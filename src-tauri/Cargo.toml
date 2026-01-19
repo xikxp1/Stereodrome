@@ -3,7 +3,7 @@ name = "stereodrome"
 version = "0.1.0"
 description = "A Tauri App"
 authors = ["Ivan Kachalkin<xikxp1@gmail.com>"]
-edition = "2024"
+edition = "2021"
 publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -23,3 +23,29 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Subsonic API
+submarine = "0.1"
+reqwest = { version = "0.13", features = ["json", "stream"] }
+
+# Async runtime
+tokio = { version = "1.49", features = ["full"] }
+
+# Error handling
+thiserror = "2.0"
+
+# Auth utilities
+md-5 = "0.10"
+rand = "0.9"
+
+# Database
+rusqlite = { version = "0.38", features = ["bundled"] }
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Audio playback (Phase 3)
+rodio = { version = "0.21", features = ["symphonia-all"] }
+
+# Search (Phase 6)
+tantivy = "0.25"

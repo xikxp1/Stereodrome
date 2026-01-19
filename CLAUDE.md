@@ -26,6 +26,9 @@ src-tauri/
 
 ## Commands
 
+Use `bun add <package>` to add new dependencies, avoid editing `package.json` manually
+Use `cargo add <package>` to add new dependencies, avoid editing `Cargo.toml` manually
+
 **Development**
 - `bun run tauri dev` - Run full app (frontend + backend)
 - `bun run check` - Type-check Svelte components
