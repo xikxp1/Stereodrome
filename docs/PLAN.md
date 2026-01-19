@@ -67,10 +67,14 @@ Phase 3: Audio Playback
 
 ### UI
 
-- [x] iTunes-inspired layout (basic)
-- [x] Sidebar navigation
-- [x] Album/artist views
-- [ ] Now playing interface
+- [x] iTunes-inspired layout with classic aesthetic
+- [x] TransportBar with playback controls, LCD display, search
+- [x] Sidebar with section headers and icons
+- [x] ColumnBrowser (Genres/Artists/Albums)
+- [x] SongList with alternating rows, checkboxes, columns
+- [x] StatusBar with item count, duration, size
+- [x] Custom DaisyUI "itunes" theme
+- [ ] Now playing interface (wired to Rodio)
 - [ ] Queue panel
 
 ## Architecture
@@ -101,12 +105,15 @@ src/lib/
 │   └── collections.ts  # Query factories
 ├── stores/connection.svelte.ts  # Connection state (runes)
 ├── components/
-│   ├── ServerConnect.svelte
-│   ├── Sidebar.svelte
+│   ├── ServerConnect.svelte   # Login screen
+│   ├── TransportBar.svelte    # Top toolbar with playback controls
+│   ├── Sidebar.svelte         # Navigation sidebar
+│   ├── StatusBar.svelte       # Bottom status bar
 │   └── library/
 │       ├── ArtistList.svelte
 │       ├── AlbumGrid.svelte
-│       └── SongList.svelte
+│       ├── ColumnBrowser.svelte  # Genre/Artist/Album browser
+│       └── SongList.svelte       # iTunes-style song table
 └── types/index.ts      # All TypeScript interfaces
 ```
 

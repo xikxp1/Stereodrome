@@ -1,8 +1,83 @@
 @import "tailwindcss";
 @plugin "daisyui" {
-  themes:
-    light,
-    dark --default --prefersdark;
+  themes: itunes --default;
+}
+
+/* ============================================
+   iTunes Classic Theme - DaisyUI 5
+   Inspired by iTunes 10-11 era (2010-2012)
+   ============================================ */
+
+@font-face {
+  font-family: "SF Pro Display";
+  src:
+    local("SF Pro Display"), local(".SF NS Display"), local("Helvetica Neue"),
+    local("Helvetica");
+  font-weight: 100 900;
+  font-style: normal;
+}
+
+[data-theme="itunes"] {
+  /* Primary - iTunes selection blue (aqua gradient feel) */
+  --color-primary: oklch(55% 0.22 250);
+  --color-primary-content: oklch(100% 0 0);
+
+  /* Secondary - Subtle cool gray */
+  --color-secondary: oklch(65% 0.02 250);
+  --color-secondary-content: oklch(20% 0.01 250);
+
+  /* Accent - Bright aqua for highlights */
+  --color-accent: oklch(62% 0.18 230);
+  --color-accent-content: oklch(100% 0 0);
+
+  /* Neutral - Charcoal for toolbar */
+  --color-neutral: oklch(32% 0.01 250);
+  --color-neutral-content: oklch(92% 0 0);
+
+  /* Base colors - Refined gray palette */
+  --color-base-100: oklch(99% 0.002 250);
+  --color-base-200: oklch(95% 0.004 250);
+  --color-base-300: oklch(88% 0.006 250);
+  --color-base-content: oklch(22% 0.01 250);
+
+  /* Semantic colors */
+  --color-info: oklch(60% 0.16 245);
+  --color-info-content: oklch(100% 0 0);
+  --color-success: oklch(58% 0.16 145);
+  --color-success-content: oklch(100% 0 0);
+  --color-warning: oklch(72% 0.14 80);
+  --color-warning-content: oklch(22% 0.05 80);
+  --color-error: oklch(55% 0.2 25);
+  --color-error-content: oklch(100% 0 0);
+
+  /* Border radius - Subtle, refined */
+  --radius-selector: 0.1875rem;
+  --radius-field: 0.25rem;
+  --radius-box: 0.375rem;
+
+  /* Border color */
+  --color-base-border: oklch(78% 0.008 250);
+}
+
+/* ============================================
+   Global Styles
+   ============================================ */
+
+html {
+  scroll-behavior: smooth;
+  font-family:
+    "SF Pro Display",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background: oklch(95% 0.004 250);
 }
 
 /* Prevent text selection on UI elements */
@@ -11,26 +86,530 @@
   user-select: none;
 }
 
-/* Smooth scrolling */
-html {
-  scroll-behavior: smooth;
-}
-
-/* Custom scrollbar for webkit browsers */
+/* Custom scrollbar - iTunes style */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: oklch(92% 0.004 250);
+  border-left: 1px solid oklch(85% 0.006 250);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: oklch(var(--bc) / 0.2);
+  background: linear-gradient(
+    to right,
+    oklch(72% 0.008 250) 0%,
+    oklch(68% 0.008 250) 50%,
+    oklch(72% 0.008 250) 100%
+  );
   border-radius: 4px;
+  border: 1px solid oklch(62% 0.01 250);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: oklch(var(--bc) / 0.3);
+  background: linear-gradient(
+    to right,
+    oklch(65% 0.01 250) 0%,
+    oklch(60% 0.01 250) 50%,
+    oklch(65% 0.01 250) 100%
+  );
+}
+
+/* ============================================
+   Transport Bar (Top Toolbar)
+   ============================================ */
+
+.transport-bar {
+  background: linear-gradient(
+    to bottom,
+    oklch(52% 0.008 250) 0%,
+    oklch(42% 0.008 250) 45%,
+    oklch(38% 0.008 250) 55%,
+    oklch(32% 0.008 250) 100%
+  );
+  border-bottom: 1px solid oklch(22% 0.01 250);
+  box-shadow: inset 0 1px 0 oklch(58% 0.006 250 / 0.4);
+}
+
+.transport-btn {
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(
+    to bottom,
+    oklch(55% 0.008 250) 0%,
+    oklch(42% 0.008 250) 50%,
+    oklch(38% 0.008 250) 51%,
+    oklch(32% 0.008 250) 100%
+  );
+  border: 1px solid oklch(25% 0.01 250);
+  border-radius: 4px;
+  color: oklch(90% 0 0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 oklch(65% 0.006 250 / 0.3),
+    0 1px 2px oklch(0% 0 0 / 0.3);
+  transition: filter 0.1s;
+}
+
+.transport-btn:hover {
+  filter: brightness(1.08);
+}
+
+.transport-btn:active {
+  filter: brightness(0.92);
+  box-shadow: inset 0 1px 3px oklch(0% 0 0 / 0.3);
+}
+
+.transport-btn-play {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(
+    to bottom,
+    oklch(58% 0.008 250) 0%,
+    oklch(45% 0.008 250) 50%,
+    oklch(40% 0.008 250) 51%,
+    oklch(34% 0.008 250) 100%
+  );
+}
+
+/* LCD Now Playing Display */
+.lcd-display {
+  background: linear-gradient(
+    to bottom,
+    oklch(18% 0.008 250) 0%,
+    oklch(22% 0.008 250) 100%
+  );
+  border: 1px solid oklch(12% 0.01 250);
+  border-radius: 4px;
+  box-shadow:
+    inset 0 1px 4px oklch(0% 0 0 / 0.5),
+    0 1px 0 oklch(50% 0.005 250 / 0.2);
+}
+
+/* Progress Scrubber */
+.scrubber-track {
+  height: 4px;
+  background: oklch(30% 0.008 250);
+  border-radius: 2px;
+  box-shadow: inset 0 1px 2px oklch(0% 0 0 / 0.4);
+}
+
+.scrubber-fill {
+  height: 100%;
+  background: linear-gradient(
+    to bottom,
+    oklch(58% 0.18 250),
+    oklch(50% 0.2 250)
+  );
+  border-radius: 2px;
+}
+
+.scrubber-thumb {
+  width: 12px;
+  height: 12px;
+  background: linear-gradient(to bottom, oklch(95% 0 0), oklch(82% 0.005 250));
+  border: 1px solid oklch(55% 0.01 250);
+  border-radius: 50%;
+  box-shadow: 0 1px 3px oklch(0% 0 0 / 0.4);
+  cursor: pointer;
+}
+
+/* Volume Slider */
+.volume-track {
+  height: 3px;
+  background: oklch(45% 0.008 250);
+  border-radius: 1.5px;
+}
+
+.volume-fill {
+  height: 100%;
+  background: oklch(75% 0.005 250);
+  border-radius: 1.5px;
+}
+
+/* Search Field */
+.search-field {
+  background: linear-gradient(
+    to bottom,
+    oklch(92% 0.004 250),
+    oklch(98% 0.002 250)
+  );
+  border: 1px solid oklch(70% 0.01 250);
+  border-radius: 12px;
+  box-shadow:
+    inset 0 1px 2px oklch(0% 0 0 / 0.08),
+    0 1px 0 oklch(100% 0 0 / 0.5);
+}
+
+.search-field:focus {
+  outline: none;
+  border-color: oklch(55% 0.18 250);
+  box-shadow:
+    inset 0 1px 2px oklch(0% 0 0 / 0.08),
+    0 0 0 2px oklch(55% 0.18 250 / 0.3);
+}
+
+/* ============================================
+   Sidebar
+   ============================================ */
+
+.sidebar {
+  background: linear-gradient(
+    to bottom,
+    oklch(93% 0.005 250) 0%,
+    oklch(89% 0.006 250) 100%
+  );
+  border-right: 1px solid oklch(78% 0.01 250);
+}
+
+.sidebar-section-title {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: oklch(52% 0.01 250);
+  padding: 1rem 1rem 0.375rem;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.1875rem 1rem;
+  margin: 0 0.375rem;
+  font-size: 0.8125rem;
+  color: oklch(22% 0.01 250);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+
+.sidebar-item:hover {
+  background: oklch(82% 0.008 250);
+}
+
+.sidebar-item.active {
+  background: linear-gradient(
+    to bottom,
+    oklch(58% 0.2 250),
+    oklch(50% 0.22 250)
+  );
+  color: white;
+  text-shadow: 0 1px 1px oklch(0% 0 0 / 0.3);
+  box-shadow:
+    inset 0 1px 0 oklch(70% 0.15 250 / 0.3),
+    0 1px 2px oklch(0% 0 0 / 0.15);
+}
+
+.sidebar-item-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.sidebar-badge {
+  margin-left: auto;
+  background: oklch(60% 0.01 250);
+  color: white;
+  font-size: 0.625rem;
+  font-weight: 600;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 8px;
+  min-width: 18px;
+  text-align: center;
+}
+
+/* ============================================
+   Column Browser
+   ============================================ */
+
+.browser-container {
+  background: white;
+  border-bottom: 1px solid oklch(80% 0.01 250);
+}
+
+.browser-column {
+  border-right: 1px solid oklch(85% 0.008 250);
+  display: flex;
+  flex-direction: column;
+}
+
+.browser-column:last-child {
+  border-right: none;
+}
+
+.browser-header {
+  background: linear-gradient(
+    to bottom,
+    oklch(97% 0.003 250) 0%,
+    oklch(91% 0.005 250) 100%
+  );
+  border-bottom: 1px solid oklch(82% 0.008 250);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: oklch(42% 0.01 250);
+  padding: 0.375rem 0.75rem;
+  text-align: center;
+  text-shadow: 0 1px 0 white;
+}
+
+.browser-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.browser-item {
+  padding: 0.125rem 0.75rem;
+  font-size: 0.75rem;
+  color: oklch(22% 0.01 250);
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
+}
+
+.browser-item:hover {
+  background: oklch(96% 0.004 250);
+}
+
+.browser-item.selected {
+  background: linear-gradient(
+    to bottom,
+    oklch(58% 0.2 250),
+    oklch(52% 0.22 250)
+  );
+  color: white;
+  text-shadow: 0 1px 1px oklch(0% 0 0 / 0.25);
+}
+
+/* ============================================
+   Song Table
+   ============================================ */
+
+.song-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.song-table-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.song-table-header th {
+  background: linear-gradient(
+    to bottom,
+    oklch(97% 0.003 250) 0%,
+    oklch(91% 0.005 250) 100%
+  );
+  border-bottom: 1px solid oklch(82% 0.008 250);
+  border-right: 1px solid oklch(88% 0.006 250);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: oklch(42% 0.01 250);
+  padding: 0.375rem 0.75rem;
+  text-align: left;
+  text-shadow: 0 1px 0 white;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.song-table-header th:last-child {
+  border-right: none;
+}
+
+.song-table-header th:hover {
+  background: linear-gradient(
+    to bottom,
+    oklch(94% 0.004 250) 0%,
+    oklch(88% 0.006 250) 100%
+  );
+}
+
+.song-table-header th.sorted {
+  color: oklch(32% 0.01 250);
+}
+
+.song-table-header th.sorted::after {
+  content: " ▲";
+  font-size: 0.5rem;
+}
+
+.song-table-header th.sorted.desc::after {
+  content: " ▼";
+}
+
+.song-row {
+  border-bottom: 1px solid oklch(94% 0.003 250);
+  transition: background-color 0.05s;
+}
+
+.song-row:nth-child(odd) {
+  background: white;
+}
+
+.song-row:nth-child(even) {
+  background: oklch(97.5% 0.002 250);
+}
+
+.song-row:hover {
+  background: oklch(94% 0.008 250);
+}
+
+.song-row.selected {
+  background: linear-gradient(
+    to bottom,
+    oklch(58% 0.2 250),
+    oklch(52% 0.22 250)
+  );
+  color: white;
+}
+
+.song-row.selected td {
+  text-shadow: 0 1px 1px oklch(0% 0 0 / 0.25);
+}
+
+.song-row.playing {
+  background: linear-gradient(
+    to bottom,
+    oklch(62% 0.18 250),
+    oklch(55% 0.2 250)
+  );
+  color: white;
+  font-weight: 500;
+}
+
+.song-row td {
+  padding: 0.25rem 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+  color: oklch(22% 0.01 250);
+}
+
+.song-row td.dimmed {
+  color: oklch(50% 0.01 250);
+}
+
+.song-row.selected td,
+.song-row.playing td {
+  color: white;
+}
+
+.song-row.selected td.dimmed,
+.song-row.playing td.dimmed {
+  color: oklch(90% 0 0 / 0.7);
+}
+
+/* ============================================
+   Status Bar
+   ============================================ */
+
+.status-bar {
+  background: linear-gradient(
+    to bottom,
+    oklch(93% 0.005 250) 0%,
+    oklch(88% 0.006 250) 100%
+  );
+  border-top: 1px solid oklch(80% 0.01 250);
+  box-shadow: inset 0 1px 0 oklch(98% 0.002 250);
+}
+
+.status-bar-text {
+  font-size: 0.6875rem;
+  color: oklch(45% 0.01 250);
+  text-shadow: 0 1px 0 white;
+}
+
+/* ============================================
+   Misc UI Elements
+   ============================================ */
+
+/* Checkbox */
+.itunes-checkbox {
+  width: 13px;
+  height: 13px;
+  accent-color: oklch(55% 0.2 250);
+}
+
+/* Loading spinner */
+.loading-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.loading-dots span {
+  width: 6px;
+  height: 6px;
+  background: oklch(55% 0.18 250);
+  border-radius: 50%;
+  animation: loading-bounce 1.4s infinite ease-in-out both;
+}
+
+.loading-dots span:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.loading-dots span:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+@keyframes loading-bounce {
+  0%,
+  80%,
+  100% {
+    transform: scale(0);
+  }
+  40% {
+    transform: scale(1);
+  }
+}
+
+/* Focus visible outline */
+:focus-visible {
+  outline: 2px solid oklch(55% 0.18 250);
+  outline-offset: 2px;
+}
+
+/* Resize handle for columns */
+.resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.resize-handle:hover {
+  background: oklch(55% 0.18 250 / 0.3);
+}
+
+/* Empty state */
+.empty-state {
+  color: oklch(55% 0.01 250);
+  text-align: center;
+  padding: 3rem 1.5rem;
+}
+
+.empty-state-icon {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 1rem;
+  color: oklch(75% 0.008 250);
+}
+
+.empty-state-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 0.25rem;
+}
+
+.empty-state-text {
+  font-size: 0.75rem;
+  color: oklch(60% 0.01 250);
 }

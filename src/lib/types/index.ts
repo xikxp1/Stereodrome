@@ -47,10 +47,12 @@ export interface Song {
   suffix: string | null;
   content_type: string | null;
   path: string | null;
+  year: number | null;
+  genre: string | null;
   synced_at: string;
   // Joined fields
-  artistName?: string;
-  albumName?: string;
+  artist?: string;
+  album?: string;
 }
 
 export interface Playlist {
