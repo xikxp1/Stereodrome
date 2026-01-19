@@ -1,11 +1,11 @@
 <script lang="ts">
-  import ServerConnect from '$lib/components/ServerConnect.svelte';
-  import Sidebar from '$lib/components/Sidebar.svelte';
-  import ArtistList from '$lib/components/library/ArtistList.svelte';
-  import AlbumGrid from '$lib/components/library/AlbumGrid.svelte';
-  import SongList from '$lib/components/library/SongList.svelte';
-  import { connection } from '$lib/stores/connection.svelte';
-  import type { Artist, Album } from '$lib/types';
+  import ServerConnect from "$lib/components/ServerConnect.svelte";
+  import Sidebar from "$lib/components/Sidebar.svelte";
+  import ArtistList from "$lib/components/library/ArtistList.svelte";
+  import AlbumGrid from "$lib/components/library/AlbumGrid.svelte";
+  import SongList from "$lib/components/library/SongList.svelte";
+  import { connection } from "$lib/stores/connection.svelte";
+  import type { Artist, Album } from "$lib/types";
 
   let selectedArtist = $state<Artist | null>(null);
   let selectedAlbum = $state<Album | null>(null);
@@ -55,10 +55,10 @@
     </div>
 
     <!-- Now playing bar placeholder -->
-    <footer class="h-20 border-t border-base-300 bg-base-200 flex items-center px-4">
-      <div class="flex-1 text-sm opacity-50">
-        No track playing
-      </div>
+    <footer
+      class="h-20 border-t border-base-300 bg-base-200 flex items-center px-4"
+    >
+      <div class="flex-1 text-sm opacity-50">No track playing</div>
     </footer>
   {:else}
     <!-- Not connected - show login form -->

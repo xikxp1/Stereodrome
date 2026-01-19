@@ -30,14 +30,16 @@ Use `bun add <package>` to add new dependencies, avoid editing `package.json` ma
 Use `cargo add <package>` to add new dependencies, avoid editing `Cargo.toml` manually
 
 **Development**
+
 - `bun run tauri dev` - Run full app (frontend + backend)
 - `bun run check` - Type-check Svelte components
 - `cd src-tauri && cargo fmt && cargo clippy` - Format and lint Rust
 
 **Build**
+
 - `bun run tauri build` - Create production bundle
 
-Always run `bun run check` for frontend changes. Always run `cargo fmt && cargo clippy` in `src-tauri/` for Rust changes.
+Always run `bun run check && bun run lint:fix && bun run format` for frontend changes. Always run `cargo fmt && cargo clippy` in `src-tauri/` for Rust changes.
 
 Use `bun run tauri dev` to verify changes work in the running app.
 
@@ -46,11 +48,13 @@ Use `bun run tauri dev` to verify changes work in the running app.
 **Svelte 5:** Use new runes syntax (`$state()`, `$derived()`, `$effect()`, `$props()`)
 
 **Tauri Commands:**
+
 - Define in `src-tauri/src/lib.rs` with `#[tauri::command]`
 - Register via `tauri::generate_handler![command_name]`
 - Call from frontend: `import { invoke } from "@tauri-apps/api/core"` then `invoke("command_name", { args })`
 
 **Frontend-Backend:**
+
 - Frontend calls Rust via `invoke()` function
 - Use `serde` for serializing data between layers
 - App runs as SPA (no SSR)

@@ -32,11 +32,11 @@ bun run tauri build
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `bun run tauri dev` | Run app in development mode |
-| `bun run tauri build` | Build production bundle |
-| `bun run check` | Type-check Svelte components |
+| Command               | Description                  |
+| --------------------- | ---------------------------- |
+| `bun run tauri dev`   | Run app in development mode  |
+| `bun run tauri build` | Build production bundle      |
+| `bun run check`       | Type-check Svelte components |
 
 Always use `bun` instead of `npm`.
 

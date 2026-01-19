@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { artistsQuery } from '$lib/db/collections';
-  import type { Artist } from '$lib/types';
+  import { artistsQuery } from "$lib/db/collections";
+  import type { Artist } from "$lib/types";
 
   interface Props {
     onSelect?: (artist: Artist) => void;
@@ -23,9 +23,7 @@
         <span class="loading loading-spinner loading-md"></span>
       </div>
     {:else if $query.error}
-      <div class="p-4 text-error text-sm">
-        Failed to load artists
-      </div>
+      <div class="p-4 text-error text-sm">Failed to load artists</div>
     {:else if $query.data && $query.data.length > 0}
       <ul class="menu p-0">
         {#each $query.data as artist (artist.id)}
@@ -36,7 +34,9 @@
               onclick={() => onSelect?.(artist)}
             >
               <span class="truncate">{artist.name}</span>
-              <span class="badge badge-sm badge-ghost">{artist.album_count}</span>
+              <span class="badge badge-sm badge-ghost"
+                >{artist.album_count}</span
+              >
             </button>
           </li>
         {/each}

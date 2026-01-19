@@ -91,5 +91,5 @@ export interface SearchResult {
   title: string;
   artist: string;
   album: string;
-  result_type: 'song' | 'album' | 'artist';
+  result_type: "song" | "album" | "artist";
 }

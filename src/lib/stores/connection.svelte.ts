@@ -1,5 +1,9 @@
-import { connectServer, disconnectServer, getConnectionStatus } from '$lib/api/commands';
-import type { ConnectionStatus, ConnectParams } from '$lib/types';
+import {
+  connectServer,
+  disconnectServer,
+  getConnectionStatus,
+} from "$lib/api/commands";
+import type { ConnectionStatus, ConnectParams } from "$lib/types";
 
 class ConnectionStore {
   status = $state<ConnectionStatus>({

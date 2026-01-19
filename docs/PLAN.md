@@ -11,6 +11,7 @@ Library sync and browsing implemented. Users can connect to a Subsonic server, s
 ## Immediate Priorities
 
 Phase 3: Audio Playback
+
 - Implement audio streaming with Rodio
 - Create playback controls
 - Add now playing UI
@@ -23,6 +24,7 @@ Phase 3: Audio Playback
 - [x] Documentation (README.md, CLAUDE.md)
 
 ### Phase 1: Foundation & Authentication
+
 - [x] Rust error handling (thiserror)
 - [x] App state management (Mutex-wrapped client, db)
 - [x] SQLite database schema and init
@@ -36,6 +38,7 @@ Phase 3: Audio Playback
 - [x] Main layout with Query provider
 
 ### Phase 2: Library Sync & Browsing
+
 - [x] Library commands (sync_library, get_artists, get_albums, get_songs)
 - [x] TanStack Query hooks for library data
 - [x] Sidebar with sync button
@@ -47,6 +50,7 @@ Phase 3: Audio Playback
 ## Planned Features
 
 ### Core Player
+
 - [x] Subsonic server connection and authentication
 - [x] Library browsing (artists, albums, songs)
 - [ ] Playback controls (play, pause, skip, volume)
@@ -55,12 +59,14 @@ Phase 3: Audio Playback
 - [ ] Search functionality
 
 ### Local Storage
+
 - [x] SQLite schema for metadata
 - [ ] Tantivy index for search
 - [x] Metadata sync from server
 - [ ] Incremental sync
 
 ### UI
+
 - [x] iTunes-inspired layout (basic)
 - [x] Sidebar navigation
 - [x] Album/artist views
@@ -70,6 +76,7 @@ Phase 3: Audio Playback
 ## Architecture
 
 ### Backend (Rust)
+
 ```
 src-tauri/src/
 ├── lib.rs              # Tauri setup, state, command registration
@@ -85,6 +92,7 @@ src-tauri/src/
 ```
 
 ### Frontend (Svelte 5)
+
 ```
 src/lib/
 ├── api/commands.ts     # Typed invoke wrappers
