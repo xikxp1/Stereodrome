@@ -1,3 +1,4 @@
+mod audio;
 mod commands;
 mod db;
 mod error;
@@ -10,6 +11,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
             let db_path = db::get_db_path(app.handle())?;
             let app_state = AppState::new(&db_path)?;
@@ -20,6 +22,12 @@ pub fn run() {
                 db::init_db(&conn)?;
             }
 
+            // Start position emitter for audio playback
+            {
+                let audio_player = app_state.audio_player.lock().unwrap();
+                audio_player.start_position_emitter(app.handle().clone());
+            }
+
             app.manage(app_state);
             Ok(())
         })
@@ -27,10 +35,39 @@ pub fn run() {
             commands::connect_server,
             commands::disconnect_server,
             commands::get_connection_status,
+            commands::restore_session,
             commands::sync_library,
             commands::get_artists,
             commands::get_albums,
             commands::get_songs,
+            commands::play_song,
+            commands::pause_playback,
+            commands::resume_playback,
+            commands::stop_playback,
+            commands::set_volume,
+            commands::get_playback_status,
+            commands::get_queue,
+            commands::add_to_queue,
+            commands::add_songs_to_queue,
+            commands::insert_next_in_queue,
+            commands::remove_from_queue,
+            commands::clear_queue,
+            commands::move_queue_item,
+            commands::play_queue_item,
+            commands::play_next,
+            commands::play_previous,
+            commands::toggle_shuffle,
+            commands::set_repeat_mode,
+            commands::cycle_repeat_mode,
+            commands::get_playlists,
+            commands::get_playlist_songs,
+            commands::create_playlist,
+            commands::update_playlist,
+            commands::delete_playlist,
+            commands::add_songs_to_playlist,
+            commands::remove_song_from_playlist,
+            commands::reorder_playlist,
+            commands::search_library,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

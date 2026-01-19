@@ -76,8 +76,20 @@ export interface PlaybackState {
 
 // Queue types
 export interface QueueItem {
-  song: Song;
-  index: number;
+  song_id: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;
+}
+
+export type RepeatMode = "Off" | "All" | "One";
+
+export interface QueueState {
+  items: QueueItem[];
+  current_index: number | null;
+  shuffle: boolean;
+  repeat_mode: RepeatMode;
 }
 
 // Sync types

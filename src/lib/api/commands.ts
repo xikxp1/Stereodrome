@@ -6,6 +6,7 @@ import type {
   Album,
   Song,
   SyncResult,
+  PlaybackState,
 } from "$lib/types";
 
 // Auth commands
@@ -23,6 +24,10 @@ export async function getConnectionStatus(): Promise<ConnectionStatus> {
   return invoke<ConnectionStatus>("get_connection_status");
 }
 
+export async function restoreSession(): Promise<ConnectionStatus> {
+  return invoke<ConnectionStatus>("restore_session");
+}
+
 // Library commands
 export async function syncLibrary(): Promise<SyncResult> {
   return invoke<SyncResult>("sync_library");
@@ -38,4 +43,29 @@ export async function getAlbums(artistId?: string): Promise<Album[]> {
 
 export async function getSongs(albumId?: string): Promise<Song[]> {
   return invoke<Song[]>("get_songs", { albumId });
+}
+
+// Playback commands
+export async function playSong(songId: string): Promise<void> {
+  return invoke("play_song", { songId });
+}
+
+export async function pausePlayback(): Promise<void> {
+  return invoke("pause_playback");
+}
+
+export async function resumePlayback(): Promise<void> {
+  return invoke("resume_playback");
+}
+
+export async function stopPlayback(): Promise<void> {
+  return invoke("stop_playback");
+}
+
+export async function setVolume(volume: number): Promise<void> {
+  return invoke("set_volume", { volume });
+}
+
+export async function getPlaybackStatus(): Promise<PlaybackState> {
+  return invoke<PlaybackState>("get_playback_status");
 }

@@ -2,6 +2,7 @@ import {
   connectServer,
   disconnectServer,
   getConnectionStatus,
+  restoreSession,
 } from "$lib/api/commands";
 import type { ConnectionStatus, ConnectParams } from "$lib/types";
 
@@ -14,6 +15,7 @@ class ConnectionStore {
   });
 
   isConnecting = $state(false);
+  isRestoring = $state(false);
   error = $state<string | null>(null);
 
   async connect(params: ConnectParams): Promise<boolean> {
@@ -50,6 +52,21 @@ class ConnectionStore {
       this.status = await getConnectionStatus();
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async restore(): Promise<boolean> {
+    this.isRestoring = true;
+    this.error = null;
+
+    try {
+      this.status = await restoreSession();
+      return this.status.connected;
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+      return false;
+    } finally {
+      this.isRestoring = false;
     }
   }
 }

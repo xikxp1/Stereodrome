@@ -4,17 +4,18 @@ Last updated: 2026-01-19
 
 ## Current Status
 
-**Phase:** Phase 2 Complete | **Version:** 0.1.0
+**Phase:** Phase 6 Complete | **Version:** 0.1.0
 
-Library sync and browsing implemented. Users can connect to a Subsonic server, sync their library, and browse artists/albums/songs.
+Core player functionality implemented: audio playback with Rodio, queue management, playlist support, and search functionality. Users can play music, manage queues, create playlists, and search their library.
 
 ## Immediate Priorities
 
-Phase 3: Audio Playback
+Phase 7: UI Polish & Optimization
 
-- Implement audio streaming with Rodio
-- Create playback controls
-- Add now playing UI
+- TanStack Virtual for large song lists
+- Now playing panel
+- Queue panel
+- Keyboard shortcuts
 
 ## Completed
 
@@ -28,8 +29,10 @@ Phase 3: Audio Playback
 - [x] Rust error handling (thiserror)
 - [x] App state management (Mutex-wrapped client, db)
 - [x] SQLite database schema and init
+- [x] Database migrations for schema changes
 - [x] Submarine crate integration for Subsonic API
-- [x] Auth commands (connect_server, disconnect, get_status)
+- [x] Auth commands (connect_server, disconnect, get_status, restore_session)
+- [x] Persistent credentials with tauri-plugin-store
 - [x] Tailwind CSS + DaisyUI setup
 - [x] TanStack Query client
 - [x] Connection store (Svelte 5 runes)
@@ -47,21 +50,49 @@ Phase 3: Audio Playback
 - [x] SongList component
 - [x] Main library browsing UI
 
+### Phase 3: Audio Playback
+
+- [x] AudioPlayer module with Rodio integration
+- [x] Stream module for fetching audio from Subsonic
+- [x] Playback commands (play_song, pause, resume, stop, set_volume)
+- [x] Playback store with Svelte 5 runes
+- [x] Position updates via Tauri events (10Hz)
+- [x] TransportBar wired to playback controls
+
+### Phase 4: Queue Management
+
+- [x] PlayQueue struct with shuffle/repeat modes
+- [x] Queue commands (add, remove, reorder, play_next, play_previous)
+- [x] Queue store with auto-advance on song end
+- [x] Play song with queue context (filtered songs)
+
+### Phase 5: Playlist Support
+
+- [x] Playlist commands (create, update, delete, add/remove songs)
+- [x] Playlist store with CRUD operations
+- [x] Sidebar playlists section with create/select
+
+### Phase 6: Search
+
+- [x] SQL LIKE-based search command
+- [x] Search store with debounced queries
+- [x] TransportBar search with results dropdown
+
 ## Planned Features
 
 ### Core Player
 
 - [x] Subsonic server connection and authentication
 - [x] Library browsing (artists, albums, songs)
-- [ ] Playback controls (play, pause, skip, volume)
-- [ ] Queue management
-- [ ] Playlist support
-- [ ] Search functionality
+- [x] Playback controls (play, pause, skip, volume)
+- [x] Queue management
+- [x] Playlist support
+- [x] Search functionality
 
 ### Local Storage
 
 - [x] SQLite schema for metadata
-- [ ] Tantivy index for search
+- [ ] Tantivy index for search (currently using SQL LIKE)
 - [x] Metadata sync from server
 - [ ] Incremental sync
 
@@ -74,8 +105,9 @@ Phase 3: Audio Playback
 - [x] SongList with alternating rows, checkboxes, columns
 - [x] StatusBar with item count, duration, size
 - [x] Custom DaisyUI "itunes" theme
-- [ ] Now playing interface (wired to Rodio)
+- [x] Now playing interface (wired to Rodio)
 - [ ] Queue panel
+- [ ] TanStack Virtual for large lists
 
 ## Architecture
 
@@ -85,11 +117,20 @@ Phase 3: Audio Playback
 src-tauri/src/
 ├── lib.rs              # Tauri setup, state, command registration
 ├── error.rs            # AppError enum with thiserror
-├── state.rs            # AppState (client, db, server config)
+├── state.rs            # AppState (client, db, audio_player, queue)
+├── audio/
+│   ├── mod.rs          # Module exports
+│   ├── player.rs       # AudioPlayer with Rodio (threaded)
+│   ├── queue.rs        # PlayQueue with shuffle/repeat
+│   └── stream.rs       # Subsonic audio stream fetching
 ├── commands/
 │   ├── mod.rs
 │   ├── auth.rs         # connect_server, disconnect, get_status
-│   └── library.rs      # sync_library, get_artists, get_albums, get_songs
+│   ├── library.rs      # sync_library, get_artists, get_albums, get_songs
+│   ├── playback.rs     # play_song, pause, resume, stop, set_volume
+│   ├── queue.rs        # Queue management commands
+│   ├── playlist.rs     # Playlist CRUD commands
+│   └── search.rs       # SQL LIKE search
 └── db/
     ├── mod.rs          # init_db, get_db_path
     └── schema.sql      # SQLite tables
@@ -103,11 +144,16 @@ src/lib/
 ├── db/
 │   ├── queryClient.ts  # TanStack Query client
 │   └── collections.ts  # Query factories
-├── stores/connection.svelte.ts  # Connection state (runes)
+├── stores/
+│   ├── connection.svelte.ts  # Connection state (runes)
+│   ├── playback.svelte.ts    # Playback state with event listeners
+│   ├── queue.svelte.ts       # Queue management store
+│   ├── playlist.svelte.ts    # Playlist store
+│   └── search.svelte.ts      # Search with debounce
 ├── components/
 │   ├── ServerConnect.svelte   # Login screen
-│   ├── TransportBar.svelte    # Top toolbar with playback controls
-│   ├── Sidebar.svelte         # Navigation sidebar
+│   ├── TransportBar.svelte    # Top toolbar with playback controls + search
+│   ├── Sidebar.svelte         # Navigation + playlists
 │   ├── StatusBar.svelte       # Bottom status bar
 │   └── library/
 │       ├── ArtistList.svelte
@@ -119,15 +165,16 @@ src/lib/
 
 ## Known Issues
 
-- Dead code warnings for unused error variants (expected, will be used in later phases)
+- Dead code warnings for unused error variants (expected)
+- TanStack Query Svelte 5 type errors in unused legacy components (ArtistList, AlbumGrid)
 
 ## Next Steps
 
-1. **Phase 3** - Audio playback with Rodio
-2. **Phase 4** - Queue management
-3. **Phase 5** - TanStack Virtual for song lists
-4. **Phase 6** - Tantivy search
-5. **Phase 7** - UI polish
+1. **Phase 7** - TanStack Virtual for large song lists
+2. **Phase 8** - Queue panel UI
+3. **Phase 9** - Tantivy full-text search
+4. **Phase 10** - Keyboard shortcuts
+5. **Phase 11** - UI polish
 
 ---
 

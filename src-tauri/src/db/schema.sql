@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS songs (
     suffix TEXT,
     content_type TEXT,
     path TEXT,
+    year INTEGER,
+    genre TEXT,
     synced_at TEXT NOT NULL,
     FOREIGN KEY (album_id) REFERENCES albums(id),
     FOREIGN KEY (artist_id) REFERENCES artists(id)

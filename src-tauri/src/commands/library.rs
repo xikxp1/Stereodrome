@@ -40,7 +40,12 @@ pub struct Song {
     pub suffix: Option<String>,
     pub content_type: Option<String>,
     pub path: Option<String>,
+    pub year: Option<i32>,
+    pub genre: Option<String>,
     pub synced_at: String,
+    // Joined fields
+    pub artist: Option<String>,
+    pub album: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +86,8 @@ struct SongData {
     suffix: Option<String>,
     content_type: Option<String>,
     path: Option<String>,
+    year: Option<i32>,
+    genre: Option<String>,
 }
 
 #[tauri::command]
@@ -100,7 +107,10 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
     let mut albums_data: Vec<AlbumData> = Vec::new();
     let mut songs_data: Vec<SongData> = Vec::new();
 
+    eprintln!("Fetched {} indexes", indexes.len());
+
     for index in indexes {
+        eprintln!("Index has {} artists", index.artist.len());
         for artist in index.artist {
             artists_data.push(ArtistData {
                 id: artist.id.clone(),
@@ -110,38 +120,46 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
             });
 
             // Fetch albums for this artist
-            if let Ok(artist_detail) = client.get_artist(&artist.id).await {
-                for album in artist_detail.album {
-                    albums_data.push(AlbumData {
-                        id: album.id.clone(),
-                        artist_id: artist.id.clone(),
-                        name: album.name.clone(),
-                        year: album.year,
-                        song_count: album.song_count,
-                        duration: Some(album.duration),
-                        cover_art: album.cover_art.clone(),
-                    });
+            match client.get_artist(&artist.id).await {
+                Ok(artist_detail) => {
+                    for album in artist_detail.album {
+                        albums_data.push(AlbumData {
+                            id: album.id.clone(),
+                            artist_id: artist.id.clone(),
+                            name: album.name.clone(),
+                            year: album.year,
+                            song_count: album.song_count,
+                            duration: Some(album.duration),
+                            cover_art: album.cover_art.clone(),
+                        });
 
-                    // Fetch songs for this album
-                    if let Ok(album_detail) = client.get_album(&album.id).await {
-                        for song in album_detail.song {
-                            songs_data.push(SongData {
-                                id: song.id.clone(),
-                                album_id: album.id.clone(),
-                                artist_id: artist.id.clone(),
-                                title: song.title.clone(),
-                                track: song.track,
-                                disc_number: song.disc_number.unwrap_or(1),
-                                duration: song.duration,
-                                bit_rate: song.bit_rate,
-                                size: song.size,
-                                suffix: song.suffix.clone(),
-                                content_type: song.content_type.clone(),
-                                path: song.path.clone(),
-                            });
+                        // Fetch songs for this album
+                        match client.get_album(&album.id).await {
+                            Ok(album_detail) => {
+                                for song in album_detail.song {
+                                    songs_data.push(SongData {
+                                        id: song.id.clone(),
+                                        album_id: album.id.clone(),
+                                        artist_id: artist.id.clone(),
+                                        title: song.title.clone(),
+                                        track: song.track,
+                                        disc_number: song.disc_number.unwrap_or(1),
+                                        duration: song.duration,
+                                        bit_rate: song.bit_rate,
+                                        size: song.size,
+                                        suffix: song.suffix.clone(),
+                                        content_type: song.content_type.clone(),
+                                        path: song.path.clone(),
+                                        year: song.year.or(album.year),
+                                        genre: song.genre.clone(),
+                                    });
+                                }
+                            }
+                            Err(e) => eprintln!("Error fetching album {}: {}", album.id, e),
                         }
                     }
                 }
+                Err(e) => eprintln!("Error fetching artist {}: {}", artist.id, e),
             }
         }
     }
@@ -166,10 +184,17 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
 
     for song in &songs_data {
         db.execute(
-            "INSERT OR REPLACE INTO songs (id, album_id, artist_id, title, track_number, disc_number, duration, bit_rate, size, suffix, content_type, path, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            rusqlite::params![song.id, song.album_id, song.artist_id, song.title, song.track, song.disc_number, song.duration, song.bit_rate, song.size, song.suffix, song.content_type, song.path, &now],
+            "INSERT OR REPLACE INTO songs (id, album_id, artist_id, title, track_number, disc_number, duration, bit_rate, size, suffix, content_type, path, year, genre, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            rusqlite::params![song.id, song.album_id, song.artist_id, song.title, song.track, song.disc_number, song.duration, song.bit_rate, song.size, song.suffix, song.content_type, song.path, song.year, song.genre, &now],
         )?;
     }
+
+    eprintln!(
+        "Sync complete: {} artists, {} albums, {} songs",
+        artists_data.len(),
+        albums_data.len(),
+        songs_data.len()
+    );
 
     Ok(SyncResult {
         artists: artists_data.len(),
@@ -257,52 +282,50 @@ pub async fn get_songs(
 ) -> AppResult<Vec<Song>> {
     let db = state.db.lock().unwrap();
 
+    let base_query = "SELECT s.id, s.album_id, s.artist_id, s.title, s.track_number, s.disc_number,
+                      s.duration, s.bit_rate, s.size, s.suffix, s.content_type, s.path,
+                      s.year, s.genre, s.synced_at, ar.name as artist_name, al.name as album_name
+                      FROM songs s
+                      LEFT JOIN artists ar ON s.artist_id = ar.id
+                      LEFT JOIN albums al ON s.album_id = al.id";
+
+    let map_row = |row: &rusqlite::Row| -> rusqlite::Result<Song> {
+        Ok(Song {
+            id: row.get(0)?,
+            album_id: row.get(1)?,
+            artist_id: row.get(2)?,
+            title: row.get(3)?,
+            track_number: row.get(4)?,
+            disc_number: row.get(5)?,
+            duration: row.get(6)?,
+            bit_rate: row.get(7)?,
+            size: row.get(8)?,
+            suffix: row.get(9)?,
+            content_type: row.get(10)?,
+            path: row.get(11)?,
+            year: row.get(12)?,
+            genre: row.get(13)?,
+            synced_at: row.get(14)?,
+            artist: row.get(15)?,
+            album: row.get(16)?,
+        })
+    };
+
     let songs: Vec<Song> = if let Some(aid) = album_id {
-        let mut stmt = db.prepare(
-            "SELECT id, album_id, artist_id, title, track_number, disc_number, duration, bit_rate, size, suffix, content_type, path, synced_at FROM songs WHERE album_id = ?1 ORDER BY disc_number, track_number",
-        )?;
+        let query = format!(
+            "{} WHERE s.album_id = ?1 ORDER BY s.disc_number, s.track_number",
+            base_query
+        );
+        let mut stmt = db.prepare(&query)?;
         let result: Vec<Song> = stmt
-            .query_map([aid], |row| {
-                Ok(Song {
-                    id: row.get(0)?,
-                    album_id: row.get(1)?,
-                    artist_id: row.get(2)?,
-                    title: row.get(3)?,
-                    track_number: row.get(4)?,
-                    disc_number: row.get(5)?,
-                    duration: row.get(6)?,
-                    bit_rate: row.get(7)?,
-                    size: row.get(8)?,
-                    suffix: row.get(9)?,
-                    content_type: row.get(10)?,
-                    path: row.get(11)?,
-                    synced_at: row.get(12)?,
-                })
-            })?
+            .query_map([aid], map_row)?
             .collect::<Result<Vec<_>, _>>()?;
         result
     } else {
-        let mut stmt = db.prepare(
-            "SELECT id, album_id, artist_id, title, track_number, disc_number, duration, bit_rate, size, suffix, content_type, path, synced_at FROM songs ORDER BY title",
-        )?;
+        let query = format!("{} ORDER BY s.title", base_query);
+        let mut stmt = db.prepare(&query)?;
         let result: Vec<Song> = stmt
-            .query_map([], |row| {
-                Ok(Song {
-                    id: row.get(0)?,
-                    album_id: row.get(1)?,
-                    artist_id: row.get(2)?,
-                    title: row.get(3)?,
-                    track_number: row.get(4)?,
-                    disc_number: row.get(5)?,
-                    duration: row.get(6)?,
-                    bit_rate: row.get(7)?,
-                    size: row.get(8)?,
-                    suffix: row.get(9)?,
-                    content_type: row.get(10)?,
-                    path: row.get(11)?,
-                    synced_at: row.get(12)?,
-                })
-            })?
+            .query_map([], map_row)?
             .collect::<Result<Vec<_>, _>>()?;
         result
     };

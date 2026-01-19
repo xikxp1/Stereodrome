@@ -6,6 +6,8 @@
   import SongList from "$lib/components/library/SongList.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
   import { connection } from "$lib/stores/connection.svelte";
+  import { playback } from "$lib/stores/playback.svelte";
+  import { queue } from "$lib/stores/queue.svelte";
   import { getArtists, getAlbums, getSongs } from "$lib/api/commands";
   import type { Artist, Album, Song } from "$lib/types";
 
@@ -23,16 +25,29 @@
   let selectedAlbum = $state<Album | null>(null);
   let selectedSong = $state<Song | null>(null);
 
-  // Playback state (placeholder)
-  let isPlaying = $state(false);
-  let currentTrack = $state<{ title: string; artist: string } | null>(null);
-  let currentTime = $state(0);
-  let duration = $state(0);
-  let volume = $state(80);
+  // Derive playback state from store
+  const currentTrack = $derived(
+    playback.currentSong
+      ? {
+          title: playback.currentSong.title,
+          artist: playback.currentSong.artist || "Unknown Artist",
+        }
+      : null
+  );
+  const volume = $derived(playback.volume * 100); // Convert to 0-100 for UI
 
   // Loading states
   let isLoading = $state(false);
   let loadError = $state<Error | null>(null);
+
+  // Restore session on mount (runs once)
+  let sessionRestored = false;
+  $effect(() => {
+    if (!sessionRestored) {
+      sessionRestored = true;
+      connection.restore();
+    }
+  });
 
   // Load data when connected
   $effect(() => {
@@ -76,28 +91,33 @@
 
   const filteredAlbums = $derived(() => {
     let result = albums;
-    if (selectedGenre) {
+    const genre = selectedGenre;
+    const artist = selectedArtist;
+    if (genre) {
       const albumIds = new Set(
-        songs.filter((s) => s.genre === selectedGenre).map((s) => s.album_id)
+        songs.filter((s) => s.genre === genre).map((s) => s.album_id)
       );
       result = result.filter((a) => albumIds.has(a.id));
     }
-    if (selectedArtist) {
-      result = result.filter((a) => a.artist_id === selectedArtist.id);
+    if (artist) {
+      result = result.filter((a) => a.artist_id === artist.id);
     }
     return result;
   });
 
   const filteredSongs = $derived(() => {
     let result = songs;
-    if (selectedGenre) {
-      result = result.filter((s) => s.genre === selectedGenre);
+    const genre = selectedGenre;
+    const artist = selectedArtist;
+    const album = selectedAlbum;
+    if (genre) {
+      result = result.filter((s) => s.genre === genre);
     }
-    if (selectedArtist) {
-      result = result.filter((s) => s.artist_id === selectedArtist.id);
+    if (artist) {
+      result = result.filter((s) => s.artist_id === artist.id);
     }
-    if (selectedAlbum) {
-      result = result.filter((s) => s.album_id === selectedAlbum.id);
+    if (album) {
+      result = result.filter((s) => s.album_id === album.id);
     }
     return result;
   });
@@ -130,19 +150,29 @@
     selectedSong = song;
   }
 
-  function handleSongPlay(song: Song) {
-    currentTrack = {
-      title: song.title,
-      artist: song.artist || "Unknown Artist",
-    };
-    isPlaying = true;
-    duration = song.duration || 0;
-    currentTime = 0;
-    // Actual playback would be implemented here
+  async function handleSongPlay(song: Song) {
+    try {
+      // Play with queue context - use filtered songs as the queue
+      await queue.playSongWithQueue(song, filteredSongs());
+    } catch (e) {
+      console.error("Failed to play song:", e);
+    }
   }
 
   function handlePlayPause() {
-    isPlaying = !isPlaying;
+    playback.togglePlayPause();
+  }
+
+  function handleVolumeChange(v: number) {
+    playback.setVolume(v / 100); // Convert from 0-100 to 0-1
+  }
+
+  function handlePrevious() {
+    queue.playPrevious();
+  }
+
+  function handleNext() {
+    queue.playNext();
   }
 
   function handleViewChange(view: string) {
@@ -154,20 +184,26 @@
   {#if connection.status.connected}
     <!-- Transport Bar -->
     <TransportBar
-      {isPlaying}
+      isPlaying={playback.isPlaying}
       {currentTrack}
-      {currentTime}
-      {duration}
+      currentTime={playback.position}
+      duration={playback.duration}
       {volume}
       onPlayPause={handlePlayPause}
-      onVolumeChange={(v) => (volume = v)}
+      onPrevious={handlePrevious}
+      onNext={handleNext}
+      onVolumeChange={handleVolumeChange}
     />
 
     <!-- Main Content Area -->
     <div class="flex-1 flex overflow-hidden">
       <!-- Sidebar -->
       <aside class="w-48 flex-shrink-0">
-        <Sidebar {activeView} onViewChange={handleViewChange} />
+        <Sidebar
+          {activeView}
+          onViewChange={handleViewChange}
+          onSync={loadLibraryData}
+        />
       </aside>
 
       <!-- Content -->
@@ -195,9 +231,7 @@
             {isLoading}
             error={loadError}
             selectedSongId={selectedSong?.id}
-            playingSongId={currentTrack
-              ? songs.find((s) => s.title === currentTrack.title)?.id
-              : null}
+            playingSongId={playback.currentSong?.id ?? null}
             onSelect={handleSongSelect}
             onPlay={handleSongPlay}
           />

@@ -1,17 +1,36 @@
 <script lang="ts">
   import { connection } from "$lib/stores/connection.svelte";
+  import { playlistStore, type Playlist } from "$lib/stores/playlist.svelte";
   import { syncLibrary } from "$lib/api/commands";
   import { queryClient } from "$lib/db/queryClient";
 
   interface Props {
     activeView?: string;
     onViewChange?: (view: string) => void;
+    onPlaylistSelect?: (playlist: Playlist | null) => void;
+    selectedPlaylistId?: string | null;
+    onSync?: () => void;
   }
 
-  let { activeView = "music", onViewChange }: Props = $props();
+  let {
+    activeView = "music",
+    onViewChange,
+    onPlaylistSelect,
+    selectedPlaylistId = null,
+    onSync,
+  }: Props = $props();
 
   let isSyncing = $state(false);
   let syncError = $state<string | null>(null);
+  let showCreatePlaylist = $state(false);
+  let newPlaylistName = $state("");
+
+  // Load playlists when component mounts
+  $effect(() => {
+    if (connection.status.connected) {
+      playlistStore.loadPlaylists();
+    }
+  });
 
   async function handleSync() {
     isSyncing = true;
@@ -21,6 +40,8 @@
       await queryClient.invalidateQueries({ queryKey: ["artists"] });
       await queryClient.invalidateQueries({ queryKey: ["albums"] });
       await queryClient.invalidateQueries({ queryKey: ["songs"] });
+      await playlistStore.loadPlaylists();
+      onSync?.();
     } catch (e) {
       syncError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -30,6 +51,21 @@
 
   function selectView(view: string) {
     onViewChange?.(view);
+    onPlaylistSelect?.(null); // Deselect playlist when changing views
+  }
+
+  function selectPlaylist(playlist: Playlist) {
+    onPlaylistSelect?.(playlist);
+  }
+
+  async function handleCreatePlaylist() {
+    if (!newPlaylistName.trim()) return;
+    const playlist = await playlistStore.createPlaylist(newPlaylistName.trim());
+    if (playlist) {
+      newPlaylistName = "";
+      showCreatePlaylist = false;
+      selectPlaylist(playlist);
+    }
   }
 </script>
 
@@ -104,12 +140,68 @@
     <!-- Playlists Section -->
     <div class="sidebar-section-title mt-4">Playlists</div>
 
-    <button class="sidebar-item w-full opacity-50 cursor-not-allowed" disabled>
-      <svg class="sidebar-item-icon" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
-      </svg>
-      <span>New Playlist</span>
-    </button>
+    {#if showCreatePlaylist}
+      <div class="px-2 py-1">
+        <input
+          type="text"
+          class="w-full px-2 py-1 text-xs bg-base-200 border border-base-300 rounded focus:outline-none focus:border-primary"
+          placeholder="Playlist name..."
+          bind:value={newPlaylistName}
+          onkeydown={(e) => {
+            if (e.key === "Enter") handleCreatePlaylist();
+            if (e.key === "Escape") {
+              showCreatePlaylist = false;
+              newPlaylistName = "";
+            }
+          }}
+        />
+        <div class="flex gap-1 mt-1">
+          <button
+            class="flex-1 px-2 py-0.5 text-[10px] bg-primary text-primary-content rounded hover:bg-primary/90"
+            onclick={handleCreatePlaylist}
+          >
+            Create
+          </button>
+          <button
+            class="flex-1 px-2 py-0.5 text-[10px] bg-base-300 rounded hover:bg-base-300/80"
+            onclick={() => {
+              showCreatePlaylist = false;
+              newPlaylistName = "";
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    {:else}
+      <button
+        class="sidebar-item w-full"
+        onclick={() => (showCreatePlaylist = true)}
+      >
+        <svg class="sidebar-item-icon" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+        </svg>
+        <span>New Playlist</span>
+      </button>
+    {/if}
+
+    {#each playlistStore.playlists as playlist (playlist.id)}
+      <button
+        class="sidebar-item w-full"
+        class:active={selectedPlaylistId === playlist.id}
+        onclick={() => selectPlaylist(playlist)}
+      >
+        <svg class="sidebar-item-icon" viewBox="0 0 24 24" fill="currentColor">
+          <path
+            d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"
+          />
+        </svg>
+        <span class="truncate">{playlist.name}</span>
+        <span class="text-[10px] text-base-content/40 ml-auto"
+          >{playlist.song_count}</span
+        >
+      </button>
+    {/each}
   </div>
 
   <!-- Bottom Actions -->

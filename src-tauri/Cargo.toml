@@ -49,3 +49,6 @@ rodio = { version = "0.21", features = ["symphonia-all"] }
 
 # Search (Phase 6)
 tantivy = "0.25"
+urlencoding = "2.1.3"
+uuid = { version = "1.19.0", features = ["v4"] }
+tauri-plugin-store = "2.4.2"
