@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "stereodrome",
+  "productName": "Stereodrome",
   "version": "0.1.0",
   "identifier": "dev.xikxp1.stereodrome",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "stereodrome",
+        "title": "Stereodrome",
         "width": 800,
         "height": 600
       }
