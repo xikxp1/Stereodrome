@@ -7,6 +7,7 @@ import type {
   Song,
   SyncResult,
   PlaybackState,
+  SearchResults,
 } from "$lib/types";
 
 // Auth commands
@@ -68,4 +69,12 @@ export async function setVolume(volume: number): Promise<void> {
 
 export async function getPlaybackStatus(): Promise<PlaybackState> {
   return invoke<PlaybackState>("get_playback_status");
+}
+
+// Search commands
+export async function searchLibrary(
+  query: string,
+  limit?: number
+): Promise<SearchResults> {
+  return invoke<SearchResults>("search_library", { query, limit });
 }

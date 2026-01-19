@@ -1,9 +1,12 @@
-use rusqlite::Connection;
+use std::path::PathBuf;
 use std::sync::Mutex;
+
+use rusqlite::Connection;
 use submarine::Client;
 
 use crate::audio::{AudioPlayer, PlayQueue};
 use crate::error::AppResult;
+use crate::search::IndexManager;
 
 #[derive(Clone)]
 pub struct ServerConfig {
@@ -18,12 +21,26 @@ pub struct AppState {
     pub db: Mutex<Connection>,
     pub audio_player: Mutex<AudioPlayer>,
     pub queue: Mutex<PlayQueue>,
+    pub search_index: Mutex<Option<IndexManager>>,
+    pub index_path: PathBuf,
 }
 
 impl AppState {
-    pub fn new(db_path: &str) -> AppResult<Self> {
+    pub fn new(db_path: &str, index_path: PathBuf) -> AppResult<Self> {
         let conn = Connection::open(db_path)?;
         let audio_player = AudioPlayer::new()?;
+
+        // Try to create search index, but don't fail if it errors
+        let search_index = match IndexManager::new(&index_path) {
+            Ok(manager) => {
+                eprintln!("Search index initialized at {:?}", index_path);
+                Some(manager)
+            }
+            Err(e) => {
+                eprintln!("Failed to initialize search index: {}", e);
+                None
+            }
+        };
 
         Ok(Self {
             client: Mutex::new(None),
@@ -31,6 +48,8 @@ impl AppState {
             db: Mutex::new(conn),
             audio_player: Mutex::new(audio_player),
             queue: Mutex::new(PlayQueue::new()),
+            search_index: Mutex::new(search_index),
+            index_path,
         })
     }
 

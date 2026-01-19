@@ -12,7 +12,6 @@
     onNext?: () => void;
     onSeek?: (time: number) => void;
     onVolumeChange?: (volume: number) => void;
-    onSearchResultClick?: (type: string, id: string) => void;
   }
 
   let {
@@ -26,24 +25,15 @@
     onNext,
     onSeek,
     onVolumeChange,
-    onSearchResultClick,
   }: Props = $props();
 
-  function handleSearch(e: Event) {
+  function handleInput(e: Event) {
     const input = e.target as HTMLInputElement;
-    searchStore.search(input.value);
+    searchStore.setQuery(input.value);
   }
 
-  function handleResultClick(type: string, id: string) {
-    searchStore.close();
-    onSearchResultClick?.(type, id);
-  }
-
-  function formatDuration(seconds: number | null): string {
-    if (!seconds) return "";
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  function handleClear() {
+    searchStore.clear();
   }
 
   function formatTime(seconds: number): string {
@@ -206,126 +196,51 @@
   </div>
 
   <!-- Right: Search -->
-  <div class="dropdown dropdown-end z-10">
+  <div class="z-10 relative flex items-center gap-2">
     <input
       type="search"
       placeholder="Search"
       value={searchStore.query}
-      oninput={handleSearch}
-      onfocus={() => searchStore.open()}
-      class="h-7 w-36 rounded-full border border-base-300 bg-base-100 px-3 text-xs outline-none transition-all duration-150 placeholder:text-base-content/40 focus:w-44 focus:border-primary focus:ring-2 focus:ring-primary/20"
+      oninput={handleInput}
+      class="h-7 w-44 rounded-full border border-base-300 bg-base-100 px-3 pr-7 text-xs outline-none transition-all duration-150 placeholder:text-base-content/40 focus:w-52 focus:border-primary focus:ring-2 focus:ring-primary/20"
     />
-
-    {#if searchStore.isOpen && searchStore.hasResults}
-      <ul
-        class="menu dropdown-content z-50 mt-1 max-h-80 w-72 overflow-y-auto rounded-lg border border-base-300 bg-base-100 p-0 shadow-lg"
+    {#if searchStore.isSearching}
+      <span class="absolute right-2 top-1/2 -translate-y-1/2">
+        <svg
+          class="h-3.5 w-3.5 animate-spin text-primary"
+          viewBox="0 0 24 24"
+          fill="none"
+        >
+          <circle
+            class="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            stroke-width="4"
+          ></circle>
+          <path
+            class="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+          ></path>
+        </svg>
+      </span>
+    {:else if searchStore.hasQuery}
+      <button
+        class="absolute right-2 top-1/2 -translate-y-1/2 text-base-content/40 hover:text-base-content"
+        onclick={handleClear}
+        aria-label="Clear search"
       >
-        {#if searchStore.results.songs.length > 0}
-          <li
-            class="border-b border-base-200 bg-base-200/50 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-base-content/50"
-          >
-            Songs
-          </li>
-          {#each searchStore.results.songs.slice(0, 5) as song (song.id)}
-            <li>
-              <button
-                class="flex items-center gap-2 rounded-none px-3 py-2 hover:bg-primary/10"
-                onclick={() => handleResultClick("song", song.id)}
-              >
-                <svg
-                  class="h-3.5 w-3.5 shrink-0 text-base-content/40"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                >
-                  <path
-                    d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"
-                  />
-                </svg>
-                <div class="min-w-0 flex-1">
-                  <div class="truncate text-xs font-medium">{song.title}</div>
-                  <div class="truncate text-[10px] text-base-content/50">
-                    {song.artist || "Unknown"} — {song.album || "Unknown"}
-                  </div>
-                </div>
-                {#if song.duration}
-                  <span class="shrink-0 text-[10px] text-base-content/40">
-                    {formatDuration(song.duration)}
-                  </span>
-                {/if}
-              </button>
-            </li>
-          {/each}
-        {/if}
-
-        {#if searchStore.results.albums.length > 0}
-          <li
-            class="border-b border-base-200 bg-base-200/50 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-base-content/50"
-          >
-            Albums
-          </li>
-          {#each searchStore.results.albums.slice(0, 3) as album (album.id)}
-            <li>
-              <button
-                class="flex items-center gap-2 rounded-none px-3 py-2 hover:bg-primary/10"
-                onclick={() => handleResultClick("album", album.id)}
-              >
-                <svg
-                  class="h-3.5 w-3.5 shrink-0 text-base-content/40"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                >
-                  <path
-                    d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"
-                  />
-                </svg>
-                <div class="min-w-0 flex-1">
-                  <div class="truncate text-xs font-medium">{album.name}</div>
-                  <div class="truncate text-[10px] text-base-content/50">
-                    {album.artist || "Unknown"}{album.year
-                      ? ` (${album.year})`
-                      : ""}
-                  </div>
-                </div>
-                <span class="shrink-0 text-[10px] text-base-content/40">
-                  {album.song_count} songs
-                </span>
-              </button>
-            </li>
-          {/each}
-        {/if}
-
-        {#if searchStore.results.artists.length > 0}
-          <li
-            class="border-b border-base-200 bg-base-200/50 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-base-content/50"
-          >
-            Artists
-          </li>
-          {#each searchStore.results.artists.slice(0, 3) as artist (artist.id)}
-            <li>
-              <button
-                class="flex items-center gap-2 rounded-none px-3 py-2 hover:bg-primary/10"
-                onclick={() => handleResultClick("artist", artist.id)}
-              >
-                <svg
-                  class="h-3.5 w-3.5 shrink-0 text-base-content/40"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                >
-                  <path
-                    d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"
-                  />
-                </svg>
-                <div class="min-w-0 flex-1">
-                  <div class="truncate text-xs font-medium">{artist.name}</div>
-                </div>
-                <span class="shrink-0 text-[10px] text-base-content/40">
-                  {artist.album_count} albums
-                </span>
-              </button>
-            </li>
-          {/each}
-        {/if}
-      </ul>
+        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+          <path
+            d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
+          />
+        </svg>
+      </button>
+    {/if}
+    {#if searchStore.hasActiveQuery}
+      <span class="text-[10px] text-primary font-medium"> Filtered </span>
     {/if}
   </div>
 </div>

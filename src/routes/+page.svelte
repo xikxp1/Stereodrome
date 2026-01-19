@@ -8,9 +8,9 @@
   import { connection } from "$lib/stores/connection.svelte";
   import { playback } from "$lib/stores/playback.svelte";
   import { queue } from "$lib/stores/queue.svelte";
+  import { searchStore } from "$lib/stores/search.svelte";
   import { getArtists, getAlbums, getSongs } from "$lib/api/commands";
   import type { Artist, Album, Song } from "$lib/types";
-
   // View state
   let activeView = $state("music");
 
@@ -80,80 +80,115 @@
     }
   }
 
-  // Filtered data based on selections
-  const filteredArtists = $derived(() => {
-    if (!selectedGenre) return artists;
-    const artistIds = new Set(
-      songs.filter((s) => s.genre === selectedGenre).map((s) => s.artist_id)
-    );
-    return artists.filter((a) => artistIds.has(a.id));
-  });
-
-  const filteredAlbums = $derived(() => {
-    let result = albums;
-    const genre = selectedGenre;
-    const artist = selectedArtist;
-    if (genre) {
-      const albumIds = new Set(
-        songs.filter((s) => s.genre === genre).map((s) => s.album_id)
-      );
-      result = result.filter((a) => albumIds.has(a.id));
-    }
-    if (artist) {
-      result = result.filter((a) => a.artist_id === artist.id);
-    }
-    return result;
-  });
-
-  const filteredSongs = $derived(() => {
-    let result = songs;
+  // Compute filtered data using Tantivy search results
+  const filterResult = $derived.by(() => {
+    const hasSearch = searchStore.hasActiveQuery;
     const genre = selectedGenre;
     const artist = selectedArtist;
     const album = selectedAlbum;
-    if (genre) {
-      result = result.filter((s) => s.genre === genre);
+
+    // No filters at all - return everything
+    if (!hasSearch && !genre && !artist && !album) {
+      return {
+        genres,
+        artistIds: new Set(artists.map((a) => a.id)),
+        albumIds: new Set(albums.map((a) => a.id)),
+        songs,
+      };
     }
-    if (artist) {
-      result = result.filter((s) => s.artist_id === artist.id);
+
+    // Use Tantivy matched IDs for search filtering
+    const searchSongIds = searchStore.matchedSongIds;
+
+    // Single pass through songs (internal computation, not reactive state)
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
+    const matchedGenres = new Set<string>();
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
+    const matchedArtistIds = new Set<string>();
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
+    const matchedAlbumIds = new Set<string>();
+    const matchedSongs: Song[] = [];
+
+    for (const s of songs) {
+      // Check Tantivy search match (if search is active)
+      if (hasSearch && !searchSongIds.has(s.id)) continue;
+
+      // Track what's available from search matches (before selection filters)
+      if (s.genre) matchedGenres.add(s.genre);
+
+      // Apply genre filter for artist/album lists
+      if (!genre || s.genre === genre) {
+        matchedArtistIds.add(s.artist_id);
+
+        // Apply artist filter for album list
+        if (!artist || s.artist_id === artist.id) {
+          matchedAlbumIds.add(s.album_id);
+        }
+      }
+
+      // Apply all selection filters for final song list
+      if (genre && s.genre !== genre) continue;
+      if (artist && s.artist_id !== artist.id) continue;
+      if (album && s.album_id !== album.id) continue;
+
+      matchedSongs.push(s);
     }
-    if (album) {
-      result = result.filter((s) => s.album_id === album.id);
-    }
-    return result;
+
+    return {
+      genres: [...matchedGenres].sort(),
+      artistIds: matchedArtistIds,
+      albumIds: matchedAlbumIds,
+      songs: matchedSongs,
+    };
   });
+
+  // Derive from cached filterResult (no function call - direct property access)
+  const filteredGenres = $derived(filterResult.genres);
+  const filteredArtists = $derived(
+    artists.filter((a) => filterResult.artistIds.has(a.id))
+  );
+  const filteredAlbums = $derived(
+    albums.filter((a) => filterResult.albumIds.has(a.id))
+  );
+  const filteredSongs = $derived(filterResult.songs);
 
   // Stats for status bar
   const totalDuration = $derived(
-    filteredSongs().reduce((acc, s) => acc + (s.duration || 0), 0)
+    filteredSongs.reduce((acc, s) => acc + (s.duration || 0), 0)
   );
   const totalSize = $derived(
-    filteredSongs().reduce((acc, s) => acc + (s.size || 0), 0)
+    filteredSongs.reduce((acc, s) => acc + (s.size || 0), 0)
   );
 
-  // Handlers
+  // Handlers - disabled during search
   function handleGenreSelect(genre: string | null) {
+    if (searchStore.isSearching) return;
     selectedGenre = genre;
     selectedArtist = null;
     selectedAlbum = null;
   }
 
   function handleArtistSelect(artist: Artist | null) {
+    if (searchStore.isSearching) return;
     selectedArtist = artist;
     selectedAlbum = null;
   }
 
   function handleAlbumSelect(album: Album | null) {
+    if (searchStore.isSearching) return;
     selectedAlbum = album;
   }
 
   function handleSongSelect(song: Song) {
+    if (searchStore.isSearching) return;
     selectedSong = song;
   }
 
   async function handleSongPlay(song: Song) {
+    if (searchStore.isSearching) return;
     try {
       // Play with queue context - use filtered songs as the queue
-      await queue.playSongWithQueue(song, filteredSongs());
+      await queue.playSongWithQueue(song, filteredSongs);
     } catch (e) {
       console.error("Failed to play song:", e);
     }
@@ -208,13 +243,15 @@
 
       <!-- Content -->
       <main
-        class="flex-1 flex flex-col overflow-hidden border-l border-base-300"
+        class="flex-1 flex flex-col overflow-hidden border-l border-base-300 transition-opacity duration-150"
+        class:opacity-50={searchStore.isSearching}
+        class:pointer-events-none={searchStore.isSearching}
       >
         <!-- Column Browser -->
         <ColumnBrowser
-          {genres}
-          artists={filteredArtists()}
-          albums={filteredAlbums()}
+          genres={filteredGenres}
+          artists={filteredArtists}
+          albums={filteredAlbums}
           {selectedGenre}
           {selectedArtist}
           {selectedAlbum}
@@ -227,7 +264,7 @@
         <!-- Song List -->
         <div class="flex-1 overflow-hidden">
           <SongList
-            songs={filteredSongs()}
+            songs={filteredSongs}
             {isLoading}
             error={loadError}
             selectedSongId={selectedSong?.id}
@@ -239,7 +276,7 @@
 
         <!-- Status Bar -->
         <StatusBar
-          itemCount={filteredSongs().length}
+          itemCount={filteredSongs.length}
           {totalDuration}
           {totalSize}
         />

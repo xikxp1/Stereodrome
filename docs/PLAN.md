@@ -92,7 +92,7 @@ Phase 7: UI Polish & Optimization
 ### Local Storage
 
 - [x] SQLite schema for metadata
-- [ ] Tantivy index for search (currently using SQL LIKE)
+- [x] Tantivy index for full-text search
 - [x] Metadata sync from server
 - [ ] Incremental sync
 
@@ -117,7 +117,7 @@ Phase 7: UI Polish & Optimization
 src-tauri/src/
 ├── lib.rs              # Tauri setup, state, command registration
 ├── error.rs            # AppError enum with thiserror
-├── state.rs            # AppState (client, db, audio_player, queue)
+├── state.rs            # AppState (client, db, audio_player, queue, search_index)
 ├── audio/
 │   ├── mod.rs          # Module exports
 │   ├── player.rs       # AudioPlayer with Rodio (threaded)
@@ -130,7 +130,9 @@ src-tauri/src/
 │   ├── playback.rs     # play_song, pause, resume, stop, set_volume
 │   ├── queue.rs        # Queue management commands
 │   ├── playlist.rs     # Playlist CRUD commands
-│   └── search.rs       # SQL LIKE search
+│   └── search.rs       # Tantivy full-text search
+├── search/
+│   └── mod.rs          # IndexManager, SearchSchema, Tantivy integration
 └── db/
     ├── mod.rs          # init_db, get_db_path
     └── schema.sql      # SQLite tables
@@ -171,8 +173,7 @@ src/lib/
 
 1. **Phase 7** - Now playing panel, Queue panel UI
 2. **Phase 8** - Keyboard shortcuts
-3. **Phase 9** - Tantivy full-text search
-4. **Phase 10** - UI polish
+3. **Phase 9** - UI polish
 
 ---
 

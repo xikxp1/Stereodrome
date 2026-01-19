@@ -100,10 +100,30 @@ export interface SyncResult {
 }
 
 // Search types
-export interface SearchResult {
+export interface SearchResultSong {
   id: string;
   title: string;
-  artist: string;
-  album: string;
-  result_type: "song" | "album" | "artist";
+  artist: string | null;
+  album: string | null;
+  duration: number | null;
+}
+
+export interface SearchResultAlbum {
+  id: string;
+  name: string;
+  artist: string | null;
+  year: number | null;
+  song_count: number;
+}
+
+export interface SearchResultArtist {
+  id: string;
+  name: string;
+  album_count: number;
+}
+
+export interface SearchResults {
+  songs: SearchResultSong[];
+  albums: SearchResultAlbum[];
+  artists: SearchResultArtist[];
 }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,94 +42,74 @@ pub fn search_library(
     query: String,
     limit: Option<i32>,
 ) -> AppResult<SearchResults> {
-    let db = state.db.lock().unwrap();
-    let limit = limit.unwrap_or(20);
-    let search_pattern = format!("%{}%", query);
+    let limit = limit.unwrap_or(20) as usize;
 
-    // Search songs
-    let mut song_stmt = db.prepare(
-        r#"
-        SELECT 
-            s.id, s.title, a.name as artist, al.name as album, s.duration
-        FROM songs s
-        LEFT JOIN artists a ON a.id = s.artist_id
-        LEFT JOIN albums al ON al.id = s.album_id
-        WHERE s.title LIKE ?1
-           OR a.name LIKE ?1
-           OR al.name LIKE ?1
-        ORDER BY 
-            CASE 
-                WHEN s.title LIKE ?1 THEN 0
-                ELSE 1
-            END,
-            s.title
-        LIMIT ?2
-        "#,
-    )?;
+    let search_index_guard = state
+        .search_index
+        .lock()
+        .map_err(|e| AppError::Search(format!("Failed to lock search index: {}", e)))?;
 
-    let songs: Vec<SearchResultSong> = song_stmt
-        .query_map(rusqlite::params![&search_pattern, limit], |row| {
-            Ok(SearchResultSong {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                artist: row.get(2)?,
-                album: row.get(3)?,
-                duration: row.get(4)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    let index_manager = search_index_guard.as_ref().ok_or_else(|| {
+        AppError::Search("Search index not initialized. Please sync library first.".to_string())
+    })?;
 
-    // Search albums
-    let mut album_stmt = db.prepare(
-        r#"
-        SELECT 
-            al.id, al.name, a.name as artist, al.year, al.song_count
-        FROM albums al
-        LEFT JOIN artists a ON a.id = al.artist_id
-        WHERE al.name LIKE ?1
-           OR a.name LIKE ?1
-        ORDER BY 
-            CASE 
-                WHEN al.name LIKE ?1 THEN 0
-                ELSE 1
-            END,
-            al.name
-        LIMIT ?2
-        "#,
-    )?;
+    // Multiply limit to get enough results for each category
+    let hits = index_manager.search(&query, limit * 3)?;
 
-    let albums: Vec<SearchResultAlbum> = album_stmt
-        .query_map(rusqlite::params![&search_pattern, limit], |row| {
-            Ok(SearchResultAlbum {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                artist: row.get(2)?,
-                year: row.get(3)?,
-                song_count: row.get(4)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    eprintln!(
+        "search_library: query='{}', limit={}, hits={}",
+        query,
+        limit,
+        hits.len()
+    );
 
-    // Search artists
-    let mut artist_stmt = db.prepare(
-        r#"
-        SELECT id, name, album_count
-        FROM artists
-        WHERE name LIKE ?1
-        ORDER BY name
-        LIMIT ?2
-        "#,
-    )?;
+    let mut songs = Vec::new();
+    let mut albums = Vec::new();
+    let mut artists = Vec::new();
 
-    let artists: Vec<SearchResultArtist> = artist_stmt
-        .query_map(rusqlite::params![&search_pattern, limit], |row| {
-            Ok(SearchResultArtist {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                album_count: row.get(2)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    for hit in hits {
+        match hit.entity_type.as_str() {
+            "song" => {
+                if songs.len() < limit {
+                    songs.push(SearchResultSong {
+                        id: hit.id,
+                        title: hit.name,
+                        artist: hit.artist_name,
+                        album: hit.album_name,
+                        duration: hit.duration.map(|d| d as i32),
+                    });
+                }
+            }
+            "album" => {
+                if albums.len() < limit {
+                    albums.push(SearchResultAlbum {
+                        id: hit.id,
+                        name: hit.name,
+                        artist: hit.artist_name,
+                        year: hit.year.map(|y| y as i32),
+                        song_count: hit.song_count.unwrap_or(0) as i32,
+                    });
+                }
+            }
+            "artist" => {
+                if artists.len() < limit {
+                    artists.push(SearchResultArtist {
+                        id: hit.id,
+                        name: hit.name,
+                        album_count: hit.album_count.unwrap_or(0) as i32,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    eprintln!(
+        "search_library: returning {} songs, {} albums, {} artists",
+        songs.len(),
+        albums.len(),
+        artists.len()
+    );
 
     Ok(SearchResults {
         songs,

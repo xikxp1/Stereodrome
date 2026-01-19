@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
+use crate::search::{AlbumIndexData, ArtistIndexData, IndexManager, SongIndexData};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +192,9 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
         )?;
     }
 
+    // Drop db lock before rebuilding search index
+    drop(db);
+
     eprintln!(
         "Sync complete: {} artists, {} albums, {} songs",
         artists_data.len(),
@@ -196,11 +202,117 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
         songs_data.len()
     );
 
+    // Rebuild search index
+    rebuild_search_index(&state, &artists_data, &albums_data, &songs_data)?;
+
     Ok(SyncResult {
         artists: artists_data.len(),
         albums: albums_data.len(),
         songs: songs_data.len(),
     })
+}
+
+/// Rebuild the search index from the synced data
+fn rebuild_search_index(
+    state: &AppState,
+    artists_data: &[ArtistData],
+    albums_data: &[AlbumData],
+    songs_data: &[SongData],
+) -> AppResult<()> {
+    // Build lookup maps for names
+    let artist_names: HashMap<&str, &str> = artists_data
+        .iter()
+        .map(|a| (a.id.as_str(), a.name.as_str()))
+        .collect();
+
+    let album_names: HashMap<&str, &str> = albums_data
+        .iter()
+        .map(|a| (a.id.as_str(), a.name.as_str()))
+        .collect();
+
+    // Convert to index data structs
+    let artists: Vec<ArtistIndexData> = artists_data
+        .iter()
+        .map(|a| ArtistIndexData {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            album_count: a.album_count,
+        })
+        .collect();
+
+    let albums: Vec<AlbumIndexData> = albums_data
+        .iter()
+        .map(|a| AlbumIndexData {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            artist_name: artist_names
+                .get(a.artist_id.as_str())
+                .unwrap_or(&"")
+                .to_string(),
+            year: a.year,
+            song_count: a.song_count,
+        })
+        .collect();
+
+    let songs: Vec<SongIndexData> = songs_data
+        .iter()
+        .map(|s| SongIndexData {
+            id: s.id.clone(),
+            title: s.title.clone(),
+            artist_name: artist_names
+                .get(s.artist_id.as_str())
+                .unwrap_or(&"")
+                .to_string(),
+            album_name: album_names
+                .get(s.album_id.as_str())
+                .unwrap_or(&"")
+                .to_string(),
+            genre: s.genre.clone(),
+            year: s.year,
+            duration: s.duration,
+        })
+        .collect();
+
+    eprintln!(
+        "rebuild_search_index called with {} artists, {} albums, {} songs",
+        artists.len(),
+        albums.len(),
+        songs.len()
+    );
+
+    // Get or create the search index
+    let mut search_index_guard = state.search_index.lock().unwrap();
+
+    // If no index exists yet, create one
+    if search_index_guard.is_none() {
+        eprintln!("Search index is None, creating new one...");
+        match IndexManager::new(&state.index_path) {
+            Ok(manager) => {
+                eprintln!("Created new search index");
+                *search_index_guard = Some(manager);
+            }
+            Err(e) => {
+                eprintln!("Failed to create search index: {}", e);
+                return Ok(()); // Don't fail the sync
+            }
+        }
+    } else {
+        eprintln!("Search index already exists");
+    }
+
+    // Rebuild the index
+    if let Some(ref index_manager) = *search_index_guard {
+        eprintln!("Calling rebuild_index...");
+        if let Err(e) = index_manager.rebuild_index(&artists, &albums, &songs) {
+            eprintln!("Failed to rebuild search index: {}", e);
+        } else {
+            eprintln!("rebuild_index completed successfully");
+        }
+    } else {
+        eprintln!("search_index_guard is still None after creation attempt!");
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

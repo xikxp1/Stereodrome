@@ -2,6 +2,7 @@ mod audio;
 mod commands;
 mod db;
 mod error;
+mod search;
 mod state;
 
 use state::AppState;
@@ -14,7 +15,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
             let db_path = db::get_db_path(app.handle())?;
-            let app_state = AppState::new(&db_path)?;
+            let index_path = search::get_index_path(app.handle())?;
+            let app_state = AppState::new(&db_path, index_path)?;
 
             // Initialize database schema
             {

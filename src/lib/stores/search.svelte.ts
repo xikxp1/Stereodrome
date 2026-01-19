@@ -1,104 +1,90 @@
-import { invoke } from "@tauri-apps/api/core";
-
-export interface SearchResultSong {
-  id: string;
-  title: string;
-  artist: string | null;
-  album: string | null;
-  duration: number | null;
-}
-
-export interface SearchResultAlbum {
-  id: string;
-  name: string;
-  artist: string | null;
-  year: number | null;
-  song_count: number;
-}
-
-export interface SearchResultArtist {
-  id: string;
-  name: string;
-  album_count: number;
-}
-
-export interface SearchResults {
-  songs: SearchResultSong[];
-  albums: SearchResultAlbum[];
-  artists: SearchResultArtist[];
-}
+import { searchLibrary } from "$lib/api/commands";
+import type { SearchResults } from "$lib/types";
 
 class SearchStore {
   query = $state("");
-  results = $state<SearchResults>({ songs: [], albums: [], artists: [] });
+  activeQuery = $state("");
   isSearching = $state(false);
-  isOpen = $state(false);
+  results = $state<SearchResults | null>(null);
 
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  // Sets of matched IDs for efficient filtering
+  matchedSongIds = $state<Set<string>>(new Set());
+  matchedAlbumIds = $state<Set<string>>(new Set());
+  matchedArtistIds = $state<Set<string>>(new Set());
 
-  async search(query: string) {
+  private debounceTimeout: ReturnType<typeof setTimeout> | null = null;
+  private readonly DEBOUNCE_MS = 300;
+
+  setQuery(query: string) {
     this.query = query;
 
-    // Clear results if query is empty
-    if (!query.trim()) {
-      this.results = { songs: [], albums: [], artists: [] };
-      this.isOpen = false;
+    // Clear existing timeout
+    if (this.debounceTimeout) {
+      clearTimeout(this.debounceTimeout);
+    }
+
+    // Debounce the search
+    this.debounceTimeout = setTimeout(() => {
+      this.search();
+    }, this.DEBOUNCE_MS);
+  }
+
+  async search() {
+    const q = this.query.trim();
+    if (q === this.activeQuery) return;
+
+    if (!q) {
+      this.clearResults();
       return;
     }
 
-    // Debounce search
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
+    this.isSearching = true;
+
+    try {
+      // Call Tantivy backend with high limit to get all matches
+      const results = await searchLibrary(q, 1000);
+      this.results = results;
+
+      console.log(
+        `Search '${q}': ${results.songs.length} songs, ${results.albums.length} albums, ${results.artists.length} artists`
+      );
+
+      // Build ID sets for efficient filtering
+      this.matchedSongIds = new Set(results.songs.map((s) => s.id));
+      this.matchedAlbumIds = new Set(results.albums.map((a) => a.id));
+      this.matchedArtistIds = new Set(results.artists.map((a) => a.id));
+
+      console.log(`Matched IDs: ${this.matchedSongIds.size} song IDs`);
+
+      this.activeQuery = q;
+    } catch (e) {
+      console.error("Search failed:", e);
+      // On error, clear results
+      this.clearResults();
+    } finally {
+      this.isSearching = false;
     }
-
-    this.debounceTimer = setTimeout(async () => {
-      this.isSearching = true;
-      try {
-        this.results = await invoke<SearchResults>("search_library", {
-          query: query.trim(),
-          limit: 10,
-        });
-        this.isOpen = this.hasResults;
-      } catch (e) {
-        console.error("Search failed:", e);
-        this.results = { songs: [], albums: [], artists: [] };
-      } finally {
-        this.isSearching = false;
-      }
-    }, 300); // 300ms debounce
   }
 
-  get hasResults() {
-    return (
-      this.results.songs.length > 0 ||
-      this.results.albums.length > 0 ||
-      this.results.artists.length > 0
-    );
-  }
-
-  get totalResults() {
-    return (
-      this.results.songs.length +
-      this.results.albums.length +
-      this.results.artists.length
-    );
+  private clearResults() {
+    this.activeQuery = "";
+    this.results = null;
+    this.matchedSongIds = new Set();
+    this.matchedAlbumIds = new Set();
+    this.matchedArtistIds = new Set();
   }
 
   clear() {
-    this.query = "";
-    this.results = { songs: [], albums: [], artists: [] };
-    this.isOpen = false;
-  }
-
-  close() {
-    this.isOpen = false;
-  }
-
-  open() {
-    if (this.hasResults) {
-      this.isOpen = true;
+    if (this.debounceTimeout) {
+      clearTimeout(this.debounceTimeout);
     }
+    this.query = "";
+    this.isSearching = false;
+    this.clearResults();
   }
+
+  hasQuery = $derived(this.query.trim().length > 0);
+  hasActiveQuery = $derived(this.activeQuery.length > 0);
 }
 
 export const searchStore = new SearchStore();
