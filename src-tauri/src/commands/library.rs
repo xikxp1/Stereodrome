@@ -322,7 +322,10 @@ pub async fn get_songs(
             .collect::<Result<Vec<_>, _>>()?;
         result
     } else {
-        let query = format!("{} ORDER BY s.title", base_query);
+        let query = format!(
+            "{} ORDER BY ar.name COLLATE NOCASE, al.name COLLATE NOCASE, s.disc_number, s.track_number",
+            base_query
+        );
         let mut stmt = db.prepare(&query)?;
         let result: Vec<Song> = stmt
             .query_map([], map_row)?

@@ -19,17 +19,17 @@
   </div>
 
   <div class="flex-1 overflow-auto p-4">
-    {#if $query.isLoading}
+    {#if query.isLoading}
       <div class="flex items-center justify-center h-32">
         <span class="loading loading-spinner loading-md"></span>
       </div>
-    {:else if $query.error}
+    {:else if query.error}
       <div class="text-error text-sm">Failed to load albums</div>
-    {:else if $query.data && $query.data.length > 0}
+    {:else if query.data && query.data.length > 0}
       <div
         class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4"
       >
-        {#each $query.data as album (album.id)}
+        {#each query.data as album (album.id)}
           <button
             class="card bg-base-200 hover:bg-base-300 transition-colors cursor-pointer text-left"
             class:ring-2={selectedId === album.id}

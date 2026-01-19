@@ -12,7 +12,7 @@ Core player functionality implemented: audio playback with Rodio, queue manageme
 
 Phase 7: UI Polish & Optimization
 
-- TanStack Virtual for large song lists
+- [x] TanStack Virtual for large song lists
 - Now playing panel
 - Queue panel
 - Keyboard shortcuts
@@ -107,7 +107,7 @@ Phase 7: UI Polish & Optimization
 - [x] Custom DaisyUI "itunes" theme
 - [x] Now playing interface (wired to Rodio)
 - [ ] Queue panel
-- [ ] TanStack Virtual for large lists
+- [x] TanStack Virtual for large lists
 
 ## Architecture
 
@@ -166,15 +166,13 @@ src/lib/
 ## Known Issues
 
 - Dead code warnings for unused error variants (expected)
-- TanStack Query Svelte 5 type errors in unused legacy components (ArtistList, AlbumGrid)
 
 ## Next Steps
 
-1. **Phase 7** - TanStack Virtual for large song lists
-2. **Phase 8** - Queue panel UI
+1. **Phase 7** - Now playing panel, Queue panel UI
+2. **Phase 8** - Keyboard shortcuts
 3. **Phase 9** - Tantivy full-text search
-4. **Phase 10** - Keyboard shortcuts
-5. **Phase 11** - UI polish
+4. **Phase 10** - UI polish
 
 ---
 

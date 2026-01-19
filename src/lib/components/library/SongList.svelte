@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { Song } from "$lib/types";
+  import { createVirtualizer } from "@tanstack/svelte-virtual";
+  import { SvelteSet } from "svelte/reactivity";
 
   interface Props {
     songs?: Song[];
@@ -21,9 +23,24 @@
     onPlay,
   }: Props = $props();
 
-  import { SvelteSet } from "svelte/reactivity";
-
   let checkedSongs = new SvelteSet<string>();
+  let scrollContainer: HTMLDivElement | undefined = $state();
+
+  const ROW_HEIGHT = 28;
+
+  const virtualizer = $derived(
+    createVirtualizer({
+      get count() {
+        return songs.length;
+      },
+      getScrollElement: () => scrollContainer ?? null,
+      estimateSize: () => ROW_HEIGHT,
+      overscan: 10,
+    })
+  );
+
+  const virtualItems = $derived($virtualizer.getVirtualItems());
+  const totalSize = $derived($virtualizer.getTotalSize());
 
   function formatDuration(seconds: number | null): string {
     if (!seconds) return "--:--";
@@ -108,47 +125,54 @@
       </div>
     </div>
   {:else}
-    <div class="flex-1 overflow-auto">
-      <table class="song-table">
-        <thead class="song-table-header">
-          <tr>
-            <th class="w-8 text-center">
-              <input
-                type="checkbox"
-                class="itunes-checkbox"
-                checked={allChecked}
-                indeterminate={someChecked}
-                onchange={toggleAllChecked}
-              />
-            </th>
-            <th class="w-10">#</th>
-            <th>Name</th>
-            <th class="w-16 text-right">Time</th>
-            <th class="w-40">Artist</th>
-            <th class="w-40">Album</th>
-            <th class="w-14">Year</th>
-            <th class="w-24">Genre</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each songs as song, index (song.id)}
-            <tr
-              class="song-row"
+    <div class="flex-1 overflow-hidden flex flex-col">
+      <!-- Fixed header -->
+      <div class="song-grid-header">
+        <div class="cell-checkbox">
+          <input
+            type="checkbox"
+            class="itunes-checkbox"
+            checked={allChecked}
+            indeterminate={someChecked}
+            onchange={toggleAllChecked}
+          />
+        </div>
+        <div class="cell-track">#</div>
+        <div class="cell-name">Name</div>
+        <div class="cell-time">Time</div>
+        <div class="cell-artist">Artist</div>
+        <div class="cell-album">Album</div>
+        <div class="cell-year">Year</div>
+        <div class="cell-genre">Genre</div>
+      </div>
+
+      <!-- Virtualized body -->
+      <div bind:this={scrollContainer} class="flex-1 overflow-auto">
+        <div style="height: {totalSize}px; width: 100%; position: relative;">
+          {#each virtualItems as row (row.index)}
+            {@const song = songs[row.index]}
+            {@const index = row.index}
+            <div
+              class="song-grid-row"
               class:selected={selectedSongId === song.id}
               class:playing={playingSongId === song.id}
+              class:even={index % 2 === 1}
               onclick={() => handleRowClick(song)}
               ondblclick={() => handleRowDoubleClick(song)}
+              style="position: absolute; top: 0; left: 0; width: 100%; height: {row.size}px; transform: translateY({row.start}px);"
             >
-              <td class="text-center">
+              <div class="cell-checkbox">
                 <input
                   type="checkbox"
                   class="itunes-checkbox"
                   checked={checkedSongs.has(song.id)}
                   onchange={(e) => toggleCheck(song.id, e)}
                 />
-              </td>
-              <td class="dimmed">{song.track_number || index + 1}</td>
-              <td class="font-medium">
+              </div>
+              <div class="cell-track dimmed">
+                {song.track_number || index + 1}
+              </div>
+              <div class="cell-name font-medium">
                 {#if playingSongId === song.id}
                   <span class="inline-flex items-center gap-1.5">
                     <svg
@@ -158,23 +182,134 @@
                     >
                       <path d="M3 9v6h4l5 5V4L7 9H3z" />
                     </svg>
-                    {song.title}
+                    <span class="truncate">{song.title}</span>
                   </span>
                 {:else}
-                  {song.title}
+                  <span class="truncate">{song.title}</span>
                 {/if}
-              </td>
-              <td class="text-right dimmed tabular-nums"
-                >{formatDuration(song.duration)}</td
-              >
-              <td class="dimmed">{song.artist || "—"}</td>
-              <td class="dimmed">{song.album || "—"}</td>
-              <td class="dimmed">{song.year || "—"}</td>
-              <td class="dimmed">{song.genre || "—"}</td>
-            </tr>
+              </div>
+              <div class="cell-time dimmed tabular-nums">
+                {formatDuration(song.duration)}
+              </div>
+              <div class="cell-artist dimmed">
+                <span class="truncate">{song.artist || "—"}</span>
+              </div>
+              <div class="cell-album dimmed">
+                <span class="truncate">{song.album || "—"}</span>
+              </div>
+              <div class="cell-year dimmed">{song.year || "—"}</div>
+              <div class="cell-genre dimmed">
+                <span class="truncate">{song.genre || "—"}</span>
+              </div>
+            </div>
           {/each}
-        </tbody>
-      </table>
+        </div>
+      </div>
     </div>
   {/if}
 </div>
+
+<style>
+  .song-grid-header,
+  .song-grid-row {
+    display: grid;
+    grid-template-columns: 32px 40px 1fr 64px 200px 200px 56px 96px;
+    align-items: center;
+    font-size: 0.75rem;
+  }
+
+  .song-grid-header {
+    background: linear-gradient(
+      to bottom,
+      oklch(97% 0.003 250) 0%,
+      oklch(91% 0.005 250) 100%
+    );
+    border-bottom: 1px solid oklch(82% 0.008 250);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: oklch(42% 0.01 250);
+    text-shadow: 0 1px 0 white;
+    flex-shrink: 0;
+  }
+
+  .song-grid-header > div {
+    padding: 0.375rem 0.75rem;
+    white-space: nowrap;
+    border-right: 1px solid oklch(88% 0.006 250);
+  }
+
+  .song-grid-header > div:last-child {
+    border-right: none;
+  }
+
+  .song-grid-row {
+    border-bottom: 1px solid oklch(94% 0.003 250);
+    background: white;
+    color: oklch(22% 0.01 250);
+  }
+
+  .song-grid-row.even {
+    background: oklch(97.5% 0.002 250);
+  }
+
+  .song-grid-row:hover {
+    background: oklch(94% 0.008 250);
+  }
+
+  .song-grid-row.selected {
+    background: linear-gradient(
+      to bottom,
+      oklch(58% 0.2 250),
+      oklch(52% 0.22 250)
+    );
+    color: white;
+  }
+
+  .song-grid-row.selected > div {
+    text-shadow: 0 1px 1px oklch(0% 0 0 / 0.25);
+  }
+
+  .song-grid-row.playing {
+    background: linear-gradient(
+      to bottom,
+      oklch(62% 0.18 250),
+      oklch(55% 0.2 250)
+    );
+    color: white;
+    font-weight: 500;
+  }
+
+  .song-grid-row > div {
+    padding: 0.25rem 0.75rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .song-grid-row .truncate {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dimmed {
+    color: oklch(50% 0.01 250);
+  }
+
+  .song-grid-row.selected .dimmed,
+  .song-grid-row.playing .dimmed {
+    color: oklch(90% 0 0 / 0.7);
+  }
+
+  .cell-checkbox {
+    justify-self: center;
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+  }
+
+  .cell-time {
+    text-align: right;
+  }
+</style>

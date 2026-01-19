@@ -18,15 +18,15 @@
   </div>
 
   <div class="flex-1 overflow-auto">
-    {#if $query.isLoading}
+    {#if query.isLoading}
       <div class="flex items-center justify-center h-32">
         <span class="loading loading-spinner loading-md"></span>
       </div>
-    {:else if $query.error}
+    {:else if query.error}
       <div class="p-4 text-error text-sm">Failed to load artists</div>
-    {:else if $query.data && $query.data.length > 0}
+    {:else if query.data && query.data.length > 0}
       <ul class="menu p-0">
-        {#each $query.data as artist (artist.id)}
+        {#each query.data as artist (artist.id)}
           <li>
             <button
               class="rounded-none"
