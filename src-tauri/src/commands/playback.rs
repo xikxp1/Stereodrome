@@ -30,8 +30,19 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
     let audio_data = fetch_audio_bytes(&config, &song_id).await?;
 
     // Play the audio
-    let audio_player = state.audio_player.lock().unwrap();
-    audio_player.play(audio_data, song_id, duration)?;
+    {
+        let audio_player = state.audio_player.lock().unwrap();
+        audio_player.play(audio_data, song_id.clone(), duration)?;
+    }
+
+    // Report "now playing" to Subsonic server
+    let client_opt = state.client.lock().unwrap().clone();
+    if let Some(client) = client_opt {
+        // Fire and forget - don't fail playback if scrobble fails
+        let _ = client
+            .scrobble(vec![(song_id, None::<usize>)], Some(false))
+            .await;
+    }
 
     Ok(())
 }

@@ -4,7 +4,9 @@ use tantivy::{
     collector::TopDocs,
     directory::MmapDirectory,
     query::QueryParser,
-    schema::{Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, STORED, STRING},
+    schema::{
+        Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, STORED, STRING,
+    },
     tokenizer::{LowerCaser, NgramTokenizer, TextAnalyzer},
     Index, IndexReader, IndexSettings, IndexWriter, TantivyDocument,
 };
@@ -85,8 +87,8 @@ impl SearchSchema {
         let text_indexing_no_store = TextFieldIndexing::default()
             .set_tokenizer(NGRAM_TOKENIZER)
             .set_index_option(IndexRecordOption::WithFreqsAndPositions);
-        let text_options_no_store = TextOptions::default()
-            .set_indexing_options(text_indexing_no_store);
+        let text_options_no_store =
+            TextOptions::default().set_indexing_options(text_indexing_no_store);
 
         // STRING = indexed but not tokenized, STORED = retrievable
         let id = builder.add_text_field("id", STRING | STORED);
@@ -163,7 +165,9 @@ impl IndexManager {
         let ngram_tokenizer = TextAnalyzer::builder(NgramTokenizer::new(2, 8, false).unwrap())
             .filter(LowerCaser)
             .build();
-        index.tokenizers().register(NGRAM_TOKENIZER, ngram_tokenizer);
+        index
+            .tokenizers()
+            .register(NGRAM_TOKENIZER, ngram_tokenizer);
 
         let reader = index
             .reader()

@@ -13,7 +13,7 @@ Core player functionality implemented: audio playback with Rodio, queue manageme
 Phase 7: UI Polish & Optimization
 
 - [x] TanStack Virtual for large song lists
-- Now playing panel
+- [x] Now playing from server (TransportBar shows server state via events)
 - Queue panel
 - Keyboard shortcuts
 
@@ -105,7 +105,8 @@ Phase 7: UI Polish & Optimization
 - [x] SongList with alternating rows, checkboxes, columns
 - [x] StatusBar with item count, duration, size
 - [x] Custom DaisyUI "itunes" theme
-- [x] Now playing interface (wired to Rodio)
+- [x] Now playing in TransportBar (shows server state for current user)
+- [x] Scrobbling to Subsonic server on play
 - [ ] Queue panel
 - [x] TanStack Virtual for large lists
 
@@ -130,7 +131,8 @@ src-tauri/src/
 │   ├── playback.rs     # play_song, pause, resume, stop, set_volume
 │   ├── queue.rs        # Queue management commands
 │   ├── playlist.rs     # Playlist CRUD commands
-│   └── search.rs       # Tantivy full-text search
+│   ├── search.rs       # Tantivy full-text search
+│   └── nowplaying.rs   # Scrobbling, now playing emitter (events)
 ├── search/
 │   └── mod.rs          # IndexManager, SearchSchema, Tantivy integration
 └── db/
@@ -151,10 +153,11 @@ src/lib/
 │   ├── playback.svelte.ts    # Playback state with event listeners
 │   ├── queue.svelte.ts       # Queue management store
 │   ├── playlist.svelte.ts    # Playlist store
-│   └── search.svelte.ts      # Search with debounce
+│   ├── search.svelte.ts      # Search with debounce
+│   └── nowplaying.svelte.ts  # Server now playing state via events
 ├── components/
 │   ├── ServerConnect.svelte   # Login screen
-│   ├── TransportBar.svelte    # Top toolbar with playback controls + search
+│   ├── TransportBar.svelte    # Top toolbar with playback controls + now playing (server state)
 │   ├── Sidebar.svelte         # Navigation + playlists
 │   ├── StatusBar.svelte       # Bottom status bar
 │   └── library/
@@ -171,7 +174,7 @@ src/lib/
 
 ## Next Steps
 
-1. **Phase 7** - Now playing panel, Queue panel UI
+1. **Phase 7** - Queue panel UI (now playing panel complete)
 2. **Phase 8** - Keyboard shortcuts
 3. **Phase 9** - UI polish
 

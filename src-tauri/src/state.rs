@@ -1,5 +1,6 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
 use submarine::Client;
@@ -23,6 +24,7 @@ pub struct AppState {
     pub queue: Mutex<PlayQueue>,
     pub search_index: Mutex<Option<IndexManager>>,
     pub index_path: PathBuf,
+    pub emitter_running: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -50,7 +52,12 @@ impl AppState {
             queue: Mutex::new(PlayQueue::new()),
             search_index: Mutex::new(search_index),
             index_path,
+            emitter_running: Arc::new(AtomicBool::new(true)),
         })
+    }
+
+    pub fn get_client(&self) -> Option<Client> {
+        self.client.lock().unwrap().clone()
     }
 
     pub fn is_connected(&self) -> bool {

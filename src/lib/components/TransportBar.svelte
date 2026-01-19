@@ -3,7 +3,7 @@
 
   interface Props {
     isPlaying?: boolean;
-    currentTrack?: { title: string; artist: string } | null;
+    currentTrack?: { title: string; artist: string; album: string } | null;
     currentTime?: number;
     duration?: number;
     volume?: number;
@@ -54,60 +54,64 @@
 
 <!-- Toolbar -->
 <div
-  class="relative flex h-16 items-center justify-between border-b border-base-300 bg-gradient-to-b from-base-200 to-base-300 px-3 select-none"
+  class="relative flex h-20 items-center justify-between border-b border-base-300 bg-gradient-to-b from-base-200 to-base-300 px-3 select-none"
 >
   <!-- Left: Playback Controls -->
   <div class="z-10 flex items-center gap-4">
     <!-- Button Group -->
-    <div class="flex rounded-lg bg-base-300 p-0.5 shadow-sm">
+    <div class="flex rounded bg-base-300 p-0.5 shadow-sm">
       <button
-        class="flex h-8 w-8 items-center justify-center rounded-l-md bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
+        class="flex h-7 w-7 items-center justify-center rounded-l bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
         onclick={() => onPrevious?.()}
         aria-label="Previous track"
       >
-        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+        <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
           <path d="M6 6h2v12H6V6zm3.5 6l8.5 6V6l-8.5 6z" />
         </svg>
       </button>
       <button
-        class="flex h-8 w-10 items-center justify-center border-x border-base-300 bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
+        class="flex h-7 w-8 items-center justify-center border-x border-base-300 bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
         onclick={() => onPlayPause?.()}
         aria-label={isPlaying ? "Pause" : "Play"}
       >
         {#if isPlaying}
-          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+          <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
             <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
           </svg>
         {:else}
-          <svg class="ml-0.5 h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+          <svg
+            class="ml-0.5 h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+          >
             <path d="M8 5v14l11-7L8 5z" />
           </svg>
         {/if}
       </button>
       <button
-        class="flex h-8 w-8 items-center justify-center rounded-r-md bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
+        class="flex h-7 w-7 items-center justify-center rounded-r bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
         onclick={() => onNext?.()}
         aria-label="Next track"
       >
-        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+        <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
           <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
         </svg>
       </button>
     </div>
 
     <!-- Volume -->
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-1.5">
       <svg
-        class="h-3.5 w-3.5 shrink-0 text-base-content/40"
+        class="h-3 w-3 shrink-0 text-base-content/40"
         viewBox="0 0 24 24"
         fill="currentColor"
       >
         <path d="M3 9v6h4l5 5V4L7 9H3z" />
       </svg>
-      <div class="relative flex h-4 w-20 items-center">
-        <div class="absolute h-1 w-full rounded-full bg-base-300"></div>
+      <div class="relative flex h-3 w-16 items-center">
+        <div class="absolute h-0.5 w-full rounded-full bg-base-300"></div>
         <div
-          class="absolute h-1 rounded-full bg-base-content/30"
+          class="absolute h-0.5 rounded-full bg-base-content/30"
           style="width: {volume}%"
         ></div>
         <input
@@ -120,12 +124,12 @@
           aria-label="Volume"
         />
         <div
-          class="pointer-events-none absolute h-3 w-3 rounded-full border border-base-300 bg-base-100 shadow-sm"
-          style="left: calc({volume}% - 6px)"
+          class="pointer-events-none absolute h-2.5 w-2.5 rounded-full border border-base-300 bg-base-100 shadow-sm"
+          style="left: calc({volume}% - 5px)"
         ></div>
       </div>
       <svg
-        class="h-3.5 w-3.5 shrink-0 text-base-content/40"
+        class="h-3 w-3 shrink-0 text-base-content/40"
         viewBox="0 0 24 24"
         fill="currentColor"
       >
@@ -141,26 +145,29 @@
     class="pointer-events-none absolute left-1/2 top-1/2 flex w-full max-w-sm -translate-x-1/2 -translate-y-1/2 justify-center px-4"
   >
     <div
-      class="pointer-events-auto w-full rounded-lg border border-base-300 bg-base-100 px-4 py-2 shadow-sm"
+      class="pointer-events-auto w-full rounded border border-base-300 bg-base-100 px-3 py-1.5 shadow-sm"
     >
-      <!-- Track Info -->
-      <div class="mb-1.5 text-center">
-        {#if currentTrack}
-          <div class="truncate text-xs font-semibold text-base-content">
+      <!-- Track Info (two lines) -->
+      {#if currentTrack}
+        <div class="mb-1 text-center">
+          <div class="truncate text-sm font-medium text-base-content">
             {currentTrack.title}
           </div>
-          <div class="truncate text-[10px] text-base-content/50">
-            {currentTrack.artist}
+          <div class="truncate text-xs text-base-content/60">
+            {currentTrack.artist}{#if currentTrack.album}
+              — {currentTrack.album}{/if}
           </div>
-        {:else}
-          <div class="text-xs text-base-content/40">Not Playing</div>
-        {/if}
-      </div>
+        </div>
+      {:else}
+        <div class="mb-1 text-center text-xs text-base-content/40">
+          Not Playing
+        </div>
+      {/if}
 
       <!-- Scrubber -->
       <div class="flex items-center gap-2">
         <span
-          class="w-8 text-right font-mono text-[9px] tabular-nums text-base-content/40"
+          class="w-8 text-right font-mono text-[9px] tabular-nums text-base-content/50"
         >
           {formatTime(currentTime)}
         </span>
@@ -187,7 +194,7 @@
           ></div>
         </div>
         <span
-          class="w-8 font-mono text-[9px] tabular-nums text-base-content/40"
+          class="w-8 font-mono text-[9px] tabular-nums text-base-content/50"
         >
           {formatTimeRemaining(currentTime, duration)}
         </span>
@@ -202,7 +209,7 @@
       placeholder="Search"
       value={searchStore.query}
       oninput={handleInput}
-      class="h-7 w-44 rounded-full border border-base-300 bg-base-100 px-3 pr-7 text-xs outline-none transition-all duration-150 placeholder:text-base-content/40 focus:w-52 focus:border-primary focus:ring-2 focus:ring-primary/20"
+      class="h-6 w-40 rounded-full border border-base-300 bg-base-100 px-2.5 pr-6 text-[11px] outline-none transition-all duration-150 placeholder:text-base-content/40 focus:w-48 focus:border-primary focus:ring-2 focus:ring-primary/20"
     />
     {#if searchStore.isSearching}
       <span class="absolute right-2 top-1/2 -translate-y-1/2">

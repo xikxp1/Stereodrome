@@ -9,8 +9,10 @@
   import { playback } from "$lib/stores/playback.svelte";
   import { queue } from "$lib/stores/queue.svelte";
   import { searchStore } from "$lib/stores/search.svelte";
+  import { nowPlaying } from "$lib/stores/nowplaying.svelte";
   import { getArtists, getAlbums, getSongs } from "$lib/api/commands";
   import type { Artist, Album, Song } from "$lib/types";
+
   // View state
   let activeView = $state("music");
 
@@ -25,12 +27,16 @@
   let selectedAlbum = $state<Album | null>(null);
   let selectedSong = $state<Song | null>(null);
 
-  // Derive playback state from store
+  // Derive playback state from server's now playing (for current user)
+  const serverNowPlaying = $derived(
+    nowPlaying.entries.find((e) => e.username === connection.status.username)
+  );
   const currentTrack = $derived(
-    playback.currentSong
+    serverNowPlaying
       ? {
-          title: playback.currentSong.title,
-          artist: playback.currentSong.artist || "Unknown Artist",
+          title: serverNowPlaying.title,
+          artist: serverNowPlaying.artist || "Unknown Artist",
+          album: serverNowPlaying.album || "",
         }
       : null
   );

@@ -5,6 +5,8 @@ mod error;
 mod search;
 mod state;
 
+use std::sync::Arc;
+
 use state::AppState;
 use tauri::Manager;
 
@@ -29,6 +31,25 @@ pub fn run() {
                 let audio_player = app_state.audio_player.lock().unwrap();
                 audio_player.start_position_emitter(app.handle().clone());
             }
+
+            // Start now playing emitter
+            let emitter_running = Arc::clone(&app_state.emitter_running);
+
+            // We need a way to get the client that doesn't hold a reference to app_state
+            // So we'll store a weak reference to check for client changes
+            let app_handle = app.handle().clone();
+            commands::nowplaying::start_now_playing_emitter(
+                app_handle.clone(),
+                move || {
+                    // Get the app state from the handle
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        state.get_client()
+                    } else {
+                        None
+                    }
+                },
+                emitter_running,
+            );
 
             app.manage(app_state);
             Ok(())
@@ -70,6 +91,8 @@ pub fn run() {
             commands::remove_song_from_playlist,
             commands::reorder_playlist,
             commands::search_library,
+            commands::scrobble_now_playing,
+            commands::scrobble_submit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
