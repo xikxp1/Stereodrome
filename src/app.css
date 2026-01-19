@@ -1,6 +1,7 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: light, dark --default --prefersdark;
+}
 
 /* Prevent text selection on UI elements */
 .select-none {
