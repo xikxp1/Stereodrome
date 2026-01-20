@@ -9,6 +9,7 @@
     error?: Error | null;
     selectedSongId?: string | null;
     playingSongId?: string | null;
+    scrollToSongId?: string | null;
     onSelect?: (song: Song) => void;
     onPlay?: (song: Song) => void;
   }
@@ -19,6 +20,7 @@
     error = null,
     selectedSongId = null,
     playingSongId = null,
+    scrollToSongId = null,
     onSelect,
     onPlay,
   }: Props = $props();
@@ -39,6 +41,26 @@
 
   const virtualItems = $derived($virtualizer.getVirtualItems());
   const totalSize = $derived($virtualizer.getTotalSize());
+
+  // Track previous scrollToSongId to detect changes
+  let prevScrollToSongId: string | null = $state(null);
+
+  // Scroll to song when scrollToSongId changes
+  $effect(() => {
+    if (
+      scrollToSongId &&
+      scrollToSongId !== prevScrollToSongId &&
+      scrollContainer
+    ) {
+      const index = songs.findIndex((s) => s.id === scrollToSongId);
+      if (index >= 0) {
+        requestAnimationFrame(() => {
+          $virtualizer.scrollToIndex(index, { align: "center" });
+        });
+      }
+    }
+    prevScrollToSongId = scrollToSongId;
+  });
 
   function formatDuration(seconds: number | null): string {
     if (!seconds) return "--:--";

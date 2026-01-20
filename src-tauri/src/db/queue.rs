@@ -1,0 +1,101 @@
+use rusqlite::Connection;
+
+use crate::audio::queue::{QueueItem, RepeatMode};
+use crate::error::AppResult;
+
+/// Save all queue items to the database (replaces existing)
+pub fn save_queue_items(conn: &Connection, items: &[QueueItem]) -> AppResult<()> {
+    conn.execute("DELETE FROM queue_items", [])?;
+
+    let mut stmt = conn.prepare(
+        "INSERT INTO queue_items (position, song_id, title, artist, album, duration)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+
+    for (pos, item) in items.iter().enumerate() {
+        stmt.execute((
+            pos as i64,
+            &item.song_id,
+            &item.title,
+            &item.artist,
+            &item.album,
+            item.duration,
+        ))?;
+    }
+
+    Ok(())
+}
+
+/// Load all queue items from the database
+pub fn load_queue_items(conn: &Connection) -> AppResult<Vec<QueueItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT song_id, title, artist, album, duration FROM queue_items ORDER BY position",
+    )?;
+
+    let items = stmt
+        .query_map([], |row| {
+            Ok(QueueItem {
+                song_id: row.get(0)?,
+                title: row.get(1)?,
+                artist: row.get(2)?,
+                album: row.get(3)?,
+                duration: row.get(4)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(items)
+}
+
+/// Save queue state (current_index, shuffle, repeat_mode)
+pub fn save_queue_state(
+    conn: &Connection,
+    current_index: Option<usize>,
+    shuffle: bool,
+    repeat_mode: RepeatMode,
+) -> AppResult<()> {
+    let repeat_str = match repeat_mode {
+        RepeatMode::Off => "Off",
+        RepeatMode::All => "All",
+        RepeatMode::One => "One",
+    };
+
+    conn.execute(
+        "INSERT OR REPLACE INTO queue_state (id, current_index, shuffle, repeat_mode)
+         VALUES (1, ?1, ?2, ?3)",
+        (current_index.map(|i| i as i64), shuffle as i64, repeat_str),
+    )?;
+
+    Ok(())
+}
+
+/// Load queue state from database
+pub fn load_queue_state(conn: &Connection) -> AppResult<(Option<usize>, bool, RepeatMode)> {
+    let result = conn.query_row(
+        "SELECT current_index, shuffle, repeat_mode FROM queue_state WHERE id = 1",
+        [],
+        |row| {
+            let current_index: Option<i64> = row.get(0)?;
+            let shuffle: i64 = row.get(1)?;
+            let repeat_mode_str: String = row.get(2)?;
+            Ok((current_index, shuffle, repeat_mode_str))
+        },
+    );
+
+    match result {
+        Ok((current_index, shuffle, repeat_mode_str)) => {
+            let repeat_mode = match repeat_mode_str.as_str() {
+                "All" => RepeatMode::All,
+                "One" => RepeatMode::One,
+                _ => RepeatMode::Off,
+            };
+            Ok((current_index.map(|i| i as usize), shuffle != 0, repeat_mode))
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            // No state saved yet, return defaults
+            Ok((None, false, RepeatMode::Off))
+        }
+        Err(e) => Err(e.into()),
+    }
+}

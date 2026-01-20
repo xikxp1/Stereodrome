@@ -15,7 +15,9 @@ Phase 7: UI Polish & Optimization
 - [x] TanStack Virtual for large song lists
 - [x] Now playing from local backend (combined playback-state event, no server latency)
 - [x] Refactored components to use DaisyUI (menu, card, input, btn, badge, alert)
-- Queue panel
+- [x] Queue panel with toggle button in TransportBar
+- [x] Single-click queue item navigates to song in SongList (if visible in current filter)
+- [x] "Scroll to current" button in QueuePanel header
 - Keyboard shortcuts
 
 ## Completed
@@ -66,6 +68,10 @@ Phase 7: UI Polish & Optimization
 - [x] Queue commands (add, remove, reorder, play_next, play_previous)
 - [x] Queue store with auto-advance on song end
 - [x] Play song with queue context (filtered songs)
+- [x] Queue persistence to SQLite (survives app restart)
+- [x] Queue-changed events (frontend reflects backend state)
+- [x] Fix: Next button now advances to next song (was restarting current song when RepeatMode::One was set)
+- [x] Fix: Play button now plays current queue item when app opens with persisted queue
 
 ### Phase 5: Playlist Support
 
@@ -108,7 +114,7 @@ Phase 7: UI Polish & Optimization
 - [x] Custom DaisyUI "itunes" theme
 - [x] Now playing in TransportBar (local state via combined playback-state event)
 - [x] Scrobbling to Subsonic server on play
-- [ ] Queue panel
+- [x] Queue panel
 - [x] TanStack Virtual for large lists
 
 ## Architecture
@@ -138,6 +144,7 @@ src-tauri/src/
 │   └── mod.rs          # IndexManager, SearchSchema, Tantivy integration
 └── db/
     ├── mod.rs          # init_db, get_db_path
+    ├── queue.rs        # Queue persistence (save/load)
     └── schema.sql      # SQLite tables
 ```
 
@@ -161,6 +168,7 @@ src/lib/
 │   ├── TransportBar.svelte    # Top toolbar with playback controls + now playing (local state)
 │   ├── Sidebar.svelte         # Navigation + playlists
 │   ├── StatusBar.svelte       # Bottom status bar
+│   ├── QueuePanel.svelte      # Queue panel with shuffle/repeat controls
 │   └── library/
 │       ├── ArtistList.svelte
 │       ├── AlbumGrid.svelte
@@ -175,9 +183,8 @@ src/lib/
 
 ## Next Steps
 
-1. **Phase 7** - Queue panel UI (now playing panel complete)
-2. **Phase 8** - Keyboard shortcuts
-3. **Phase 9** - UI polish
+1. **Phase 7** - Keyboard shortcuts
+2. **Phase 8** - UI polish
 
 ---
 

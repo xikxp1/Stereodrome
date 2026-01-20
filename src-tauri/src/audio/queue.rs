@@ -44,6 +44,22 @@ impl PlayQueue {
         }
     }
 
+    /// Load queue from persisted data
+    pub fn load(
+        items: Vec<QueueItem>,
+        current_index: Option<usize>,
+        shuffle: bool,
+        repeat_mode: RepeatMode,
+    ) -> Self {
+        Self {
+            original_order: items.clone(),
+            items,
+            current_index,
+            shuffle,
+            repeat_mode,
+        }
+    }
+
     pub fn items(&self) -> &[QueueItem] {
         &self.items
     }
@@ -117,23 +133,21 @@ impl PlayQueue {
             if index < current {
                 self.current_index = Some(current - 1);
             } else if index == current {
-                // Current song was removed
-                if self.items.is_empty() {
-                    self.current_index = None;
-                } else if current >= self.items.len() {
-                    self.current_index = Some(self.items.len() - 1);
-                }
+                // Current song was removed - no song in queue is playing now
+                // (the audio player still has the old song, but it's not in the queue)
+                self.current_index = None;
             }
         }
 
         Some(item)
     }
 
-    /// Clear the entire queue
+    /// Clear the entire queue and reset shuffle state
     pub fn clear(&mut self) {
         self.items.clear();
         self.original_order.clear();
         self.current_index = None;
+        self.shuffle = false;
     }
 
     /// Move an item from one position to another
@@ -168,17 +182,20 @@ impl PlayQueue {
     }
 
     /// Get the next song to play
-    pub fn next(&mut self) -> Option<&QueueItem> {
+    /// If `force` is true, always advance to next song (ignores RepeatMode::One)
+    /// If `force` is false, respect repeat mode (for auto-advance when song ends)
+    pub fn next(&mut self, force: bool) -> Option<&QueueItem> {
         if self.items.is_empty() {
             return None;
         }
 
         match self.repeat_mode {
-            RepeatMode::One => {
-                // Stay on current song
+            RepeatMode::One if !force => {
+                // Stay on current song (only when auto-advancing, not user-initiated)
                 self.current_item()
             }
-            RepeatMode::All => {
+            RepeatMode::One | RepeatMode::All => {
+                // Wrap around to beginning when reaching end
                 let next_idx = match self.current_index {
                     Some(i) => (i + 1) % self.items.len(),
                     None => 0,

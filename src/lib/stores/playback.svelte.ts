@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Song } from "$lib/types";
+import { queue } from "./queue.svelte";
 
 interface PlaybackStatus {
   is_playing: boolean;
@@ -110,7 +111,14 @@ class PlaybackStore {
     if (this.isPlaying) {
       await this.pause();
     } else if (this.currentTrack) {
+      // Resume paused playback
       await this.resume();
+    } else if (queue.currentIndex !== null && queue.items.length > 0) {
+      // Nothing playing but queue has items - play the current queue item
+      await queue.playQueueItem(queue.currentIndex);
+    } else if (queue.items.length > 0) {
+      // Queue has items but no current index - start from beginning
+      await queue.playQueueItem(0);
     }
   }
 

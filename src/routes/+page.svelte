@@ -5,6 +5,7 @@
   import ColumnBrowser from "$lib/components/library/ColumnBrowser.svelte";
   import SongList from "$lib/components/library/SongList.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
+  import QueuePanel from "$lib/components/QueuePanel.svelte";
   import { connection } from "$lib/stores/connection.svelte";
   import { playback } from "$lib/stores/playback.svelte";
   import { queue } from "$lib/stores/queue.svelte";
@@ -19,6 +20,7 @@
 
   // View state
   let activeView = $state("music");
+  let queueOpen = $state(false);
 
   // Browser state
   let artists = $state<Artist[]>([]);
@@ -29,6 +31,7 @@
   let selectedArtist = $state<Artist | null>(null);
   let selectedAlbum = $state<Album | null>(null);
   let selectedSong = $state<Song | null>(null);
+  let scrollToSongId = $state<string | null>(null);
 
   // Get current track from local playback state (no server latency)
   const currentTrack = $derived(playback.currentTrack);
@@ -187,6 +190,20 @@
   function handleViewChange(view: string) {
     activeView = view;
   }
+
+  function handleQueueToggle() {
+    queueOpen = !queueOpen;
+  }
+
+  function handleQueueItemClick(songId: string) {
+    // Find the song in the filtered list
+    const song = filteredSongs.find((s) => s.id === songId);
+    if (song) {
+      // Select the song and scroll to it
+      selectedSong = song;
+      scrollToSongId = songId;
+    }
+  }
 </script>
 
 <div class="h-screen flex flex-col bg-base-200 overflow-hidden">
@@ -198,11 +215,13 @@
       currentTime={playback.position}
       duration={playback.duration}
       {volume}
+      {queueOpen}
       onPlayPause={handlePlayPause}
       onPrevious={handlePrevious}
       onNext={handleNext}
       onSeek={handleSeek}
       onVolumeChange={handleVolumeChange}
+      onQueueToggle={handleQueueToggle}
     />
 
     <!-- Main Content Area -->
@@ -244,6 +263,7 @@
             error={loadError}
             selectedSongId={selectedSong?.id}
             playingSongId={playback.currentTrack?.id ?? null}
+            {scrollToSongId}
             onSelect={handleSongSelect}
             onPlay={handleSongPlay}
           />
@@ -256,6 +276,11 @@
           {totalSize}
         />
       </main>
+
+      <!-- Queue Panel -->
+      {#if queueOpen}
+        <QueuePanel onItemClick={handleQueueItemClick} />
+      {/if}
     </div>
   {:else}
     <!-- Login Screen -->

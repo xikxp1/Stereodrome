@@ -8,6 +8,7 @@
     Volume1,
     Volume2,
     Loader2,
+    ListMusic,
   } from "lucide-svelte";
 
   interface Props {
@@ -16,11 +17,13 @@
     currentTime?: number;
     duration?: number;
     volume?: number;
+    queueOpen?: boolean;
     onPlayPause?: () => void;
     onPrevious?: () => void;
     onNext?: () => void;
     onSeek?: (time: number) => void;
     onVolumeChange?: (volume: number) => void;
+    onQueueToggle?: () => void;
   }
 
   let {
@@ -29,11 +32,13 @@
     currentTime = 0,
     duration = 0,
     volume = 80,
+    queueOpen = false,
     onPlayPause,
     onPrevious,
     onNext,
     onSeek,
     onVolumeChange,
+    onQueueToggle,
   }: Props = $props();
 
   function handleInput(e: Event) {
@@ -178,8 +183,18 @@
     </div>
   </div>
 
-  <!-- Right: Search -->
+  <!-- Right: Queue Toggle + Search -->
   <div class="z-10 relative flex items-center gap-2">
+    <button
+      class="flex h-7 w-7 items-center justify-center rounded transition-colors {queueOpen
+        ? 'bg-primary text-primary-content'
+        : 'bg-base-100 text-base-content/70 hover:bg-base-200 hover:text-base-content'}"
+      onclick={() => onQueueToggle?.()}
+      aria-label="Toggle queue"
+      title="Queue"
+    >
+      <ListMusic class="h-4 w-4" />
+    </button>
     <input
       type="search"
       placeholder="Search"

@@ -67,6 +67,23 @@ CREATE TABLE IF NOT EXISTS server_config (
     last_connected_at TEXT
 );
 
+-- Queue persistence
+CREATE TABLE IF NOT EXISTS queue_items (
+    position INTEGER PRIMARY KEY,
+    song_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    artist TEXT NOT NULL,
+    album TEXT NOT NULL,
+    duration INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS queue_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    current_index INTEGER,
+    shuffle INTEGER NOT NULL DEFAULT 0,
+    repeat_mode TEXT NOT NULL DEFAULT 'Off'
+);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_albums_artist_id ON albums(artist_id);
 CREATE INDEX IF NOT EXISTS idx_songs_album_id ON songs(album_id);

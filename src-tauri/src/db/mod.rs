@@ -1,3 +1,5 @@
+pub mod queue;
+
 use rusqlite::Connection;
 
 use crate::error::AppResult;

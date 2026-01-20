@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { playback } from "./playback.svelte";
 import type { Song } from "$lib/types";
 
 export type RepeatMode = "Off" | "All" | "One";
@@ -21,31 +20,59 @@ interface QueueState {
 }
 
 class QueueStore {
-  // State
+  // State - reflects backend state
   items = $state<QueueItem[]>([]);
   currentIndex = $state<number | null>(null);
   shuffle = $state(false);
   repeatMode = $state<RepeatMode>("Off");
 
   // Event listeners
+  private unlistenChanged: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
   private unlistenQueueEnded: UnlistenFn | null = null;
 
   constructor() {
-    this.setupEventListeners();
+    this.init();
   }
 
-  private async setupEventListeners() {
+  private async init() {
+    // Load initial state from backend
+    await this.loadFromBackend();
+
+    // Listen for queue changes from backend
+    this.unlistenChanged = await listen<QueueState>(
+      "queue-changed",
+      (event) => {
+        this.updateFromState(event.payload);
+      }
+    );
+
     // Listen for playback ended to auto-advance
+    // Pass force=false to respect repeat mode (e.g., RepeatMode::One will replay current song)
     this.unlistenEnded = await listen("playback-ended", async () => {
-      await this.playNext();
+      await this.playNext(undefined, false);
     });
 
     // Listen for queue ended
     this.unlistenQueueEnded = await listen("queue-ended", () => {
-      // Queue finished, reset state
       this.currentIndex = null;
     });
+  }
+
+  private updateFromState(state: QueueState) {
+    this.items = state.items;
+    this.currentIndex = state.current_index;
+    this.shuffle = state.shuffle;
+    this.repeatMode = state.repeat_mode;
+  }
+
+  private async loadFromBackend() {
+    try {
+      const state = await invoke<QueueState>("get_queue");
+      this.updateFromState(state);
+    } catch (e) {
+      console.error("Failed to load queue:", e);
+    }
   }
 
   private songToQueueItem(song: Song): QueueItem {
@@ -58,23 +85,10 @@ class QueueStore {
     };
   }
 
-  async refresh() {
-    try {
-      const state = await invoke<QueueState>("get_queue");
-      this.items = state.items;
-      this.currentIndex = state.current_index;
-      this.shuffle = state.shuffle;
-      this.repeatMode = state.repeat_mode;
-    } catch (e) {
-      console.error("Failed to refresh queue:", e);
-    }
-  }
-
   async addSong(song: Song) {
     const item = this.songToQueueItem(song);
     try {
       await invoke("add_to_queue", { item });
-      this.items = [...this.items, item];
     } catch (e) {
       console.error("Failed to add to queue:", e);
     }
@@ -84,29 +98,26 @@ class QueueStore {
     const items = songs.map((s) => this.songToQueueItem(s));
     try {
       await invoke("add_songs_to_queue", { items });
-      this.items = [...this.items, ...items];
     } catch (e) {
       console.error("Failed to add songs to queue:", e);
     }
   }
 
-  async playNext(song?: Song) {
+  async playNext(song?: Song, force: boolean = true) {
     if (song) {
       // Insert song as next to play
       const item = this.songToQueueItem(song);
       try {
         await invoke("insert_next_in_queue", { item });
-        await this.refresh();
       } catch (e) {
         console.error("Failed to insert next:", e);
       }
     } else {
       // Play the next song in queue
+      // force=true: always advance (user clicked Next button)
+      // force=false: respect repeat mode (auto-advance when song ends)
       try {
-        const hasNext = await invoke<boolean>("play_next");
-        if (hasNext) {
-          await this.refresh();
-        }
+        await invoke<boolean>("play_next", { force });
       } catch (e) {
         console.error("Failed to play next:", e);
       }
@@ -116,7 +127,6 @@ class QueueStore {
   async playPrevious() {
     try {
       await invoke<boolean>("play_previous");
-      await this.refresh();
     } catch (e) {
       console.error("Failed to play previous:", e);
     }
@@ -125,7 +135,6 @@ class QueueStore {
   async playQueueItem(index: number) {
     try {
       await invoke("play_queue_item", { index });
-      this.currentIndex = index;
     } catch (e) {
       console.error("Failed to play queue item:", e);
     }
@@ -134,7 +143,6 @@ class QueueStore {
   async removeFromQueue(index: number) {
     try {
       await invoke("remove_from_queue", { index });
-      await this.refresh();
     } catch (e) {
       console.error("Failed to remove from queue:", e);
     }
@@ -143,8 +151,6 @@ class QueueStore {
   async clearQueue() {
     try {
       await invoke("clear_queue");
-      this.items = [];
-      this.currentIndex = null;
     } catch (e) {
       console.error("Failed to clear queue:", e);
     }
@@ -153,7 +159,6 @@ class QueueStore {
   async moveItem(from: number, to: number) {
     try {
       await invoke("move_queue_item", { from, to });
-      await this.refresh();
     } catch (e) {
       console.error("Failed to move queue item:", e);
     }
@@ -161,9 +166,7 @@ class QueueStore {
 
   async toggleShuffle() {
     try {
-      const newValue = await invoke<boolean>("toggle_shuffle");
-      this.shuffle = newValue;
-      await this.refresh(); // Refresh to get reordered items
+      await invoke<boolean>("toggle_shuffle");
     } catch (e) {
       console.error("Failed to toggle shuffle:", e);
     }
@@ -171,8 +174,7 @@ class QueueStore {
 
   async cycleRepeatMode() {
     try {
-      const newMode = await invoke<RepeatMode>("cycle_repeat_mode");
-      this.repeatMode = newMode;
+      await invoke<RepeatMode>("cycle_repeat_mode");
     } catch (e) {
       console.error("Failed to cycle repeat mode:", e);
     }
@@ -181,15 +183,13 @@ class QueueStore {
   async setRepeatMode(mode: RepeatMode) {
     try {
       await invoke("set_repeat_mode", { mode });
-      this.repeatMode = mode;
     } catch (e) {
       console.error("Failed to set repeat mode:", e);
     }
   }
 
-  // Helper to play a song and optionally set up queue
+  // Helper to play a song and set up queue
   async playSongWithQueue(song: Song, allSongs?: Song[]) {
-    // If allSongs provided, set up queue with all songs starting from this one
     if (allSongs && allSongs.length > 0) {
       await this.clearQueue();
       await this.addSongs(allSongs);
@@ -200,13 +200,18 @@ class QueueStore {
         await this.playQueueItem(index);
       }
     } else {
-      // Just play the single song
-      await playback.playSong(song);
+      // Just play the single song by adding it and playing
+      await this.clearQueue();
+      await this.addSong(song);
+      await this.playQueueItem(0);
     }
   }
 
   // Cleanup
   destroy() {
+    if (this.unlistenChanged) {
+      this.unlistenChanged();
+    }
     if (this.unlistenEnded) {
       this.unlistenEnded();
     }
