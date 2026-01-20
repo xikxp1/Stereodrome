@@ -1,6 +1,7 @@
 <script lang="ts">
   import { albumsQuery } from "$lib/db/collections";
   import type { Album } from "$lib/types";
+  import { Music } from "lucide-svelte";
 
   interface Props {
     artistId?: string;
@@ -40,20 +41,7 @@
               <div
                 class="aspect-square bg-base-300 rounded mb-2 flex items-center justify-center"
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="h-12 w-12 opacity-30"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"
-                  />
-                </svg>
+                <Music class="h-12 w-12 opacity-30" />
               </div>
               <h3 class="font-medium text-sm truncate">{album.name}</h3>
               {#if album.year}

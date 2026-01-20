@@ -2,6 +2,7 @@
   import type { Song } from "$lib/types";
   import { createVirtualizer } from "@tanstack/svelte-virtual";
   import { SvelteSet } from "svelte/reactivity";
+  import { AlertCircle, Music, Volume2 } from "lucide-svelte";
 
   interface Props {
     songs?: Song[];
@@ -92,32 +93,13 @@
     </div>
   {:else if error}
     <div class="empty-state">
-      <svg
-        class="empty-state-icon"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"
-      >
-        <circle cx="12" cy="12" r="10" />
-        <path d="M12 8v4m0 4h.01" />
-      </svg>
+      <AlertCircle class="empty-state-icon" />
       <div class="empty-state-title">Failed to load songs</div>
       <div class="empty-state-text">{error.message}</div>
     </div>
   {:else if songs.length === 0}
     <div class="empty-state">
-      <svg
-        class="empty-state-icon"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"
-      >
-        <path
-          d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"
-        />
-      </svg>
+      <Music class="empty-state-icon" />
       <div class="empty-state-title">No songs</div>
       <div class="empty-state-text">
         Select an artist or album to view songs
@@ -174,13 +156,7 @@
               <div class="cell-name font-medium">
                 {#if playingSongId === song.id}
                   <span class="inline-flex items-center gap-1.5">
-                    <svg
-                      class="w-3 h-3 animate-pulse"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                    >
-                      <path d="M3 9v6h4l5 5V4L7 9H3z" />
-                    </svg>
+                    <Volume2 class="w-3 h-3 animate-pulse" />
                     <span class="truncate">{song.title}</span>
                   </span>
                 {:else}

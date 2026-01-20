@@ -1,5 +1,14 @@
 <script lang="ts">
   import { searchStore } from "$lib/stores/search.svelte";
+  import {
+    SkipBack,
+    Play,
+    Pause,
+    SkipForward,
+    Volume1,
+    Volume2,
+    Loader2,
+  } from "lucide-svelte";
 
   interface Props {
     isPlaying?: boolean;
@@ -61,9 +70,7 @@
         onclick={() => onPrevious?.()}
         aria-label="Previous track"
       >
-        <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M6 6h2v12H6V6zm3.5 6l8.5 6V6l-8.5 6z" />
-        </svg>
+        <SkipBack class="h-3 w-3" fill="currentColor" />
       </button>
       <button
         class="flex h-7 w-8 items-center justify-center border-x border-base-300 bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
@@ -71,17 +78,9 @@
         aria-label={isPlaying ? "Pause" : "Play"}
       >
         {#if isPlaying}
-          <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
-          </svg>
+          <Pause class="h-3.5 w-3.5" fill="currentColor" />
         {:else}
-          <svg
-            class="ml-0.5 h-3.5 w-3.5"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-          >
-            <path d="M8 5v14l11-7L8 5z" />
-          </svg>
+          <Play class="ml-0.5 h-3.5 w-3.5" fill="currentColor" />
         {/if}
       </button>
       <button
@@ -89,21 +88,13 @@
         onclick={() => onNext?.()}
         aria-label="Next track"
       >
-        <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
-        </svg>
+        <SkipForward class="h-3 w-3" fill="currentColor" />
       </button>
     </div>
 
     <!-- Volume -->
     <div class="flex items-center gap-1.5">
-      <svg
-        class="h-3 w-3 shrink-0 text-base-content/40"
-        viewBox="0 0 24 24"
-        fill="currentColor"
-      >
-        <path d="M3 9v6h4l5 5V4L7 9H3z" />
-      </svg>
+      <Volume1 class="h-3 w-3 shrink-0 text-base-content/40" />
       <div class="relative flex h-3 w-16 items-center">
         <div class="absolute h-0.5 w-full rounded-full bg-base-300"></div>
         <div
@@ -124,15 +115,7 @@
           style="left: calc({volume}% - 5px)"
         ></div>
       </div>
-      <svg
-        class="h-3 w-3 shrink-0 text-base-content/40"
-        viewBox="0 0 24 24"
-        fill="currentColor"
-      >
-        <path
-          d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05a4.49 4.49 0 002.5-3.02zM14 3.23v2.06a7.007 7.007 0 010 13.42v2.06A9.02 9.02 0 0023 12a9.02 9.02 0 00-9-8.77z"
-        />
-      </svg>
+      <Volume2 class="h-3 w-3 shrink-0 text-base-content/40" />
     </div>
   </div>
 
@@ -209,25 +192,7 @@
     />
     {#if searchStore.isSearching}
       <span class="absolute right-2 top-1/2 -translate-y-1/2">
-        <svg
-          class="h-3.5 w-3.5 animate-spin text-primary"
-          viewBox="0 0 24 24"
-          fill="none"
-        >
-          <circle
-            class="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            stroke-width="4"
-          ></circle>
-          <path
-            class="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-          ></path>
-        </svg>
+        <Loader2 class="h-3.5 w-3.5 animate-spin text-primary" />
       </span>
     {/if}
   </div>
