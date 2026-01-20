@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod cache;
 pub mod coverart;
 pub mod library;
 pub mod nowplaying;
@@ -8,6 +9,7 @@ pub mod queue;
 pub mod search;
 
 pub use auth::*;
+pub use cache::*;
 pub use coverart::*;
 pub use library::*;
 pub use nowplaying::*;

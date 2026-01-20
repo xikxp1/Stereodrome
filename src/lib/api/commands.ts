@@ -97,3 +97,18 @@ export async function getSongCoverArt(
 ): Promise<string | null> {
   return invoke<string | null>("get_song_cover_art", { songId, size });
 }
+
+// Audio cache commands
+export interface CacheStats {
+  total_size: number;
+  file_count: number;
+  max_size: number;
+}
+
+export async function getAudioCacheStats(): Promise<CacheStats> {
+  return invoke<CacheStats>("get_audio_cache_stats");
+}
+
+export async function clearAudioCache(): Promise<void> {
+  return invoke("clear_audio_cache");
+}

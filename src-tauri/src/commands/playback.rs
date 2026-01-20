@@ -1,11 +1,16 @@
-use tauri::State;
+use tauri::{AppHandle, State};
 
-use crate::audio::{fetch_audio_bytes, PlaybackStatus, SongMetadata};
+use crate::audio::{PlaybackStatus, SongMetadata};
+use crate::cache::{AudioCache, DEFAULT_MAX_CACHE_SIZE};
 use crate::error::{AppError, AppResult, MutexExt};
 use crate::state::AppState;
 
 #[tauri::command]
-pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult<()> {
+pub async fn play_song(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    song_id: String,
+) -> AppResult<()> {
     // Get server config
     let config = state
         .server_config
@@ -15,16 +20,17 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
         .ok_or(AppError::NotConnected)?;
 
     // Get song metadata from database (join with artists and albums for names and cover art)
-    let (duration, title, artist, album, cover_art_id): (
+    let (duration, title, artist, album, cover_art_id, suffix): (
         f64,
         String,
         String,
         String,
         Option<String>,
+        String,
     ) = {
         let conn = state.db.lock_recover();
         conn.query_row(
-            "SELECT s.duration, s.title, a.name, al.name, al.cover_art_id
+            "SELECT s.duration, s.title, a.name, al.name, al.cover_art_id, s.suffix
              FROM songs s
              LEFT JOIN artists a ON s.artist_id = a.id
              LEFT JOIN albums al ON s.album_id = al.id
@@ -37,6 +43,7 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
                     row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(3)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?.unwrap_or_default(),
                 ))
             },
         )
@@ -51,8 +58,9 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
         cover_art_id,
     };
 
-    // Fetch audio bytes from server
-    let audio_data = fetch_audio_bytes(&config, &song_id).await?;
+    // Fetch audio bytes (from cache or server)
+    let cache = AudioCache::new(&app_handle, DEFAULT_MAX_CACHE_SIZE)?;
+    let audio_data = cache.get_or_fetch(&config, &song_id, &suffix).await?;
 
     // Play the audio
     {

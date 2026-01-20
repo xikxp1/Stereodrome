@@ -147,7 +147,7 @@ pub async fn play_queue_item(
     persist_and_emit(&state, &app_handle);
 
     if let Some(song_id) = song_id {
-        crate::commands::play_song(state, song_id).await?;
+        crate::commands::play_song(app_handle, state, song_id).await?;
     }
 
     Ok(())
@@ -170,7 +170,7 @@ pub async fn play_next(
     persist_and_emit(&state, &app_handle);
 
     if let Some(song_id) = next_song {
-        crate::commands::play_song(state, song_id).await?;
+        crate::commands::play_song(app_handle.clone(), state, song_id).await?;
         Ok(true)
     } else {
         let _ = app_handle.emit("queue-ended", ());
@@ -189,7 +189,7 @@ pub async fn play_previous(state: State<'_, AppState>, app_handle: AppHandle) ->
     persist_and_emit(&state, &app_handle);
 
     if let Some(song_id) = prev_song {
-        crate::commands::play_song(state, song_id).await?;
+        crate::commands::play_song(app_handle, state, song_id).await?;
         Ok(true)
     } else {
         Ok(false)

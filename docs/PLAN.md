@@ -4,13 +4,23 @@ Last updated: 2026-01-20
 
 ## Current Status
 
-**Phase:** Phase 7 Complete | **Version:** 0.1.0
+**Phase:** Phase 8 In Progress | **Version:** 0.1.0
 
-Core player functionality with UI polish: audio playback, queue management, playlist support, search, cover art display, and keyboard shortcuts. All Phase 7 UI optimization tasks complete.
+Core player functionality with UI polish: audio playback, queue management, playlist support, search, cover art display, and keyboard shortcuts. Phase 7 complete, now adding Phase 8 features.
 
 ## Immediate Priorities
 
-Phase 7: UI Polish & Optimization
+Phase 8: Local Storage & Offline Features
+
+- [x] Local audio cache with LRU eviction (5GB max, automatic cleanup)
+- [ ] Cache settings UI (view stats, clear cache)
+- [ ] Incremental library sync
+- [ ] Crossfade between tracks
+- [ ] Gapless playback
+
+## Completed
+
+### Phase 7: UI Polish & Optimization
 
 - [x] TanStack Virtual for large song lists
 - [x] Now playing from local backend (combined playback-state event, no server latency)
@@ -24,6 +34,8 @@ Phase 7: UI Polish & Optimization
 - [x] Audio spectrum visualizer (real-time FFT in Rust, 8 frequency bands, 30Hz updates)
 
 ## Completed
+
+### Project Setup
 
 - [x] Project scaffolding (Tauri + Svelte 5)
 - [x] Bun package manager setup
@@ -106,6 +118,7 @@ Phase 7: UI Polish & Optimization
 - [x] SQLite schema for metadata
 - [x] Tantivy index for full-text search
 - [x] Metadata sync from server
+- [x] Local audio cache with LRU eviction (5GB max)
 - [ ] Incremental sync
 
 ### UI
@@ -141,9 +154,13 @@ src-tauri/src/
 │   ├── queue.rs        # PlayQueue with shuffle/repeat
 │   ├── spectrum.rs     # FFT analysis, SpectrumAnalyzer, band aggregation
 │   └── stream.rs       # Subsonic audio stream fetching
+├── cache/
+│   ├── mod.rs          # Module exports
+│   └── audio.rs        # AudioCache with LRU eviction (5GB max)
 ├── commands/
 │   ├── mod.rs
 │   ├── auth.rs         # connect_server, disconnect, get_status
+│   ├── cache.rs        # get_audio_cache_stats, clear_audio_cache
 │   ├── library.rs      # sync_library, get_artists, get_albums, get_songs
 │   ├── playback.rs     # play_song, pause, resume, stop, set_volume
 │   ├── queue.rs        # Queue management commands
@@ -196,8 +213,8 @@ src/lib/
 
 ## Next Steps
 
-1. **Phase 7 Complete** - All UI polish tasks done, including audio visualizer
-2. **Phase 8** - Additional features (crossfade, gapless playback, audio enhancements)
+1. **Phase 8 In Progress** - Local audio cache implemented, continue with settings UI and incremental sync
+2. **Phase 9** - Audio enhancements (crossfade, gapless playback)
 
 ---
 

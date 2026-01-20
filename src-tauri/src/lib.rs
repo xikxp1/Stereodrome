@@ -1,4 +1,5 @@
 mod audio;
+mod cache;
 mod commands;
 mod db;
 mod error;
@@ -98,6 +99,8 @@ pub fn run() {
             commands::scrobble_submit,
             commands::get_cover_art,
             commands::get_song_cover_art,
+            commands::get_audio_cache_stats,
+            commands::clear_audio_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

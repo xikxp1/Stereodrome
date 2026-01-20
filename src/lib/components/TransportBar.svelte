@@ -1,5 +1,6 @@
 <script lang="ts">
   import { searchStore } from "$lib/stores/search.svelte";
+  import { queue } from "$lib/stores/queue.svelte";
   import SpectrumBars from "./SpectrumBars.svelte";
   import MarqueeText from "./MarqueeText.svelte";
   import {
@@ -12,6 +13,9 @@
     Loader2,
     ListMusic,
     Music,
+    Shuffle,
+    Repeat,
+    Repeat1,
   } from "lucide-svelte";
 
   interface Props {
@@ -130,6 +134,35 @@
         ></div>
       </div>
       <Volume2 class="h-3 w-3 shrink-0 text-base-content/40" />
+    </div>
+
+    <!-- Shuffle/Repeat -->
+    <div class="flex items-center gap-1">
+      <button
+        class="flex h-6 w-6 items-center justify-center rounded transition-colors {queue.shuffle
+          ? 'text-primary'
+          : 'text-base-content/40 hover:text-base-content/70'}"
+        onclick={() => queue.toggleShuffle()}
+        title="Shuffle"
+        aria-label="Toggle shuffle"
+      >
+        <Shuffle class="h-3.5 w-3.5" />
+      </button>
+      <button
+        class="flex h-6 w-6 items-center justify-center rounded transition-colors {queue.repeatMode !==
+        'Off'
+          ? 'text-primary'
+          : 'text-base-content/40 hover:text-base-content/70'}"
+        onclick={() => queue.cycleRepeatMode()}
+        title="Repeat: {queue.repeatMode}"
+        aria-label="Cycle repeat mode"
+      >
+        {#if queue.repeatMode === "One"}
+          <Repeat1 class="h-3.5 w-3.5" />
+        {:else}
+          <Repeat class="h-3.5 w-3.5" />
+        {/if}
+      </button>
     </div>
   </div>
 
