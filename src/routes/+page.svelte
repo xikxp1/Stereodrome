@@ -16,7 +16,6 @@
   let activeView = $state("music");
 
   // Browser state
-  let genres = $state<string[]>([]);
   let artists = $state<Artist[]>([]);
   let albums = $state<Album[]>([]);
   let songs = $state<Song[]>([]);
@@ -62,11 +61,6 @@
       artists = artistsData;
       albums = albumsData;
       songs = songsData;
-
-      // Extract unique genres
-      genres = [
-        ...new Set(songsData.map((s) => s.genre).filter(Boolean) as string[]),
-      ].sort();
     } catch (e) {
       loadError = e instanceof Error ? e : new Error(String(e));
     } finally {
@@ -74,57 +68,31 @@
     }
   }
 
-  // Compute filtered data using Tantivy search results
+  // Compute filtered data - all columns derived from shown songs
   const filterResult = $derived.by(() => {
     const hasSearch = searchStore.hasActiveQuery;
     const genre = selectedGenre;
     const artist = selectedArtist;
     const album = selectedAlbum;
-
-    // No filters at all - return everything
-    if (!hasSearch && !genre && !artist && !album) {
-      return {
-        genres,
-        artistIds: new Set(artists.map((a) => a.id)),
-        albumIds: new Set(albums.map((a) => a.id)),
-        songs,
-      };
-    }
-
-    // Use Tantivy matched IDs for search filtering
     const searchSongIds = searchStore.matchedSongIds;
 
-    // Single pass through songs (internal computation, not reactive state)
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
+    // Single pass through songs
     const matchedGenres = new Set<string>();
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const matchedArtistIds = new Set<string>();
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const matchedAlbumIds = new Set<string>();
     const matchedSongs: Song[] = [];
 
     for (const s of songs) {
-      // Check Tantivy search match (if search is active)
+      // Apply all filters
       if (hasSearch && !searchSongIds.has(s.id)) continue;
-
-      // Track what's available from search matches (before selection filters)
-      if (s.genre) matchedGenres.add(s.genre);
-
-      // Apply genre filter for artist/album lists
-      if (!genre || s.genre === genre) {
-        matchedArtistIds.add(s.artist_id);
-
-        // Apply artist filter for album list
-        if (!artist || s.artist_id === artist.id) {
-          matchedAlbumIds.add(s.album_id);
-        }
-      }
-
-      // Apply all selection filters for final song list
       if (genre && s.genre !== genre) continue;
       if (artist && s.artist_id !== artist.id) continue;
       if (album && s.album_id !== album.id) continue;
 
+      // Derive columns from shown songs
+      if (s.genre) matchedGenres.add(s.genre);
+      matchedArtistIds.add(s.artist_id);
+      matchedAlbumIds.add(s.album_id);
       matchedSongs.push(s);
     }
 
