@@ -63,6 +63,7 @@ Phase 7: UI Polish & Optimization
 - [x] Playback commands (play_song, pause, resume, stop, set_volume)
 - [x] Playback store with Svelte 5 runes
 - [x] Position updates via Tauri events (10Hz)
+- [x] Consolidated playback state (volume included in playback-state event)
 - [x] TransportBar wired to playback controls
 
 ### Phase 4: Queue Management

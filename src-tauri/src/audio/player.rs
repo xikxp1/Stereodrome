@@ -32,6 +32,7 @@ pub struct PlaybackState {
     pub is_playing: bool,
     pub position: f64,
     pub duration: f64,
+    pub volume: f32,
     pub song: Option<SongMetadata>,
 }
 
@@ -95,6 +96,7 @@ impl SharedState {
             is_playing: self.is_playing.load(Ordering::SeqCst),
             position: self.get_position(),
             duration: *self.duration.lock_recover(),
+            volume: *self.volume.lock_recover(),
             song: self.current_song.lock_recover().clone(),
         }
     }

@@ -23,6 +23,7 @@ interface PlaybackState {
   is_playing: boolean;
   position: number;
   duration: number;
+  volume: number;
   song: SongMetadata | null;
 }
 
@@ -59,6 +60,7 @@ class PlaybackStore {
         this.isPlaying = state.is_playing;
         this.position = state.position;
         this.duration = state.duration;
+        this.volume = state.volume;
 
         if (state.song) {
           this.currentTrack = {
