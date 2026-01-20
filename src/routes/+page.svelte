@@ -243,7 +243,7 @@
             {isLoading}
             error={loadError}
             selectedSongId={selectedSong?.id}
-            playingSongId={playback.currentSong?.id ?? null}
+            playingSongId={playback.currentTrack?.id ?? null}
             onSelect={handleSongSelect}
             onPlay={handleSongPlay}
           />

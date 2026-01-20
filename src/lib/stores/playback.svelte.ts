@@ -26,7 +26,6 @@ interface PlaybackState {
 
 class PlaybackStore {
   // State
-  currentSong = $state<Song | null>(null);
   isPlaying = $state(false);
   position = $state(0);
   duration = $state(0);
@@ -34,6 +33,7 @@ class PlaybackStore {
 
   // Current track info from backend (for TransportBar display)
   currentTrack = $state<{
+    id: string;
     title: string;
     artist: string;
     album: string;
@@ -59,6 +59,7 @@ class PlaybackStore {
 
         if (state.song) {
           this.currentTrack = {
+            id: state.song.id,
             title: state.song.title,
             artist: state.song.artist || "Unknown Artist",
             album: state.song.album || "",
@@ -78,7 +79,6 @@ class PlaybackStore {
   async playSong(song: Song) {
     try {
       await invoke("play_song", { songId: song.id });
-      this.currentSong = song;
       this.isPlaying = true;
       this.position = 0;
       this.duration = song.duration || 0;
@@ -109,7 +109,7 @@ class PlaybackStore {
   async togglePlayPause() {
     if (this.isPlaying) {
       await this.pause();
-    } else if (this.currentSong) {
+    } else if (this.currentTrack) {
       await this.resume();
     }
   }
@@ -119,7 +119,6 @@ class PlaybackStore {
       await invoke("stop_playback");
       this.isPlaying = false;
       this.position = 0;
-      this.currentSong = null;
       this.currentTrack = null;
     } catch (e) {
       console.error("Failed to stop:", e);
