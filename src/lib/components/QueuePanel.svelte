@@ -20,7 +20,7 @@
 
   let scrollContainer: HTMLDivElement | null = $state(null);
 
-  const ROW_HEIGHT = 48;
+  const ROW_HEIGHT = 40;
 
   const virtualizer = $derived(
     createVirtualizer<HTMLDivElement, HTMLDivElement>({
@@ -36,27 +36,35 @@
 
   // Track previous values to detect actual changes
   let prevCurrentIndex: number | null = $state(null);
-  let prevItemsLength = $state(0);
+  let prevItemsRef: typeof queue.items | null = $state(null);
   let prevShuffle = $state(false);
   let prevRepeatMode = $state(queue.repeatMode);
+  let prevScrollContainer: HTMLDivElement | null = $state(null);
 
-  // Scroll to current item only when queue changes (not on every render)
+  // Scroll to current item when queue changes or virtualizer is recreated
   $effect(() => {
     const index = queue.currentIndex;
-    const itemsLength = queue.items.length;
+    const items = queue.items;
     const shuffle = queue.shuffle;
     const repeatMode = queue.repeatMode;
+    const container = scrollContainer;
 
-    // Only scroll if currentIndex changed, items were added, or shuffle/repeat toggled
+    // Detect changes that should trigger scroll-to-current
     const indexChanged = index !== prevCurrentIndex;
-    const itemsChanged = itemsLength !== prevItemsLength && itemsLength > 0;
+    const itemsRefChanged = items !== prevItemsRef && items.length > 0;
     const shuffleChanged = shuffle !== prevShuffle;
     const repeatModeChanged = repeatMode !== prevRepeatMode;
+    const containerJustMounted =
+      container !== null && prevScrollContainer === null;
 
     if (
-      (indexChanged || itemsChanged || shuffleChanged || repeatModeChanged) &&
+      (indexChanged ||
+        itemsRefChanged ||
+        shuffleChanged ||
+        repeatModeChanged ||
+        containerJustMounted) &&
       index !== null &&
-      scrollContainer
+      container
     ) {
       // Use requestAnimationFrame to ensure virtualizer is ready
       requestAnimationFrame(() => {
@@ -65,9 +73,10 @@
     }
 
     prevCurrentIndex = index;
-    prevItemsLength = itemsLength;
+    prevItemsRef = items;
     prevShuffle = shuffle;
     prevRepeatMode = repeatMode;
+    prevScrollContainer = container;
   });
 
   function formatDuration(seconds: number): string {
@@ -110,12 +119,12 @@
 >
   <!-- Header -->
   <div
-    class="flex items-center gap-2 px-2 py-2 border-b border-base-300 bg-gradient-to-b from-base-200 to-base-300"
+    class="flex items-center gap-1.5 px-2 py-1.5 border-b border-base-300 bg-gradient-to-b from-base-200 to-base-300"
   >
-    <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
-      <ListMusic class="w-4 h-4 text-base-content/60 flex-shrink-0" />
-      <span class="text-sm font-medium truncate">Queue</span>
-      <span class="text-xs text-base-content/50 flex-shrink-0"
+    <div class="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
+      <ListMusic class="w-3.5 h-3.5 text-base-content/60 flex-shrink-0" />
+      <span class="text-xs font-medium truncate">Queue</span>
+      <span class="text-[10px] text-base-content/50 flex-shrink-0"
         >{queue.items.length}</span
       >
     </div>
@@ -127,7 +136,7 @@
         onclick={handleToggleShuffle}
         title="Shuffle"
       >
-        <Shuffle class="w-3.5 h-3.5" />
+        <Shuffle class="w-3 h-3" />
       </button>
       <!-- Repeat -->
       <button
@@ -137,9 +146,9 @@
         title="Repeat: {queue.repeatMode}"
       >
         {#if queue.repeatMode === "One"}
-          <Repeat1 class="w-3.5 h-3.5" />
+          <Repeat1 class="w-3 h-3" />
         {:else}
-          <Repeat class="w-3.5 h-3.5" />
+          <Repeat class="w-3 h-3" />
         {/if}
       </button>
       <!-- Scroll to current -->
@@ -149,7 +158,7 @@
         title="Scroll to current"
         disabled={queue.currentIndex === null}
       >
-        <LocateFixed class="w-3.5 h-3.5" />
+        <LocateFixed class="w-3 h-3" />
       </button>
       <!-- Clear -->
       <button
@@ -158,7 +167,7 @@
         title="Clear queue"
         disabled={queue.items.length === 0}
       >
-        <Trash2 class="w-3.5 h-3.5" />
+        <Trash2 class="w-3 h-3" />
       </button>
     </div>
   </div>
@@ -211,7 +220,7 @@
               onclick={(e) => handleRemoveItem(index, e)}
               title="Remove from queue"
             >
-              <X class="w-3.5 h-3.5" />
+              <X class="w-3 h-3" />
             </button>
           </div>
         {/each}
@@ -222,17 +231,17 @@
 
 <style>
   .queue-panel {
-    width: 280px;
-    min-width: 280px;
+    width: clamp(220px, 18vw, 320px);
+    min-width: 220px;
   }
 
   .queue-header-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 4px;
+    width: 22px;
+    height: 22px;
+    border-radius: 3px;
     color: oklch(50% 0.01 250);
     transition:
       background-color 0.15s,
@@ -257,8 +266,8 @@
   .queue-item {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
+    gap: 0.375rem;
+    padding: 0.375rem 0.5rem;
     cursor: pointer;
     border-bottom: 1px solid oklch(94% 0.003 250);
   }
@@ -285,7 +294,7 @@
   }
 
   .queue-item-title {
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
     font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -309,8 +318,8 @@
 
   .queue-item-remove {
     opacity: 0;
-    padding: 0.25rem;
-    border-radius: 0.25rem;
+    padding: 0.125rem;
+    border-radius: 0.125rem;
     color: oklch(50% 0.01 250);
     transition:
       opacity 0.15s,
