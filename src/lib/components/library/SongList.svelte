@@ -1,8 +1,7 @@
 <script lang="ts">
   import type { Song } from "$lib/types";
   import { createVirtualizer } from "@tanstack/svelte-virtual";
-  import { SvelteSet } from "svelte/reactivity";
-  import { AlertCircle, Music, Volume2 } from "lucide-svelte";
+  import { CircleAlert, Music, Volume2 } from "lucide-svelte";
 
   interface Props {
     songs?: Song[];
@@ -24,10 +23,9 @@
     onPlay,
   }: Props = $props();
 
-  let checkedSongs = new SvelteSet<string>();
   let scrollContainer: HTMLDivElement | null = $state(null);
 
-  const ROW_HEIGHT = 28;
+  const ROW_HEIGHT = 24;
 
   // Create virtualizer - key is the ternary in getScrollElement
   const virtualizer = $derived(
@@ -56,30 +54,6 @@
   function handleRowDoubleClick(song: Song) {
     onPlay?.(song);
   }
-
-  function toggleCheck(songId: string, e: Event) {
-    e.stopPropagation();
-    if (checkedSongs.has(songId)) {
-      checkedSongs.delete(songId);
-    } else {
-      checkedSongs.add(songId);
-    }
-  }
-
-  function toggleAllChecked() {
-    if (checkedSongs.size === songs.length) {
-      checkedSongs.clear();
-    } else {
-      songs.forEach((s) => checkedSongs.add(s.id));
-    }
-  }
-
-  const allChecked = $derived(
-    songs.length > 0 && checkedSongs.size === songs.length
-  );
-  const someChecked = $derived(
-    checkedSongs.size > 0 && checkedSongs.size < songs.length
-  );
 </script>
 
 <div class="song-list-container flex flex-col h-full bg-white select-none">
@@ -93,7 +67,7 @@
     </div>
   {:else if error}
     <div class="empty-state">
-      <AlertCircle class="empty-state-icon" />
+      <CircleAlert class="empty-state-icon" />
       <div class="empty-state-title">Failed to load songs</div>
       <div class="empty-state-text">{error.message}</div>
     </div>
@@ -109,15 +83,6 @@
     <div class="flex-1 overflow-hidden flex flex-col">
       <!-- Fixed header -->
       <div class="song-grid-header">
-        <div class="cell-checkbox">
-          <input
-            type="checkbox"
-            class="itunes-checkbox"
-            checked={allChecked}
-            indeterminate={someChecked}
-            onchange={toggleAllChecked}
-          />
-        </div>
         <div class="cell-track">#</div>
         <div class="cell-name">Name</div>
         <div class="cell-time">Time</div>
@@ -142,14 +107,6 @@
               ondblclick={() => handleRowDoubleClick(song)}
               style="position: absolute; top: 0; left: 0; width: 100%; height: {row.size}px; transform: translateY({row.start}px);"
             >
-              <div class="cell-checkbox">
-                <input
-                  type="checkbox"
-                  class="itunes-checkbox"
-                  checked={checkedSongs.has(song.id)}
-                  onchange={(e) => toggleCheck(song.id, e)}
-                />
-              </div>
               <div class="cell-track dimmed">
                 {song.track_number || index + 1}
               </div>
@@ -193,7 +150,7 @@
   .song-grid-row {
     display: grid;
     grid-template-columns:
-      32px 40px minmax(120px, 1fr) 52px minmax(100px, 0.6fr)
+      40px minmax(120px, 1fr) 52px minmax(100px, 0.6fr)
       minmax(100px, 0.8fr) 56px 96px;
     align-items: center;
     font-size: 0.75rem;
@@ -204,7 +161,7 @@
     .song-grid-header,
     .song-grid-row {
       grid-template-columns:
-        32px 40px minmax(120px, 1fr) 52px minmax(100px, 0.6fr)
+        40px minmax(120px, 1fr) 52px minmax(100px, 0.6fr)
         minmax(100px, 0.8fr) 56px;
     }
 
@@ -218,7 +175,7 @@
     .song-grid-header,
     .song-grid-row {
       grid-template-columns:
-        32px 40px minmax(120px, 1fr) 52px minmax(80px, 0.6fr)
+        40px minmax(120px, 1fr) 52px minmax(80px, 0.6fr)
         minmax(80px, 0.8fr);
     }
 
@@ -280,13 +237,18 @@
   }
 
   .song-grid-row.playing {
+    background: oklch(92% 0.04 250);
+    color: oklch(22% 0.01 250);
+    font-weight: 500;
+  }
+
+  .song-grid-row.playing.selected {
     background: linear-gradient(
       to bottom,
-      oklch(62% 0.18 250),
-      oklch(55% 0.2 250)
+      oklch(58% 0.2 250),
+      oklch(52% 0.22 250)
     );
     color: white;
-    font-weight: 500;
   }
 
   .song-grid-row > div {
@@ -308,15 +270,8 @@
     color: oklch(50% 0.01 250);
   }
 
-  .song-grid-row.selected .dimmed,
-  .song-grid-row.playing .dimmed {
+  .song-grid-row.selected .dimmed {
     color: oklch(90% 0 0 / 0.7);
-  }
-
-  .cell-checkbox {
-    justify-self: center;
-    padding-left: 0.5rem !important;
-    padding-right: 0.5rem !important;
   }
 
   .cell-time {
