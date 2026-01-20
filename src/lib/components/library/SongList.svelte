@@ -24,16 +24,15 @@
   }: Props = $props();
 
   let checkedSongs = new SvelteSet<string>();
-  let scrollContainer: HTMLDivElement | undefined = $state();
+  let scrollContainer: HTMLDivElement | null = $state(null);
 
   const ROW_HEIGHT = 28;
 
+  // Create virtualizer - key is the ternary in getScrollElement
   const virtualizer = $derived(
-    createVirtualizer({
-      get count() {
-        return songs.length;
-      },
-      getScrollElement: () => scrollContainer ?? null,
+    createVirtualizer<HTMLDivElement, HTMLDivElement>({
+      count: songs.length,
+      getScrollElement: scrollContainer ? () => scrollContainer : () => null,
       estimateSize: () => ROW_HEIGHT,
       overscan: 10,
     })
@@ -146,7 +145,7 @@
         <div class="cell-genre">Genre</div>
       </div>
 
-      <!-- Virtualized body -->
+      <!-- Virtualized song list body -->
       <div bind:this={scrollContainer} class="flex-1 overflow-auto">
         <div style="height: {totalSize}px; width: 100%; position: relative;">
           {#each virtualItems as row (row.index)}
