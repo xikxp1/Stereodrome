@@ -18,7 +18,11 @@
   );
 
   // Generate smooth SVG path from band values
-  function generatePath(bands: number[], width: number, height: number): string {
+  function generatePath(
+    bands: number[],
+    width: number,
+    height: number
+  ): string {
     if (bands.length === 0) return "";
 
     const points: [number, number][] = [];
@@ -58,10 +62,26 @@
     <svg viewBox="0 0 400 100" preserveAspectRatio="none" class="spectrum-svg">
       <defs>
         <linearGradient id="spectrumGradient" x1="0%" y1="100%" x2="0%" y2="0%">
-          <stop offset="0%" stop-color="oklch(65% 0.15 250)" stop-opacity="0.4" />
-          <stop offset="40%" stop-color="oklch(70% 0.12 260)" stop-opacity="0.25" />
-          <stop offset="80%" stop-color="oklch(75% 0.08 270)" stop-opacity="0.1" />
-          <stop offset="100%" stop-color="oklch(80% 0.05 280)" stop-opacity="0" />
+          <stop
+            offset="0%"
+            stop-color="oklch(65% 0.15 250)"
+            stop-opacity="0.4"
+          />
+          <stop
+            offset="40%"
+            stop-color="oklch(70% 0.12 260)"
+            stop-opacity="0.25"
+          />
+          <stop
+            offset="80%"
+            stop-color="oklch(75% 0.08 270)"
+            stop-opacity="0.1"
+          />
+          <stop
+            offset="100%"
+            stop-color="oklch(80% 0.05 280)"
+            stop-opacity="0"
+          />
         </linearGradient>
       </defs>
       <path d={pathData} fill="url(#spectrumGradient)" class="spectrum-path" />

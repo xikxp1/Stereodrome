@@ -1,6 +1,7 @@
 <script lang="ts">
   import { searchStore } from "$lib/stores/search.svelte";
   import SpectrumBars from "./SpectrumBars.svelte";
+  import MarqueeText from "./MarqueeText.svelte";
   import {
     SkipBack,
     Play,
@@ -164,16 +165,20 @@
       <div class="relative z-10 min-w-0 flex-1">
         <!-- Track Info (fixed height for consistency) -->
         <div class="mb-1 text-center">
-          <div class="truncate text-sm font-medium text-base-content">
-            {currentTrack?.title ?? "\u00A0"}
-          </div>
-          <div class="truncate text-xs text-base-content/60">
-            {#if currentTrack}
-              {currentTrack.artist}{#if currentTrack.album}&nbsp;— {currentTrack.album}{/if}
-            {:else}
-              <span class="text-base-content/40">Not Playing</span>
-            {/if}
-          </div>
+          {#if currentTrack}
+            <MarqueeText
+              text={currentTrack.title}
+              class="text-sm font-medium text-base-content"
+            />
+            <MarqueeText
+              text={currentTrack.artist +
+                (currentTrack.album ? ` — ${currentTrack.album}` : "")}
+              class="text-xs text-base-content/60"
+            />
+          {:else}
+            <div class="text-sm font-medium text-base-content">&nbsp;</div>
+            <div class="text-xs text-base-content/40">Not Playing</div>
+          {/if}
         </div>
 
         <!-- Scrubber -->
