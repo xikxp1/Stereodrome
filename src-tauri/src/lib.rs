@@ -31,6 +31,7 @@ pub fn run() {
             {
                 let audio_player = app_state.audio_player.lock_recover();
                 audio_player.start_position_emitter(app.handle().clone());
+                audio_player.start_spectrum_emitter(app.handle().clone());
             }
 
             // Start now playing emitter

@@ -10,6 +10,7 @@
   import { playback } from "$lib/stores/playback.svelte";
   import { queue } from "$lib/stores/queue.svelte";
   import { searchStore } from "$lib/stores/search.svelte";
+  import { spectrum } from "$lib/stores/spectrum.svelte";
   import {
     getArtists,
     getAlbums,
@@ -389,6 +390,14 @@
         if (!isMod) {
           // Q - toggle queue panel
           handleQueueToggle();
+        }
+        break;
+
+      case "v":
+      case "V":
+        if (!isMod) {
+          // V - toggle spectrum visualizer
+          spectrum.toggle();
         }
         break;
 

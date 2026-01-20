@@ -20,7 +20,8 @@ Phase 7: UI Polish & Optimization
 - [x] "Scroll to current" button in QueuePanel header
 - [x] Cover art display in TransportBar (thumbnail with click-to-view full size)
 - [x] Cover art caching to local filesystem
-- [x] Keyboard shortcuts (Space play/pause, ↑/↓ navigate songs, Enter play, Shift+←/→ seek, Mod+↑/↓ volume, Mod+←/→ prev/next, M mute, S shuffle, R repeat, Q queue, / search)
+- [x] Keyboard shortcuts (Space play/pause, ↑/↓ navigate songs, Enter play, Shift+←/→ seek, Mod+↑/↓ volume, Mod+←/→ prev/next, M mute, S shuffle, R repeat, Q queue, V visualizer, / search)
+- [x] Audio spectrum visualizer (real-time FFT in Rust, 8 frequency bands, 30Hz updates)
 
 ## Completed
 
@@ -122,6 +123,7 @@ Phase 7: UI Polish & Optimization
 - [x] TanStack Virtual for large lists
 - [x] Cover art display with caching and full-size viewer window
 - [x] Standard base64 encoding (replaced custom implementation)
+- [x] Audio spectrum visualizer in TransportBar (V to toggle)
 
 ## Architecture
 
@@ -134,8 +136,10 @@ src-tauri/src/
 ├── state.rs            # AppState (client, db, audio_player, queue, search_index)
 ├── audio/
 │   ├── mod.rs          # Module exports
+│   ├── analyzer.rs     # AnalyzingSource wrapper for sample capture
 │   ├── player.rs       # AudioPlayer with Rodio (threaded)
 │   ├── queue.rs        # PlayQueue with shuffle/repeat
+│   ├── spectrum.rs     # FFT analysis, SpectrumAnalyzer, band aggregation
 │   └── stream.rs       # Subsonic audio stream fetching
 ├── commands/
 │   ├── mod.rs
@@ -169,10 +173,12 @@ src/lib/
 │   ├── queue.svelte.ts       # Queue management store
 │   ├── playlist.svelte.ts    # Playlist store
 │   ├── search.svelte.ts      # Search with debounce
+│   ├── spectrum.svelte.ts    # Spectrum visualizer state (30Hz band updates)
 │   └── nowplaying.svelte.ts  # Server now playing state (for other users)
 ├── components/
 │   ├── ServerConnect.svelte   # Login screen
 │   ├── TransportBar.svelte    # Top toolbar with playback controls + now playing (local state)
+│   ├── SpectrumBars.svelte    # Audio spectrum visualizer (8 bars)
 │   ├── Sidebar.svelte         # Navigation + playlists
 │   ├── StatusBar.svelte       # Bottom status bar
 │   ├── QueuePanel.svelte      # Queue panel with shuffle/repeat controls
@@ -190,8 +196,8 @@ src/lib/
 
 ## Next Steps
 
-1. **Phase 7 Complete** - All UI polish tasks done
-2. **Phase 8** - Additional features (audio visualizer, crossfade, gapless playback)
+1. **Phase 7 Complete** - All UI polish tasks done, including audio visualizer
+2. **Phase 8** - Additional features (crossfade, gapless playback, audio enhancements)
 
 ---
 

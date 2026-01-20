@@ -1,13 +1,19 @@
+use ringbuf::{traits::Split, HeapCons, HeapProd, HeapRb};
 use rodio::{Decoder, OutputStreamBuilder, Sink};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
+use crate::audio::analyzer::AnalyzingSource;
 use crate::error::{AppError, AppResult};
+
+/// Ring buffer size for spectrum analysis (~370ms at 44.1kHz stereo)
+/// Larger buffer prevents sample loss from lock contention
+const SPECTRUM_BUFFER_SIZE: usize = 32768;
 
 #[derive(Debug, Clone, serde::Serialize, Default)]
 pub struct SongMetadata {
@@ -145,6 +151,7 @@ impl SharedState {
 pub struct AudioPlayer {
     command_tx: Sender<AudioCommand>,
     shared_state: Arc<SharedState>,
+    spectrum_consumer: Arc<Mutex<HeapCons<f32>>>,
     _audio_thread: JoinHandle<()>,
 }
 
@@ -158,13 +165,21 @@ impl AudioPlayer {
         let shared_state = Arc::new(SharedState::new());
         let state_clone = Arc::clone(&shared_state);
 
+        // Create ring buffer for spectrum analysis
+        let ring_buffer = HeapRb::<f32>::new(SPECTRUM_BUFFER_SIZE);
+        let (producer, consumer) = ring_buffer.split();
+        let spectrum_producer = Arc::new(Mutex::new(producer));
+        let spectrum_consumer = Arc::new(Mutex::new(consumer));
+
+        let producer_clone = Arc::clone(&spectrum_producer);
         let audio_thread = thread::spawn(move || {
-            run_audio_thread(command_rx, state_clone);
+            run_audio_thread(command_rx, state_clone, producer_clone);
         });
 
         Ok(Self {
             command_tx,
             shared_state,
+            spectrum_consumer,
             _audio_thread: audio_thread,
         })
     }
@@ -251,6 +266,62 @@ impl AudioPlayer {
         self.shared_state.is_playing.load(Ordering::SeqCst)
     }
 
+    #[allow(dead_code)]
+    /// Get the spectrum buffer consumer for the spectrum analyzer
+    pub fn get_spectrum_consumer(&self) -> Arc<Mutex<HeapCons<f32>>> {
+        Arc::clone(&self.spectrum_consumer)
+    }
+
+    #[allow(dead_code)]
+    /// Get the is_playing flag for the spectrum analyzer
+    pub fn get_is_playing_flag(&self) -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(
+            self.shared_state.is_playing.load(Ordering::SeqCst),
+        ))
+    }
+
+    #[allow(dead_code)]
+    /// Get a clone of the shared is_playing atomic for spectrum emitter
+    pub fn get_shared_is_playing(&self) -> &AtomicBool {
+        &self.shared_state.is_playing
+    }
+
+    /// Start a background thread that emits spectrum data for visualization
+    pub fn start_spectrum_emitter(&self, app_handle: AppHandle) {
+        use crate::audio::spectrum;
+
+        let consumer = Arc::clone(&self.spectrum_consumer);
+        let shared_state = Arc::clone(&self.shared_state);
+
+        // Default sample rate (will work for most audio)
+        const DEFAULT_SAMPLE_RATE: u32 = 44100;
+
+        thread::spawn(move || {
+            let mut analyzer = spectrum::SpectrumAnalyzer::new(DEFAULT_SAMPLE_RATE);
+
+            loop {
+                thread::sleep(Duration::from_millis(33)); // 30Hz updates
+
+                let is_playing = shared_state.is_playing.load(Ordering::SeqCst);
+
+                // Only process when playing
+                if !is_playing {
+                    // Emit empty spectrum when not playing
+                    let _ = app_handle.emit("spectrum-data", spectrum::SpectrumData::default());
+                    analyzer.clear();
+                    continue;
+                }
+
+                // Process samples and emit if we have data
+                if let Ok(mut cons) = consumer.try_lock() {
+                    if let Some(spectrum_data) = analyzer.process(&mut cons) {
+                        let _ = app_handle.emit("spectrum-data", spectrum_data);
+                    }
+                }
+            }
+        });
+    }
+
     /// Start a background thread that emits playback state updates
     pub fn start_position_emitter(&self, app_handle: AppHandle) {
         let shared_state = Arc::clone(&self.shared_state);
@@ -286,7 +357,11 @@ impl Drop for AudioPlayer {
 }
 
 /// Main audio thread function
-fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<SharedState>) {
+fn run_audio_thread(
+    command_rx: Receiver<AudioCommand>,
+    shared_state: Arc<SharedState>,
+    spectrum_producer: Arc<Mutex<HeapProd<f32>>>,
+) {
     // Open the default audio output stream
     let stream = match OutputStreamBuilder::open_default_stream() {
         Ok(mut s) => {
@@ -325,10 +400,15 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                         .build()
                     {
                         Ok(source) => {
+                            // Wrap source with analyzer for spectrum analysis
+                            // Rodio 0.21+ uses f32 samples natively
+                            let analyzing_source =
+                                AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
+
                             let sink = Sink::connect_new(stream.mixer());
                             let volume = shared_state.read_inner().volume;
                             sink.set_volume(volume);
-                            sink.append(source);
+                            sink.append(analyzing_source);
 
                             // Update shared state (single lock acquisition)
                             {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { searchStore } from "$lib/stores/search.svelte";
+  import SpectrumBars from "./SpectrumBars.svelte";
   import {
     SkipBack,
     Play,
@@ -136,11 +137,14 @@
     class="pointer-events-none absolute left-1/2 top-1/2 flex w-full max-w-[40%] -translate-x-1/2 -translate-y-1/2 justify-center px-4"
   >
     <div
-      class="pointer-events-auto flex w-full items-center gap-2 rounded border border-base-300 bg-base-100 p-1.5 shadow-sm"
+      class="pointer-events-auto relative flex w-full items-center gap-2 overflow-hidden rounded border border-base-300 bg-base-100 p-1.5 shadow-sm"
     >
+      <!-- Spectrum Visualizer (background layer) -->
+      <SpectrumBars />
+
       <!-- Cover Art -->
       <button
-        class="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded bg-base-200 transition-opacity hover:opacity-80"
+        class="relative z-10 flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded bg-base-200 transition-opacity hover:opacity-80"
         onclick={() => onCoverArtClick?.()}
         disabled={!coverArtUrl}
         aria-label="View cover art"
@@ -157,7 +161,7 @@
       </button>
 
       <!-- Track Info and Scrubber -->
-      <div class="min-w-0 flex-1">
+      <div class="relative z-10 min-w-0 flex-1">
         <!-- Track Info (fixed height for consistency) -->
         <div class="mb-1 text-center">
           <div class="truncate text-sm font-medium text-base-content">
