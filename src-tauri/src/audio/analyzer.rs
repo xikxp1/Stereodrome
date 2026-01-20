@@ -3,6 +3,7 @@
 
 use ringbuf::traits::Producer;
 use ringbuf::HeapProd;
+use rodio::source::SeekError;
 use rodio::Source;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -66,5 +67,9 @@ where
 
     fn total_duration(&self) -> Option<Duration> {
         self.inner.total_duration()
+    }
+
+    fn try_seek(&mut self, pos: Duration) -> Result<(), SeekError> {
+        self.inner.try_seek(pos)
     }
 }
