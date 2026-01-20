@@ -28,6 +28,34 @@
     /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
   const modKey = isMac ? "⌘" : "Ctrl+";
 
+  // Derived tooltip text for prev/next/play buttons
+  const prevTooltip = $derived.by(() => {
+    const prev = queue.previousSong;
+    if (prev) {
+      return `Previous (${modKey}←)\n${prev.title} — ${prev.artist}`;
+    }
+    return `Previous (${modKey}←)`;
+  });
+
+  const nextTooltip = $derived.by(() => {
+    const next = queue.nextSong;
+    if (next) {
+      return `Next (${modKey}→)\n${next.title} — ${next.artist}`;
+    }
+    return `Next (${modKey}→)`;
+  });
+
+  const playTooltip = $derived.by(() => {
+    if (isPlaying) {
+      return "Pause (Space)";
+    }
+    const current = queue.currentSong;
+    if (current) {
+      return `Play (Space)\n${current.title} — ${current.artist}`;
+    }
+    return "Play (Space)";
+  });
+
   function handleVolumeChange(newVolume: number) {
     onVolumeChange?.(newVolume);
     volumeAdjusting = true;
@@ -106,7 +134,7 @@
         class="flex h-7 w-7 items-center justify-center rounded-l bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
         onclick={() => onPrevious?.()}
         aria-label="Previous track"
-        title="Previous ({modKey}←)"
+        title={prevTooltip}
       >
         <SkipBack class="h-3 w-3" fill="currentColor" />
       </button>
@@ -114,7 +142,7 @@
         class="flex h-7 w-8 items-center justify-center border-x border-base-300 bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
         onclick={() => onPlayPause?.()}
         aria-label={isPlaying ? "Pause" : "Play"}
-        title="{isPlaying ? 'Pause' : 'Play'} (Space)"
+        title={playTooltip}
       >
         {#if isPlaying}
           <Pause class="h-3.5 w-3.5" fill="currentColor" />
@@ -126,7 +154,7 @@
         class="flex h-7 w-7 items-center justify-center rounded-r bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
         onclick={() => onNext?.()}
         aria-label="Next track"
-        title="Next ({modKey}→)"
+        title={nextTooltip}
       >
         <SkipForward class="h-3 w-3" fill="currentColor" />
       </button>

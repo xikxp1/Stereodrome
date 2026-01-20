@@ -188,6 +188,57 @@ class QueueStore {
     }
   }
 
+  // Get the current song
+  get currentSong(): QueueItem | null {
+    if (this.currentIndex === null || this.currentIndex >= this.items.length) {
+      return null;
+    }
+    return this.items[this.currentIndex];
+  }
+
+  // Get the previous song (what will play when Previous is clicked)
+  get previousSong(): QueueItem | null {
+    if (this.items.length === 0) return null;
+    if (this.currentIndex === null) return null;
+
+    if (this.currentIndex > 0) {
+      return this.items[this.currentIndex - 1];
+    }
+
+    // At the start - wrap around if repeat is on
+    if (this.repeatMode === "All") {
+      return this.items[this.items.length - 1];
+    }
+
+    return null;
+  }
+
+  // Get the next song (what will play when Next is clicked)
+  get nextSong(): QueueItem | null {
+    if (this.items.length === 0) return null;
+
+    // If repeat one, next will play the same song
+    if (this.repeatMode === "One" && this.currentIndex !== null) {
+      return this.items[this.currentIndex];
+    }
+
+    if (this.currentIndex === null) {
+      // Nothing playing, next would start from beginning
+      return this.items[0];
+    }
+
+    if (this.currentIndex < this.items.length - 1) {
+      return this.items[this.currentIndex + 1];
+    }
+
+    // At the end - wrap around if repeat is on
+    if (this.repeatMode === "All") {
+      return this.items[0];
+    }
+
+    return null;
+  }
+
   // Helper to play a song and set up queue
   async playSongWithQueue(song: Song, allSongs?: Song[]) {
     if (allSongs && allSongs.length > 0) {
