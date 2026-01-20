@@ -121,31 +121,29 @@
 
   <!-- Center: Now Playing (absolutely positioned) -->
   <div
-    class="pointer-events-none absolute left-1/2 top-1/2 flex w-full max-w-sm -translate-x-1/2 -translate-y-1/2 justify-center px-4"
+    class="pointer-events-none absolute left-1/2 top-1/2 flex w-full max-w-[40%] -translate-x-1/2 -translate-y-1/2 justify-center px-4"
   >
     <div
       class="pointer-events-auto w-full rounded border border-base-300 bg-base-100 px-3 py-1.5 shadow-sm"
     >
-      <!-- Track Info (two lines) -->
-      {#if currentTrack}
-        <div class="mb-1 text-center">
-          <div class="truncate text-sm font-medium text-base-content">
-            {currentTrack.title}
-          </div>
-          <div class="truncate text-xs text-base-content/60">
+      <!-- Track Info (fixed height for consistency) -->
+      <div class="mb-1 text-center">
+        <div class="truncate text-sm font-medium text-base-content">
+          {currentTrack?.title ?? "\u00A0"}
+        </div>
+        <div class="truncate text-xs text-base-content/60">
+          {#if currentTrack}
             {currentTrack.artist}{#if currentTrack.album}&nbsp;— {currentTrack.album}{/if}
-          </div>
+          {:else}
+            <span class="text-base-content/40">Not Playing</span>
+          {/if}
         </div>
-      {:else}
-        <div class="mb-1 text-center text-xs text-base-content/40">
-          Not Playing
-        </div>
-      {/if}
+      </div>
 
       <!-- Scrubber -->
       <div class="flex items-center gap-2">
         <span
-          class="w-8 text-right font-mono text-[9px] tabular-nums text-base-content/50"
+          class="w-9 text-right font-mono text-[11px] tabular-nums text-base-content/50"
         >
           {formatTime(currentTime)}
         </span>
@@ -172,7 +170,7 @@
           ></div>
         </div>
         <span
-          class="w-8 font-mono text-[9px] tabular-nums text-base-content/50"
+          class="w-9 font-mono text-[11px] tabular-nums text-base-content/50"
         >
           {formatTimeRemaining(currentTime, duration)}
         </span>
