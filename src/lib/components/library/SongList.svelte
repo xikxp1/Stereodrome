@@ -82,7 +82,7 @@
   );
 </script>
 
-<div class="flex flex-col h-full bg-white select-none">
+<div class="song-list-container flex flex-col h-full bg-white select-none">
   {#if isLoading}
     <div class="flex-1 flex items-center justify-center">
       <div class="loading-dots">
@@ -185,12 +185,41 @@
 </div>
 
 <style>
+  .song-list-container {
+    container-type: inline-size;
+  }
+
   .song-grid-header,
   .song-grid-row {
     display: grid;
-    grid-template-columns: 32px 40px 1fr 64px 200px 200px 56px 96px;
+    grid-template-columns: 32px 40px minmax(120px, 1fr) 52px minmax(100px, 0.6fr) minmax(100px, 0.8fr) 56px 96px;
     align-items: center;
     font-size: 0.75rem;
+  }
+
+  /* Hide genre column below 900px */
+  @container (max-width: 900px) {
+    .song-grid-header,
+    .song-grid-row {
+      grid-template-columns: 32px 40px minmax(120px, 1fr) 52px minmax(100px, 0.6fr) minmax(100px, 0.8fr) 56px;
+    }
+
+    .cell-genre {
+      display: none;
+    }
+  }
+
+  /* Hide year and genre columns below 800px */
+  @container (max-width: 800px) {
+    .song-grid-header,
+    .song-grid-row {
+      grid-template-columns: 32px 40px minmax(120px, 1fr) 52px minmax(80px, 0.6fr) minmax(80px, 0.8fr);
+    }
+
+    .cell-year,
+    .cell-genre {
+      display: none;
+    }
   }
 
   .song-grid-header {
@@ -286,5 +315,10 @@
 
   .cell-time {
     text-align: right;
+  }
+
+  .cell-year,
+  .cell-genre {
+    padding-left: 1rem !important;
   }
 </style>
