@@ -80,9 +80,9 @@
   }
 </script>
 
-<div class="sidebar flex flex-col h-full select-none">
+<div class="sidebar flex flex-col h-full select-none overflow-hidden">
   <!-- Library Section -->
-  <div class="flex-1 overflow-y-auto py-1">
+  <div class="flex-1 overflow-y-auto overflow-x-hidden py-1">
     <div class="sidebar-section-title">Library</div>
 
     <button

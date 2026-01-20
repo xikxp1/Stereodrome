@@ -9,7 +9,12 @@
   import { playback } from "$lib/stores/playback.svelte";
   import { queue } from "$lib/stores/queue.svelte";
   import { searchStore } from "$lib/stores/search.svelte";
-  import { getArtists, getAlbums, getSongs } from "$lib/api/commands";
+  import {
+    getArtists,
+    getAlbums,
+    getSongs,
+    seekPlayback,
+  } from "$lib/api/commands";
   import type { Artist, Album, Song } from "$lib/types";
 
   // View state
@@ -164,6 +169,10 @@
     playback.setVolume(v / 100); // Convert from 0-100 to 0-1
   }
 
+  function handleSeek(position: number) {
+    seekPlayback(position);
+  }
+
   function handlePrevious() {
     queue.playPrevious();
   }
@@ -189,6 +198,7 @@
       onPlayPause={handlePlayPause}
       onPrevious={handlePrevious}
       onNext={handleNext}
+      onSeek={handleSeek}
       onVolumeChange={handleVolumeChange}
     />
 

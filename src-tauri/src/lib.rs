@@ -68,6 +68,7 @@ pub fn run() {
             commands::resume_playback,
             commands::stop_playback,
             commands::set_volume,
+            commands::seek_playback,
             commands::get_playback_status,
             commands::get_queue,
             commands::add_to_queue,

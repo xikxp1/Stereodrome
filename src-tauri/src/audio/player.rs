@@ -45,6 +45,7 @@ enum AudioCommand {
     Resume,
     Stop,
     SetVolume(f32),
+    Seek(f64),
     Shutdown,
 }
 
@@ -52,6 +53,7 @@ enum AudioCommand {
 struct SharedState {
     is_playing: AtomicBool,
     current_song: Mutex<Option<SongMetadata>>,
+    current_audio_data: Mutex<Option<(Vec<u8>, u64)>>, // (data, byte_len)
     volume: Mutex<f32>,
     playback_start: Mutex<Option<Instant>>,
     paused_position: Mutex<f64>,
@@ -63,6 +65,7 @@ impl SharedState {
         Self {
             is_playing: AtomicBool::new(false),
             current_song: Mutex::new(None),
+            current_audio_data: Mutex::new(None),
             volume: Mutex::new(0.8),
             playback_start: Mutex::new(None),
             paused_position: Mutex::new(0.0),
@@ -175,6 +178,14 @@ impl AudioPlayer {
             .map_err(|e| AppError::Audio(format!("Failed to send volume command: {}", e)))
     }
 
+    pub fn seek(&self, position_secs: f64) -> AppResult<()> {
+        let duration = *self.shared_state.duration.lock().unwrap();
+        let clamped = position_secs.clamp(0.0, duration);
+        self.command_tx
+            .send(AudioCommand::Seek(clamped))
+            .map_err(|e| AppError::Audio(format!("Failed to send seek command: {}", e)))
+    }
+
     #[allow(dead_code)]
     pub fn get_volume(&self) -> f32 {
         *self.shared_state.volume.lock().unwrap()
@@ -273,9 +284,15 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                         sink.stop();
                     }
 
-                    // Decode and play
-                    let cursor = Cursor::new(audio_data);
-                    match Decoder::new(cursor) {
+                    // Decode and play with coarse seek enabled for better seeking
+                    let byte_len = audio_data.len() as u64;
+                    let cursor = Cursor::new(audio_data.clone());
+                    match Decoder::builder()
+                        .with_data(cursor)
+                        .with_byte_len(byte_len)
+                        .with_coarse_seek(true)
+                        .build()
+                    {
                         Ok(source) => {
                             let sink = Sink::connect_new(stream.mixer());
                             let volume = *shared_state.volume.lock().unwrap();
@@ -283,6 +300,8 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                             sink.append(source);
 
                             // Update shared state
+                            *shared_state.current_audio_data.lock().unwrap() =
+                                Some((audio_data, byte_len));
                             *shared_state.current_song.lock().unwrap() = Some(metadata);
                             *shared_state.playback_start.lock().unwrap() = Some(Instant::now());
                             *shared_state.paused_position.lock().unwrap() = 0.0;
@@ -328,6 +347,7 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                     }
                     shared_state.is_playing.store(false, Ordering::SeqCst);
                     *shared_state.current_song.lock().unwrap() = None;
+                    *shared_state.current_audio_data.lock().unwrap() = None;
                     *shared_state.playback_start.lock().unwrap() = None;
                     *shared_state.paused_position.lock().unwrap() = 0.0;
                     *shared_state.duration.lock().unwrap() = 0.0;
@@ -335,6 +355,18 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                 AudioCommand::SetVolume(volume) => {
                     if let Some(ref sink) = current_sink {
                         sink.set_volume(volume);
+                    }
+                }
+                AudioCommand::Seek(position_secs) => {
+                    if let Some(ref sink) = current_sink {
+                        let seek_duration = Duration::from_secs_f64(position_secs);
+                        if let Err(e) = sink.try_seek(seek_duration) {
+                            eprintln!("Seek failed: {:?}", e);
+                        } else {
+                            // Update position tracking
+                            *shared_state.paused_position.lock().unwrap() = position_secs;
+                            *shared_state.playback_start.lock().unwrap() = Some(Instant::now());
+                        }
                     }
                 }
                 AudioCommand::Shutdown => {

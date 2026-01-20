@@ -89,6 +89,12 @@ pub fn set_volume(state: State<'_, AppState>, volume: f32) -> AppResult<()> {
 }
 
 #[tauri::command]
+pub fn seek_playback(state: State<'_, AppState>, position: f64) -> AppResult<()> {
+    let audio_player = state.audio_player.lock().unwrap();
+    audio_player.seek(position)
+}
+
+#[tauri::command]
 pub fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
     let audio_player = state.audio_player.lock().unwrap();
     audio_player.get_status()

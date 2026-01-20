@@ -133,8 +133,7 @@
             {currentTrack.title}
           </div>
           <div class="truncate text-xs text-base-content/60">
-            {currentTrack.artist}{#if currentTrack.album}
-              — {currentTrack.album}{/if}
+            {currentTrack.artist}{#if currentTrack.album}&nbsp;— {currentTrack.album}{/if}
           </div>
         </div>
       {:else}

@@ -67,6 +67,10 @@ export async function setVolume(volume: number): Promise<void> {
   return invoke("set_volume", { volume });
 }
 
+export async function seekPlayback(position: number): Promise<void> {
+  return invoke("seek_playback", { position });
+}
+
 export async function getPlaybackStatus(): Promise<PlaybackState> {
   return invoke<PlaybackState>("get_playback_status");
 }

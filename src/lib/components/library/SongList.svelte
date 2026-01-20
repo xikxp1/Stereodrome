@@ -192,7 +192,10 @@
   .song-grid-header,
   .song-grid-row {
     display: grid;
-    grid-template-columns: 32px 40px minmax(120px, 1fr) 52px minmax(100px, 0.6fr) minmax(100px, 0.8fr) 56px 96px;
+    grid-template-columns: 32px 40px minmax(120px, 1fr) 52px minmax(
+        100px,
+        0.6fr
+      ) minmax(100px, 0.8fr) 56px 96px;
     align-items: center;
     font-size: 0.75rem;
   }
@@ -201,7 +204,10 @@
   @container (max-width: 900px) {
     .song-grid-header,
     .song-grid-row {
-      grid-template-columns: 32px 40px minmax(120px, 1fr) 52px minmax(100px, 0.6fr) minmax(100px, 0.8fr) 56px;
+      grid-template-columns: 32px 40px minmax(120px, 1fr) 52px minmax(
+          100px,
+          0.6fr
+        ) minmax(100px, 0.8fr) 56px;
     }
 
     .cell-genre {
@@ -213,7 +219,10 @@
   @container (max-width: 800px) {
     .song-grid-header,
     .song-grid-row {
-      grid-template-columns: 32px 40px minmax(120px, 1fr) 52px minmax(80px, 0.6fr) minmax(80px, 0.8fr);
+      grid-template-columns: 32px 40px minmax(120px, 1fr) 52px minmax(
+          80px,
+          0.6fr
+        ) minmax(80px, 0.8fr);
     }
 
     .cell-year,
