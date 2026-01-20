@@ -117,6 +117,29 @@ impl SearchSchema {
         }
     }
 
+    /// Build SearchSchema from an existing tantivy Schema (for reopening indexes)
+    pub fn from_existing(schema: &Schema) -> AppResult<Self> {
+        let get_field = |name: &str| -> AppResult<Field> {
+            schema
+                .get_field(name)
+                .map_err(|_| AppError::Search(format!("Schema mismatch: missing field '{}'", name)))
+        };
+
+        Ok(Self {
+            id: get_field("id")?,
+            entity_type: get_field("entity_type")?,
+            name: get_field("name")?,
+            artist_name: get_field("artist_name")?,
+            album_name: get_field("album_name")?,
+            genre: get_field("genre")?,
+            year: get_field("year")?,
+            duration: get_field("duration")?,
+            song_count: get_field("song_count")?,
+            album_count: get_field("album_count")?,
+            schema: schema.clone(),
+        })
+    }
+
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
@@ -139,29 +162,29 @@ pub struct IndexManager {
 impl IndexManager {
     /// Create or open an index at the given path
     pub fn new(index_path: &Path) -> AppResult<Self> {
-        let schema = SearchSchema::new();
-
         // Create directory if it doesn't exist
         std::fs::create_dir_all(index_path)?;
 
-        // Always create fresh index to ensure schema matches
-        // Delete existing index files if any
-        if index_path.exists() {
-            for entry in std::fs::read_dir(index_path)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() {
-                    std::fs::remove_file(&path)?;
-                }
-            }
-        }
+        // Try to open existing index first, fall back to creating fresh
+        Self::try_open_existing(index_path).or_else(|e| {
+            eprintln!("Could not open existing index: {}, creating fresh", e);
+            Self::create_fresh(index_path)
+        })
+    }
 
+    /// Try to open an existing index
+    fn try_open_existing(index_path: &Path) -> AppResult<Self> {
         let dir = MmapDirectory::open(index_path)
             .map_err(|e| AppError::Search(format!("Failed to open index dir: {}", e)))?;
-        let index = Index::create(dir, schema.schema().clone(), IndexSettings::default())
-            .map_err(|e| AppError::Search(format!("Failed to create index: {}", e)))?;
 
-        // Register ngram tokenizer for substring matching (min 2, max 8 chars)
+        let index = Index::open(dir)
+            .map_err(|e| AppError::Search(format!("Failed to open existing index: {}", e)))?;
+
+        // Build schema from the opened index's schema
+        let existing_schema = index.schema();
+        let schema = SearchSchema::from_existing(&existing_schema)?;
+
+        // Register tokenizer
         let ngram_tokenizer = TextAnalyzer::builder(NgramTokenizer::new(2, 8, false).unwrap())
             .filter(LowerCaser)
             .build();
@@ -173,7 +196,6 @@ impl IndexManager {
             .reader()
             .map_err(|e| AppError::Search(format!("Failed to create reader: {}", e)))?;
 
-        // Pre-create query parser for search fields
         let mut query_parser = QueryParser::for_index(
             &index,
             vec![
@@ -183,7 +205,66 @@ impl IndexManager {
                 schema.genre,
             ],
         );
-        // Be lenient with query parsing errors
+        query_parser.set_conjunction_by_default();
+
+        eprintln!(
+            "Opened existing search index at {:?} with {} docs",
+            index_path,
+            reader.searcher().num_docs()
+        );
+
+        Ok(Self {
+            index,
+            reader,
+            schema,
+            query_parser,
+        })
+    }
+
+    /// Create a fresh index
+    fn create_fresh(index_path: &Path) -> AppResult<Self> {
+        eprintln!("Creating fresh search index at {:?}", index_path);
+
+        // Delete existing index files if any
+        if index_path.exists() {
+            for entry in std::fs::read_dir(index_path)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_file() {
+                    std::fs::remove_file(&path)?;
+                }
+            }
+        }
+
+        let schema = SearchSchema::new();
+
+        let dir = MmapDirectory::open(index_path)
+            .map_err(|e| AppError::Search(format!("Failed to open index dir: {}", e)))?;
+
+        let index = Index::create(dir, schema.schema().clone(), IndexSettings::default())
+            .map_err(|e| AppError::Search(format!("Failed to create index: {}", e)))?;
+
+        // Register tokenizer
+        let ngram_tokenizer = TextAnalyzer::builder(NgramTokenizer::new(2, 8, false).unwrap())
+            .filter(LowerCaser)
+            .build();
+        index
+            .tokenizers()
+            .register(NGRAM_TOKENIZER, ngram_tokenizer);
+
+        let reader = index
+            .reader()
+            .map_err(|e| AppError::Search(format!("Failed to create reader: {}", e)))?;
+
+        let mut query_parser = QueryParser::for_index(
+            &index,
+            vec![
+                schema.name,
+                schema.artist_name,
+                schema.album_name,
+                schema.genre,
+            ],
+        );
         query_parser.set_conjunction_by_default();
 
         Ok(Self {

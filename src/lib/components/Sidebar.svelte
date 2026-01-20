@@ -195,7 +195,7 @@
   <div class="p-3 border-t border-base-300/50 space-y-2">
     {#if connection.status.connected}
       <div class="px-2 mb-2">
-        <p class="text-[10px] text-base-content/50 truncate">
+        <p class="text-[10px] text-base-content/50 truncate text-center">
           {connection.status.server_url}
         </p>
       </div>
@@ -207,11 +207,7 @@
       disabled={isSyncing || !connection.status.connected}
     >
       {#if isSyncing}
-        <div class="loading-dots">
-          <span></span>
-          <span></span>
-          <span></span>
-        </div>
+        <span class="loading loading-spinner loading-xs"></span>
         <span class="ml-1">Syncing...</span>
       {:else}
         <RefreshCw class="sidebar-item-icon" />
