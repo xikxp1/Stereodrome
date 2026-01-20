@@ -115,7 +115,9 @@
     <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
       <ListMusic class="w-4 h-4 text-base-content/60 flex-shrink-0" />
       <span class="text-sm font-medium truncate">Queue</span>
-      <span class="text-xs text-base-content/50 flex-shrink-0">{queue.items.length}</span>
+      <span class="text-xs text-base-content/50 flex-shrink-0"
+        >{queue.items.length}</span
+      >
     </div>
     <div class="flex items-center flex-shrink-0">
       <!-- Shuffle -->
@@ -232,7 +234,9 @@
     height: 26px;
     border-radius: 4px;
     color: oklch(50% 0.01 250);
-    transition: background-color 0.15s, color 0.15s;
+    transition:
+      background-color 0.15s,
+      color 0.15s;
   }
 
   .queue-header-btn:hover {

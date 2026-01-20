@@ -18,6 +18,8 @@ Phase 7: UI Polish & Optimization
 - [x] Queue panel with toggle button in TransportBar
 - [x] Single-click queue item navigates to song in SongList (if visible in current filter)
 - [x] "Scroll to current" button in QueuePanel header
+- [x] Cover art display in TransportBar (thumbnail with click-to-view full size)
+- [x] Cover art caching to local filesystem
 - Keyboard shortcuts
 
 ## Completed
@@ -116,6 +118,7 @@ Phase 7: UI Polish & Optimization
 - [x] Scrobbling to Subsonic server on play
 - [x] Queue panel
 - [x] TanStack Virtual for large lists
+- [x] Cover art display with caching and full-size viewer window
 
 ## Architecture
 
@@ -139,7 +142,8 @@ src-tauri/src/
 │   ├── queue.rs        # Queue management commands
 │   ├── playlist.rs     # Playlist CRUD commands
 │   ├── search.rs       # Tantivy full-text search
-│   └── nowplaying.rs   # Scrobbling, now playing emitter (events)
+│   ├── nowplaying.rs   # Scrobbling, now playing emitter (events)
+│   └── coverart.rs     # Cover art fetching with local cache
 ├── search/
 │   └── mod.rs          # IndexManager, SearchSchema, Tantivy integration
 └── db/

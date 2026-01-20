@@ -14,11 +14,17 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
         .clone()
         .ok_or(AppError::NotConnected)?;
 
-    // Get song metadata from database (join with artists and albums for names)
-    let (duration, title, artist, album): (f64, String, String, String) = {
+    // Get song metadata from database (join with artists and albums for names and cover art)
+    let (duration, title, artist, album, cover_art_id): (
+        f64,
+        String,
+        String,
+        String,
+        Option<String>,
+    ) = {
         let conn = state.db.lock().unwrap();
         conn.query_row(
-            "SELECT s.duration, s.title, a.name, al.name
+            "SELECT s.duration, s.title, a.name, al.name, al.cover_art_id
              FROM songs s
              LEFT JOIN artists a ON s.artist_id = a.id
              LEFT JOIN albums al ON s.album_id = al.id
@@ -30,6 +36,7 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         )
@@ -41,6 +48,7 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
         title,
         artist,
         album,
+        cover_art_id,
     };
 
     // Fetch audio bytes from server

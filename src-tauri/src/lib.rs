@@ -94,6 +94,8 @@ pub fn run() {
             commands::search_library,
             commands::scrobble_now_playing,
             commands::scrobble_submit,
+            commands::get_cover_art,
+            commands::get_song_cover_art,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

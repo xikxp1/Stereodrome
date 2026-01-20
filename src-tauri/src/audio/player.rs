@@ -15,6 +15,7 @@ pub struct SongMetadata {
     pub title: String,
     pub artist: String,
     pub album: String,
+    pub cover_art_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

@@ -82,3 +82,18 @@ export async function searchLibrary(
 ): Promise<SearchResults> {
   return invoke<SearchResults>("search_library", { query, limit });
 }
+
+// Cover art commands
+export async function getCoverArt(
+  coverArtId: string,
+  size?: number
+): Promise<string> {
+  return invoke<string>("get_cover_art", { coverArtId, size });
+}
+
+export async function getSongCoverArt(
+  songId: string,
+  size?: number
+): Promise<string | null> {
+  return invoke<string | null>("get_song_cover_art", { songId, size });
+}

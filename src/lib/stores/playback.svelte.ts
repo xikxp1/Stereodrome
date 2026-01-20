@@ -16,6 +16,7 @@ interface SongMetadata {
   title: string;
   artist: string;
   album: string;
+  cover_art_id: string | null;
 }
 
 interface PlaybackState {
@@ -38,6 +39,7 @@ class PlaybackStore {
     title: string;
     artist: string;
     album: string;
+    coverArtId: string | null;
   } | null>(null);
 
   // Event listeners
@@ -64,6 +66,7 @@ class PlaybackStore {
             title: state.song.title,
             artist: state.song.artist || "Unknown Artist",
             album: state.song.album || "",
+            coverArtId: state.song.cover_art_id || null,
           };
         }
       }

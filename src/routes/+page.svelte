@@ -15,7 +15,10 @@
     getAlbums,
     getSongs,
     seekPlayback,
+    getCoverArt,
   } from "$lib/api/commands";
+  import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+  import { emit } from "@tauri-apps/api/event";
   import type { Artist, Album, Song } from "$lib/types";
 
   // View state
@@ -36,6 +39,30 @@
   // Get current track from local playback state (no server latency)
   const currentTrack = $derived(playback.currentTrack);
   const volume = $derived(playback.volume * 100); // Convert to 0-100 for UI
+
+  // Cover art state
+  let coverArtUrl = $state<string | null>(null);
+  let lastCoverArtId = $state<string | null>(null);
+
+  // Fetch cover art thumbnail when track changes
+  $effect(() => {
+    const coverArtId = currentTrack?.coverArtId;
+    if (coverArtId && coverArtId !== lastCoverArtId) {
+      lastCoverArtId = coverArtId;
+      // Fetch thumbnail (64px for transport bar)
+      getCoverArt(coverArtId, 64)
+        .then((url) => {
+          coverArtUrl = url;
+        })
+        .catch((e) => {
+          console.error("Failed to fetch cover art thumbnail:", e);
+          coverArtUrl = null;
+        });
+    } else if (!coverArtId) {
+      coverArtUrl = null;
+      lastCoverArtId = null;
+    }
+  });
 
   // Loading states
   let isLoading = $state(false);
@@ -204,6 +231,43 @@
       scrollToSongId = songId;
     }
   }
+
+  async function handleCoverArtClick() {
+    if (!currentTrack?.coverArtId) return;
+
+    const coverArtData = {
+      id: currentTrack.coverArtId,
+      album: currentTrack.album,
+      artist: currentTrack.artist,
+    };
+
+    // Check if window already exists
+    const existingWindow = await WebviewWindow.getByLabel("cover-art-viewer");
+    if (existingWindow) {
+      // Update existing window with new cover art
+      await emit("cover-art-update", coverArtData);
+      await existingWindow.setTitle(
+        `${currentTrack.artist}${currentTrack.album ? ` — ${currentTrack.album}` : ""}`
+      );
+      await existingWindow.setFocus();
+      return;
+    }
+
+    // Create a new window for cover art viewing
+    const webview = new WebviewWindow("cover-art-viewer", {
+      url: `/cover-art?id=${encodeURIComponent(currentTrack.coverArtId)}&album=${encodeURIComponent(currentTrack.album)}&artist=${encodeURIComponent(currentTrack.artist)}`,
+      title: `${currentTrack.artist}${currentTrack.album ? ` — ${currentTrack.album}` : ""}`,
+      width: 500,
+      height: 550,
+      resizable: true,
+      center: true,
+      decorations: true,
+    });
+
+    webview.once("tauri://error", (e) => {
+      console.error("Failed to create cover art window:", e);
+    });
+  }
 </script>
 
 <div class="h-screen flex flex-col bg-base-200 overflow-hidden">
@@ -216,12 +280,14 @@
       duration={playback.duration}
       {volume}
       {queueOpen}
+      {coverArtUrl}
       onPlayPause={handlePlayPause}
       onPrevious={handlePrevious}
       onNext={handleNext}
       onSeek={handleSeek}
       onVolumeChange={handleVolumeChange}
       onQueueToggle={handleQueueToggle}
+      onCoverArtClick={handleCoverArtClick}
     />
 
     <!-- Main Content Area -->
