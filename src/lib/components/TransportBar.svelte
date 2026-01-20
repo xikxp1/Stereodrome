@@ -10,6 +10,7 @@
     SkipForward,
     Volume1,
     Volume2,
+    VolumeX,
     Loader2,
     ListMusic,
     Music,
@@ -17,6 +18,24 @@
     Repeat,
     Repeat1,
   } from "lucide-svelte";
+
+  let volumeDropdownOpen = $state(false);
+  let volumeAdjusting = $state(false);
+  let volumeAdjustTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  const isMac =
+    typeof navigator !== "undefined" &&
+    /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
+  const modKey = isMac ? "⌘" : "Ctrl+";
+
+  function handleVolumeChange(newVolume: number) {
+    onVolumeChange?.(newVolume);
+    volumeAdjusting = true;
+    if (volumeAdjustTimeout) clearTimeout(volumeAdjustTimeout);
+    volumeAdjustTimeout = setTimeout(() => {
+      volumeAdjusting = false;
+    }, 1000);
+  }
 
   interface Props {
     isPlaying?: boolean;
@@ -87,6 +106,7 @@
         class="flex h-7 w-7 items-center justify-center rounded-l bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
         onclick={() => onPrevious?.()}
         aria-label="Previous track"
+        title="Previous ({modKey}←)"
       >
         <SkipBack class="h-3 w-3" fill="currentColor" />
       </button>
@@ -94,6 +114,7 @@
         class="flex h-7 w-8 items-center justify-center border-x border-base-300 bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
         onclick={() => onPlayPause?.()}
         aria-label={isPlaying ? "Pause" : "Play"}
+        title="{isPlaying ? 'Pause' : 'Play'} (Space)"
       >
         {#if isPlaying}
           <Pause class="h-3.5 w-3.5" fill="currentColor" />
@@ -105,13 +126,72 @@
         class="flex h-7 w-7 items-center justify-center rounded-r bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
         onclick={() => onNext?.()}
         aria-label="Next track"
+        title="Next ({modKey}→)"
       >
         <SkipForward class="h-3 w-3" fill="currentColor" />
       </button>
     </div>
 
-    <!-- Volume -->
-    <div class="flex items-center gap-1.5">
+    <!-- Volume - Compact dropdown on small screens -->
+    <div class="relative flex items-center gap-1.5 lg:hidden">
+      <button
+        class="flex h-7 w-7 items-center justify-center rounded bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content"
+        onclick={() => (volumeDropdownOpen = !volumeDropdownOpen)}
+        aria-label="Volume"
+        title="Volume: {volume}% (M to mute, {modKey}↑/↓)"
+      >
+        {#if volume === 0}
+          <VolumeX class="h-4 w-4" />
+        {:else if volume < 50}
+          <Volume1 class="h-4 w-4" />
+        {:else}
+          <Volume2 class="h-4 w-4" />
+        {/if}
+      </button>
+      {#if volumeDropdownOpen}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="fixed inset-0 z-40"
+          onclick={() => (volumeDropdownOpen = false)}
+          onkeydown={(e) => e.key === "Escape" && (volumeDropdownOpen = false)}
+        ></div>
+        <div
+          class="absolute left-0 top-full z-50 mt-1 flex h-36 w-8 flex-col items-center rounded border border-base-300 bg-base-100 py-2 shadow-lg"
+        >
+          <span
+            class="mb-1 text-[10px] font-medium tabular-nums text-base-content/60"
+            >{volume}%</span
+          >
+          <Volume2 class="mb-1 h-3 w-3 shrink-0 text-base-content/40" />
+          <div class="relative h-20 w-3">
+            <div
+              class="absolute left-1/2 h-full w-0.5 -translate-x-1/2 rounded-full bg-base-300"
+            ></div>
+            <div
+              class="absolute bottom-0 left-1/2 w-0.5 -translate-x-1/2 rounded-full bg-base-content/30"
+              style="height: {volume}%"
+            ></div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={volume}
+              class="absolute left-1/2 h-full w-20 -translate-x-1/2 origin-center -rotate-90 cursor-pointer opacity-0"
+              oninput={(e) => handleVolumeChange(Number(e.currentTarget.value))}
+              aria-label="Volume"
+            />
+            <div
+              class="pointer-events-none absolute left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full border border-base-300 bg-base-100 shadow-sm"
+              style="top: {100 - volume}%"
+            ></div>
+          </div>
+          <Volume1 class="mt-1 h-3 w-3 shrink-0 text-base-content/40" />
+        </div>
+      {/if}
+    </div>
+
+    <!-- Volume - Full slider on large screens -->
+    <div class="relative hidden items-center gap-1.5 lg:flex">
       <Volume1 class="h-3 w-3 shrink-0 text-base-content/40" />
       <div class="relative flex h-3 w-16 items-center">
         <div class="absolute h-0.5 w-full rounded-full bg-base-300"></div>
@@ -125,7 +205,7 @@
           max="100"
           value={volume}
           class="absolute w-full cursor-pointer opacity-0"
-          oninput={(e) => onVolumeChange?.(Number(e.currentTarget.value))}
+          oninput={(e) => handleVolumeChange(Number(e.currentTarget.value))}
           aria-label="Volume"
         />
         <div
@@ -134,6 +214,12 @@
         ></div>
       </div>
       <Volume2 class="h-3 w-3 shrink-0 text-base-content/40" />
+      {#if volumeAdjusting}
+        <span
+          class="absolute -top-6 left-1/2 -translate-x-1/2 rounded bg-base-content px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-base-100 shadow"
+          >{volume}%</span
+        >
+      {/if}
     </div>
 
     <!-- Shuffle/Repeat -->
@@ -143,7 +229,7 @@
           ? 'text-primary'
           : 'text-base-content/40 hover:text-base-content/70'}"
         onclick={() => queue.toggleShuffle()}
-        title="Shuffle"
+        title="Shuffle (S)"
         aria-label="Toggle shuffle"
       >
         <Shuffle class="h-3.5 w-3.5" />
@@ -154,7 +240,7 @@
           ? 'text-primary'
           : 'text-base-content/40 hover:text-base-content/70'}"
         onclick={() => queue.cycleRepeatMode()}
-        title="Repeat: {queue.repeatMode}"
+        title="Repeat: {queue.repeatMode} (R)"
         aria-label="Cycle repeat mode"
       >
         {#if queue.repeatMode === "One"}
@@ -256,29 +342,34 @@
   </div>
 
   <!-- Right: Queue Toggle + Search -->
-  <div class="z-10 relative flex items-center gap-2">
+  <div class="z-10 flex items-center gap-2">
     <button
       class="flex h-7 w-7 items-center justify-center rounded transition-colors {queueOpen
         ? 'bg-primary text-primary-content'
         : 'bg-base-100 text-base-content/70 hover:bg-base-200 hover:text-base-content'}"
       onclick={() => onQueueToggle?.()}
       aria-label="Toggle queue"
-      title="Queue"
+      title="Queue (Q)"
     >
       <ListMusic class="h-4 w-4" />
     </button>
-    <input
-      bind:this={searchInputRef}
-      type="search"
-      placeholder="Search"
-      value={searchStore.query}
-      oninput={handleInput}
-      class="h-7 w-44 rounded-full border border-base-300 bg-base-100 px-3 pr-7 text-xs outline-none transition-all duration-150 placeholder:text-base-content/40 focus:w-52 focus:border-primary focus:ring-2 focus:ring-primary/20"
-    />
-    {#if searchStore.isSearching}
-      <span class="absolute right-2.5 top-1/2 -translate-y-1/2">
-        <Loader2 class="h-4 w-4 animate-spin text-primary" />
-      </span>
-    {/if}
+    <div class="relative">
+      <input
+        bind:this={searchInputRef}
+        type="search"
+        placeholder="Search (/)"
+        title="Search ({modKey}K or /)"
+        value={searchStore.query}
+        oninput={handleInput}
+        class="h-7 w-24 rounded-full border border-base-300 bg-base-100 px-3 text-xs outline-none transition-all duration-150 placeholder:text-base-content/40 focus:border-primary focus:ring-2 focus:ring-primary/20 sm:w-32 md:w-40 lg:w-44 lg:focus:w-52"
+      />
+      {#if searchStore.isSearching}
+        <span
+          class="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2"
+        >
+          <Loader2 class="h-4 w-4 animate-spin text-primary" />
+        </span>
+      {/if}
+    </div>
   </div>
 </div>
