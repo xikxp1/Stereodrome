@@ -20,6 +20,7 @@
     volume?: number;
     queueOpen?: boolean;
     coverArtUrl?: string | null;
+    searchInputRef?: HTMLInputElement | null;
     onPlayPause?: () => void;
     onPrevious?: () => void;
     onNext?: () => void;
@@ -37,6 +38,7 @@
     volume = 80,
     queueOpen = false,
     coverArtUrl = null,
+    searchInputRef = $bindable(null),
     onPlayPause,
     onPrevious,
     onNext,
@@ -224,6 +226,7 @@
       <ListMusic class="h-4 w-4" />
     </button>
     <input
+      bind:this={searchInputRef}
       type="search"
       placeholder="Search"
       value={searchStore.query}

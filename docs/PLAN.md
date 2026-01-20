@@ -4,9 +4,9 @@ Last updated: 2026-01-20
 
 ## Current Status
 
-**Phase:** Phase 6 Complete | **Version:** 0.1.0
+**Phase:** Phase 7 Complete | **Version:** 0.1.0
 
-Core player functionality implemented: audio playback with Rodio, queue management, playlist support, and search functionality. Users can play music, manage queues, create playlists, and search their library.
+Core player functionality with UI polish: audio playback, queue management, playlist support, search, cover art display, and keyboard shortcuts. All Phase 7 UI optimization tasks complete.
 
 ## Immediate Priorities
 
@@ -20,7 +20,7 @@ Phase 7: UI Polish & Optimization
 - [x] "Scroll to current" button in QueuePanel header
 - [x] Cover art display in TransportBar (thumbnail with click-to-view full size)
 - [x] Cover art caching to local filesystem
-- Keyboard shortcuts
+- [x] Keyboard shortcuts (Space play/pause, ↑/↓ navigate songs, Enter play, Shift+←/→ seek, Mod+↑/↓ volume, Mod+←/→ prev/next, M mute, S shuffle, R repeat, Q queue, / search)
 
 ## Completed
 
@@ -190,8 +190,8 @@ src/lib/
 
 ## Next Steps
 
-1. **Phase 7** - Keyboard shortcuts
-2. **Phase 8** - UI polish
+1. **Phase 7 Complete** - All UI polish tasks done
+2. **Phase 8** - Additional features (audio visualizer, crossfade, gapless playback)
 
 ---
 

@@ -25,6 +25,10 @@
   let activeView = $state("music");
   let queueOpen = $state(false);
 
+  // Keyboard shortcut state
+  let previousVolume = $state(1); // For mute/unmute toggle
+  let searchInputRef = $state<HTMLInputElement | null>(null);
+
   // Browser state
   let artists = $state<Artist[]>([]);
   let albums = $state<Album[]>([]);
@@ -268,12 +272,178 @@
       console.error("Failed to create cover art window:", e);
     });
   }
+
+  // Keyboard shortcuts handler
+  function handleKeydown(event: KeyboardEvent) {
+    const activeElement = document.activeElement;
+    const isInputFocused =
+      activeElement instanceof HTMLInputElement ||
+      activeElement instanceof HTMLTextAreaElement;
+
+    // Escape always works - blur input
+    if (event.key === "Escape" && isInputFocused) {
+      (activeElement as HTMLElement).blur();
+      event.preventDefault();
+      return;
+    }
+
+    // Skip other shortcuts when input is focused
+    if (isInputFocused) return;
+
+    const isMod = event.metaKey || event.ctrlKey;
+    const isShift = event.shiftKey;
+
+    switch (event.key) {
+      case " ": // Space - play/pause
+        event.preventDefault();
+        handlePlayPause();
+        break;
+
+      case "Enter":
+        // Play selected song
+        if (selectedSong) {
+          event.preventDefault();
+          handleSongPlay(selectedSong);
+        }
+        break;
+
+      case "ArrowLeft":
+        event.preventDefault();
+        if (isMod) {
+          // Mod+Left - previous track
+          handlePrevious();
+        } else if (isShift) {
+          // Shift+Left - seek back 10 seconds
+          const newPos = Math.max(0, playback.position - 10);
+          seekPlayback(newPos);
+        }
+        // Plain left arrow reserved for navigation (handled by components)
+        break;
+
+      case "ArrowRight":
+        event.preventDefault();
+        if (isMod) {
+          // Mod+Right - next track
+          handleNext();
+        } else if (isShift) {
+          // Shift+Right - seek forward 10 seconds
+          const newPos = Math.min(playback.duration, playback.position + 10);
+          seekPlayback(newPos);
+        }
+        // Plain right arrow reserved for navigation (handled by components)
+        break;
+
+      case "ArrowUp":
+        if (isMod) {
+          event.preventDefault();
+          // Mod+Up - volume up 5%
+          playback.setVolume(Math.min(1, playback.volume + 0.05));
+        } else {
+          // Plain up arrow - navigate to previous song in list
+          event.preventDefault();
+          navigateSongList(-1);
+        }
+        break;
+
+      case "ArrowDown":
+        if (isMod) {
+          event.preventDefault();
+          // Mod+Down - volume down 5%
+          playback.setVolume(Math.max(0, playback.volume - 0.05));
+        } else {
+          // Plain down arrow - navigate to next song in list
+          event.preventDefault();
+          navigateSongList(1);
+        }
+        break;
+
+      case "m":
+      case "M":
+        // Mute/unmute toggle
+        if (playback.volume > 0) {
+          previousVolume = playback.volume;
+          playback.setVolume(0);
+        } else {
+          playback.setVolume(previousVolume);
+        }
+        break;
+
+      case "s":
+      case "S":
+        if (!isMod) {
+          // S - toggle shuffle
+          queue.toggleShuffle();
+        }
+        break;
+
+      case "r":
+      case "R":
+        if (!isMod) {
+          // R - cycle repeat mode
+          queue.cycleRepeatMode();
+        }
+        break;
+
+      case "q":
+      case "Q":
+        if (!isMod) {
+          // Q - toggle queue panel
+          handleQueueToggle();
+        }
+        break;
+
+      case "/":
+        // Focus search
+        event.preventDefault();
+        searchInputRef?.focus();
+        break;
+
+      case "k":
+      case "K":
+        if (isMod) {
+          // Cmd/Ctrl+K - focus search
+          event.preventDefault();
+          searchInputRef?.focus();
+        }
+        break;
+    }
+  }
+
+  // Navigate up/down in the song list
+  function navigateSongList(direction: number) {
+    if (filteredSongs.length === 0) return;
+
+    const selected = selectedSong;
+    const currentIndex = selected
+      ? filteredSongs.findIndex((s) => s.id === selected.id)
+      : -1;
+
+    let newIndex: number;
+    if (currentIndex === -1) {
+      // No selection - select first or last based on direction
+      newIndex = direction > 0 ? 0 : filteredSongs.length - 1;
+    } else {
+      newIndex = currentIndex + direction;
+      // Clamp to valid range
+      if (newIndex < 0) newIndex = 0;
+      if (newIndex >= filteredSongs.length) newIndex = filteredSongs.length - 1;
+    }
+
+    const newSong = filteredSongs[newIndex];
+    if (newSong) {
+      selectedSong = newSong;
+      scrollToSongId = newSong.id;
+    }
+  }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="h-screen flex flex-col bg-base-200 overflow-hidden">
   {#if connection.status.connected}
     <!-- Transport Bar -->
     <TransportBar
+      bind:searchInputRef
       isPlaying={playback.isPlaying}
       {currentTrack}
       currentTime={playback.position}
