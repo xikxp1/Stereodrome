@@ -34,7 +34,11 @@ class SearchStore {
     if (q === this.activeQuery) return;
 
     if (!q) {
-      this.clearResults();
+      this.activeQuery = "";
+      this.results = null;
+      this.matchedSongIds = new Set();
+      this.matchedAlbumIds = new Set();
+      this.matchedArtistIds = new Set();
       return;
     }
 
@@ -59,31 +63,11 @@ class SearchStore {
       this.activeQuery = q;
     } catch (e) {
       console.error("Search failed:", e);
-      // On error, clear results
-      this.clearResults();
     } finally {
       this.isSearching = false;
     }
   }
 
-  private clearResults() {
-    this.activeQuery = "";
-    this.results = null;
-    this.matchedSongIds = new Set();
-    this.matchedAlbumIds = new Set();
-    this.matchedArtistIds = new Set();
-  }
-
-  clear() {
-    if (this.debounceTimeout) {
-      clearTimeout(this.debounceTimeout);
-    }
-    this.query = "";
-    this.isSearching = false;
-    this.clearResults();
-  }
-
-  hasQuery = $derived(this.query.trim().length > 0);
   hasActiveQuery = $derived(this.activeQuery.length > 0);
 }
 

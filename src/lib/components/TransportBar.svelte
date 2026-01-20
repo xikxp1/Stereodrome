@@ -32,10 +32,6 @@
     searchStore.setQuery(input.value);
   }
 
-  function handleClear() {
-    searchStore.clear();
-  }
-
   function formatTime(seconds: number): string {
     if (!seconds || isNaN(seconds)) return "0:00";
     const mins = Math.floor(seconds / 60);
@@ -233,21 +229,6 @@
           ></path>
         </svg>
       </span>
-    {:else if searchStore.hasQuery}
-      <button
-        class="absolute right-2 top-1/2 -translate-y-1/2 text-base-content/40 hover:text-base-content"
-        onclick={handleClear}
-        aria-label="Clear search"
-      >
-        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
-          <path
-            d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
-          />
-        </svg>
-      </button>
-    {/if}
-    {#if searchStore.hasActiveQuery}
-      <span class="text-[10px] text-primary font-medium"> Filtered </span>
     {/if}
   </div>
 </div>

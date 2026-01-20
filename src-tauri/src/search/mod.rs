@@ -293,6 +293,11 @@ impl IndexManager {
 
     /// Search the index and return matching hits
     pub fn search(&self, query_str: &str, limit: usize) -> AppResult<Vec<SearchHit>> {
+        // Reload reader to pick up any committed changes
+        self.reader
+            .reload()
+            .map_err(|e| AppError::Search(format!("Failed to reload reader: {}", e)))?;
+
         let searcher = self.reader.searcher();
 
         let query_str = query_str.trim().to_lowercase();
@@ -326,7 +331,7 @@ impl IndexManager {
         // Parse and execute query
         let query = self
             .query_parser
-            .parse_query(&query_text)
+            .parse_query(query_text)
             .map_err(|e| AppError::Search(format!("Query parse error: {}", e)))?;
 
         eprintln!("Search: parsed query = {:?}", query);
