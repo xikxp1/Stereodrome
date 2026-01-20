@@ -44,88 +44,113 @@
   }
 </script>
 
-<div class="browser-container h-44 flex select-none">
+<div class="h-44 flex select-none bg-base-100 border-b border-base-300">
   <!-- Genres Column -->
-  <div class="browser-column flex-1 min-w-0">
-    <div class="browser-header">Genres</div>
-    <div class="browser-list">
-      <button
-        class="browser-item w-full text-left"
-        class:selected={selectedGenre === null}
-        onclick={() => handleGenreClick(null)}
-      >
-        All ({allGenresCount} Genres)
-      </button>
-      {#each genres as genre (genre)}
+  <div
+    class="flex-1 min-w-0 flex flex-col border-r border-base-300 overflow-hidden"
+  >
+    <div
+      class="text-xs font-semibold text-center py-1.5 bg-base-200 border-b border-base-300 shrink-0"
+    >
+      Genres
+    </div>
+    <div class="flex-1 overflow-y-auto">
+      <div class="flex flex-col">
         <button
-          class="browser-item w-full text-left"
-          class:selected={selectedGenre === genre}
-          onclick={() => handleGenreClick(genre)}
+          class="px-2 py-0.5 text-xs text-left truncate {selectedGenre === null
+            ? 'bg-primary text-primary-content'
+            : 'hover:bg-base-200'}"
+          onclick={() => handleGenreClick(null)}
         >
-          {genre}
+          All ({allGenresCount} Genres)
         </button>
-      {/each}
-      {#if genres.length === 0 && !isLoading}
-        <div class="browser-item text-base-content/40 cursor-default">
-          No genres
-        </div>
-      {/if}
+        {#each genres as genre (genre)}
+          <button
+            class="px-2 py-0.5 text-xs text-left truncate {selectedGenre ===
+            genre
+              ? 'bg-primary text-primary-content'
+              : 'hover:bg-base-200'}"
+            onclick={() => handleGenreClick(genre)}
+          >
+            {genre}
+          </button>
+        {/each}
+        {#if genres.length === 0 && !isLoading}
+          <span class="px-2 py-0.5 text-xs opacity-40">No genres</span>
+        {/if}
+      </div>
     </div>
   </div>
 
   <!-- Artists Column -->
-  <div class="browser-column flex-1 min-w-0">
-    <div class="browser-header">Artists</div>
-    <div class="browser-list">
-      <button
-        class="browser-item w-full text-left"
-        class:selected={selectedArtist === null}
-        onclick={() => handleArtistClick(null)}
-      >
-        All ({allArtistsCount} Artists)
-      </button>
-      {#each artists as artist (artist.id)}
+  <div
+    class="flex-1 min-w-0 flex flex-col border-r border-base-300 overflow-hidden"
+  >
+    <div
+      class="text-xs font-semibold text-center py-1.5 bg-base-200 border-b border-base-300 shrink-0"
+    >
+      Artists
+    </div>
+    <div class="flex-1 overflow-y-auto">
+      <div class="flex flex-col">
         <button
-          class="browser-item w-full text-left"
-          class:selected={selectedArtist?.id === artist.id}
-          onclick={() => handleArtistClick(artist)}
+          class="px-2 py-0.5 text-xs text-left truncate {selectedArtist === null
+            ? 'bg-primary text-primary-content'
+            : 'hover:bg-base-200'}"
+          onclick={() => handleArtistClick(null)}
         >
-          {artist.name}
+          All ({allArtistsCount} Artists)
         </button>
-      {/each}
-      {#if artists.length === 0 && !isLoading}
-        <div class="browser-item text-base-content/40 cursor-default">
-          No artists
-        </div>
-      {/if}
+        {#each artists as artist (artist.id)}
+          <button
+            class="px-2 py-0.5 text-xs text-left truncate {selectedArtist?.id ===
+            artist.id
+              ? 'bg-primary text-primary-content'
+              : 'hover:bg-base-200'}"
+            onclick={() => handleArtistClick(artist)}
+          >
+            {artist.name}
+          </button>
+        {/each}
+        {#if artists.length === 0 && !isLoading}
+          <span class="px-2 py-0.5 text-xs opacity-40">No artists</span>
+        {/if}
+      </div>
     </div>
   </div>
 
   <!-- Albums Column -->
-  <div class="browser-column flex-1 min-w-0">
-    <div class="browser-header">Albums</div>
-    <div class="browser-list">
-      <button
-        class="browser-item w-full text-left"
-        class:selected={selectedAlbum === null}
-        onclick={() => handleAlbumClick(null)}
-      >
-        All ({allAlbumsCount} Albums)
-      </button>
-      {#each albums as album (album.id)}
+  <div class="flex-1 min-w-0 flex flex-col overflow-hidden">
+    <div
+      class="text-xs font-semibold text-center py-1.5 bg-base-200 border-b border-base-300 shrink-0"
+    >
+      Albums
+    </div>
+    <div class="flex-1 overflow-y-auto">
+      <div class="flex flex-col">
         <button
-          class="browser-item w-full text-left"
-          class:selected={selectedAlbum?.id === album.id}
-          onclick={() => handleAlbumClick(album)}
+          class="px-2 py-0.5 text-xs text-left truncate {selectedAlbum === null
+            ? 'bg-primary text-primary-content'
+            : 'hover:bg-base-200'}"
+          onclick={() => handleAlbumClick(null)}
         >
-          {album.name}
+          All ({allAlbumsCount} Albums)
         </button>
-      {/each}
-      {#if albums.length === 0 && !isLoading}
-        <div class="browser-item text-base-content/40 cursor-default">
-          No albums
-        </div>
-      {/if}
+        {#each albums as album (album.id)}
+          <button
+            class="px-2 py-0.5 text-xs text-left truncate {selectedAlbum?.id ===
+            album.id
+              ? 'bg-primary text-primary-content'
+              : 'hover:bg-base-200'}"
+            onclick={() => handleAlbumClick(album)}
+          >
+            {album.name}
+          </button>
+        {/each}
+        {#if albums.length === 0 && !isLoading}
+          <span class="px-2 py-0.5 text-xs opacity-40">No albums</span>
+        {/if}
+      </div>
     </div>
   </div>
 </div>

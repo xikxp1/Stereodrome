@@ -81,9 +81,12 @@
     const album = selectedAlbum;
     const searchSongIds = searchStore.matchedSongIds;
 
-    // Single pass through songs
+    // Single pass through songs (these are temporary computation sets, not reactive state)
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const matchedGenres = new Set<string>();
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const matchedArtistIds = new Set<string>();
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const matchedAlbumIds = new Set<string>();
     const matchedSongs: Song[] = [];
 

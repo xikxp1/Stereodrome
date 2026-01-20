@@ -14,6 +14,7 @@ Phase 7: UI Polish & Optimization
 
 - [x] TanStack Virtual for large song lists
 - [x] Now playing from local backend (combined playback-state event, no server latency)
+- [x] Refactored components to use DaisyUI (menu, card, input, btn, badge, alert)
 - Queue panel
 - Keyboard shortcuts
 

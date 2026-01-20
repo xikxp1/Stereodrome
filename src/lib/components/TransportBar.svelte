@@ -187,11 +187,11 @@
       placeholder="Search"
       value={searchStore.query}
       oninput={handleInput}
-      class="h-6 w-40 rounded-full border border-base-300 bg-base-100 px-2.5 pr-6 text-[11px] outline-none transition-all duration-150 placeholder:text-base-content/40 focus:w-48 focus:border-primary focus:ring-2 focus:ring-primary/20"
+      class="h-7 w-44 rounded-full border border-base-300 bg-base-100 px-3 pr-7 text-xs outline-none transition-all duration-150 placeholder:text-base-content/40 focus:w-52 focus:border-primary focus:ring-2 focus:ring-primary/20"
     />
     {#if searchStore.isSearching}
-      <span class="absolute right-2 top-1/2 -translate-y-1/2">
-        <Loader2 class="h-3.5 w-3.5 animate-spin text-primary" />
+      <span class="absolute right-2.5 top-1/2 -translate-y-1/2">
+        <Loader2 class="h-4 w-4 animate-spin text-primary" />
       </span>
     {/if}
   </div>

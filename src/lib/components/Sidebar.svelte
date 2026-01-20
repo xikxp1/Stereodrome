@@ -80,138 +80,138 @@
   }
 </script>
 
-<div class="sidebar flex flex-col h-full select-none overflow-hidden">
-  <!-- Library Section -->
-  <div class="flex-1 overflow-y-auto overflow-x-hidden py-1">
-    <div class="sidebar-section-title">Library</div>
-
-    <button
-      class="sidebar-item w-full"
-      class:active={activeView === "music"}
-      onclick={() => selectView("music")}
-    >
-      <Music class="sidebar-item-icon" />
-      <span>Music</span>
-    </button>
-
-    <button
-      class="sidebar-item w-full"
-      class:active={activeView === "artists"}
-      onclick={() => selectView("artists")}
-    >
-      <User class="sidebar-item-icon" />
-      <span>Artists</span>
-    </button>
-
-    <button
-      class="sidebar-item w-full"
-      class:active={activeView === "albums"}
-      onclick={() => selectView("albums")}
-    >
-      <Disc class="sidebar-item-icon" />
-      <span>Albums</span>
-    </button>
-
-    <button
-      class="sidebar-item w-full"
-      class:active={activeView === "songs"}
-      onclick={() => selectView("songs")}
-    >
-      <List class="sidebar-item-icon" />
-      <span>Songs</span>
-    </button>
-
-    <button
-      class="sidebar-item w-full"
-      class:active={activeView === "genres"}
-      onclick={() => selectView("genres")}
-    >
-      <Globe class="sidebar-item-icon" />
-      <span>Genres</span>
-    </button>
-
-    <!-- Playlists Section -->
-    <div class="sidebar-section-title mt-4">Playlists</div>
-
-    {#if showCreatePlaylist}
-      <div class="px-2 py-1">
-        <input
-          type="text"
-          class="w-full px-2 py-1 text-xs bg-base-200 border border-base-300 rounded focus:outline-none focus:border-primary"
-          placeholder="Playlist name..."
-          bind:value={newPlaylistName}
-          onkeydown={(e) => {
-            if (e.key === "Enter") handleCreatePlaylist();
-            if (e.key === "Escape") {
-              showCreatePlaylist = false;
-              newPlaylistName = "";
-            }
-          }}
-        />
-        <div class="flex gap-1 mt-1">
-          <button
-            class="flex-1 px-2 py-0.5 text-[10px] bg-primary text-primary-content rounded hover:bg-primary/90"
-            onclick={handleCreatePlaylist}
-          >
-            Create
-          </button>
-          <button
-            class="flex-1 px-2 py-0.5 text-[10px] bg-base-300 rounded hover:bg-base-300/80"
-            onclick={() => {
-              showCreatePlaylist = false;
-              newPlaylistName = "";
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    {:else}
-      <button
-        class="sidebar-item w-full"
-        onclick={() => (showCreatePlaylist = true)}
-      >
-        <Plus class="sidebar-item-icon" />
-        <span>New Playlist</span>
-      </button>
-    {/if}
-
-    {#each playlistStore.playlists as playlist (playlist.id)}
-      <button
-        class="sidebar-item w-full"
-        class:active={selectedPlaylistId === playlist.id}
-        onclick={() => selectPlaylist(playlist)}
-      >
-        <ListMusic class="sidebar-item-icon" />
-        <span class="truncate">{playlist.name}</span>
-        <span class="text-[10px] text-base-content/40 ml-auto"
-          >{playlist.song_count}</span
+<div
+  class="flex flex-col h-full select-none overflow-hidden bg-base-200 border-r border-base-300"
+>
+  <div class="flex-1 overflow-y-auto overflow-x-hidden">
+    <ul class="menu menu-sm p-2">
+      <li class="menu-title">Library</li>
+      <li>
+        <button
+          class:active={activeView === "music"}
+          onclick={() => selectView("music")}
         >
-      </button>
-    {/each}
+          <Music class="size-4" />
+          Music
+        </button>
+      </li>
+      <li>
+        <button
+          class:active={activeView === "artists"}
+          onclick={() => selectView("artists")}
+        >
+          <User class="size-4" />
+          Artists
+        </button>
+      </li>
+      <li>
+        <button
+          class:active={activeView === "albums"}
+          onclick={() => selectView("albums")}
+        >
+          <Disc class="size-4" />
+          Albums
+        </button>
+      </li>
+      <li>
+        <button
+          class:active={activeView === "songs"}
+          onclick={() => selectView("songs")}
+        >
+          <List class="size-4" />
+          Songs
+        </button>
+      </li>
+      <li>
+        <button
+          class:active={activeView === "genres"}
+          onclick={() => selectView("genres")}
+        >
+          <Globe class="size-4" />
+          Genres
+        </button>
+      </li>
+
+      <li class="menu-title mt-4">Playlists</li>
+
+      {#if showCreatePlaylist}
+        <li class="px-2 py-1">
+          <div class="flex flex-col gap-1 p-0 hover:bg-transparent">
+            <input
+              type="text"
+              class="w-full px-2 py-1 text-xs bg-base-100 border border-base-300 rounded focus:outline-none focus:border-primary"
+              placeholder="Playlist name..."
+              bind:value={newPlaylistName}
+              onkeydown={(e) => {
+                if (e.key === "Enter") handleCreatePlaylist();
+                if (e.key === "Escape") {
+                  showCreatePlaylist = false;
+                  newPlaylistName = "";
+                }
+              }}
+            />
+            <div class="flex gap-1">
+              <button
+                class="flex-1 px-2 py-0.5 text-[11px] bg-primary text-primary-content rounded hover:opacity-90"
+                onclick={handleCreatePlaylist}
+              >
+                Create
+              </button>
+              <button
+                class="flex-1 px-2 py-0.5 text-[11px] rounded hover:bg-base-300"
+                onclick={() => {
+                  showCreatePlaylist = false;
+                  newPlaylistName = "";
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </li>
+      {:else}
+        <li>
+          <button onclick={() => (showCreatePlaylist = true)}>
+            <Plus class="size-4" />
+            New Playlist
+          </button>
+        </li>
+      {/if}
+
+      {#each playlistStore.playlists as playlist (playlist.id)}
+        <li>
+          <button
+            class:active={selectedPlaylistId === playlist.id}
+            onclick={() => selectPlaylist(playlist)}
+          >
+            <ListMusic class="size-4" />
+            <span class="truncate flex-1">{playlist.name}</span>
+            <span class="badge badge-ghost badge-xs">{playlist.song_count}</span
+            >
+          </button>
+        </li>
+      {/each}
+    </ul>
   </div>
 
-  <!-- Bottom Actions -->
-  <div class="p-3 border-t border-base-300/50 space-y-2">
+  <div class="p-2 border-t border-base-300 space-y-1">
     {#if connection.status.connected}
-      <div class="px-2 mb-2">
-        <p class="text-[10px] text-base-content/50 truncate text-center">
-          {connection.status.server_url}
-        </p>
-      </div>
+      <p class="text-[10px] opacity-50 truncate text-center mb-1">
+        {connection.status.server_url}
+      </p>
     {/if}
 
     <button
-      class="sidebar-item w-full justify-center !mx-0 !rounded bg-base-300/50 hover:!bg-base-300"
+      class="flex items-center justify-center gap-1.5 w-full px-2 py-1 text-xs rounded hover:bg-base-300 disabled:opacity-50"
       onclick={handleSync}
       disabled={isSyncing || !connection.status.connected}
     >
       {#if isSyncing}
         <span class="loading loading-spinner loading-xs"></span>
-        <span class="ml-1">Syncing...</span>
+        Syncing...
       {:else}
-        <RefreshCw class="sidebar-item-icon" />
-        <span>Sync Library</span>
+        <RefreshCw class="size-3" />
+        Sync Library
       {/if}
     </button>
 
@@ -220,11 +220,11 @@
     {/if}
 
     <button
-      class="sidebar-item w-full justify-center !mx-0 !rounded text-error/80 hover:!bg-error/10"
+      class="flex items-center justify-center gap-1.5 w-full px-2 py-1 text-xs text-error/70 rounded hover:bg-error/10"
       onclick={() => connection.disconnect()}
     >
-      <LogOut class="sidebar-item-icon" />
-      <span>Disconnect</span>
+      <LogOut class="size-3" />
+      Disconnect
     </button>
   </div>
 </div>

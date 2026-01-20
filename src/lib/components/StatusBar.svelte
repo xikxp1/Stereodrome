@@ -46,6 +46,8 @@
   });
 </script>
 
-<div class="status-bar h-6 flex items-center justify-center px-4 select-none">
-  <span class="status-bar-text">{statusText()}</span>
+<div
+  class="h-6 flex items-center justify-center px-4 select-none bg-base-200 border-t border-base-300"
+>
+  <span class="text-xs opacity-60">{statusText()}</span>
 </div>
