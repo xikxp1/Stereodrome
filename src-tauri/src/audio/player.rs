@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, MutexExt};
 
 #[derive(Debug, Clone, serde::Serialize, Default)]
 pub struct SongMetadata {
@@ -76,12 +76,12 @@ impl SharedState {
 
     fn get_position(&self) -> f64 {
         if !self.is_playing.load(Ordering::SeqCst) {
-            return *self.paused_position.lock().unwrap();
+            return *self.paused_position.lock_recover();
         }
 
-        let start = self.playback_start.lock().unwrap();
-        let paused = *self.paused_position.lock().unwrap();
-        let dur = *self.duration.lock().unwrap();
+        let start = self.playback_start.lock_recover();
+        let paused = *self.paused_position.lock_recover();
+        let dur = *self.duration.lock_recover();
 
         if let Some(instant) = *start {
             (instant.elapsed().as_secs_f64() + paused).min(dur)
@@ -94,19 +94,19 @@ impl SharedState {
         PlaybackState {
             is_playing: self.is_playing.load(Ordering::SeqCst),
             position: self.get_position(),
-            duration: *self.duration.lock().unwrap(),
-            song: self.current_song.lock().unwrap().clone(),
+            duration: *self.duration.lock_recover(),
+            song: self.current_song.lock_recover().clone(),
         }
     }
 
     fn get_status(&self) -> PlaybackStatus {
-        let song = self.current_song.lock().unwrap();
+        let song = self.current_song.lock_recover();
         PlaybackStatus {
             is_playing: self.is_playing.load(Ordering::SeqCst),
             current_song_id: song.as_ref().map(|s| s.id.clone()),
             position: self.get_position(),
-            duration: *self.duration.lock().unwrap(),
-            volume: *self.volume.lock().unwrap(),
+            duration: *self.duration.lock_recover(),
+            volume: *self.volume.lock_recover(),
         }
     }
 }
@@ -173,14 +173,14 @@ impl AudioPlayer {
 
     pub fn set_volume(&self, volume: f32) -> AppResult<()> {
         let clamped = volume.clamp(0.0, 1.0);
-        *self.shared_state.volume.lock().unwrap() = clamped;
+        *self.shared_state.volume.lock_recover() = clamped;
         self.command_tx
             .send(AudioCommand::SetVolume(clamped))
             .map_err(|e| AppError::Audio(format!("Failed to send volume command: {}", e)))
     }
 
     pub fn seek(&self, position_secs: f64) -> AppResult<()> {
-        let duration = *self.shared_state.duration.lock().unwrap();
+        let duration = *self.shared_state.duration.lock_recover();
         let clamped = position_secs.clamp(0.0, duration);
         self.command_tx
             .send(AudioCommand::Seek(clamped))
@@ -189,7 +189,7 @@ impl AudioPlayer {
 
     #[allow(dead_code)]
     pub fn get_volume(&self) -> f32 {
-        *self.shared_state.volume.lock().unwrap()
+        *self.shared_state.volume.lock_recover()
     }
 
     #[allow(dead_code)]
@@ -199,7 +199,7 @@ impl AudioPlayer {
 
     #[allow(dead_code)]
     pub fn get_duration(&self) -> f64 {
-        *self.shared_state.duration.lock().unwrap()
+        *self.shared_state.duration.lock_recover()
     }
 
     pub fn get_status(&self) -> PlaybackStatus {
@@ -296,17 +296,17 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                     {
                         Ok(source) => {
                             let sink = Sink::connect_new(stream.mixer());
-                            let volume = *shared_state.volume.lock().unwrap();
+                            let volume = *shared_state.volume.lock_recover();
                             sink.set_volume(volume);
                             sink.append(source);
 
                             // Update shared state
-                            *shared_state.current_audio_data.lock().unwrap() =
+                            *shared_state.current_audio_data.lock_recover() =
                                 Some((audio_data, byte_len));
-                            *shared_state.current_song.lock().unwrap() = Some(metadata);
-                            *shared_state.playback_start.lock().unwrap() = Some(Instant::now());
-                            *shared_state.paused_position.lock().unwrap() = 0.0;
-                            *shared_state.duration.lock().unwrap() = duration_secs;
+                            *shared_state.current_song.lock_recover() = Some(metadata);
+                            *shared_state.playback_start.lock_recover() = Some(Instant::now());
+                            *shared_state.paused_position.lock_recover() = 0.0;
+                            *shared_state.duration.lock_recover() = duration_secs;
                             shared_state.is_playing.store(true, Ordering::SeqCst);
 
                             current_sink = Some(sink);
@@ -320,11 +320,11 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                     if let Some(ref sink) = current_sink {
                         if !sink.is_paused() {
                             // Save current position
-                            let start = shared_state.playback_start.lock().unwrap();
-                            let paused = *shared_state.paused_position.lock().unwrap();
+                            let start = shared_state.playback_start.lock_recover();
+                            let paused = *shared_state.paused_position.lock_recover();
                             if let Some(instant) = *start {
                                 let elapsed = instant.elapsed().as_secs_f64() + paused;
-                                *shared_state.paused_position.lock().unwrap() = elapsed;
+                                *shared_state.paused_position.lock_recover() = elapsed;
                             }
                             drop(start);
 
@@ -336,7 +336,7 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                 AudioCommand::Resume => {
                     if let Some(ref sink) = current_sink {
                         if sink.is_paused() {
-                            *shared_state.playback_start.lock().unwrap() = Some(Instant::now());
+                            *shared_state.playback_start.lock_recover() = Some(Instant::now());
                             sink.play();
                             shared_state.is_playing.store(true, Ordering::SeqCst);
                         }
@@ -347,11 +347,11 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                         sink.stop();
                     }
                     shared_state.is_playing.store(false, Ordering::SeqCst);
-                    *shared_state.current_song.lock().unwrap() = None;
-                    *shared_state.current_audio_data.lock().unwrap() = None;
-                    *shared_state.playback_start.lock().unwrap() = None;
-                    *shared_state.paused_position.lock().unwrap() = 0.0;
-                    *shared_state.duration.lock().unwrap() = 0.0;
+                    *shared_state.current_song.lock_recover() = None;
+                    *shared_state.current_audio_data.lock_recover() = None;
+                    *shared_state.playback_start.lock_recover() = None;
+                    *shared_state.paused_position.lock_recover() = 0.0;
+                    *shared_state.duration.lock_recover() = 0.0;
                 }
                 AudioCommand::SetVolume(volume) => {
                     if let Some(ref sink) = current_sink {
@@ -365,8 +365,8 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                             eprintln!("Seek failed: {:?}", e);
                         } else {
                             // Update position tracking
-                            *shared_state.paused_position.lock().unwrap() = position_secs;
-                            *shared_state.playback_start.lock().unwrap() = Some(Instant::now());
+                            *shared_state.paused_position.lock_recover() = position_secs;
+                            *shared_state.playback_start.lock_recover() = Some(Instant::now());
                         }
                     }
                 }

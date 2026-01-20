@@ -32,6 +32,7 @@ Phase 7: UI Polish & Optimization
 ### Phase 1: Foundation & Authentication
 
 - [x] Rust error handling (thiserror)
+- [x] Mutex poisoning recovery (MutexExt trait with lock_recover)
 - [x] App state management (Mutex-wrapped client, db)
 - [x] SQLite database schema and init
 - [x] Database migrations for schema changes
@@ -127,7 +128,7 @@ Phase 7: UI Polish & Optimization
 ```
 src-tauri/src/
 ├── lib.rs              # Tauri setup, state, command registration
-├── error.rs            # AppError enum with thiserror
+├── error.rs            # AppError enum with thiserror, MutexExt trait
 ├── state.rs            # AppState (client, db, audio_player, queue, search_index)
 ├── audio/
 │   ├── mod.rs          # Module exports

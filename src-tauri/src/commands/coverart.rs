@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager, State};
 
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, MutexExt};
 use crate::state::AppState;
 
 /// Get the cover art cache directory path
@@ -81,7 +81,7 @@ pub async fn get_song_cover_art(
 ) -> AppResult<Option<String>> {
     // Look up the album's cover_art_id for this song
     let cover_art_id: Option<String> = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         conn.query_row(
             "SELECT al.cover_art_id FROM songs s
              JOIN albums al ON s.album_id = al.id

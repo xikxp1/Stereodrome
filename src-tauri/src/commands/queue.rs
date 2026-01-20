@@ -3,7 +3,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::audio::queue::{PlayQueue, QueueItem, RepeatMode};
 use crate::db::queue::{save_queue_items, save_queue_state};
-use crate::error::AppResult;
+use crate::error::{AppResult, MutexExt};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize)]
@@ -27,7 +27,7 @@ impl QueueState {
 
 /// Save queue to database and emit queue-changed event
 fn persist_and_emit(state: &AppState, app_handle: &AppHandle) {
-    let queue = state.queue.lock().unwrap();
+    let queue = state.queue.lock_recover();
     let queue_state = QueueState::from_queue(&queue);
 
     // Save to database
@@ -47,7 +47,7 @@ fn persist_and_emit(state: &AppState, app_handle: &AppHandle) {
 
 #[tauri::command]
 pub fn get_queue(state: State<'_, AppState>) -> QueueState {
-    let queue = state.queue.lock().unwrap();
+    let queue = state.queue.lock_recover();
     QueueState::from_queue(&queue)
 }
 
@@ -58,7 +58,7 @@ pub fn add_to_queue(
     item: QueueItem,
 ) -> AppResult<()> {
     {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue.add(item);
     }
     persist_and_emit(&state, &app_handle);
@@ -72,7 +72,7 @@ pub fn add_songs_to_queue(
     items: Vec<QueueItem>,
 ) -> AppResult<()> {
     {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue.add_many(items);
     }
     persist_and_emit(&state, &app_handle);
@@ -86,7 +86,7 @@ pub fn insert_next_in_queue(
     item: QueueItem,
 ) -> AppResult<()> {
     {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue.insert_next(item);
     }
     persist_and_emit(&state, &app_handle);
@@ -100,7 +100,7 @@ pub fn remove_from_queue(
     index: usize,
 ) -> AppResult<Option<QueueItem>> {
     let result = {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue.remove(index)
     };
     persist_and_emit(&state, &app_handle);
@@ -110,7 +110,7 @@ pub fn remove_from_queue(
 #[tauri::command]
 pub fn clear_queue(state: State<'_, AppState>, app_handle: AppHandle) -> AppResult<()> {
     {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue.clear();
     }
     persist_and_emit(&state, &app_handle);
@@ -125,7 +125,7 @@ pub fn move_queue_item(
     to: usize,
 ) -> AppResult<()> {
     {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue.move_item(from, to);
     }
     persist_and_emit(&state, &app_handle);
@@ -139,7 +139,7 @@ pub async fn play_queue_item(
     index: usize,
 ) -> AppResult<()> {
     let song_id = {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue.set_current(index).map(|item| item.song_id.clone())
     };
 
@@ -160,7 +160,7 @@ pub async fn play_next(
     force: Option<bool>,
 ) -> AppResult<bool> {
     let next_song = {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue
             .next(force.unwrap_or(false))
             .map(|item| item.song_id.clone())
@@ -181,7 +181,7 @@ pub async fn play_next(
 #[tauri::command]
 pub async fn play_previous(state: State<'_, AppState>, app_handle: AppHandle) -> AppResult<bool> {
     let prev_song = {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue.previous().map(|item| item.song_id.clone())
     };
 
@@ -199,7 +199,7 @@ pub async fn play_previous(state: State<'_, AppState>, app_handle: AppHandle) ->
 #[tauri::command]
 pub fn toggle_shuffle(state: State<'_, AppState>, app_handle: AppHandle) -> bool {
     let shuffle = {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue.toggle_shuffle();
         queue.is_shuffle()
     };
@@ -214,7 +214,7 @@ pub fn set_repeat_mode(
     mode: RepeatMode,
 ) -> AppResult<()> {
     {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue.set_repeat_mode(mode);
     }
     persist_and_emit(&state, &app_handle);
@@ -224,7 +224,7 @@ pub fn set_repeat_mode(
 #[tauri::command]
 pub fn cycle_repeat_mode(state: State<'_, AppState>, app_handle: AppHandle) -> RepeatMode {
     let mode = {
-        let mut queue = state.queue.lock().unwrap();
+        let mut queue = state.queue.lock_recover();
         queue.cycle_repeat_mode()
     };
     persist_and_emit(&state, &app_handle);

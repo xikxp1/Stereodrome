@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::error::AppResult;
+use crate::error::{AppResult, MutexExt};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +38,7 @@ pub struct PlaylistSong {
 
 #[tauri::command]
 pub fn get_playlists(state: State<'_, AppState>) -> AppResult<Vec<Playlist>> {
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
     let mut stmt = db.prepare(
         "SELECT id, name, song_count, duration, created_at, changed_at FROM playlists ORDER BY name",
     )?;
@@ -64,7 +64,7 @@ pub fn get_playlist_songs(
     state: State<'_, AppState>,
     playlist_id: String,
 ) -> AppResult<Vec<PlaylistSong>> {
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
     let mut stmt = db.prepare(
         r#"
         SELECT 
@@ -116,7 +116,7 @@ pub fn create_playlist(
     let now = Utc::now().to_rfc3339();
     let id = Uuid::new_v4().to_string();
 
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
 
     // Create the playlist
     db.execute(
@@ -163,7 +163,7 @@ pub fn update_playlist(
     name: String,
 ) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
 
     db.execute(
         "UPDATE playlists SET name = ?1, changed_at = ?2 WHERE id = ?3",
@@ -175,7 +175,7 @@ pub fn update_playlist(
 
 #[tauri::command]
 pub fn delete_playlist(state: State<'_, AppState>, playlist_id: String) -> AppResult<()> {
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
 
     // Delete playlist songs first
     db.execute(
@@ -196,7 +196,7 @@ pub fn add_songs_to_playlist(
     song_ids: Vec<String>,
 ) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
 
     // Get current max position
     let max_position: i32 = db
@@ -246,7 +246,7 @@ pub fn remove_song_from_playlist(
     song_id: String,
 ) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
 
     db.execute(
         "DELETE FROM playlist_songs WHERE playlist_id = ?1 AND song_id = ?2",
@@ -275,7 +275,7 @@ pub fn reorder_playlist(
     song_ids: Vec<String>,
 ) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
 
     // Update positions for each song
     for (position, song_id) in song_ids.iter().enumerate() {

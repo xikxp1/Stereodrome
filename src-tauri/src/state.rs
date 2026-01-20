@@ -7,7 +7,7 @@ use submarine::Client;
 
 use crate::audio::{AudioPlayer, PlayQueue};
 use crate::db::queue::{load_queue_items, load_queue_state};
-use crate::error::AppResult;
+use crate::error::{AppResult, MutexExt};
 use crate::search::IndexManager;
 
 #[derive(Clone)]
@@ -70,10 +70,10 @@ impl AppState {
     }
 
     pub fn get_client(&self) -> Option<Client> {
-        self.client.lock().unwrap().clone()
+        self.client.lock_recover().clone()
     }
 
     pub fn is_connected(&self) -> bool {
-        self.client.lock().unwrap().is_some()
+        self.client.lock_recover().is_some()
     }
 }

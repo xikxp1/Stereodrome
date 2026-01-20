@@ -7,6 +7,7 @@ mod state;
 
 use std::sync::Arc;
 
+use error::MutexExt;
 use state::AppState;
 use tauri::Manager;
 
@@ -22,13 +23,13 @@ pub fn run() {
 
             // Initialize database schema
             {
-                let conn = app_state.db.lock().unwrap();
+                let conn = app_state.db.lock_recover();
                 db::init_db(&conn)?;
             }
 
             // Start position emitter for audio playback
             {
-                let audio_player = app_state.audio_player.lock().unwrap();
+                let audio_player = app_state.audio_player.lock_recover();
                 audio_player.start_position_emitter(app.handle().clone());
             }
 

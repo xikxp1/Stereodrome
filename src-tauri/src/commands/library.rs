@@ -4,7 +4,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, MutexExt};
 use crate::search::{AlbumIndexData, ArtistIndexData, IndexManager, SongIndexData};
 use crate::state::AppState;
 
@@ -96,7 +96,7 @@ struct SongData {
 #[tauri::command]
 pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
     let client = {
-        let lock = state.client.lock().unwrap();
+        let lock = state.client.lock_recover();
         lock.clone().ok_or(AppError::NotConnected)?
     };
 
@@ -169,7 +169,7 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
 
     // Now write all data to DB (short lock duration, no await)
     let now = Utc::now().to_rfc3339();
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
 
     for artist in &artists_data {
         db.execute(
@@ -281,7 +281,7 @@ fn rebuild_search_index(
     );
 
     // Get or create the search index
-    let mut search_index_guard = state.search_index.lock().unwrap();
+    let mut search_index_guard = state.search_index.lock_recover();
 
     // If no index exists yet, create one
     if search_index_guard.is_none() {
@@ -317,7 +317,7 @@ fn rebuild_search_index(
 
 #[tauri::command]
 pub async fn get_artists(state: State<'_, AppState>) -> AppResult<Vec<Artist>> {
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
     let mut stmt = db.prepare(
         "SELECT id, name, album_count, cover_art_id, synced_at FROM artists ORDER BY name",
     )?;
@@ -342,7 +342,7 @@ pub async fn get_albums(
     state: State<'_, AppState>,
     artist_id: Option<String>,
 ) -> AppResult<Vec<Album>> {
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
 
     let albums: Vec<Album> = if let Some(aid) = artist_id {
         let mut stmt = db.prepare(
@@ -392,7 +392,7 @@ pub async fn get_songs(
     state: State<'_, AppState>,
     album_id: Option<String>,
 ) -> AppResult<Vec<Song>> {
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_recover();
 
     let base_query = "SELECT s.id, s.album_id, s.artist_id, s.title, s.track_number, s.disc_number,
                       s.duration, s.bit_rate, s.size, s.suffix, s.content_type, s.path,

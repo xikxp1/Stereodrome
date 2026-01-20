@@ -3,7 +3,7 @@ use submarine::{auth::AuthBuilder, Client};
 use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, MutexExt};
 use crate::state::{AppState, ServerConfig};
 
 const STORE_FILE: &str = "settings.json";
@@ -46,12 +46,12 @@ pub async fn connect_server(
 
     // Store client and config in memory
     {
-        let mut client_lock = state.client.lock().unwrap();
+        let mut client_lock = state.client.lock_recover();
         *client_lock = Some(client);
     }
 
     {
-        let mut config_lock = state.server_config.lock().unwrap();
+        let mut config_lock = state.server_config.lock_recover();
         *config_lock = Some(ServerConfig {
             url: params.url.clone(),
             username: params.username.clone(),
@@ -78,12 +78,12 @@ pub async fn connect_server(
 #[tauri::command]
 pub async fn disconnect_server(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
     {
-        let mut client_lock = state.client.lock().unwrap();
+        let mut client_lock = state.client.lock_recover();
         *client_lock = None;
     }
 
     {
-        let mut config_lock = state.server_config.lock().unwrap();
+        let mut config_lock = state.server_config.lock_recover();
         *config_lock = None;
     }
 
@@ -100,7 +100,7 @@ pub async fn disconnect_server(app: AppHandle, state: State<'_, AppState>) -> Ap
 
 #[tauri::command]
 pub async fn get_connection_status(state: State<'_, AppState>) -> AppResult<ConnectionStatus> {
-    let config = state.server_config.lock().unwrap();
+    let config = state.server_config.lock_recover();
 
     match config.as_ref() {
         Some(cfg) => Ok(ConnectionStatus {
@@ -126,7 +126,7 @@ pub async fn restore_session(
 ) -> AppResult<ConnectionStatus> {
     // Check if already connected
     if state.is_connected() {
-        let config = state.server_config.lock().unwrap();
+        let config = state.server_config.lock_recover();
         if let Some(cfg) = config.as_ref() {
             return Ok(ConnectionStatus {
                 connected: true,
@@ -166,11 +166,11 @@ pub async fn restore_session(
                 Ok(ping_result) => {
                     // Store client and config
                     {
-                        let mut client_lock = state.client.lock().unwrap();
+                        let mut client_lock = state.client.lock_recover();
                         *client_lock = Some(client);
                     }
                     {
-                        let mut config_lock = state.server_config.lock().unwrap();
+                        let mut config_lock = state.server_config.lock_recover();
                         *config_lock = Some(ServerConfig {
                             url: url.clone(),
                             username: username.clone(),

@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::audio::{fetch_audio_bytes, PlaybackStatus, SongMetadata};
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, MutexExt};
 use crate::state::AppState;
 
 #[tauri::command]
@@ -22,7 +22,7 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
         String,
         Option<String>,
     ) = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         conn.query_row(
             "SELECT s.duration, s.title, a.name, al.name, al.cover_art_id
              FROM songs s
@@ -56,12 +56,12 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
 
     // Play the audio
     {
-        let audio_player = state.audio_player.lock().unwrap();
+        let audio_player = state.audio_player.lock_recover();
         audio_player.play(audio_data, metadata, duration)?;
     }
 
     // Report "now playing" to Subsonic server
-    let client_opt = state.client.lock().unwrap().clone();
+    let client_opt = state.client.lock_recover().clone();
     if let Some(client) = client_opt {
         // Fire and forget - don't fail playback if scrobble fails
         let _ = client
@@ -74,36 +74,36 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
 
 #[tauri::command]
 pub fn pause_playback(state: State<'_, AppState>) -> AppResult<()> {
-    let audio_player = state.audio_player.lock().unwrap();
+    let audio_player = state.audio_player.lock_recover();
     audio_player.pause()
 }
 
 #[tauri::command]
 pub fn resume_playback(state: State<'_, AppState>) -> AppResult<()> {
-    let audio_player = state.audio_player.lock().unwrap();
+    let audio_player = state.audio_player.lock_recover();
     audio_player.resume()
 }
 
 #[tauri::command]
 pub fn stop_playback(state: State<'_, AppState>) -> AppResult<()> {
-    let audio_player = state.audio_player.lock().unwrap();
+    let audio_player = state.audio_player.lock_recover();
     audio_player.stop()
 }
 
 #[tauri::command]
 pub fn set_volume(state: State<'_, AppState>, volume: f32) -> AppResult<()> {
-    let audio_player = state.audio_player.lock().unwrap();
+    let audio_player = state.audio_player.lock_recover();
     audio_player.set_volume(volume)
 }
 
 #[tauri::command]
 pub fn seek_playback(state: State<'_, AppState>, position: f64) -> AppResult<()> {
-    let audio_player = state.audio_player.lock().unwrap();
+    let audio_player = state.audio_player.lock_recover();
     audio_player.seek(position)
 }
 
 #[tauri::command]
 pub fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
-    let audio_player = state.audio_player.lock().unwrap();
+    let audio_player = state.audio_player.lock_recover();
     audio_player.get_status()
 }
