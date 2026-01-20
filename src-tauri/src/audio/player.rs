@@ -2,12 +2,12 @@ use rodio::{Decoder, OutputStreamBuilder, Sink};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-use crate::error::{AppError, AppResult, MutexExt};
+use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, serde::Serialize, Default)]
 pub struct SongMetadata {
@@ -51,64 +51,93 @@ enum AudioCommand {
     Shutdown,
 }
 
-/// State shared between the main thread and audio thread
+/// Inner playback state consolidated into a single struct for efficient locking
+struct PlaybackInner {
+    current_song: Option<SongMetadata>,
+    current_audio_data: Option<(Vec<u8>, u64)>, // (data, byte_len)
+    volume: f32,
+    playback_start: Option<Instant>,
+    paused_position: f64,
+    duration: f64,
+}
+
+impl Default for PlaybackInner {
+    fn default() -> Self {
+        Self {
+            current_song: None,
+            current_audio_data: None,
+            volume: 0.8,
+            playback_start: None,
+            paused_position: 0.0,
+            duration: 0.0,
+        }
+    }
+}
+
+/// State shared between the main thread and audio thread.
+/// Uses a single RwLock for efficient concurrent reads (position emitter at 10Hz).
 struct SharedState {
     is_playing: AtomicBool,
-    current_song: Mutex<Option<SongMetadata>>,
-    current_audio_data: Mutex<Option<(Vec<u8>, u64)>>, // (data, byte_len)
-    volume: Mutex<f32>,
-    playback_start: Mutex<Option<Instant>>,
-    paused_position: Mutex<f64>,
-    duration: Mutex<f64>,
+    inner: RwLock<PlaybackInner>,
 }
 
 impl SharedState {
     fn new() -> Self {
         Self {
             is_playing: AtomicBool::new(false),
-            current_song: Mutex::new(None),
-            current_audio_data: Mutex::new(None),
-            volume: Mutex::new(0.8),
-            playback_start: Mutex::new(None),
-            paused_position: Mutex::new(0.0),
-            duration: Mutex::new(0.0),
+            inner: RwLock::new(PlaybackInner::default()),
         }
     }
 
+    fn read_inner(&self) -> std::sync::RwLockReadGuard<'_, PlaybackInner> {
+        self.inner
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn write_inner(&self) -> std::sync::RwLockWriteGuard<'_, PlaybackInner> {
+        self.inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn get_position(&self) -> f64 {
+        let inner = self.read_inner();
+        self.calculate_position(&inner)
+    }
+
+    /// Calculate position from an already-acquired read guard (avoids double locking)
+    fn calculate_position(&self, inner: &PlaybackInner) -> f64 {
         if !self.is_playing.load(Ordering::SeqCst) {
-            return *self.paused_position.lock_recover();
+            return inner.paused_position;
         }
 
-        let start = self.playback_start.lock_recover();
-        let paused = *self.paused_position.lock_recover();
-        let dur = *self.duration.lock_recover();
-
-        if let Some(instant) = *start {
-            (instant.elapsed().as_secs_f64() + paused).min(dur)
+        if let Some(instant) = inner.playback_start {
+            (instant.elapsed().as_secs_f64() + inner.paused_position).min(inner.duration)
         } else {
-            paused
+            inner.paused_position
         }
     }
 
     fn get_state(&self) -> PlaybackState {
+        let inner = self.read_inner();
         PlaybackState {
             is_playing: self.is_playing.load(Ordering::SeqCst),
-            position: self.get_position(),
-            duration: *self.duration.lock_recover(),
-            volume: *self.volume.lock_recover(),
-            song: self.current_song.lock_recover().clone(),
+            position: self.calculate_position(&inner),
+            duration: inner.duration,
+            volume: inner.volume,
+            song: inner.current_song.clone(),
         }
     }
 
     fn get_status(&self) -> PlaybackStatus {
-        let song = self.current_song.lock_recover();
+        let inner = self.read_inner();
         PlaybackStatus {
             is_playing: self.is_playing.load(Ordering::SeqCst),
-            current_song_id: song.as_ref().map(|s| s.id.clone()),
-            position: self.get_position(),
-            duration: *self.duration.lock_recover(),
-            volume: *self.volume.lock_recover(),
+            current_song_id: inner.current_song.as_ref().map(|s| s.id.clone()),
+            position: self.calculate_position(&inner),
+            duration: inner.duration,
+            volume: inner.volume,
         }
     }
 }
@@ -175,14 +204,14 @@ impl AudioPlayer {
 
     pub fn set_volume(&self, volume: f32) -> AppResult<()> {
         let clamped = volume.clamp(0.0, 1.0);
-        *self.shared_state.volume.lock_recover() = clamped;
+        self.shared_state.write_inner().volume = clamped;
         self.command_tx
             .send(AudioCommand::SetVolume(clamped))
             .map_err(|e| AppError::Audio(format!("Failed to send volume command: {}", e)))
     }
 
     pub fn seek(&self, position_secs: f64) -> AppResult<()> {
-        let duration = *self.shared_state.duration.lock_recover();
+        let duration = self.shared_state.read_inner().duration;
         let clamped = position_secs.clamp(0.0, duration);
         self.command_tx
             .send(AudioCommand::Seek(clamped))
@@ -191,7 +220,7 @@ impl AudioPlayer {
 
     #[allow(dead_code)]
     pub fn get_volume(&self) -> f32 {
-        *self.shared_state.volume.lock_recover()
+        self.shared_state.read_inner().volume
     }
 
     #[allow(dead_code)]
@@ -201,7 +230,7 @@ impl AudioPlayer {
 
     #[allow(dead_code)]
     pub fn get_duration(&self) -> f64 {
-        *self.shared_state.duration.lock_recover()
+        self.shared_state.read_inner().duration
     }
 
     pub fn get_status(&self) -> PlaybackStatus {
@@ -211,9 +240,8 @@ impl AudioPlayer {
     #[allow(dead_code)]
     pub fn current_song_id(&self) -> Option<String> {
         self.shared_state
+            .read_inner()
             .current_song
-            .lock()
-            .unwrap()
             .as_ref()
             .map(|s| s.id.clone())
     }
@@ -298,17 +326,19 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                     {
                         Ok(source) => {
                             let sink = Sink::connect_new(stream.mixer());
-                            let volume = *shared_state.volume.lock_recover();
+                            let volume = shared_state.read_inner().volume;
                             sink.set_volume(volume);
                             sink.append(source);
 
-                            // Update shared state
-                            *shared_state.current_audio_data.lock_recover() =
-                                Some((audio_data, byte_len));
-                            *shared_state.current_song.lock_recover() = Some(metadata);
-                            *shared_state.playback_start.lock_recover() = Some(Instant::now());
-                            *shared_state.paused_position.lock_recover() = 0.0;
-                            *shared_state.duration.lock_recover() = duration_secs;
+                            // Update shared state (single lock acquisition)
+                            {
+                                let mut inner = shared_state.write_inner();
+                                inner.current_audio_data = Some((audio_data, byte_len));
+                                inner.current_song = Some(metadata);
+                                inner.playback_start = Some(Instant::now());
+                                inner.paused_position = 0.0;
+                                inner.duration = duration_secs;
+                            }
                             shared_state.is_playing.store(true, Ordering::SeqCst);
 
                             current_sink = Some(sink);
@@ -321,14 +351,15 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                 AudioCommand::Pause => {
                     if let Some(ref sink) = current_sink {
                         if !sink.is_paused() {
-                            // Save current position
-                            let start = shared_state.playback_start.lock_recover();
-                            let paused = *shared_state.paused_position.lock_recover();
-                            if let Some(instant) = *start {
-                                let elapsed = instant.elapsed().as_secs_f64() + paused;
-                                *shared_state.paused_position.lock_recover() = elapsed;
+                            // Save current position (single lock acquisition)
+                            {
+                                let mut inner = shared_state.write_inner();
+                                if let Some(instant) = inner.playback_start {
+                                    let elapsed =
+                                        instant.elapsed().as_secs_f64() + inner.paused_position;
+                                    inner.paused_position = elapsed;
+                                }
                             }
-                            drop(start);
 
                             sink.pause();
                             shared_state.is_playing.store(false, Ordering::SeqCst);
@@ -338,7 +369,7 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                 AudioCommand::Resume => {
                     if let Some(ref sink) = current_sink {
                         if sink.is_paused() {
-                            *shared_state.playback_start.lock_recover() = Some(Instant::now());
+                            shared_state.write_inner().playback_start = Some(Instant::now());
                             sink.play();
                             shared_state.is_playing.store(true, Ordering::SeqCst);
                         }
@@ -349,11 +380,15 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                         sink.stop();
                     }
                     shared_state.is_playing.store(false, Ordering::SeqCst);
-                    *shared_state.current_song.lock_recover() = None;
-                    *shared_state.current_audio_data.lock_recover() = None;
-                    *shared_state.playback_start.lock_recover() = None;
-                    *shared_state.paused_position.lock_recover() = 0.0;
-                    *shared_state.duration.lock_recover() = 0.0;
+                    // Reset all state in single lock acquisition
+                    {
+                        let mut inner = shared_state.write_inner();
+                        inner.current_song = None;
+                        inner.current_audio_data = None;
+                        inner.playback_start = None;
+                        inner.paused_position = 0.0;
+                        inner.duration = 0.0;
+                    }
                 }
                 AudioCommand::SetVolume(volume) => {
                     if let Some(ref sink) = current_sink {
@@ -366,9 +401,10 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                         if let Err(e) = sink.try_seek(seek_duration) {
                             eprintln!("Seek failed: {:?}", e);
                         } else {
-                            // Update position tracking
-                            *shared_state.paused_position.lock_recover() = position_secs;
-                            *shared_state.playback_start.lock_recover() = Some(Instant::now());
+                            // Update position tracking (single lock acquisition)
+                            let mut inner = shared_state.write_inner();
+                            inner.paused_position = position_secs;
+                            inner.playback_start = Some(Instant::now());
                         }
                     }
                 }
