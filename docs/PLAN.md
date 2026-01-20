@@ -121,6 +121,7 @@ Phase 7: UI Polish & Optimization
 - [x] Queue panel
 - [x] TanStack Virtual for large lists
 - [x] Cover art display with caching and full-size viewer window
+- [x] Standard base64 encoding (replaced custom implementation)
 
 ## Architecture
 
