@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::audio::{fetch_audio_bytes, PlaybackStatus};
+use crate::audio::{fetch_audio_bytes, PlaybackStatus, SongMetadata};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -14,16 +14,33 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
         .clone()
         .ok_or(AppError::NotConnected)?;
 
-    // Get song duration from database
-    let duration: f64 = {
+    // Get song metadata from database (join with artists and albums for names)
+    let (duration, title, artist, album): (f64, String, String, String) = {
         let conn = state.db.lock().unwrap();
         conn.query_row(
-            "SELECT duration FROM songs WHERE id = ?",
+            "SELECT s.duration, s.title, a.name, al.name
+             FROM songs s
+             LEFT JOIN artists a ON s.artist_id = a.id
+             LEFT JOIN albums al ON s.album_id = al.id
+             WHERE s.id = ?",
             [&song_id],
-            |row| row.get::<_, Option<i64>>(0),
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?.unwrap_or(0) as f64,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                ))
+            },
         )
         .map_err(AppError::Database)?
-        .unwrap_or(0) as f64
+    };
+
+    let metadata = SongMetadata {
+        id: song_id.clone(),
+        title,
+        artist,
+        album,
     };
 
     // Fetch audio bytes from server
@@ -32,7 +49,7 @@ pub async fn play_song(state: State<'_, AppState>, song_id: String) -> AppResult
     // Play the audio
     {
         let audio_player = state.audio_player.lock().unwrap();
-        audio_player.play(audio_data, song_id.clone(), duration)?;
+        audio_player.play(audio_data, metadata, duration)?;
     }
 
     // Report "now playing" to Subsonic server

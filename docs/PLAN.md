@@ -13,7 +13,7 @@ Core player functionality implemented: audio playback with Rodio, queue manageme
 Phase 7: UI Polish & Optimization
 
 - [x] TanStack Virtual for large song lists
-- [x] Now playing from server (TransportBar shows server state via events)
+- [x] Now playing from local backend (combined playback-state event, no server latency)
 - Queue panel
 - Keyboard shortcuts
 
@@ -105,7 +105,7 @@ Phase 7: UI Polish & Optimization
 - [x] SongList with alternating rows, checkboxes, columns
 - [x] StatusBar with item count, duration, size
 - [x] Custom DaisyUI "itunes" theme
-- [x] Now playing in TransportBar (shows server state for current user)
+- [x] Now playing in TransportBar (local state via combined playback-state event)
 - [x] Scrobbling to Subsonic server on play
 - [ ] Queue panel
 - [x] TanStack Virtual for large lists
@@ -150,14 +150,14 @@ src/lib/
 │   └── collections.ts  # Query factories
 ├── stores/
 │   ├── connection.svelte.ts  # Connection state (runes)
-│   ├── playback.svelte.ts    # Playback state with event listeners
+│   ├── playback.svelte.ts    # Playback state with combined event (position + song info)
 │   ├── queue.svelte.ts       # Queue management store
 │   ├── playlist.svelte.ts    # Playlist store
 │   ├── search.svelte.ts      # Search with debounce
-│   └── nowplaying.svelte.ts  # Server now playing state via events
+│   └── nowplaying.svelte.ts  # Server now playing state (for other users)
 ├── components/
 │   ├── ServerConnect.svelte   # Login screen
-│   ├── TransportBar.svelte    # Top toolbar with playback controls + now playing (server state)
+│   ├── TransportBar.svelte    # Top toolbar with playback controls + now playing (local state)
 │   ├── Sidebar.svelte         # Navigation + playlists
 │   ├── StatusBar.svelte       # Bottom status bar
 │   └── library/

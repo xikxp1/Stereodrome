@@ -10,9 +10,18 @@ interface PlaybackStatus {
   volume: number;
 }
 
-interface PositionEvent {
+interface SongMetadata {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+}
+
+interface PlaybackState {
+  is_playing: boolean;
   position: number;
-  song_id: string | null;
+  duration: number;
+  song: SongMetadata | null;
 }
 
 class PlaybackStore {
@@ -23,8 +32,15 @@ class PlaybackStore {
   duration = $state(0);
   volume = $state(0.8);
 
+  // Current track info from backend (for TransportBar display)
+  currentTrack = $state<{
+    title: string;
+    artist: string;
+    album: string;
+  } | null>(null);
+
   // Event listeners
-  private unlistenPosition: UnlistenFn | null = null;
+  private unlistenState: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
 
   constructor() {
@@ -32,11 +48,22 @@ class PlaybackStore {
   }
 
   private async setupEventListeners() {
-    // Listen for position updates
-    this.unlistenPosition = await listen<PositionEvent>(
-      "playback-position",
+    // Listen for combined playback state updates (10Hz)
+    this.unlistenState = await listen<PlaybackState>(
+      "playback-state",
       (event) => {
-        this.position = event.payload.position;
+        const state = event.payload;
+        this.isPlaying = state.is_playing;
+        this.position = state.position;
+        this.duration = state.duration;
+
+        if (state.song) {
+          this.currentTrack = {
+            title: state.song.title,
+            artist: state.song.artist || "Unknown Artist",
+            album: state.song.album || "",
+          };
+        }
       }
     );
 
@@ -93,6 +120,7 @@ class PlaybackStore {
       this.isPlaying = false;
       this.position = 0;
       this.currentSong = null;
+      this.currentTrack = null;
     } catch (e) {
       console.error("Failed to stop:", e);
     }
@@ -122,8 +150,8 @@ class PlaybackStore {
 
   // Cleanup
   destroy() {
-    if (this.unlistenPosition) {
-      this.unlistenPosition();
+    if (this.unlistenState) {
+      this.unlistenState();
     }
     if (this.unlistenEnded) {
       this.unlistenEnded();

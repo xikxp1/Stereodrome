@@ -9,6 +9,14 @@ use tauri::{AppHandle, Emitter};
 
 use crate::error::{AppError, AppResult};
 
+#[derive(Debug, Clone, serde::Serialize, Default)]
+pub struct SongMetadata {
+    pub id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PlaybackStatus {
     pub is_playing: bool,
@@ -18,11 +26,19 @@ pub struct PlaybackStatus {
     pub volume: f32,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlaybackState {
+    pub is_playing: bool,
+    pub position: f64,
+    pub duration: f64,
+    pub song: Option<SongMetadata>,
+}
+
 /// Commands sent to the audio thread
 enum AudioCommand {
     Play {
         audio_data: Vec<u8>,
-        song_id: String,
+        metadata: SongMetadata,
         duration_secs: f64,
     },
     Pause,
@@ -35,7 +51,7 @@ enum AudioCommand {
 /// State shared between the main thread and audio thread
 struct SharedState {
     is_playing: AtomicBool,
-    current_song_id: Mutex<Option<String>>,
+    current_song: Mutex<Option<SongMetadata>>,
     volume: Mutex<f32>,
     playback_start: Mutex<Option<Instant>>,
     paused_position: Mutex<f64>,
@@ -46,7 +62,7 @@ impl SharedState {
     fn new() -> Self {
         Self {
             is_playing: AtomicBool::new(false),
-            current_song_id: Mutex::new(None),
+            current_song: Mutex::new(None),
             volume: Mutex::new(0.8),
             playback_start: Mutex::new(None),
             paused_position: Mutex::new(0.0),
@@ -70,10 +86,20 @@ impl SharedState {
         }
     }
 
+    fn get_state(&self) -> PlaybackState {
+        PlaybackState {
+            is_playing: self.is_playing.load(Ordering::SeqCst),
+            position: self.get_position(),
+            duration: *self.duration.lock().unwrap(),
+            song: self.current_song.lock().unwrap().clone(),
+        }
+    }
+
     fn get_status(&self) -> PlaybackStatus {
+        let song = self.current_song.lock().unwrap();
         PlaybackStatus {
             is_playing: self.is_playing.load(Ordering::SeqCst),
-            current_song_id: self.current_song_id.lock().unwrap().clone(),
+            current_song_id: song.as_ref().map(|s| s.id.clone()),
             position: self.get_position(),
             duration: *self.duration.lock().unwrap(),
             volume: *self.volume.lock().unwrap(),
@@ -108,11 +134,16 @@ impl AudioPlayer {
         })
     }
 
-    pub fn play(&self, audio_data: Vec<u8>, song_id: String, duration_secs: f64) -> AppResult<()> {
+    pub fn play(
+        &self,
+        audio_data: Vec<u8>,
+        metadata: SongMetadata,
+        duration_secs: f64,
+    ) -> AppResult<()> {
         self.command_tx
             .send(AudioCommand::Play {
                 audio_data,
-                song_id,
+                metadata,
                 duration_secs,
             })
             .map_err(|e| AppError::Audio(format!("Failed to send play command: {}", e)))
@@ -165,7 +196,12 @@ impl AudioPlayer {
 
     #[allow(dead_code)]
     pub fn current_song_id(&self) -> Option<String> {
-        self.shared_state.current_song_id.lock().unwrap().clone()
+        self.shared_state
+            .current_song
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.id.clone())
     }
 
     #[allow(dead_code)]
@@ -173,7 +209,7 @@ impl AudioPlayer {
         self.shared_state.is_playing.load(Ordering::SeqCst)
     }
 
-    /// Start a background thread that emits position updates
+    /// Start a background thread that emits playback state updates
     pub fn start_position_emitter(&self, app_handle: AppHandle) {
         let shared_state = Arc::clone(&self.shared_state);
 
@@ -181,28 +217,21 @@ impl AudioPlayer {
             loop {
                 thread::sleep(Duration::from_millis(100)); // 10Hz updates
 
-                if !shared_state.is_playing.load(Ordering::SeqCst) {
+                let state = shared_state.get_state();
+
+                // Only emit when playing or when we have a song (to update paused state)
+                if !state.is_playing && state.song.is_none() {
                     continue;
                 }
 
-                let position = shared_state.get_position();
-                let duration = *shared_state.duration.lock().unwrap();
-                let song_id = shared_state.current_song_id.lock().unwrap().clone();
-
                 // Check if playback ended naturally
-                if position >= duration && duration > 0.0 {
+                if state.position >= state.duration && state.duration > 0.0 && state.is_playing {
                     shared_state.is_playing.store(false, Ordering::SeqCst);
                     let _ = app_handle.emit("playback-ended", ());
                     continue;
                 }
 
-                let _ = app_handle.emit(
-                    "playback-position",
-                    serde_json::json!({
-                        "position": position,
-                        "song_id": song_id
-                    }),
-                );
+                let _ = app_handle.emit("playback-state", &state);
             }
         });
     }
@@ -236,7 +265,7 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
             Ok(command) => match command {
                 AudioCommand::Play {
                     audio_data,
-                    song_id,
+                    metadata,
                     duration_secs,
                 } => {
                     // Stop any existing playback
@@ -254,7 +283,7 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                             sink.append(source);
 
                             // Update shared state
-                            *shared_state.current_song_id.lock().unwrap() = Some(song_id);
+                            *shared_state.current_song.lock().unwrap() = Some(metadata);
                             *shared_state.playback_start.lock().unwrap() = Some(Instant::now());
                             *shared_state.paused_position.lock().unwrap() = 0.0;
                             *shared_state.duration.lock().unwrap() = duration_secs;
@@ -298,7 +327,7 @@ fn run_audio_thread(command_rx: Receiver<AudioCommand>, shared_state: Arc<Shared
                         sink.stop();
                     }
                     shared_state.is_playing.store(false, Ordering::SeqCst);
-                    *shared_state.current_song_id.lock().unwrap() = None;
+                    *shared_state.current_song.lock().unwrap() = None;
                     *shared_state.playback_start.lock().unwrap() = None;
                     *shared_state.paused_position.lock().unwrap() = 0.0;
                     *shared_state.duration.lock().unwrap() = 0.0;
