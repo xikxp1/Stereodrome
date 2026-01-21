@@ -105,12 +105,21 @@ export interface CacheStats {
   max_size: number;
 }
 
+// Cache size limits (must match Rust constants)
+export const MIN_CACHE_SIZE = 500 * 1024 * 1024; // 500 MB
+export const MAX_CACHE_SIZE = 50 * 1024 * 1024 * 1024; // 50 GB
+export const DEFAULT_CACHE_SIZE = 5 * 1024 * 1024 * 1024; // 5 GB
+
 export async function getAudioCacheStats(): Promise<CacheStats> {
   return invoke<CacheStats>("get_audio_cache_stats");
 }
 
 export async function clearAudioCache(): Promise<void> {
   return invoke("clear_audio_cache");
+}
+
+export async function setMaxCacheSize(size: number): Promise<CacheStats> {
+  return invoke<CacheStats>("set_max_cache_size", { size });
 }
 
 // Scrobbling commands

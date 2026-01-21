@@ -6,6 +6,7 @@
   import SongList from "$lib/components/library/SongList.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
   import QueuePanel from "$lib/components/QueuePanel.svelte";
+  import SettingsModal from "$lib/components/SettingsModal.svelte";
   import { connection } from "$lib/stores/connection.svelte";
   import { playback } from "$lib/stores/playback.svelte";
   import { queue } from "$lib/stores/queue.svelte";
@@ -25,6 +26,7 @@
   // View state
   let activeView = $state("music");
   let queueOpen = $state(false);
+  let settingsOpen = $state(false);
 
   // Keyboard shortcut state
   let previousVolume = $state(100); // For mute/unmute toggle (0-100 scale)
@@ -244,6 +246,14 @@
     queueOpen = !queueOpen;
   }
 
+  function handleSettingsToggle() {
+    settingsOpen = !settingsOpen;
+  }
+
+  function handleSettingsClose() {
+    settingsOpen = false;
+  }
+
   function handleQueueItemClick(songId: string) {
     // Find the song in the filtered list
     const song = filteredSongs.find((s) => s.id === songId);
@@ -432,6 +442,14 @@
           searchInputRef?.focus();
         }
         break;
+
+      case ",":
+        if (isMod) {
+          // Cmd/Ctrl+, - open settings
+          event.preventDefault();
+          handleSettingsToggle();
+        }
+        break;
     }
   }
 
@@ -486,6 +504,7 @@
       onVolumeChange={handleVolumeChange}
       onQueueToggle={handleQueueToggle}
       onCoverArtClick={handleCoverArtClick}
+      onSettingsClick={handleSettingsToggle}
     />
 
     <!-- Main Content Area -->
@@ -550,4 +569,7 @@
     <!-- Login Screen -->
     <ServerConnect />
   {/if}
+
+  <!-- Settings Modal -->
+  <SettingsModal open={settingsOpen} onClose={handleSettingsClose} />
 </div>

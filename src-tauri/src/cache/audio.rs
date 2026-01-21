@@ -118,7 +118,7 @@ impl AudioCache {
     }
 
     /// Enforce the maximum cache size by removing least recently accessed files
-    fn enforce_size_limit(&self) -> AppResult<()> {
+    pub fn enforce_size_limit(&self) -> AppResult<()> {
         let mut entries = self.get_cache_entries()?;
 
         // Calculate total size

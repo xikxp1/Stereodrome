@@ -12,9 +12,9 @@ Core player functionality with UI polish: audio playback, queue management, play
 
 Phase 8: Local Storage & Offline Features
 
-- [x] Local audio cache with LRU eviction (5GB max, automatic cleanup)
+- [x] Local audio cache with LRU eviction (configurable size, automatic cleanup)
 - [x] Prefetch next song to cache for gapless playback
-- [ ] Cache settings UI (view stats, clear cache)
+- [x] Cache settings UI (view stats, clear cache, configurable max size 500MB-50GB)
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks
 - [ ] Gapless playback
@@ -31,7 +31,7 @@ Phase 8: Local Storage & Offline Features
 - [x] "Scroll to current" button in QueuePanel header
 - [x] Cover art display in TransportBar (thumbnail with click-to-view full size)
 - [x] Cover art caching to local filesystem
-- [x] Keyboard shortcuts (Space play/pause, ↑/↓ navigate songs, Enter play, Shift+←/→ seek, Mod+↑/↓ volume, Mod+←/→ prev/next, M mute, S shuffle, R repeat, Q queue, V visualizer, / search)
+- [x] Keyboard shortcuts (Space play/pause, ↑/↓ navigate songs, Enter play, Shift+←/→ seek, Mod+↑/↓ volume, Mod+←/→ prev/next, M mute, S shuffle, R repeat, Q queue, V visualizer, / search, Mod+, settings)
 - [x] Audio spectrum visualizer (real-time FFT in Rust, 8 frequency bands, 30Hz updates)
 - [x] Desktop notifications on song change (only when app is unfocused)
 
@@ -203,6 +203,7 @@ src/lib/
 │   ├── Sidebar.svelte         # Navigation + playlists
 │   ├── StatusBar.svelte       # Bottom status bar
 │   ├── QueuePanel.svelte      # Queue panel with shuffle/repeat controls
+│   ├── SettingsModal.svelte   # Settings modal with cache management
 │   └── library/
 │       ├── ArtistList.svelte
 │       ├── AlbumGrid.svelte
