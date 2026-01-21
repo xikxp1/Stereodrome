@@ -55,7 +55,7 @@
       const index = songs.findIndex((s) => s.id === scrollToSongId);
       if (index >= 0) {
         requestAnimationFrame(() => {
-          $virtualizer.scrollToIndex(index, { align: "center" });
+          $virtualizer.scrollToIndex(index, { align: "center", behavior: "smooth" });
         });
       }
     }
