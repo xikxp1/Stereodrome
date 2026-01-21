@@ -51,26 +51,36 @@
     }
   }
 
-  function startGroupAnimation(groupId: string) {
-    const group = groupStates.get(groupId);
-    if (!group || group.members.size === 0) return;
-
-    // Find the maximum offset among all members (longest text)
+  function getGroupMaxOffset(group: { members: Set<{ maxOffset: number }> }) {
     let maxOffset = 0;
     for (const member of group.members) {
       if (member.maxOffset > maxOffset) {
         maxOffset = member.maxOffset;
       }
     }
+    return maxOffset;
+  }
 
-    if (maxOffset <= 0) return;
+  function startGroupAnimation(groupId: string) {
+    const group = groupStates.get(groupId);
+    if (!group || group.members.size === 0) return;
 
-    group.state.maxOffset = maxOffset;
+    const initialMaxOffset = getGroupMaxOffset(group);
+    if (initialMaxOffset <= 0) return;
+
+    group.state.maxOffset = initialMaxOffset;
     let lastTime: number | null = null;
 
     function animate(currentTime: number) {
       const group = groupStates.get(groupId);
       if (!group || group.members.size === 0) return;
+
+      // Always get fresh max offset from members
+      const groupMaxOffset = getGroupMaxOffset(group);
+      if (groupMaxOffset <= 0) return;
+
+      // Update state's maxOffset if it changed
+      group.state.maxOffset = groupMaxOffset;
 
       if (lastTime === null) {
         lastTime = currentTime;
@@ -92,10 +102,9 @@
           // Pause at the end
           lastTime = null;
 
-          // Update all members with final position
+          // Update all members to their max position (100% progress)
           for (const member of group.members) {
-            const memberOffset = Math.min(state.offset, member.maxOffset);
-            member.updateOffset(memberOffset);
+            member.updateOffset(member.maxOffset);
           }
 
           group.pauseTimeout = setTimeout(() => {
@@ -127,10 +136,11 @@
         }
       }
 
-      // Update all members with the same offset (capped at their own max)
+      // Update all members proportionally so they scroll together
       for (const member of group.members) {
-        // All lines scroll the same pixel distance, but each stops at its own max
-        const memberOffset = Math.min(state.offset, member.maxOffset);
+        const progress =
+          state.maxOffset > 0 ? state.offset / state.maxOffset : 0;
+        const memberOffset = progress * member.maxOffset;
         member.updateOffset(Math.max(0, memberOffset));
       }
 
@@ -152,9 +162,26 @@
     }, PAUSE_DURATION);
   }
 
+  // Debounce restart to allow all members to register and calculate their offsets
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity
+  const restartTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
   function restartGroupAnimation(groupId: string) {
-    stopGroupAnimation(groupId);
-    startGroupAnimation(groupId);
+    // Clear any pending restart
+    const existingTimeout = restartTimeouts.get(groupId);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+    }
+
+    // Debounce: wait a frame for all members to calculate their offsets
+    restartTimeouts.set(
+      groupId,
+      setTimeout(() => {
+        restartTimeouts.delete(groupId);
+        stopGroupAnimation(groupId);
+        startGroupAnimation(groupId);
+      }, 50)
+    );
   }
 </script>
 
