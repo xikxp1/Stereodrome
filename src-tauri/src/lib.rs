@@ -17,6 +17,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let db_path = db::get_db_path(app.handle())?;
             let index_path = search::get_index_path(app.handle())?;
@@ -98,6 +99,7 @@ pub fn run() {
             commands::scrobble_now_playing,
             commands::scrobble_submit,
             commands::get_cover_art,
+            commands::get_cover_art_path,
             commands::get_song_cover_art,
             commands::get_audio_cache_stats,
             commands::clear_audio_cache,

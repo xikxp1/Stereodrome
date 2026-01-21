@@ -102,6 +102,52 @@ pub async fn get_song_cover_art(
     }
 }
 
+/// Get cover art file path (for notifications with attachments)
+/// Returns the local file path if cached, otherwise fetches and caches first
+#[tauri::command]
+pub async fn get_cover_art_path(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    cover_art_id: String,
+    size: Option<i32>,
+) -> AppResult<String> {
+    if cover_art_id.is_empty() {
+        return Err(AppError::Subsonic("Empty cover art ID".to_string()));
+    }
+
+    let cache_dir = get_cache_dir(&app_handle)?;
+
+    // Create cache filename based on cover_art_id and size
+    let cache_filename = match size {
+        Some(s) => format!("{}_{}.jpg", cover_art_id.replace(['/', '\\'], "_"), s),
+        None => format!("{}.jpg", cover_art_id.replace(['/', '\\'], "_")),
+    };
+    let cache_path = cache_dir.join(&cache_filename);
+
+    // Check cache first
+    if cache_path.exists() {
+        return Ok(cache_path.to_string_lossy().to_string());
+    }
+
+    // Get submarine client
+    let client = state
+        .client
+        .lock_recover()
+        .clone()
+        .ok_or(AppError::NotConnected)?;
+
+    // Fetch cover art using submarine client
+    let bytes_vec = client
+        .get_cover_art(&cover_art_id, size)
+        .await
+        .map_err(|e| AppError::Subsonic(format!("Failed to fetch cover art: {}", e)))?;
+
+    // Cache the image
+    fs::write(&cache_path, &bytes_vec)?;
+
+    Ok(cache_path.to_string_lossy().to_string())
+}
+
 fn guess_mime_type(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         "image/jpeg"

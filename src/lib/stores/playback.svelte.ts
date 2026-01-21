@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Song } from "$lib/types";
 import { queue } from "./queue.svelte";
+import { notifications } from "$lib/services/notifications.svelte";
 
 interface PlaybackStatus {
   is_playing: boolean;
@@ -76,6 +77,15 @@ class PlaybackStore {
 
           if (songChanged || songRestarted) {
             this.scrobbledSongId = null;
+          }
+
+          // Notify song change when app is not focused
+          if (songChanged) {
+            notifications.notifySongChange(
+              state.song.title,
+              state.song.artist,
+              state.song.cover_art_id
+            );
           }
 
           this.currentTrack = {

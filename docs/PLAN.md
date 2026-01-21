@@ -33,6 +33,7 @@ Phase 8: Local Storage & Offline Features
 - [x] Cover art caching to local filesystem
 - [x] Keyboard shortcuts (Space play/pause, ↑/↓ navigate songs, Enter play, Shift+←/→ seek, Mod+↑/↓ volume, Mod+←/→ prev/next, M mute, S shuffle, R repeat, Q queue, V visualizer, / search)
 - [x] Audio spectrum visualizer (real-time FFT in Rust, 8 frequency bands, 30Hz updates)
+- [x] Desktop notifications on song change (only when app is unfocused)
 
 ## Completed
 
@@ -193,6 +194,8 @@ src/lib/
 │   ├── search.svelte.ts      # Search with debounce
 │   ├── spectrum.svelte.ts    # Spectrum visualizer state (30Hz band updates)
 │   └── nowplaying.svelte.ts  # Server now playing state (for other users)
+├── services/
+│   └── notifications.svelte.ts  # Desktop notifications (song change when unfocused)
 ├── components/
 │   ├── ServerConnect.svelte   # Login screen
 │   ├── TransportBar.svelte    # Top toolbar with playback controls + now playing (local state)
