@@ -179,6 +179,17 @@
       setTimeout(() => {
         restartTimeouts.delete(groupId);
         stopGroupAnimation(groupId);
+
+        const group = groupStates.get(groupId);
+        if (group) {
+          // Reset all members to initial position
+          group.state.offset = 0;
+          group.state.direction = "left";
+          for (const member of group.members) {
+            member.updateOffset(0);
+          }
+        }
+
         startGroupAnimation(groupId);
       }, 50)
     );
@@ -240,7 +251,20 @@
       calculateMaxOffset();
     });
 
+    // Watch for container resize
+    let resizeObserver: ResizeObserver | null = null;
+    if (containerRef) {
+      resizeObserver = new ResizeObserver(() => {
+        calculateMaxOffset();
+      });
+      resizeObserver.observe(containerRef);
+    }
+
     return () => {
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
+
       if (memberRef) {
         group.members.delete(memberRef);
       }
