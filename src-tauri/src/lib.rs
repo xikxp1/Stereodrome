@@ -3,13 +3,15 @@ mod cache;
 mod commands;
 mod db;
 mod error;
+mod media;
 mod search;
 mod state;
 
 use std::sync::Arc;
 
 use error::MutexExt;
-use log::LevelFilter;
+use log::{info, LevelFilter};
+use media::MediaControlsManager;
 use state::AppState;
 use tauri::Manager;
 use tauri_plugin_log::{Target, TargetKind};
@@ -69,6 +71,15 @@ pub fn run() {
             );
 
             app.manage(app_state);
+
+            // Initialize media controls for OS integration (Control Center, media keys)
+            if let Some(media_controls) = MediaControlsManager::new(app.handle().clone()) {
+                info!("Media controls initialized");
+                app.manage(media_controls);
+            } else {
+                info!("Media controls not available on this platform");
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
