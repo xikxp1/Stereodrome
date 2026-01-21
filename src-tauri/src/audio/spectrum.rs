@@ -51,8 +51,8 @@ const BAND_FREQUENCIES: [(f32, f32); NUM_BANDS] = [
     (2000.0, 3200.0),   // Upper-mids
     (3200.0, 4800.0),   // Presence
     (4800.0, 6000.0),   // Brilliance low
-    (6000.0, 9000.0),  // Brilliance high
-    (9000.0, 12000.0), // Highs
+    (6000.0, 8000.0),  // Brilliance high
+    (8000.0, 10000.0), // Highs
 ];
 
 /// Per-band scaling to balance frequencies
@@ -65,8 +65,8 @@ const BAND_GAINS: [f32; NUM_BANDS] = [
     0.9,  // Mids
     1.0,  // Mids high
     1.2,  // Upper-mids
-    1.4, // Presence
-    1.5,  // Brilliance low
+    1.4,  // Presence
+    1.6,  // Brilliance low
     1.8,  // Brilliance high
     2.1,  // Highs
 ];
