@@ -70,6 +70,8 @@ class PlaybackStore {
             album: state.song.album || "",
             coverArtId: state.song.cover_art_id || null,
           };
+        } else {
+          this.currentTrack = null;
         }
       }
     );
@@ -78,7 +80,8 @@ class PlaybackStore {
     this.unlistenEnded = await listen("playback-ended", () => {
       this.isPlaying = false;
       this.position = 0;
-      // Queue will handle auto-advance later
+      this.duration = 0;
+      this.currentTrack = null;
     });
   }
 

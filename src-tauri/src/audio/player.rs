@@ -337,9 +337,23 @@ impl AudioPlayer {
                     continue;
                 }
 
-                // Check if playback ended naturally
-                if state.position >= state.duration && state.duration > 0.0 && state.is_playing {
-                    shared_state.is_playing.store(false, Ordering::SeqCst);
+                // Check if playback ended naturally (position reached end)
+                // This handles both cases:
+                // 1. We catch it while is_playing is still true
+                // 2. Audio thread already set is_playing to false but song still exists
+                let playback_finished = state.duration > 0.0
+                    && state.position >= state.duration - 0.2 // Small tolerance for timing
+                    && state.song.is_some()
+                    && !state.is_playing;
+
+                if playback_finished {
+                    // Clear the current song so frontend updates
+                    {
+                        let mut inner = shared_state.write_inner();
+                        inner.current_song = None;
+                        inner.paused_position = 0.0;
+                        inner.duration = 0.0;
+                    }
                     let _ = app_handle.emit("playback-ended", ());
                     continue;
                 }
@@ -499,6 +513,11 @@ fn run_audio_thread(
                 // Check if current playback has ended
                 if let Some(ref sink) = current_sink {
                     if sink.empty() && shared_state.is_playing.load(Ordering::SeqCst) {
+                        // Set paused_position to duration so position emitter can detect end
+                        {
+                            let mut inner = shared_state.write_inner();
+                            inner.paused_position = inner.duration;
+                        }
                         shared_state.is_playing.store(false, Ordering::SeqCst);
                     }
                 }
