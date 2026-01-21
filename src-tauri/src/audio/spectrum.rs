@@ -49,8 +49,8 @@ const BAND_FREQUENCIES: [(f32, f32); NUM_BANDS] = [
     (750.0, 1200.0),    // Mids
     (1200.0, 2000.0),   // Mids high
     (2000.0, 3200.0),   // Upper-mids
-    (3200.0, 4800.0),   // Presence
-    (4800.0, 6000.0),   // Brilliance low
+    (3200.0, 4600.0),   // Presence
+    (4600.0, 6000.0),   // Brilliance low
     (6000.0, 8000.0),  // Brilliance high
     (8000.0, 10000.0), // Highs
 ];
