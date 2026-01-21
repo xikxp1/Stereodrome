@@ -1,3 +1,4 @@
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -119,7 +120,7 @@ pub fn start_now_playing_emitter(
                         let _ = app_handle.emit("now-playing", NowPlayingEvent { entries });
                     }
                     Err(e) => {
-                        eprintln!("Failed to fetch now playing: {}", e);
+                        warn!("Failed to fetch now playing: {}", e);
                     }
                 }
             }

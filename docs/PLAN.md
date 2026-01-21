@@ -15,6 +15,7 @@ Phase 8: Local Storage & Offline Features
 - [x] Local audio cache with LRU eviction (configurable size, automatic cleanup)
 - [x] Prefetch next song to cache for gapless playback
 - [x] Cache settings UI (view stats, clear cache, configurable max size 500MB-50GB)
+- [x] File logging with tauri-plugin-log (replaces println/console.log)
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks
 - [ ] Gapless playback

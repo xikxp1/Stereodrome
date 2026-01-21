@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::Utc;
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -116,10 +117,10 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
     let mut albums_data: Vec<AlbumData> = Vec::new();
     let mut songs_data: Vec<SongData> = Vec::new();
 
-    eprintln!("Fetched {} indexes", indexes.len());
+    debug!("Fetched {} indexes", indexes.len());
 
     for index in indexes {
-        eprintln!("Index has {} artists", index.artist.len());
+        debug!("Index has {} artists", index.artist.len());
         for artist in index.artist {
             artists_data.push(ArtistData {
                 id: artist.id.clone(),
@@ -164,11 +165,11 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
                                     });
                                 }
                             }
-                            Err(e) => eprintln!("Error fetching album {}: {}", album.id, e),
+                            Err(e) => warn!("Error fetching album {}: {}", album.id, e),
                         }
                     }
                 }
-                Err(e) => eprintln!("Error fetching artist {}: {}", artist.id, e),
+                Err(e) => warn!("Error fetching artist {}: {}", artist.id, e),
             }
         }
     }
@@ -201,7 +202,7 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
     // Drop db lock before rebuilding search index
     drop(db);
 
-    eprintln!(
+    info!(
         "Sync complete: {} artists, {} albums, {} songs",
         artists_data.len(),
         albums_data.len(),
@@ -279,7 +280,7 @@ fn rebuild_search_index(
         })
         .collect();
 
-    eprintln!(
+    debug!(
         "rebuild_search_index called with {} artists, {} albums, {} songs",
         artists.len(),
         albums.len(),
@@ -291,31 +292,31 @@ fn rebuild_search_index(
 
     // If no index exists yet, create one
     if search_index_guard.is_none() {
-        eprintln!("Search index is None, creating new one...");
+        debug!("Search index is None, creating new one...");
         match IndexManager::new(&state.index_path) {
             Ok(manager) => {
-                eprintln!("Created new search index");
+                info!("Created new search index");
                 *search_index_guard = Some(manager);
             }
             Err(e) => {
-                eprintln!("Failed to create search index: {}", e);
+                warn!("Failed to create search index: {}", e);
                 return Ok(()); // Don't fail the sync
             }
         }
     } else {
-        eprintln!("Search index already exists");
+        debug!("Search index already exists");
     }
 
     // Rebuild the index
     if let Some(ref index_manager) = *search_index_guard {
-        eprintln!("Calling rebuild_index...");
+        debug!("Calling rebuild_index...");
         if let Err(e) = index_manager.rebuild_index(&artists, &albums, &songs) {
-            eprintln!("Failed to rebuild search index: {}", e);
+            warn!("Failed to rebuild search index: {}", e);
         } else {
-            eprintln!("rebuild_index completed successfully");
+            debug!("rebuild_index completed successfully");
         }
     } else {
-        eprintln!("search_index_guard is still None after creation attempt!");
+        warn!("search_index_guard is still None after creation attempt!");
     }
 
     Ok(())

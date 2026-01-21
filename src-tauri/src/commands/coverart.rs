@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use log::warn;
 use tauri::{AppHandle, Manager, State};
 
 use crate::error::{AppError, AppResult, MutexExt};
@@ -63,7 +64,7 @@ pub async fn get_cover_art(
 
     // Cache the image
     if let Err(e) = fs::write(&cache_path, &bytes_vec) {
-        eprintln!("Failed to cache cover art: {}", e);
+        warn!("Failed to cache cover art: {}", e);
     }
 
     let base64 = STANDARD.encode(&bytes_vec);

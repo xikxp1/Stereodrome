@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use log::warn;
 use serde::Serialize;
 use submarine::Client;
 use tauri::{AppHandle, Manager};
@@ -87,7 +88,7 @@ impl AudioCache {
                 }
                 Err(e) => {
                     // Log error but continue to fetch from server
-                    eprintln!("Failed to read cached audio: {}", e);
+                    warn!("Failed to read cached audio: {}", e);
                 }
             }
         }
@@ -97,11 +98,11 @@ impl AudioCache {
 
         // Write to cache (fire-and-forget, don't fail playback if caching fails)
         if let Err(e) = fs::write(&cache_path, &bytes) {
-            eprintln!("Failed to cache audio: {}", e);
+            warn!("Failed to cache audio: {}", e);
         } else {
             // Enforce size limit after successful write
             if let Err(e) = self.enforce_size_limit() {
-                eprintln!("Failed to enforce cache size limit: {}", e);
+                warn!("Failed to enforce cache size limit: {}", e);
             }
         }
 
@@ -139,7 +140,7 @@ impl AudioCache {
             }
 
             if let Err(e) = fs::remove_file(&entry.path) {
-                eprintln!("Failed to remove cached file {:?}: {}", entry.path, e);
+                warn!("Failed to remove cached file {:?}: {}", entry.path, e);
             } else {
                 current_size = current_size.saturating_sub(entry.size);
             }
@@ -166,7 +167,7 @@ impl AudioCache {
         let entries = self.get_cache_entries()?;
         for entry in entries {
             if let Err(e) = fs::remove_file(&entry.path) {
-                eprintln!("Failed to remove cached file {:?}: {}", entry.path, e);
+                warn!("Failed to remove cached file {:?}: {}", entry.path, e);
             }
         }
         Ok(())

@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use log::{debug, info, warn};
 use tantivy::{
     collector::TopDocs,
     directory::MmapDirectory,
@@ -167,7 +168,7 @@ impl IndexManager {
 
         // Try to open existing index first, fall back to creating fresh
         Self::try_open_existing(index_path).or_else(|e| {
-            eprintln!("Could not open existing index: {}, creating fresh", e);
+            warn!("Could not open existing index: {}, creating fresh", e);
             Self::create_fresh(index_path)
         })
     }
@@ -207,7 +208,7 @@ impl IndexManager {
         );
         query_parser.set_conjunction_by_default();
 
-        eprintln!(
+        info!(
             "Opened existing search index at {:?} with {} docs",
             index_path,
             reader.searcher().num_docs()
@@ -223,7 +224,7 @@ impl IndexManager {
 
     /// Create a fresh index
     fn create_fresh(index_path: &Path) -> AppResult<Self> {
-        eprintln!("Creating fresh search index at {:?}", index_path);
+        info!("Creating fresh search index at {:?}", index_path);
 
         // Delete existing index files if any
         if index_path.exists() {
@@ -293,7 +294,7 @@ impl IndexManager {
             .delete_all_documents()
             .map_err(|e| AppError::Search(format!("Failed to delete existing documents: {}", e)))?;
 
-        eprintln!(
+        debug!(
             "Indexing {} artists, {} albums, {} songs...",
             artists.len(),
             albums.len(),
@@ -361,7 +362,7 @@ impl IndexManager {
             .map_err(|e| AppError::Search(format!("Failed to reload after commit: {}", e)))?;
 
         let doc_count = self.reader.searcher().num_docs();
-        eprintln!(
+        info!(
             "Search index rebuilt: {} artists, {} albums, {} songs (total {} docs in index)",
             artists.len(),
             albums.len(),
@@ -404,7 +405,7 @@ impl IndexManager {
             return Ok(Vec::new());
         }
 
-        eprintln!(
+        debug!(
             "Search: query='{}', tantivy_query='{}', limit={}",
             query_str, query_text, limit
         );
@@ -415,13 +416,13 @@ impl IndexManager {
             .parse_query(query_text)
             .map_err(|e| AppError::Search(format!("Query parse error: {}", e)))?;
 
-        eprintln!("Search: parsed query = {:?}", query);
+        debug!("Search: parsed query = {:?}", query);
 
         let top_docs = searcher
             .search(&query, &TopDocs::with_limit(limit))
             .map_err(|e| AppError::Search(format!("Search error: {}", e)))?;
 
-        eprintln!(
+        debug!(
             "Search: searcher has {} docs, found {} matches",
             searcher.num_docs(),
             top_docs.len()

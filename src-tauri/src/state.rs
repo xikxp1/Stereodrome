@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use log::{debug, info, warn};
 use rusqlite::Connection;
 use submarine::Client;
 
@@ -38,11 +39,11 @@ impl AppState {
         // Try to create search index, but don't fail if it errors
         let search_index = match IndexManager::new(&index_path) {
             Ok(manager) => {
-                eprintln!("Search index initialized at {:?}", index_path);
+                info!("Search index initialized at {:?}", index_path);
                 Some(manager)
             }
             Err(e) => {
-                eprintln!("Failed to initialize search index: {}", e);
+                warn!("Failed to initialize search index: {}", e);
                 None
             }
         };
@@ -50,11 +51,11 @@ impl AppState {
         // Load persisted queue
         let queue = match (load_queue_items(&conn), load_queue_state(&conn)) {
             (Ok(items), Ok((current_index, shuffle, repeat_mode))) => {
-                eprintln!("Loaded queue with {} items from database", items.len());
+                debug!("Loaded queue with {} items from database", items.len());
                 PlayQueue::load(items, current_index, shuffle, repeat_mode)
             }
             _ => {
-                eprintln!("No persisted queue found, starting fresh");
+                debug!("No persisted queue found, starting fresh");
                 PlayQueue::new()
             }
         };

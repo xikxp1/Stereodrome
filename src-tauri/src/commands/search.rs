@@ -1,3 +1,4 @@
+use log::debug;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -56,7 +57,7 @@ pub fn search_library(
     // Multiply limit to get enough results for each category
     let hits = index_manager.search(&query, limit * 3)?;
 
-    eprintln!(
+    debug!(
         "search_library: query='{}', limit={}, hits={}",
         query,
         limit,
@@ -104,7 +105,7 @@ pub fn search_library(
         }
     }
 
-    eprintln!(
+    debug!(
         "search_library: returning {} songs, {} albums, {} artists",
         songs.len(),
         albums.len(),

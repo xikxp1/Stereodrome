@@ -1,5 +1,6 @@
 import { searchLibrary } from "$lib/api/commands";
 import type { SearchResults } from "$lib/types";
+import { debug, error } from "@tauri-apps/plugin-log";
 
 class SearchStore {
   query = $state("");
@@ -49,7 +50,7 @@ class SearchStore {
       const results = await searchLibrary(q, 1000);
       this.results = results;
 
-      console.log(
+      debug(
         `Search '${q}': ${results.songs.length} songs, ${results.albums.length} albums, ${results.artists.length} artists`
       );
 
@@ -58,11 +59,11 @@ class SearchStore {
       this.matchedAlbumIds = new Set(results.albums.map((a) => a.id));
       this.matchedArtistIds = new Set(results.artists.map((a) => a.id));
 
-      console.log(`Matched IDs: ${this.matchedSongIds.size} song IDs`);
+      debug(`Matched IDs: ${this.matchedSongIds.size} song IDs`);
 
       this.activeQuery = q;
     } catch (e) {
-      console.error("Search failed:", e);
+      error(`Search failed: ${e}`);
     } finally {
       this.isSearching = false;
     }

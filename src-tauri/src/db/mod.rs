@@ -1,5 +1,6 @@
 pub mod queue;
 
+use log::warn;
 use rusqlite::Connection;
 
 use crate::error::AppResult;
@@ -46,7 +47,7 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
     // If critical columns are missing, drop and recreate tables
     // Data will be re-synced from server
     if !missing.is_empty() {
-        eprintln!(
+        warn!(
             "Songs table missing columns {:?}, recreating tables",
             missing
         );
