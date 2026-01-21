@@ -49,10 +49,10 @@ const BAND_FREQUENCIES: [(f32, f32); NUM_BANDS] = [
     (750.0, 1200.0),    // Mids
     (1200.0, 2000.0),   // Mids high
     (2000.0, 3200.0),   // Upper-mids
-    (3200.0, 5000.0),   // Presence
-    (5000.0, 7000.0),   // Brilliance low
-    (7000.0, 10000.0),  // Brilliance high
-    (10000.0, 14000.0), // Highs
+    (3200.0, 4800.0),   // Presence
+    (4800.0, 6000.0),   // Brilliance low
+    (6000.0, 9000.0),  // Brilliance high
+    (9000.0, 12000.0), // Highs
 ];
 
 /// Per-band scaling to balance frequencies
@@ -64,11 +64,11 @@ const BAND_GAINS: [f32; NUM_BANDS] = [
     0.8,  // Mids low
     0.9,  // Mids
     1.0,  // Mids high
-    1.1,  // Upper-mids
-    1.25, // Presence
-    1.4,  // Brilliance low
-    1.6,  // Brilliance high
-    1.8,  // Highs
+    1.2,  // Upper-mids
+    1.4, // Presence
+    1.5,  // Brilliance low
+    1.8,  // Brilliance high
+    2.1,  // Highs
 ];
 
 /// Spectrum analyzer that processes audio samples and computes FFT
