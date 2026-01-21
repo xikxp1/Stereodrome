@@ -16,6 +16,7 @@ Phase 8: Local Storage & Offline Features
 - [x] Prefetch next song to cache for gapless playback
 - [x] Cache settings UI (view stats, clear cache, configurable max size 500MB-50GB)
 - [x] File logging with tauri-plugin-log (replaces println/console.log)
+- [x] OS media controls integration (souvlaki: macOS Control Center, Windows media overlay, Linux MPRIS)
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks
 - [ ] Gapless playback
@@ -153,10 +154,13 @@ src-tauri/src/
 ├── audio/
 │   ├── mod.rs          # Module exports
 │   ├── analyzer.rs     # AnalyzingSource wrapper for sample capture
-│   ├── player.rs       # AudioPlayer with Rodio (threaded)
+│   ├── player.rs       # AudioPlayer with Rodio (threaded), media controls integration
 │   ├── queue.rs        # PlayQueue with shuffle/repeat
 │   ├── spectrum.rs     # FFT analysis, SpectrumAnalyzer, band aggregation
 │   └── stream.rs       # Subsonic audio stream fetching
+├── media/
+│   ├── mod.rs          # Module exports
+│   └── controls.rs     # OS media controls via souvlaki (macOS/Windows/Linux)
 ├── cache/
 │   ├── mod.rs          # Module exports
 │   └── audio.rs        # AudioCache with LRU eviction (5GB max)
@@ -196,7 +200,8 @@ src/lib/
 │   ├── spectrum.svelte.ts    # Spectrum visualizer state (30Hz band updates)
 │   └── nowplaying.svelte.ts  # Server now playing state (for other users)
 ├── services/
-│   └── notifications.svelte.ts  # Desktop notifications (song change when unfocused)
+│   ├── notifications.svelte.ts  # Desktop notifications (song change when unfocused)
+│   └── mediaControls.svelte.ts  # Handle OS media button events (play/pause/next/prev)
 ├── components/
 │   ├── ServerConnect.svelte   # Login screen
 │   ├── TransportBar.svelte    # Top toolbar with playback controls + now playing (local state)

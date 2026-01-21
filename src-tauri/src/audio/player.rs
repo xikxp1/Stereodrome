@@ -7,10 +7,11 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::analyzer::AnalyzingSource;
 use crate::error::{AppError, AppResult};
+use crate::media::MediaControlsManager;
 
 /// Ring buffer size for spectrum analysis (~370ms at 44.1kHz stereo)
 /// Larger buffer prevents sample loss from lock contention
@@ -328,6 +329,11 @@ impl AudioPlayer {
         let shared_state = Arc::clone(&self.shared_state);
 
         thread::spawn(move || {
+            // State tracking for media controls
+            let mut last_song_id: Option<String> = None;
+            let mut last_is_playing = false;
+            let mut position_update_counter: u8 = 0;
+
             loop {
                 thread::sleep(Duration::from_millis(100)); // 10Hz updates
 
@@ -335,6 +341,15 @@ impl AudioPlayer {
 
                 // Only emit when playing or when we have a song (to update paused state)
                 if !state.is_playing && state.song.is_none() {
+                    // Clear media controls if we had a song before
+                    if last_song_id.is_some() {
+                        if let Some(media_controls) = app_handle.try_state::<MediaControlsManager>()
+                        {
+                            media_controls.clear();
+                        }
+                        last_song_id = None;
+                        last_is_playing = false;
+                    }
                     continue;
                 }
 
@@ -355,8 +370,66 @@ impl AudioPlayer {
                         inner.paused_position = 0.0;
                         inner.duration = 0.0;
                     }
+
+                    // Clear media controls
+                    if let Some(media_controls) = app_handle.try_state::<MediaControlsManager>() {
+                        media_controls.clear();
+                    }
+                    last_song_id = None;
+                    last_is_playing = false;
+
                     let _ = app_handle.emit("playback-ended", ());
                     continue;
+                }
+
+                // Update media controls when song changes
+                let current_song_id = state.song.as_ref().map(|s| s.id.clone());
+                if current_song_id != last_song_id {
+                    if let Some(song) = &state.song {
+                        if let Some(media_controls) = app_handle.try_state::<MediaControlsManager>()
+                        {
+                            // Get cover art path from cache - try various sizes that might be cached
+                            let cover_art_path = song.cover_art_id.as_ref().and_then(|id| {
+                                let data_dir = app_handle.path().app_data_dir().ok()?;
+                                let cache_dir = data_dir.join("cover_cache");
+                                let sanitized_id = id.replace(['/', '\\'], "_");
+
+                                // Try sizes in order of preference: 800 (full viewer), 128 (notifications), 64 (transport bar)
+                                for size in [800, 128, 64] {
+                                    let path =
+                                        cache_dir.join(format!("{}_{}.jpg", sanitized_id, size));
+                                    if path.exists() {
+                                        return Some(path.to_string_lossy().to_string());
+                                    }
+                                }
+                                // Fallback to unsized version
+                                let path = cache_dir.join(format!("{}.jpg", sanitized_id));
+                                if path.exists() {
+                                    return Some(path.to_string_lossy().to_string());
+                                }
+                                None
+                            });
+
+                            media_controls.update_metadata(song, state.duration, cover_art_path);
+                        }
+                    }
+                    last_song_id = current_song_id;
+                }
+
+                // Update playback status when it changes
+                if state.is_playing != last_is_playing {
+                    if let Some(media_controls) = app_handle.try_state::<MediaControlsManager>() {
+                        media_controls.set_playback_status(state.is_playing, state.position);
+                    }
+                    last_is_playing = state.is_playing;
+                }
+
+                // Throttled position updates to OS media controls (~1Hz instead of 10Hz)
+                position_update_counter = (position_update_counter + 1) % 10;
+                if position_update_counter == 0 && state.is_playing {
+                    if let Some(media_controls) = app_handle.try_state::<MediaControlsManager>() {
+                        media_controls.set_playback_status(state.is_playing, state.position);
+                    }
                 }
 
                 let _ = app_handle.emit("playback-state", &state);
