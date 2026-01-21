@@ -7,6 +7,8 @@
     Server,
     Database,
     LogOut,
+    Monitor,
+    Activity,
   } from "lucide-svelte";
   import {
     getAudioCacheStats,
@@ -19,6 +21,7 @@
   } from "$lib/api/commands";
   import { connection } from "$lib/stores/connection.svelte";
   import { queryClient } from "$lib/db/queryClient";
+  import { spectrum } from "$lib/stores/spectrum.svelte";
   import type { ScanStatus } from "$lib/types";
 
   interface Props {
@@ -294,6 +297,36 @@
               <LogOut class="h-3.5 w-3.5" />
               Disconnect
             </button>
+          </div>
+        </div>
+
+        <!-- Display Section -->
+        <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
+          <div class="mb-3 flex items-center gap-2">
+            <Monitor class="h-4 w-4 text-base-content/60" />
+            <h3 class="font-medium">Display</h3>
+          </div>
+
+          <div class="space-y-3">
+            <label class="flex cursor-pointer items-center justify-between">
+              <div class="flex items-center gap-2">
+                <Activity class="h-4 w-4 text-base-content/60" />
+                <span class="text-sm">Spectrum Visualizer</span>
+              </div>
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm checkbox-primary"
+                checked={spectrum.enabled}
+                onchange={(e) => {
+                  if (e.currentTarget.checked !== spectrum.enabled) {
+                    spectrum.toggle();
+                  }
+                }}
+              />
+            </label>
+            <p class="text-xs text-base-content/50">
+              Show audio spectrum bars in the transport bar. Press V to toggle.
+            </p>
           </div>
         </div>
 
