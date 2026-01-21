@@ -1,3 +1,4 @@
+use log::{error, warn};
 use ringbuf::{traits::Split, HeapCons, HeapProd, HeapRb};
 use rodio::{Decoder, OutputStreamBuilder, Sink};
 use std::io::Cursor;
@@ -383,7 +384,7 @@ fn run_audio_thread(
             s
         }
         Err(e) => {
-            eprintln!("Failed to open audio stream: {:?}", e);
+            error!("Failed to open audio stream: {:?}", e);
             return;
         }
     };
@@ -438,7 +439,7 @@ fn run_audio_thread(
                             current_sink = Some(sink);
                         }
                         Err(e) => {
-                            eprintln!("Failed to decode audio: {:?}", e);
+                            error!("Failed to decode audio: {:?}", e);
                         }
                     }
                 }
@@ -493,7 +494,7 @@ fn run_audio_thread(
                     if let Some(ref sink) = current_sink {
                         let seek_duration = Duration::from_secs_f64(position_secs);
                         if let Err(e) = sink.try_seek(seek_duration) {
-                            eprintln!("Seek failed: {:?}", e);
+                            warn!("Seek failed: {:?}", e);
                         } else {
                             // Update position tracking (single lock acquisition)
                             let mut inner = shared_state.write_inner();

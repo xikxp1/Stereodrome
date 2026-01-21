@@ -12,6 +12,7 @@
     "core:webview:allow-create-webview-window",
     "opener:default",
     "store:default",
-    "notification:default"
+    "notification:default",
+    "log:default"
   ]
 }
