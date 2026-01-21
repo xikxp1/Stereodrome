@@ -99,6 +99,11 @@ export interface SyncResult {
   songs: number;
 }
 
+export interface ScanStatus {
+  scanning: boolean;
+  count: number | null;
+}
+
 // Search types
 export interface SearchResultSong {
   id: string;

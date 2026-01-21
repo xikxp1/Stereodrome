@@ -1,11 +1,25 @@
 <script lang="ts">
-  import { X, HardDrive, Trash2, RefreshCw } from "lucide-svelte";
+  import {
+    X,
+    HardDrive,
+    Trash2,
+    RefreshCw,
+    Server,
+    Database,
+    LogOut,
+  } from "lucide-svelte";
   import {
     getAudioCacheStats,
     clearAudioCache,
     setMaxCacheSize,
+    getScanStatus,
+    startScan,
+    syncLibrary,
     type CacheStats,
   } from "$lib/api/commands";
+  import { connection } from "$lib/stores/connection.svelte";
+  import { queryClient } from "$lib/db/queryClient";
+  import type { ScanStatus } from "$lib/types";
 
   interface Props {
     open: boolean;
@@ -14,10 +28,18 @@
 
   let { open, onClose }: Props = $props();
 
+  // Cache state
   let cacheStats = $state<CacheStats | null>(null);
   let loadingStats = $state(false);
   let clearing = $state(false);
   let savingSize = $state(false);
+
+  // Scan state
+  let scanStatus = $state<ScanStatus | null>(null);
+  let loadingScanStatus = $state(false);
+  let startingScan = $state(false);
+  let syncing = $state(false);
+  let scanPollInterval = $state<ReturnType<typeof setInterval> | null>(null);
 
   // Cache size in GB for the slider (0.5 to 50 GB)
   let cacheSizeGB = $state(5);
@@ -25,10 +47,27 @@
   // Preset size options in GB
   const sizePresets = [0.5, 1, 2, 5, 10, 20, 50];
 
-  // Load cache stats when modal opens
+  // Load stats when modal opens
   $effect(() => {
     if (open) {
       loadCacheStats();
+      loadScanStatus();
+    } else {
+      // Clean up polling when modal closes
+      if (scanPollInterval) {
+        clearInterval(scanPollInterval);
+        scanPollInterval = null;
+      }
+    }
+  });
+
+  // Poll scan status while scanning
+  $effect(() => {
+    if (scanStatus?.scanning && !scanPollInterval) {
+      scanPollInterval = setInterval(loadScanStatus, 2000);
+    } else if (!scanStatus?.scanning && scanPollInterval) {
+      clearInterval(scanPollInterval);
+      scanPollInterval = null;
     }
   });
 
@@ -73,6 +112,47 @@
     } finally {
       clearing = false;
     }
+  }
+
+  async function loadScanStatus() {
+    loadingScanStatus = true;
+    try {
+      scanStatus = await getScanStatus();
+    } catch (e) {
+      console.error("Failed to load scan status:", e);
+    } finally {
+      loadingScanStatus = false;
+    }
+  }
+
+  async function handleStartScan() {
+    startingScan = true;
+    try {
+      scanStatus = await startScan();
+    } catch (e) {
+      console.error("Failed to start scan:", e);
+    } finally {
+      startingScan = false;
+    }
+  }
+
+  async function handleSyncLibrary() {
+    syncing = true;
+    try {
+      await syncLibrary();
+      await queryClient.invalidateQueries({ queryKey: ["artists"] });
+      await queryClient.invalidateQueries({ queryKey: ["albums"] });
+      await queryClient.invalidateQueries({ queryKey: ["songs"] });
+    } catch (e) {
+      console.error("Failed to sync library:", e);
+    } finally {
+      syncing = false;
+    }
+  }
+
+  async function handleDisconnect() {
+    await connection.disconnect();
+    onClose();
   }
 
   function formatBytes(bytes: number): string {
@@ -128,7 +208,95 @@
       </div>
 
       <!-- Content -->
-      <div class="p-4">
+      <div class="max-h-[70vh] space-y-4 overflow-y-auto p-4">
+        <!-- Server Section -->
+        <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
+          <div class="mb-3 flex items-center gap-2">
+            <Server class="h-4 w-4 text-base-content/60" />
+            <h3 class="font-medium">Server</h3>
+          </div>
+
+          <div class="space-y-2">
+            <div class="flex justify-between text-sm">
+              <span class="text-base-content/60">URL</span>
+              <span class="max-w-48 truncate font-medium">
+                {connection.status.server_url ?? "Not connected"}
+              </span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-base-content/60">Username</span>
+              <span class="font-medium">
+                {connection.status.username ?? "-"}
+              </span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-base-content/60">Server version</span>
+              <span class="font-medium">
+                {connection.status.server_version ?? "-"}
+              </span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-base-content/60">Scan status</span>
+              <span class="font-medium">
+                {#if loadingScanStatus && !scanStatus}
+                  <RefreshCw class="inline h-3 w-3 animate-spin" />
+                {:else if scanStatus?.scanning}
+                  <span class="text-warning">
+                    Scanning{scanStatus.count
+                      ? ` (${scanStatus.count} items)`
+                      : "..."}
+                  </span>
+                {:else if scanStatus}
+                  <span class="text-success">Idle</span>
+                  {#if scanStatus.count}
+                    <span class="text-base-content/50">
+                      ({scanStatus.count.toLocaleString()} items)
+                    </span>
+                  {/if}
+                {:else}
+                  -
+                {/if}
+              </span>
+            </div>
+          </div>
+
+          <div class="mt-4 flex flex-wrap gap-2 border-t border-base-300 pt-4">
+            <button
+              class="btn btn-sm btn-ghost gap-1"
+              onclick={handleStartScan}
+              disabled={startingScan || scanStatus?.scanning}
+            >
+              {#if startingScan || scanStatus?.scanning}
+                <RefreshCw class="h-3.5 w-3.5 animate-spin" />
+                {scanStatus?.scanning ? "Scanning..." : "Starting..."}
+              {:else}
+                <RefreshCw class="h-3.5 w-3.5" />
+                Start Scan
+              {/if}
+            </button>
+            <button
+              class="btn btn-sm btn-ghost gap-1"
+              onclick={handleSyncLibrary}
+              disabled={syncing}
+            >
+              {#if syncing}
+                <Database class="h-3.5 w-3.5 animate-pulse" />
+                Syncing...
+              {:else}
+                <Database class="h-3.5 w-3.5" />
+                Sync to Local
+              {/if}
+            </button>
+            <button
+              class="btn btn-sm btn-error btn-outline gap-1"
+              onclick={handleDisconnect}
+            >
+              <LogOut class="h-3.5 w-3.5" />
+              Disconnect
+            </button>
+          </div>
+        </div>
+
         <!-- Audio Cache Section -->
         <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
           <div class="mb-3 flex items-center gap-2">

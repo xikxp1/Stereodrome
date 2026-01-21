@@ -6,6 +6,7 @@ import type {
   Album,
   Song,
   SyncResult,
+  ScanStatus,
   PlaybackState,
   SearchResults,
 } from "$lib/types";
@@ -125,4 +126,13 @@ export async function setMaxCacheSize(size: number): Promise<CacheStats> {
 // Scrobbling commands
 export async function scrobbleSubmit(songId: string): Promise<void> {
   return invoke("scrobble_submit", { songId });
+}
+
+// Scan commands
+export async function getScanStatus(): Promise<ScanStatus> {
+  return invoke<ScanStatus>("get_scan_status");
+}
+
+export async function startScan(): Promise<ScanStatus> {
+  return invoke<ScanStatus>("start_scan");
 }

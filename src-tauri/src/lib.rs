@@ -104,6 +104,8 @@ pub fn run() {
             commands::get_audio_cache_stats,
             commands::clear_audio_cache,
             commands::set_max_cache_size,
+            commands::get_scan_status,
+            commands::start_scan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
