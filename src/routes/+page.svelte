@@ -27,7 +27,9 @@
   let queueOpen = $state(false);
 
   // Keyboard shortcut state
-  let previousVolume = $state(1); // For mute/unmute toggle
+  let previousVolume = $state(100); // For mute/unmute toggle (0-100 scale)
+  let volumeAdjusting = $state(false);
+  let volumeAdjustTimeout: ReturnType<typeof setTimeout> | null = null;
   let searchInputRef = $state<HTMLInputElement | null>(null);
 
   // Browser state
@@ -43,7 +45,7 @@
 
   // Get current track from local playback state (no server latency)
   const currentTrack = $derived(playback.currentTrack);
-  const volume = $derived(playback.volume * 100); // Convert to 0-100 for UI
+  const volume = $derived(Math.round(playback.volume * 100)); // Convert to 0-100 for UI
 
   // Cover art state
   let coverArtUrl = $state<string | null>(null);
@@ -215,6 +217,11 @@
 
   function handleVolumeChange(v: number) {
     playback.setVolume(v / 100); // Convert from 0-100 to 0-1
+    volumeAdjusting = true;
+    if (volumeAdjustTimeout) clearTimeout(volumeAdjustTimeout);
+    volumeAdjustTimeout = setTimeout(() => {
+      volumeAdjusting = false;
+    }, 1000);
   }
 
   function handleSeek(position: number) {
@@ -348,7 +355,7 @@
         if (isMod) {
           event.preventDefault();
           // Mod+Up - volume up 5%
-          playback.setVolume(Math.min(1, playback.volume + 0.05));
+          handleVolumeChange(Math.min(100, volume + 5));
         } else {
           // Plain up arrow - navigate to previous song in list
           event.preventDefault();
@@ -360,7 +367,7 @@
         if (isMod) {
           event.preventDefault();
           // Mod+Down - volume down 5%
-          playback.setVolume(Math.max(0, playback.volume - 0.05));
+          handleVolumeChange(Math.max(0, volume - 5));
         } else {
           // Plain down arrow - navigate to next song in list
           event.preventDefault();
@@ -371,11 +378,11 @@
       case "m":
       case "M":
         // Mute/unmute toggle
-        if (playback.volume > 0) {
-          previousVolume = playback.volume;
-          playback.setVolume(0);
+        if (volume > 0) {
+          previousVolume = volume;
+          handleVolumeChange(0);
         } else {
-          playback.setVolume(previousVolume);
+          handleVolumeChange(previousVolume);
         }
         break;
 
@@ -468,6 +475,7 @@
       currentTime={playback.position}
       duration={playback.duration}
       {volume}
+      {volumeAdjusting}
       {queueOpen}
       {coverArtUrl}
       filteredSongsCount={filteredSongs.length}

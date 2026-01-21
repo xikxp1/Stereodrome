@@ -71,6 +71,7 @@
     currentTime?: number;
     duration?: number;
     volume?: number;
+    volumeAdjusting?: boolean;
     queueOpen?: boolean;
     coverArtUrl?: string | null;
     filteredSongsCount?: number;
@@ -89,7 +90,8 @@
     currentTrack = null,
     currentTime = 0,
     duration = 0,
-    volume = 80,
+    volume: volumeProp = 80,
+    volumeAdjusting: volumeAdjustingProp = false,
     queueOpen = false,
     coverArtUrl = null,
     filteredSongsCount = 0,
@@ -102,6 +104,9 @@
     onQueueToggle,
     onCoverArtClick,
   }: Props = $props();
+
+  // Ensure volume is always a whole number for display
+  const volume = $derived(Math.round(volumeProp));
 
   function handleInput(e: Event) {
     const input = e.target as HTMLInputElement;
@@ -249,7 +254,7 @@
         ></div>
       </div>
       <Volume2 class="h-3 w-3 shrink-0 text-base-content/40" />
-      {#if volumeAdjusting}
+      {#if volumeAdjusting || volumeAdjustingProp}
         <span
           class="absolute -top-6 left-1/2 -translate-x-1/2 rounded bg-base-content px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-base-100 shadow"
           >{volume}%</span
