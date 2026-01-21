@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -140,19 +142,35 @@ pub async fn play_queue_item(
     app_handle: AppHandle,
     index: usize,
 ) -> AppResult<()> {
-    let song_id = {
-        let mut queue = state.queue.lock_recover();
-        queue.set_current(index).map(|item| item.song_id.clone())
-    };
-
-    // Persist current index change
-    persist_and_emit(&state, &app_handle);
-
-    if let Some(song_id) = song_id {
-        crate::commands::play_song(app_handle, state, song_id).await?;
+    // Prevent race condition: if already navigating, skip this request
+    if state
+        .navigating
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(());
     }
 
-    Ok(())
+    let result = async {
+        let song_id = {
+            let mut queue = state.queue.lock_recover();
+            queue.set_current(index).map(|item| item.song_id.clone())
+        };
+
+        // Persist current index change
+        persist_and_emit(&state, &app_handle);
+
+        if let Some(song_id) = song_id {
+            crate::commands::play_song(app_handle, state.clone(), song_id).await?;
+        }
+
+        Ok(())
+    }
+    .await;
+
+    // Always release the navigation lock
+    state.navigating.store(false, Ordering::SeqCst);
+    result
 }
 
 #[tauri::command]
@@ -161,41 +179,73 @@ pub async fn play_next(
     app_handle: AppHandle,
     force: Option<bool>,
 ) -> AppResult<bool> {
-    let next_song = {
-        let mut queue = state.queue.lock_recover();
-        queue
-            .next(force.unwrap_or(false))
-            .map(|item| item.song_id.clone())
-    };
-
-    // Persist current index change
-    persist_and_emit(&state, &app_handle);
-
-    if let Some(song_id) = next_song {
-        crate::commands::play_song(app_handle.clone(), state, song_id).await?;
-        Ok(true)
-    } else {
-        let _ = app_handle.emit("queue-ended", ());
-        Ok(false)
+    // Prevent race condition: if already navigating, skip this request
+    if state
+        .navigating
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(false);
     }
+
+    let result = async {
+        let next_song = {
+            let mut queue = state.queue.lock_recover();
+            queue
+                .next(force.unwrap_or(false))
+                .map(|item| item.song_id.clone())
+        };
+
+        // Persist current index change
+        persist_and_emit(&state, &app_handle);
+
+        if let Some(song_id) = next_song {
+            crate::commands::play_song(app_handle.clone(), state.clone(), song_id).await?;
+            Ok(true)
+        } else {
+            let _ = app_handle.emit("queue-ended", ());
+            Ok(false)
+        }
+    }
+    .await;
+
+    // Always release the navigation lock
+    state.navigating.store(false, Ordering::SeqCst);
+    result
 }
 
 #[tauri::command]
 pub async fn play_previous(state: State<'_, AppState>, app_handle: AppHandle) -> AppResult<bool> {
-    let prev_song = {
-        let mut queue = state.queue.lock_recover();
-        queue.previous().map(|item| item.song_id.clone())
-    };
-
-    // Persist current index change
-    persist_and_emit(&state, &app_handle);
-
-    if let Some(song_id) = prev_song {
-        crate::commands::play_song(app_handle, state, song_id).await?;
-        Ok(true)
-    } else {
-        Ok(false)
+    // Prevent race condition: if already navigating, skip this request
+    if state
+        .navigating
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(false);
     }
+
+    let result = async {
+        let prev_song = {
+            let mut queue = state.queue.lock_recover();
+            queue.previous().map(|item| item.song_id.clone())
+        };
+
+        // Persist current index change
+        persist_and_emit(&state, &app_handle);
+
+        if let Some(song_id) = prev_song {
+            crate::commands::play_song(app_handle, state.clone(), song_id).await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+    .await;
+
+    // Always release the navigation lock
+    state.navigating.store(false, Ordering::SeqCst);
+    result
 }
 
 #[tauri::command]

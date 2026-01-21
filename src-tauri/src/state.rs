@@ -26,6 +26,8 @@ pub struct AppState {
     pub search_index: Mutex<Option<IndexManager>>,
     pub index_path: PathBuf,
     pub emitter_running: Arc<AtomicBool>,
+    /// Prevents race conditions when rapidly clicking next/previous
+    pub navigating: AtomicBool,
 }
 
 impl AppState {
@@ -66,6 +68,7 @@ impl AppState {
             search_index: Mutex::new(search_index),
             index_path,
             emitter_running: Arc::new(AtomicBool::new(true)),
+            navigating: AtomicBool::new(false),
         })
     }
 
