@@ -428,12 +428,6 @@
         }
         break;
 
-      case "/":
-        // Focus search
-        event.preventDefault();
-        searchInputRef?.focus();
-        break;
-
       case "k":
       case "K":
         if (isMod) {

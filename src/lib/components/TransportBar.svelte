@@ -11,13 +11,13 @@
     Volume1,
     Volume2,
     VolumeX,
-    Loader2,
     ListMusic,
     Music,
     Shuffle,
     Repeat,
     Repeat1,
     Settings,
+    LoaderCircle,
   } from "lucide-svelte";
 
   let volumeDropdownOpen = $state(false);
@@ -412,8 +412,8 @@
       <input
         bind:this={searchInputRef}
         type="search"
-        placeholder="Search (/)"
-        title="Search ({modKey}K or /)"
+        placeholder="Search ({modKey}K)"
+        title="Search ({modKey}K)"
         value={searchStore.query}
         oninput={handleInput}
         class="h-7 w-24 rounded-full border border-base-300 bg-base-100 px-3 text-xs outline-none transition-all duration-150 placeholder:text-base-content/40 focus:border-primary focus:ring-2 focus:ring-primary/20 sm:w-32 md:w-40 lg:w-44 lg:focus:w-52"
@@ -422,7 +422,7 @@
         <span
           class="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2"
         >
-          <Loader2 class="h-4 w-4 animate-spin text-primary" />
+          <LoaderCircle class="h-4 w-4 animate-spin text-primary" />
         </span>
       {/if}
     </div>
