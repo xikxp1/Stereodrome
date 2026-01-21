@@ -287,7 +287,7 @@
                 Syncing...
               {:else}
                 <Database class="h-3.5 w-3.5" />
-                Sync to Local
+                Sync Library
               {/if}
             </button>
             <button
@@ -325,7 +325,7 @@
               />
             </label>
             <p class="text-xs text-base-content/50">
-              Show audio spectrum bars in the transport bar. Press V to toggle.
+              Show audio spectrum bars in Now Playing. Press V to toggle.
             </p>
           </div>
         </div>
@@ -389,16 +389,18 @@
                     <RefreshCw class="h-3.5 w-3.5 animate-spin" />
                   {/if}
                 </div>
-                <div class="flex flex-wrap gap-1.5">
+                <div class="flex flex-wrap gap-1">
                   {#each sizePresets as preset (preset)}
                     <button
-                      class="btn btn-xs {Math.abs(cacheSizeGB - preset) < 0.01
+                      class="btn btn-xs h-6 min-h-0 px-2 {Math.abs(
+                        cacheSizeGB - preset
+                      ) < 0.01
                         ? 'btn-primary'
                         : 'btn-ghost'}"
                       onclick={() => handleSizeChange(preset)}
                       disabled={savingSize}
                     >
-                      {preset < 1 ? `${preset * 1000} MB` : `${preset} GB`}
+                      {preset < 1 ? `${preset * 1000}MB` : `${preset}GB`}
                     </button>
                   {/each}
                 </div>
