@@ -2,7 +2,7 @@
   import { searchStore } from "$lib/stores/search.svelte";
   import { queue } from "$lib/stores/queue.svelte";
   import SpectrumBars from "./SpectrumBars.svelte";
-  import MarqueeText from "./MarqueeText.svelte";
+  import SyncedMarquee from "./SyncedMarquee.svelte";
   import {
     SkipBack,
     Play,
@@ -322,13 +322,15 @@
         <!-- Track Info (fixed height for consistency) -->
         <div class="mb-1 text-center">
           {#if currentTrack}
-            <MarqueeText
+            <SyncedMarquee
               text={currentTrack.title}
+              group="now-playing"
               class="text-sm font-medium text-base-content"
             />
-            <MarqueeText
+            <SyncedMarquee
               text={currentTrack.artist +
                 (currentTrack.album ? ` — ${currentTrack.album}` : "")}
+              group="now-playing"
               class="text-xs text-base-content/60"
             />
           {:else}
