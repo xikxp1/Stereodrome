@@ -239,6 +239,16 @@ class QueueStore {
     return null;
   }
 
+  // Check if there's a previous track available
+  get hasPrevious(): boolean {
+    return this.previousSong !== null;
+  }
+
+  // Check if there's a next track available
+  get hasNext(): boolean {
+    return this.nextSong !== null;
+  }
+
   // Helper to play a song and set up queue
   async playSongWithQueue(song: Song, allSongs?: Song[]) {
     if (allSongs && allSongs.length > 0) {

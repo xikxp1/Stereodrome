@@ -131,8 +131,9 @@
     <!-- Button Group -->
     <div class="flex rounded bg-base-300 p-0.5 shadow-sm">
       <button
-        class="flex h-7 w-7 items-center justify-center rounded-l bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
+        class="flex h-7 w-7 items-center justify-center rounded-l bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
         onclick={() => onPrevious?.()}
+        disabled={!queue.hasPrevious}
         aria-label="Previous track"
         title={prevTooltip}
       >
@@ -151,8 +152,9 @@
         {/if}
       </button>
       <button
-        class="flex h-7 w-7 items-center justify-center rounded-r bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
+        class="flex h-7 w-7 items-center justify-center rounded-r bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
         onclick={() => onNext?.()}
+        disabled={!queue.hasNext}
         aria-label="Next track"
         title={nextTooltip}
       >
