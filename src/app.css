@@ -78,12 +78,18 @@ html {
 
 body {
   background: oklch(95% 0.004 250);
-}
-
-/* Prevent text selection on UI elements */
-.select-none {
   -webkit-user-select: none;
   user-select: none;
+  cursor: default;
+}
+
+/* Allow text selection in inputs */
+input,
+textarea,
+[contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
 }
 
 /* Custom scrollbar - iTunes style */
