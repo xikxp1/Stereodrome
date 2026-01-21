@@ -12,6 +12,7 @@ pub struct QueueState {
     pub current_index: Option<usize>,
     pub shuffle: bool,
     pub repeat_mode: RepeatMode,
+    pub pending_navigation_index: Option<usize>,
 }
 
 impl QueueState {
@@ -21,6 +22,7 @@ impl QueueState {
             current_index: queue.current_index(),
             shuffle: queue.is_shuffle(),
             repeat_mode: queue.repeat_mode(),
+            pending_navigation_index: queue.pending_navigation_index(),
         }
     }
 }

@@ -17,6 +17,7 @@ interface QueueState {
   current_index: number | null;
   shuffle: boolean;
   repeat_mode: RepeatMode;
+  pending_navigation_index: number | null;
 }
 
 class QueueStore {
@@ -25,6 +26,7 @@ class QueueStore {
   currentIndex = $state<number | null>(null);
   shuffle = $state(false);
   repeatMode = $state<RepeatMode>("Off");
+  pendingNavigationIndex = $state<number | null>(null);
 
   // Event listeners
   private unlistenChanged: UnlistenFn | null = null;
@@ -64,6 +66,7 @@ class QueueStore {
     this.currentIndex = state.current_index;
     this.shuffle = state.shuffle;
     this.repeatMode = state.repeat_mode;
+    this.pendingNavigationIndex = state.pending_navigation_index;
   }
 
   private async loadFromBackend() {
@@ -199,6 +202,20 @@ class QueueStore {
   // Get the previous song (what will play when Previous is clicked)
   get previousSong(): QueueItem | null {
     if (this.items.length === 0) return null;
+
+    // If current was removed, use pending navigation index
+    if (this.currentIndex === null && this.pendingNavigationIndex !== null) {
+      const prevIdx = this.pendingNavigationIndex - 1;
+      if (prevIdx >= 0) {
+        return this.items[prevIdx];
+      }
+      // At start with pending - wrap if repeat all
+      if (this.repeatMode === "All") {
+        return this.items[this.items.length - 1];
+      }
+      return this.items[0]; // Stay at beginning
+    }
+
     if (this.currentIndex === null) return null;
 
     if (this.currentIndex > 0) {
@@ -216,6 +233,15 @@ class QueueStore {
   // Get the next song (what will play when Next is clicked)
   get nextSong(): QueueItem | null {
     if (this.items.length === 0) return null;
+
+    // If current was removed, use pending navigation index
+    if (this.currentIndex === null && this.pendingNavigationIndex !== null) {
+      const nextIdx = Math.min(
+        this.pendingNavigationIndex,
+        this.items.length - 1
+      );
+      return this.items[nextIdx];
+    }
 
     // If repeat one, next will play the same song
     if (this.repeatMode === "One" && this.currentIndex !== null) {
