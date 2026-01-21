@@ -350,7 +350,7 @@
         <!-- Scrubber -->
         <div class="flex items-center gap-2">
           <span
-            class="w-9 text-right font-mono text-[11px] tabular-nums text-base-content/50"
+            class="w-9 text-right font-mono text-[11px] tabular-nums text-base-content"
           >
             {formatTime(currentTime)}
           </span>
@@ -379,7 +379,7 @@
             ></div>
           </div>
           <span
-            class="w-9 font-mono text-[11px] tabular-nums text-base-content/50"
+            class="w-9 font-mono text-[11px] tabular-nums text-base-content"
           >
             {formatTimeRemaining(currentTime, duration)}
           </span>
