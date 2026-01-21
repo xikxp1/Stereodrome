@@ -9,6 +9,12 @@ use crate::search::{AlbumIndexData, ArtistIndexData, IndexManager, SongIndexData
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanStatus {
+    pub scanning: bool,
+    pub count: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artist {
     pub id: String,
     pub name: String,
@@ -446,4 +452,40 @@ pub async fn get_songs(
     };
 
     Ok(songs)
+}
+
+#[tauri::command]
+pub async fn get_scan_status(state: State<'_, AppState>) -> AppResult<ScanStatus> {
+    let client = {
+        let lock = state.client.lock_recover();
+        lock.clone().ok_or(AppError::NotConnected)?
+    };
+
+    let status = client
+        .get_scan_status()
+        .await
+        .map_err(|e| AppError::Subsonic(e.to_string()))?;
+
+    Ok(ScanStatus {
+        scanning: status.scanning,
+        count: status.count,
+    })
+}
+
+#[tauri::command]
+pub async fn start_scan(state: State<'_, AppState>) -> AppResult<ScanStatus> {
+    let client = {
+        let lock = state.client.lock_recover();
+        lock.clone().ok_or(AppError::NotConnected)?
+    };
+
+    let status = client
+        .start_scan()
+        .await
+        .map_err(|e| AppError::Subsonic(e.to_string()))?;
+
+    Ok(ScanStatus {
+        scanning: status.scanning,
+        count: status.count,
+    })
 }

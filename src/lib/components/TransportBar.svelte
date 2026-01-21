@@ -17,6 +17,7 @@
     Shuffle,
     Repeat,
     Repeat1,
+    Settings,
   } from "lucide-svelte";
 
   let volumeDropdownOpen = $state(false);
@@ -83,6 +84,7 @@
     onVolumeChange?: (volume: number) => void;
     onQueueToggle?: () => void;
     onCoverArtClick?: () => void;
+    onSettingsClick?: () => void;
   }
 
   let {
@@ -103,6 +105,7 @@
     onVolumeChange,
     onQueueToggle,
     onCoverArtClick,
+    onSettingsClick,
   }: Props = $props();
 
   // Ensure volume is always a whole number for display
@@ -385,8 +388,16 @@
     </div>
   </div>
 
-  <!-- Right: Queue Toggle + Search -->
+  <!-- Right: Settings + Queue Toggle + Search -->
   <div class="z-10 flex items-center gap-2">
+    <button
+      class="flex h-7 w-7 items-center justify-center rounded bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content"
+      onclick={() => onSettingsClick?.()}
+      aria-label="Settings"
+      title="Settings ({modKey},)"
+    >
+      <Settings class="h-4 w-4" />
+    </button>
     <button
       class="flex h-7 w-7 items-center justify-center rounded transition-colors {queueOpen
         ? 'bg-primary text-primary-content'

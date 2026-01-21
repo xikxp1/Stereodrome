@@ -31,17 +31,10 @@ Use `cargo add <package>` to add new dependencies, avoid editing `Cargo.toml` ma
 
 **Development**
 
-- `bun run tauri dev` - Run full app (frontend + backend)
 - `bun run check` - Type-check Svelte components
 - `cd src-tauri && cargo fmt && cargo clippy` - Format and lint Rust
 
-**Build**
-
-- `bun run tauri build` - Create production bundle
-
 Always run `bun run check && bun run lint:fix && bun run format` for frontend changes. Always run `cargo fmt && cargo clippy` in `src-tauri/` for Rust changes.
-
-Use `bun run tauri dev` to verify changes work in the running app.
 
 ## Coding Notes
 
