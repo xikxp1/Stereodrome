@@ -73,6 +73,7 @@
     volume?: number;
     queueOpen?: boolean;
     coverArtUrl?: string | null;
+    filteredSongsCount?: number;
     searchInputRef?: HTMLInputElement | null;
     onPlayPause?: () => void;
     onPrevious?: () => void;
@@ -91,6 +92,7 @@
     volume = 80,
     queueOpen = false,
     coverArtUrl = null,
+    filteredSongsCount = 0,
     searchInputRef = $bindable(null),
     onPlayPause,
     onPrevious,
@@ -140,8 +142,11 @@
         <SkipBack class="h-3 w-3" fill="currentColor" />
       </button>
       <button
-        class="flex h-7 w-8 items-center justify-center border-x border-base-300 bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300"
+        class="flex h-7 w-8 items-center justify-center border-x border-base-300 bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
         onclick={() => onPlayPause?.()}
+        disabled={queue.items.length === 0 &&
+          !queue.currentSong &&
+          filteredSongsCount === 0}
         aria-label={isPlaying ? "Pause" : "Play"}
         title={playTooltip}
       >

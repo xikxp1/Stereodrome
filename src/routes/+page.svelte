@@ -470,6 +470,7 @@
       {volume}
       {queueOpen}
       {coverArtUrl}
+      filteredSongsCount={filteredSongs.length}
       onPlayPause={handlePlayPause}
       onPrevious={handlePrevious}
       onNext={handleNext}
