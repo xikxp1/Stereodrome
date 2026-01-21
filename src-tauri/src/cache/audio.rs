@@ -1,10 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use serde::Serialize;
 use submarine::Client;
 use tauri::{AppHandle, Manager};
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::audio::fetch_audio_bytes;
 use crate::error::{AppError, AppResult};
@@ -22,6 +24,11 @@ pub struct CacheStats {
     /// Maximum allowed cache size in bytes
     pub max_size: u64,
 }
+
+/// Tracks songs currently being prefetched to avoid duplicate requests
+static PREFETCH_IN_PROGRESS: std::sync::LazyLock<
+    Arc<TokioMutex<std::collections::HashSet<String>>>,
+> = std::sync::LazyLock::new(|| Arc::new(TokioMutex::new(std::collections::HashSet::new())));
 
 /// Audio file cache with LRU eviction
 pub struct AudioCache {
@@ -191,6 +198,50 @@ impl AudioCache {
         }
 
         Ok(entries)
+    }
+
+    /// Prefetch a song to cache in the background.
+    /// Returns immediately - the fetch happens asynchronously.
+    /// Skips if the song is already cached or currently being prefetched.
+    pub fn prefetch(
+        app_handle: AppHandle,
+        client: Client,
+        song_id: String,
+        suffix: String,
+        max_size: u64,
+    ) {
+        tauri::async_runtime::spawn(async move {
+            // Check if already being prefetched
+            {
+                let mut in_progress = PREFETCH_IN_PROGRESS.lock().await;
+                if in_progress.contains(&song_id) {
+                    return;
+                }
+                in_progress.insert(song_id.clone());
+            }
+
+            // Create cache instance
+            let cache = match AudioCache::new(&app_handle, max_size) {
+                Ok(c) => c,
+                Err(_) => {
+                    // Remove from in-progress on error
+                    PREFETCH_IN_PROGRESS.lock().await.remove(&song_id);
+                    return;
+                }
+            };
+
+            // Skip if already cached
+            if cache.is_cached(&song_id, &suffix) {
+                PREFETCH_IN_PROGRESS.lock().await.remove(&song_id);
+                return;
+            }
+
+            // Fetch and cache
+            let _ = cache.get_or_fetch(&client, &song_id, &suffix).await;
+
+            // Remove from in-progress
+            PREFETCH_IN_PROGRESS.lock().await.remove(&song_id);
+        });
     }
 }
 

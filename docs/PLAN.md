@@ -1,6 +1,6 @@
 # Stereodrome Development Plan
 
-Last updated: 2026-01-20
+Last updated: 2026-01-21
 
 ## Current Status
 
@@ -13,6 +13,7 @@ Core player functionality with UI polish: audio playback, queue management, play
 Phase 8: Local Storage & Offline Features
 
 - [x] Local audio cache with LRU eviction (5GB max, automatic cleanup)
+- [x] Prefetch next song to cache for gapless playback
 - [ ] Cache settings UI (view stats, clear cache)
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks

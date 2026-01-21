@@ -5,6 +5,41 @@ use crate::cache::{AudioCache, DEFAULT_MAX_CACHE_SIZE};
 use crate::error::{AppError, AppResult, MutexExt};
 use crate::state::AppState;
 
+/// Prefetch the next song in the queue for gapless playback
+fn prefetch_next_song(app_handle: &AppHandle, state: &AppState) {
+    // Get client
+    let client = match state.client.lock().unwrap().clone() {
+        Some(c) => c,
+        None => return,
+    };
+
+    // Get next song info from queue
+    let next_song_info: Option<(String, String)> = {
+        let queue = state.queue.lock_recover();
+        queue.peek_next().map(|item| item.song_id.clone())
+    }
+    .and_then(|song_id| {
+        // Get suffix from database
+        let conn = state.db.lock_recover();
+        conn.query_row("SELECT suffix FROM songs WHERE id = ?", [&song_id], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .ok()
+        .flatten()
+        .map(|suffix| (song_id, suffix))
+    });
+
+    if let Some((song_id, suffix)) = next_song_info {
+        AudioCache::prefetch(
+            app_handle.clone(),
+            client,
+            song_id,
+            suffix,
+            DEFAULT_MAX_CACHE_SIZE,
+        );
+    }
+}
+
 #[tauri::command]
 pub async fn play_song(
     app_handle: AppHandle,
@@ -67,6 +102,9 @@ pub async fn play_song(
         let audio_player = state.audio_player.lock_recover();
         audio_player.play(audio_data, metadata, duration)?;
     }
+
+    // Prefetch next song for gapless playback
+    prefetch_next_song(&app_handle, &state);
 
     // Report "now playing" to Subsonic server
     // Fire and forget - don't fail playback if scrobble fails

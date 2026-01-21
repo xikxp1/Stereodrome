@@ -381,4 +381,43 @@ impl PlayQueue {
         };
         self.repeat_mode
     }
+
+    /// Peek at the next song without advancing the queue position.
+    /// Used for prefetching the next track to enable gapless playback.
+    pub fn peek_next(&self) -> Option<&QueueItem> {
+        if self.items.is_empty() {
+            return None;
+        }
+
+        let effective_index = self.current_index.or(self.pending_navigation_index);
+
+        match self.repeat_mode {
+            RepeatMode::One => {
+                // In repeat one, next song is the same song
+                self.current_item()
+            }
+            RepeatMode::All => {
+                // Wrap around to beginning when reaching end
+                let next_idx = match effective_index {
+                    Some(i) if self.current_index.is_some() => (i + 1) % self.items.len(),
+                    Some(i) => i.min(self.items.len() - 1),
+                    None => 0,
+                };
+                self.items.get(next_idx)
+            }
+            RepeatMode::Off => {
+                match effective_index {
+                    Some(i) if self.current_index.is_some() => {
+                        if i + 1 < self.items.len() {
+                            self.items.get(i + 1)
+                        } else {
+                            None // End of queue
+                        }
+                    }
+                    Some(i) => self.items.get(i.min(self.items.len() - 1)),
+                    None => self.items.first(),
+                }
+            }
+        }
+    }
 }
