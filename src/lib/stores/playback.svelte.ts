@@ -43,6 +43,10 @@ class PlaybackStore {
     coverArtId: string | null;
   } | null>(null);
 
+  // Scrobble tracking - prevents duplicate scrobbles within the same playback
+  private scrobbledSongId: string | null = null;
+  private lastPosition: number = 0;
+
   // Event listeners
   private unlistenState: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
@@ -63,6 +67,17 @@ class PlaybackStore {
         this.volume = state.volume;
 
         if (state.song) {
+          // Reset scrobble tracking when song changes or restarts (for repeat mode)
+          const songChanged = state.song.id !== this.currentTrack?.id;
+          const songRestarted =
+            state.song.id === this.scrobbledSongId &&
+            state.position < this.lastPosition &&
+            state.position < 5; // Position jumped back to near start
+
+          if (songChanged || songRestarted) {
+            this.scrobbledSongId = null;
+          }
+
           this.currentTrack = {
             id: state.song.id,
             title: state.song.title,
@@ -70,6 +85,24 @@ class PlaybackStore {
             album: state.song.album || "",
             coverArtId: state.song.cover_art_id || null,
           };
+
+          // Check scrobble threshold (50% of song played)
+          if (state.duration > 0) {
+            const threshold = state.duration * 0.5;
+            if (
+              state.position >= threshold &&
+              this.scrobbledSongId !== state.song.id
+            ) {
+              this.scrobbledSongId = state.song.id;
+              invoke("scrobble_submit", { songId: state.song.id }).catch(
+                (e) => {
+                  console.error("Failed to submit scrobble:", e);
+                }
+              );
+            }
+          }
+
+          this.lastPosition = state.position;
         } else {
           this.currentTrack = null;
         }
@@ -82,6 +115,8 @@ class PlaybackStore {
       this.position = 0;
       this.duration = 0;
       this.currentTrack = null;
+      this.scrobbledSongId = null;
+      this.lastPosition = 0;
     });
   }
 

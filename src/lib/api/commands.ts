@@ -112,3 +112,8 @@ export async function getAudioCacheStats(): Promise<CacheStats> {
 export async function clearAudioCache(): Promise<void> {
   return invoke("clear_audio_cache");
 }
+
+// Scrobbling commands
+export async function scrobbleSubmit(songId: string): Promise<void> {
+  return invoke("scrobble_submit", { songId });
+}
