@@ -29,12 +29,6 @@ pub enum AppError {
     #[error("Subsonic API error: {0}")]
     Subsonic(String),
 
-    #[error("Network error: {0}")]
-    Network(#[from] reqwest::Error),
-
-    #[error("Authentication failed: {0}")]
-    Auth(String),
-
     #[error("Not connected to server")]
     NotConnected,
 

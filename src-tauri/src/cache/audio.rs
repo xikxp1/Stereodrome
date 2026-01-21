@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use serde::Serialize;
+use submarine::Client;
 use tauri::{AppHandle, Manager};
 
 use crate::audio::fetch_audio_bytes;
 use crate::error::{AppError, AppResult};
-use crate::state::ServerConfig;
 
 /// Default maximum cache size: 5 GB
 pub const DEFAULT_MAX_CACHE_SIZE: u64 = 5 * 1024 * 1024 * 1024;
@@ -64,7 +64,7 @@ impl AudioCache {
     /// Get audio bytes, either from cache or by fetching from server
     pub async fn get_or_fetch(
         &self,
-        config: &ServerConfig,
+        client: &Client,
         song_id: &str,
         suffix: &str,
     ) -> AppResult<Vec<u8>> {
@@ -86,7 +86,7 @@ impl AudioCache {
         }
 
         // Fetch from server
-        let bytes = fetch_audio_bytes(config, song_id).await?;
+        let bytes = fetch_audio_bytes(client, song_id).await?;
 
         // Write to cache (fire-and-forget, don't fail playback if caching fails)
         if let Err(e) = fs::write(&cache_path, &bytes) {

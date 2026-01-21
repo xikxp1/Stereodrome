@@ -11,9 +11,9 @@ pub async fn play_song(
     state: State<'_, AppState>,
     song_id: String,
 ) -> AppResult<()> {
-    // Get server config
-    let config = state
-        .server_config
+    // Get submarine client
+    let client = state
+        .client
         .lock()
         .unwrap()
         .clone()
@@ -60,7 +60,7 @@ pub async fn play_song(
 
     // Fetch audio bytes (from cache or server)
     let cache = AudioCache::new(&app_handle, DEFAULT_MAX_CACHE_SIZE)?;
-    let audio_data = cache.get_or_fetch(&config, &song_id, &suffix).await?;
+    let audio_data = cache.get_or_fetch(&client, &song_id, &suffix).await?;
 
     // Play the audio
     {
@@ -69,13 +69,10 @@ pub async fn play_song(
     }
 
     // Report "now playing" to Subsonic server
-    let client_opt = state.client.lock_recover().clone();
-    if let Some(client) = client_opt {
-        // Fire and forget - don't fail playback if scrobble fails
-        let _ = client
-            .scrobble(vec![(song_id, None::<usize>)], Some(false))
-            .await;
-    }
+    // Fire and forget - don't fail playback if scrobble fails
+    let _ = client
+        .scrobble(vec![(song_id, None::<usize>)], Some(false))
+        .await;
 
     Ok(())
 }
