@@ -199,7 +199,17 @@
     }
   }
 
-  function handlePlayPause() {
+  async function handlePlayPause() {
+    // If queue is empty and we have filtered songs, add them all and start playing
+    if (
+      queue.items.length === 0 &&
+      !playback.isPlaying &&
+      filteredSongs.length > 0
+    ) {
+      await queue.addSongs(filteredSongs);
+      await queue.playQueueItem(0);
+      return;
+    }
     playback.togglePlayPause();
   }
 
@@ -371,16 +381,16 @@
 
       case "s":
       case "S":
-        if (!isMod) {
-          // S - toggle shuffle
+        if (!isMod && queue.items.length > 0) {
+          // S - toggle shuffle (only when queue is not empty)
           queue.toggleShuffle();
         }
         break;
 
       case "r":
       case "R":
-        if (!isMod) {
-          // R - cycle repeat mode
+        if (!isMod && queue.items.length > 0) {
+          // R - cycle repeat mode (only when queue is not empty)
           queue.cycleRepeatMode();
         }
         break;

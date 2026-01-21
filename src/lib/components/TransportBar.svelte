@@ -255,21 +255,23 @@
     <!-- Shuffle/Repeat -->
     <div class="flex items-center gap-1">
       <button
-        class="flex h-6 w-6 items-center justify-center rounded transition-colors {queue.shuffle
+        class="flex h-6 w-6 items-center justify-center rounded transition-colors disabled:cursor-not-allowed disabled:text-base-content/20 {queue.shuffle
           ? 'text-primary'
-          : 'text-base-content/40 hover:text-base-content/70'}"
+          : 'text-base-content/40 hover:text-base-content/70 disabled:hover:text-base-content/20'}"
         onclick={() => queue.toggleShuffle()}
+        disabled={queue.items.length === 0}
         title="Shuffle (S)"
         aria-label="Toggle shuffle"
       >
         <Shuffle class="h-3.5 w-3.5" />
       </button>
       <button
-        class="flex h-6 w-6 items-center justify-center rounded transition-colors {queue.repeatMode !==
+        class="flex h-6 w-6 items-center justify-center rounded transition-colors disabled:cursor-not-allowed disabled:text-base-content/20 {queue.repeatMode !==
         'Off'
           ? 'text-primary'
-          : 'text-base-content/40 hover:text-base-content/70'}"
+          : 'text-base-content/40 hover:text-base-content/70 disabled:hover:text-base-content/20'}"
         onclick={() => queue.cycleRepeatMode()}
+        disabled={queue.items.length === 0}
         title="Repeat: {queue.repeatMode} (R)"
         aria-label="Cycle repeat mode"
       >

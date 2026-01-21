@@ -142,12 +142,13 @@ impl PlayQueue {
         Some(item)
     }
 
-    /// Clear the entire queue and reset shuffle state
+    /// Clear the entire queue and reset shuffle/repeat state
     pub fn clear(&mut self) {
         self.items.clear();
         self.original_order.clear();
         self.current_index = None;
         self.shuffle = false;
+        self.repeat_mode = RepeatMode::Off;
     }
 
     /// Move an item from one position to another
