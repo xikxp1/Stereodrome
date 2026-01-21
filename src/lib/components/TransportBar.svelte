@@ -32,7 +32,7 @@
   const prevTooltip = $derived.by(() => {
     const prev = queue.previousSong;
     if (prev) {
-      return `Previous (${modKey}←)\n${prev.title} — ${prev.artist}`;
+      return `Previous (${modKey}←)\n${prev.artist} - ${prev.title}`;
     }
     return `Previous (${modKey}←)`;
   });
@@ -40,7 +40,7 @@
   const nextTooltip = $derived.by(() => {
     const next = queue.nextSong;
     if (next) {
-      return `Next (${modKey}→)\n${next.title} — ${next.artist}`;
+      return `Next (${modKey}→)\n${next.artist} - ${next.title}`;
     }
     return `Next (${modKey}→)`;
   });
@@ -51,7 +51,7 @@
     }
     const current = queue.currentSong;
     if (current) {
-      return `Play (Space)\n${current.title} — ${current.artist}`;
+      return `Play (Space)\n${current.artist} - ${current.title}`;
     }
     return "Play (Space)";
   });
