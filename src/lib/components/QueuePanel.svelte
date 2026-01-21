@@ -109,7 +109,10 @@
 
   function handleScrollToCurrent() {
     if (queue.currentIndex !== null && scrollContainer) {
-      $virtualizer.scrollToIndex(queue.currentIndex, { align: "center" });
+      $virtualizer.scrollToIndex(queue.currentIndex, {
+        align: "center",
+        behavior: "smooth",
+      });
     }
   }
 </script>
