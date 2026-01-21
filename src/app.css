@@ -84,7 +84,13 @@ body {
 }
 
 /* Allow text selection in inputs */
-input,
+input[type="text"],
+input[type="search"],
+input[type="password"],
+input[type="email"],
+input[type="url"],
+input[type="number"],
+input:not([type]),
 textarea,
 [contenteditable="true"] {
   -webkit-user-select: text;
