@@ -298,41 +298,39 @@ impl PlayQueue {
                 self.current_item()
             }
             RepeatMode::All => {
-                let prev_idx =
-                    if let (None, Some(pending)) =
-                        (self.current_index, self.pending_navigation_index)
-                    {
-                        // Pending navigation: go to index - 1 (with wrap)
-                        if pending == 0 {
-                            self.items.len() - 1
-                        } else {
-                            pending - 1
-                        }
+                let prev_idx = if let (None, Some(pending)) =
+                    (self.current_index, self.pending_navigation_index)
+                {
+                    // Pending navigation: go to index - 1 (with wrap)
+                    if pending == 0 {
+                        self.items.len() - 1
                     } else {
-                        match effective_index {
-                            Some(0) => self.items.len() - 1,
-                            Some(i) => i - 1,
-                            None => self.items.len() - 1,
-                        }
-                    };
+                        pending - 1
+                    }
+                } else {
+                    match effective_index {
+                        Some(0) => self.items.len() - 1,
+                        Some(i) => i - 1,
+                        None => self.items.len() - 1,
+                    }
+                };
                 self.current_index = Some(prev_idx);
                 self.pending_navigation_index = None;
                 self.items.get(prev_idx)
             }
             RepeatMode::Off => {
-                let prev_idx =
-                    if let (None, Some(pending)) =
-                        (self.current_index, self.pending_navigation_index)
-                    {
-                        // Pending navigation: go to index - 1
-                        Some(pending.saturating_sub(1))
-                    } else {
-                        match effective_index {
-                            Some(i) if i > 0 => Some(i - 1),
-                            Some(_) => Some(0), // Stay at beginning
-                            None => Some(0),
-                        }
-                    };
+                let prev_idx = if let (None, Some(pending)) =
+                    (self.current_index, self.pending_navigation_index)
+                {
+                    // Pending navigation: go to index - 1
+                    Some(pending.saturating_sub(1))
+                } else {
+                    match effective_index {
+                        Some(i) if i > 0 => Some(i - 1),
+                        Some(_) => Some(0), // Stay at beginning
+                        None => Some(0),
+                    }
+                };
                 self.current_index = prev_idx;
                 self.pending_navigation_index = None;
                 prev_idx.and_then(|i| self.items.get(i))
