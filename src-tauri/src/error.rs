@@ -40,6 +40,9 @@ pub enum AppError {
 
     #[error("Search error: {0}")]
     Search(String),
+
+    #[error("Credentials error: {0}")]
+    Credentials(String),
 }
 
 impl Serialize for AppError {

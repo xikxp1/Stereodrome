@@ -1,6 +1,7 @@
 mod audio;
 mod cache;
 mod commands;
+mod credentials;
 mod db;
 mod error;
 mod media;

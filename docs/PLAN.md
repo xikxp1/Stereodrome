@@ -58,7 +58,7 @@ Phase 8: Local Storage & Offline Features
 - [x] Database migrations for schema changes
 - [x] Submarine crate integration for Subsonic API
 - [x] Auth commands (connect_server, disconnect, get_status, restore_session)
-- [x] Persistent credentials with tauri-plugin-store
+- [x] Secure credential storage with keyring (macOS Keychain, Windows Credential Manager, Linux Secret Service)
 - [x] Tailwind CSS + DaisyUI setup
 - [x] TanStack Query client
 - [x] Connection store (Svelte 5 runes)
@@ -154,6 +154,7 @@ src-tauri/src/
 ├── lib.rs              # Tauri setup, state, command registration
 ├── error.rs            # AppError enum with thiserror, MutexExt trait
 ├── state.rs            # AppState (client, db, audio_player, queue, search_index)
+├── credentials.rs      # OS keyring integration for secure credential storage
 ├── audio/
 │   ├── mod.rs          # Module exports
 │   ├── analyzer.rs     # AnalyzingSource wrapper for sample capture

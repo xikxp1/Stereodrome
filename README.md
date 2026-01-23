@@ -81,7 +81,6 @@ bun run tauri build
 - Incremental library sync not yet implemented (full sync only)
 - No crossfade between tracks
 - No gapless playback
-- Credentials stored in plain text (use at your own discretion on shared machines)
 
 ## License
 

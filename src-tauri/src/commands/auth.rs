@@ -1,15 +1,11 @@
+use log::warn;
 use serde::{Deserialize, Serialize};
 use submarine::{auth::AuthBuilder, Client};
-use tauri::{AppHandle, State};
-use tauri_plugin_store::StoreExt;
+use tauri::State;
 
+use crate::credentials;
 use crate::error::{AppError, AppResult, MutexExt};
 use crate::state::{AppState, ServerConfig};
-
-const STORE_FILE: &str = "settings.json";
-const KEY_SERVER_URL: &str = "server_url";
-const KEY_USERNAME: &str = "username";
-const KEY_PASSWORD: &str = "password";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionStatus {
@@ -28,7 +24,6 @@ pub struct ConnectParams {
 
 #[tauri::command]
 pub async fn connect_server(
-    app: AppHandle,
     state: State<'_, AppState>,
     params: ConnectParams,
 ) -> AppResult<ConnectionStatus> {
@@ -44,6 +39,12 @@ pub async fn connect_server(
         .await
         .map_err(|e| AppError::Subsonic(e.to_string()))?;
 
+    let config = ServerConfig {
+        url: params.url.clone(),
+        username: params.username.clone(),
+        password: params.password.clone(),
+    };
+
     // Store client and config in memory
     {
         let mut client_lock = state.client.lock_recover();
@@ -52,19 +53,12 @@ pub async fn connect_server(
 
     {
         let mut config_lock = state.server_config.lock_recover();
-        *config_lock = Some(ServerConfig {
-            url: params.url.clone(),
-            username: params.username.clone(),
-            password: params.password.clone(),
-        });
+        *config_lock = Some(config.clone());
     }
 
-    // Persist credentials to store
-    if let Ok(store) = app.store(STORE_FILE) {
-        store.set(KEY_SERVER_URL, serde_json::json!(params.url));
-        store.set(KEY_USERNAME, serde_json::json!(params.username));
-        store.set(KEY_PASSWORD, serde_json::json!(params.password));
-        let _ = store.save();
+    // Persist credentials to OS keyring
+    if let Err(e) = credentials::save_credentials(&config) {
+        warn!("Failed to save credentials to keyring: {}", e);
     }
 
     Ok(ConnectionStatus {
@@ -76,7 +70,7 @@ pub async fn connect_server(
 }
 
 #[tauri::command]
-pub async fn disconnect_server(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
+pub async fn disconnect_server(state: State<'_, AppState>) -> AppResult<()> {
     {
         let mut client_lock = state.client.lock_recover();
         *client_lock = None;
@@ -87,12 +81,9 @@ pub async fn disconnect_server(app: AppHandle, state: State<'_, AppState>) -> Ap
         *config_lock = None;
     }
 
-    // Clear stored credentials
-    if let Ok(store) = app.store(STORE_FILE) {
-        let _ = store.delete(KEY_SERVER_URL);
-        let _ = store.delete(KEY_USERNAME);
-        let _ = store.delete(KEY_PASSWORD);
-        let _ = store.save();
+    // Clear credentials from OS keyring
+    if let Err(e) = credentials::delete_credentials() {
+        warn!("Failed to delete credentials from keyring: {}", e);
     }
 
     Ok(())
@@ -120,10 +111,7 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> AppResult<Conn
 
 /// Attempt to restore session from stored credentials
 #[tauri::command]
-pub async fn restore_session(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> AppResult<ConnectionStatus> {
+pub async fn restore_session(state: State<'_, AppState>) -> AppResult<ConnectionStatus> {
     // Check if already connected
     if state.is_connected() {
         let config = state.server_config.lock_recover();
@@ -137,29 +125,18 @@ pub async fn restore_session(
         }
     }
 
-    // Try to load credentials from store
-    let store = app
-        .store(STORE_FILE)
-        .map_err(|e| AppError::Subsonic(e.to_string()))?;
+    // Try to load credentials from keyring
+    match credentials::load_credentials()? {
+        Some(config) => {
+            let url = config.url.clone();
+            let username = config.username.clone();
 
-    let url = store
-        .get(KEY_SERVER_URL)
-        .and_then(|v| v.as_str().map(String::from));
-    let username = store
-        .get(KEY_USERNAME)
-        .and_then(|v| v.as_str().map(String::from));
-    let password = store
-        .get(KEY_PASSWORD)
-        .and_then(|v| v.as_str().map(String::from));
-
-    match (url, username, password) {
-        (Some(url), Some(username), Some(password)) => {
             // Attempt to reconnect
-            let auth = AuthBuilder::new(&username, "1.16.1")
+            let auth = AuthBuilder::new(&config.username, "1.16.1")
                 .client_name("Stereodrome")
-                .hashed(&password);
+                .hashed(&config.password);
 
-            let client = Client::new(&url, auth);
+            let client = Client::new(&config.url, auth);
 
             // Test connection
             match client.ping().await {
@@ -171,11 +148,7 @@ pub async fn restore_session(
                     }
                     {
                         let mut config_lock = state.server_config.lock_recover();
-                        *config_lock = Some(ServerConfig {
-                            url: url.clone(),
-                            username: username.clone(),
-                            password,
-                        });
+                        *config_lock = Some(config);
                     }
 
                     Ok(ConnectionStatus {
@@ -196,7 +169,7 @@ pub async fn restore_session(
                 }
             }
         }
-        _ => {
+        None => {
             // No stored credentials
             Ok(ConnectionStatus {
                 connected: false,
