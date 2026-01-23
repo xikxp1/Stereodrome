@@ -20,6 +20,7 @@ Phase 8: Local Storage & Offline Features
 - [x] Single-instance enforcement (tauri-plugin-single-instance: focus existing window on repeated launch)
 - [x] System tray icon with context menu (play/pause, next/prev, show window, quit)
 - [x] Minimize to tray on window close (keeps playback running)
+- [x] Update checker (check for updates on startup, install from Settings modal)
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks
 - [ ] Gapless playback
@@ -205,7 +206,8 @@ src/lib/
 │   ├── playlist.svelte.ts    # Playlist store
 │   ├── search.svelte.ts      # Search with debounce
 │   ├── spectrum.svelte.ts    # Spectrum visualizer state (30Hz band updates)
-│   └── nowplaying.svelte.ts  # Server now playing state (for other users)
+│   ├── nowplaying.svelte.ts  # Server now playing state (for other users)
+│   └── updater.svelte.ts     # App update checker state
 ├── services/
 │   ├── notifications.svelte.ts  # Desktop notifications (song change when unfocused)
 │   ├── mediaControls.svelte.ts  # Handle OS media button events (play/pause/next/prev)
@@ -217,7 +219,7 @@ src/lib/
 │   ├── Sidebar.svelte         # Navigation + playlists
 │   ├── StatusBar.svelte       # Bottom status bar
 │   ├── QueuePanel.svelte      # Queue panel with shuffle/repeat controls
-│   ├── SettingsModal.svelte   # Settings modal with cache management
+│   ├── SettingsModal.svelte   # Settings modal with cache management and updates
 │   └── library/
 │       ├── ArtistList.svelte
 │       ├── AlbumGrid.svelte

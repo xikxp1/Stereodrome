@@ -1,12 +1,16 @@
 # Stereodrome
 
-A desktop music player for Subsonic-compatible music servers, inspired by the classic iTunes interface.
+Desktop music player for Subsonic-compatible music servers. Inspired by the classic iTunes interface.
+
+<p align="center">
+  <img src="docs/assets/main.png" alt="Main screen">
+</p>
 
 ## Features
 
 - Music playback experience inspired by legacy iTunes versions (2010-2012)
 - Sync library metadata from your Subsonic server
-- Full-text search powered by Tantivy
+- Full-text metadata search powered by Tantivy
 - System integration: media controls, system tray, keyboard controls
 - Local audio cache with configurable size
 

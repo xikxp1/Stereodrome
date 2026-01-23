@@ -12,6 +12,7 @@
   import { queue } from "$lib/stores/queue.svelte";
   import { searchStore } from "$lib/stores/search.svelte";
   import { spectrum } from "$lib/stores/spectrum.svelte";
+  import { updater } from "$lib/stores/updater.svelte";
   import {
     getArtists,
     getAlbums,
@@ -84,6 +85,25 @@
       sessionRestored = true;
       connection.restore();
     }
+  });
+
+  // Check for updates on startup (runs once after connection)
+  let updateChecked = false;
+  $effect(() => {
+    if (connection.status.connected && !updateChecked) {
+      updateChecked = true;
+      // Non-blocking update check
+      updater.checkForUpdate();
+    }
+  });
+
+  // Listen for open-settings event from tray
+  $effect(() => {
+    const handler = () => {
+      settingsOpen = true;
+    };
+    window.addEventListener("open-settings", handler);
+    return () => window.removeEventListener("open-settings", handler);
   });
 
   // Load data when connected

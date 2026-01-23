@@ -22,6 +22,10 @@ class TrayControlsService {
         case "previous":
           queue.playPrevious();
           break;
+        case "open_settings":
+          // Dispatch custom event for +page.svelte to handle
+          window.dispatchEvent(new CustomEvent("open-settings"));
+          break;
       }
     });
   }

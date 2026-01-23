@@ -136,3 +136,10 @@ export async function getScanStatus(): Promise<ScanStatus> {
 export async function startScan(): Promise<ScanStatus> {
   return invoke<ScanStatus>("start_scan");
 }
+
+// Tray commands
+export async function setTrayUpdateAvailable(
+  version: string | null
+): Promise<void> {
+  return invoke("set_tray_update_available", { version });
+}

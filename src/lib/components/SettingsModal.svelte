@@ -9,6 +9,7 @@
     LogOut,
     Monitor,
     Activity,
+    Download,
   } from "lucide-svelte";
   import {
     getAudioCacheStats,
@@ -20,6 +21,7 @@
     type CacheStats,
   } from "$lib/api/commands";
   import { connection } from "$lib/stores/connection.svelte";
+  import { updater } from "$lib/stores/updater.svelte";
   import { queryClient } from "$lib/db/queryClient";
   import { spectrum } from "$lib/stores/spectrum.svelte";
   import type { ScanStatus } from "$lib/types";
@@ -55,6 +57,7 @@
     if (open) {
       loadCacheStats();
       loadScanStatus();
+      updater.loadCurrentVersion();
     } else {
       // Clean up polling when modal closes
       if (scanPollInterval) {
@@ -212,6 +215,76 @@
 
       <!-- Content -->
       <div class="max-h-[70vh] space-y-4 overflow-y-auto p-4">
+        <!-- Updates Section -->
+        <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
+          <div class="mb-3 flex items-center gap-2">
+            <Download class="h-4 w-4 text-base-content/60" />
+            <h3 class="font-medium">Updates</h3>
+          </div>
+
+          <div class="space-y-2">
+            <div class="flex justify-between text-sm">
+              <span class="text-base-content/60">Current version</span>
+              <span class="font-medium">
+                {updater.currentVersion ?? "-"}
+              </span>
+            </div>
+
+            {#if updater.updateAvailable}
+              <div class="flex justify-between text-sm">
+                <span class="text-base-content/60">Available version</span>
+                <span class="font-medium text-success">
+                  {updater.version}
+                </span>
+              </div>
+              {#if updater.notes}
+                <div
+                  class="mt-2 rounded border border-base-300 bg-base-300/50 p-2 text-xs text-base-content/70"
+                >
+                  {updater.notes}
+                </div>
+              {/if}
+            {/if}
+
+            {#if updater.error}
+              <div class="text-sm text-error">
+                {updater.error}
+              </div>
+            {/if}
+          </div>
+
+          <div class="mt-4 flex flex-wrap gap-2 border-t border-base-300 pt-4">
+            <button
+              class="btn btn-sm btn-ghost gap-1"
+              onclick={() => updater.checkForUpdate()}
+              disabled={updater.checking}
+            >
+              {#if updater.checking}
+                <RefreshCw class="h-3.5 w-3.5 animate-spin" />
+                Checking...
+              {:else}
+                <RefreshCw class="h-3.5 w-3.5" />
+                Check for Updates
+              {/if}
+            </button>
+            {#if updater.updateAvailable}
+              <button
+                class="btn btn-sm btn-primary gap-1"
+                onclick={() => updater.downloadAndInstall()}
+                disabled={updater.downloading}
+              >
+                {#if updater.downloading}
+                  <Download class="h-3.5 w-3.5 animate-pulse" />
+                  Installing...
+                {:else}
+                  <Download class="h-3.5 w-3.5" />
+                  Install Update
+                {/if}
+              </button>
+            {/if}
+          </div>
+        </div>
+
         <!-- Server Section -->
         <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
           <div class="mb-3 flex items-center gap-2">
