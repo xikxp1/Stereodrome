@@ -299,9 +299,10 @@ impl PlayQueue {
             }
             RepeatMode::All => {
                 let prev_idx =
-                    if self.current_index.is_none() && self.pending_navigation_index.is_some() {
+                    if let (None, Some(pending)) =
+                        (self.current_index, self.pending_navigation_index)
+                    {
                         // Pending navigation: go to index - 1 (with wrap)
-                        let pending = self.pending_navigation_index.unwrap();
                         if pending == 0 {
                             self.items.len() - 1
                         } else {
@@ -320,9 +321,10 @@ impl PlayQueue {
             }
             RepeatMode::Off => {
                 let prev_idx =
-                    if self.current_index.is_none() && self.pending_navigation_index.is_some() {
+                    if let (None, Some(pending)) =
+                        (self.current_index, self.pending_navigation_index)
+                    {
                         // Pending navigation: go to index - 1
-                        let pending = self.pending_navigation_index.unwrap();
                         Some(pending.saturating_sub(1))
                     } else {
                         match effective_index {
