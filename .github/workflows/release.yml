@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g., 0.1.0)'
+        description: "Version to release (e.g., 0.1.0)"
         required: true
         type: string
 
@@ -28,9 +28,9 @@ jobs:
           - platform: macos-latest
             args: --target universal-apple-darwin
           - platform: ubuntu-22.04
-            args: ''
+            args: ""
           - platform: windows-latest
-            args: ''
+            args: ""
 
     runs-on: ${{ matrix.platform }}
 
@@ -70,7 +70,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: 'Stereodrome v__VERSION__'
+          releaseName: "Stereodrome v__VERSION__"
           releaseBody: |
             See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
 
