@@ -299,12 +299,13 @@ fn show_main_window(app: &AppHandle) {
         // On macOS, activate the app first so set_focus() works
         #[cfg(target_os = "macos")]
         {
-            use objc::{class, msg_send, sel, sel_impl};
-            unsafe {
-                let ns_app: *mut objc::runtime::Object =
-                    msg_send![class!(NSApplication), sharedApplication];
-                let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
-            }
+            use objc2::MainThreadMarker;
+            use objc2_app_kit::NSApplication;
+            // Safety: Tauri menu events run on the main thread
+            let mtm = unsafe { MainThreadMarker::new_unchecked() };
+            let app = NSApplication::sharedApplication(mtm);
+            #[allow(deprecated)]
+            app.activateIgnoringOtherApps(true);
         }
 
         let _ = window.unminimize();

@@ -32,6 +32,18 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENENEVBNkEzOTBBRjBDNjMKUldSakRLK1FvNlpPeld1bWhTU2pjVlNoTDlpMDl4dW5ML25HRkRBUmg3Tkw5NVNqNTVuT3UxaEsK",
+      "endpoints": [
+        "https://github.com/xikxp1/Stereodrome/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
