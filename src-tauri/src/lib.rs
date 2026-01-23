@@ -6,6 +6,7 @@ mod error;
 mod media;
 mod search;
 mod state;
+mod tray;
 
 use std::sync::Arc;
 
@@ -15,6 +16,7 @@ use media::MediaControlsManager;
 use state::AppState;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_log::{Target, TargetKind};
+use tray::TrayManager;
 
 /// Focus and show the main window when a second instance tries to open
 fn focus_main_window(app: &AppHandle) {
@@ -96,6 +98,14 @@ pub fn run() {
                 info!("Media controls not available on this platform");
             }
 
+            // Initialize system tray icon
+            if let Some(tray_manager) = TrayManager::new(app) {
+                info!("Tray icon initialized");
+                app.manage(tray_manager);
+            } else {
+                info!("Tray icon not available on this platform");
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -147,6 +157,23 @@ pub fn run() {
             commands::get_scan_status,
             commands::start_scan,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } = event
+            {
+                if label == "main" {
+                    // Hide window instead of closing (minimize to tray)
+                    api.prevent_close();
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.hide();
+                        info!("Window hidden to tray");
+                    }
+                }
+            }
+        });
 }

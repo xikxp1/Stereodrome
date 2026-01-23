@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::audio::analyzer::AnalyzingSource;
 use crate::error::{AppError, AppResult};
 use crate::media::MediaControlsManager;
+use crate::tray::TrayManager;
 
 /// Ring buffer size for spectrum analysis (~370ms at 44.1kHz stereo)
 /// Larger buffer prevents sample loss from lock contention
@@ -341,11 +342,15 @@ impl AudioPlayer {
 
                 // Only emit when playing or when we have a song (to update paused state)
                 if !state.is_playing && state.song.is_none() {
-                    // Clear media controls if we had a song before
+                    // Clear media controls and tray if we had a song before
                     if last_song_id.is_some() {
                         if let Some(media_controls) = app_handle.try_state::<MediaControlsManager>()
                         {
                             media_controls.clear();
+                        }
+                        if let Some(tray_manager) = app_handle.try_state::<TrayManager>() {
+                            tray_manager.update_song_info("", "");
+                            tray_manager.update_playback_state(false);
                         }
                         last_song_id = None;
                         last_is_playing = false;
@@ -375,6 +380,13 @@ impl AudioPlayer {
                     if let Some(media_controls) = app_handle.try_state::<MediaControlsManager>() {
                         media_controls.clear();
                     }
+
+                    // Clear tray
+                    if let Some(tray_manager) = app_handle.try_state::<TrayManager>() {
+                        tray_manager.update_song_info("", "");
+                        tray_manager.update_playback_state(false);
+                    }
+
                     last_song_id = None;
                     last_is_playing = false;
 
@@ -382,7 +394,7 @@ impl AudioPlayer {
                     continue;
                 }
 
-                // Update media controls when song changes
+                // Update media controls and tray when song changes
                 let current_song_id = state.song.as_ref().map(|s| s.id.clone());
                 if current_song_id != last_song_id {
                     if let Some(song) = &state.song {
@@ -412,6 +424,11 @@ impl AudioPlayer {
 
                             media_controls.update_metadata(song, state.duration, cover_art_path);
                         }
+
+                        // Update tray with song info
+                        if let Some(tray_manager) = app_handle.try_state::<TrayManager>() {
+                            tray_manager.update_song_info(&song.title, &song.artist);
+                        }
                     }
                     last_song_id = current_song_id;
                 }
@@ -421,6 +438,12 @@ impl AudioPlayer {
                     if let Some(media_controls) = app_handle.try_state::<MediaControlsManager>() {
                         media_controls.set_playback_status(state.is_playing, state.position);
                     }
+
+                    // Update tray with playback state
+                    if let Some(tray_manager) = app_handle.try_state::<TrayManager>() {
+                        tray_manager.update_playback_state(state.is_playing);
+                    }
+
                     last_is_playing = state.is_playing;
                 }
 

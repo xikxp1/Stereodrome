@@ -4601,6 +4601,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "log",
+ "objc",
  "rand 0.9.2",
  "ringbuf",
  "rodio",
