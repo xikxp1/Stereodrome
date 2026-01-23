@@ -35,6 +35,7 @@ fn focus_main_window(app: &AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .targets([
@@ -159,6 +160,7 @@ pub fn run() {
             commands::set_max_cache_size,
             commands::get_scan_status,
             commands::start_scan,
+            commands::set_tray_update_available,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

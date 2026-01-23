@@ -9,6 +9,7 @@ use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Emitter, Manager};
 
 const MENU_ID_APP_INFO: &str = "app_info";
+const MENU_ID_UPDATE_AVAILABLE: &str = "update_available";
 const MENU_ID_NOW_PLAYING: &str = "now_playing";
 const MENU_ID_PLAY_PAUSE: &str = "play_pause";
 const MENU_ID_NEXT: &str = "next";
@@ -20,6 +21,7 @@ const MENU_ID_QUIT: &str = "quit";
 pub enum TrayCommand {
     UpdatePlaybackState { is_playing: bool },
     UpdateSongInfo { title: String, artist: String },
+    UpdateAvailable { version: Option<String> },
     Shutdown,
 }
 
@@ -27,6 +29,7 @@ struct TrayState {
     tray: TrayIcon,
     play_pause_item: MenuItem<tauri::Wry>,
     now_playing_item: MenuItem<tauri::Wry>,
+    update_available_item: MenuItem<tauri::Wry>,
 }
 
 pub struct TrayManager {
@@ -49,6 +52,20 @@ impl TrayManager {
                     return None;
                 }
             };
+
+        let update_available_item = match MenuItem::with_id(
+            app,
+            MENU_ID_UPDATE_AVAILABLE,
+            "Update Available",
+            false,
+            None::<&str>,
+        ) {
+            Ok(item) => item,
+            Err(e) => {
+                error!("Failed to create update available menu item: {:?}", e);
+                return None;
+            }
+        };
 
         let now_playing_item =
             match MenuItem::with_id(app, MENU_ID_NOW_PLAYING, "Not Playing", false, None::<&str>) {
@@ -128,6 +145,7 @@ impl TrayManager {
             app,
             &[
                 &app_info_item,
+                &update_available_item,
                 &show_item,
                 &separator,
                 &now_playing_item,
@@ -179,6 +197,7 @@ impl TrayManager {
             tray,
             play_pause_item,
             now_playing_item,
+            update_available_item,
         }));
 
         // Spawn background thread to handle state updates
@@ -202,6 +221,12 @@ impl TrayManager {
         let _ = self.command_tx.send(TrayCommand::UpdateSongInfo {
             title: title.to_string(),
             artist: artist.to_string(),
+        });
+    }
+
+    pub fn update_update_available(&self, version: Option<&str>) {
+        let _ = self.command_tx.send(TrayCommand::UpdateAvailable {
+            version: version.map(|v| v.to_string()),
         });
     }
 }
@@ -251,6 +276,31 @@ fn run_tray_thread(command_rx: mpsc::Receiver<TrayCommand>, tray_state: Arc<Mute
                         }
                     }
                 }
+                TrayCommand::UpdateAvailable { version } => {
+                    if let Ok(state) = tray_state.lock() {
+                        match version {
+                            Some(ver) => {
+                                let text = format!("⬆ Update Available (v{})", ver);
+                                if let Err(e) = state.update_available_item.set_text(&text) {
+                                    debug!("Failed to update update available text: {:?}", e);
+                                }
+                                if let Err(e) = state.update_available_item.set_enabled(true) {
+                                    debug!("Failed to enable update available item: {:?}", e);
+                                }
+                            }
+                            None => {
+                                if let Err(e) =
+                                    state.update_available_item.set_text("Update Available")
+                                {
+                                    debug!("Failed to reset update available text: {:?}", e);
+                                }
+                                if let Err(e) = state.update_available_item.set_enabled(false) {
+                                    debug!("Failed to disable update available item: {:?}", e);
+                                }
+                            }
+                        }
+                    }
+                }
                 TrayCommand::Shutdown => {
                     info!("Tray manager shutting down");
                     break;
@@ -285,6 +335,14 @@ fn handle_menu_event(app: &AppHandle, menu_id: &MenuId) {
         MENU_ID_SHOW => {
             debug!("Tray: show clicked");
             show_main_window(app);
+        }
+        MENU_ID_UPDATE_AVAILABLE => {
+            debug!("Tray: update_available clicked");
+            show_main_window(app);
+            let _ = app.emit(
+                "tray-control",
+                serde_json::json!({ "action": "open_settings" }),
+            );
         }
         MENU_ID_QUIT => {
             debug!("Tray: quit clicked");

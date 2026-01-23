@@ -1,6 +1,7 @@
 <script lang="ts">
   import { searchStore } from "$lib/stores/search.svelte";
   import { queue } from "$lib/stores/queue.svelte";
+  import { updater } from "$lib/stores/updater.svelte";
   import SpectrumBars from "./SpectrumBars.svelte";
   import SyncedMarquee from "./SyncedMarquee.svelte";
   import {
@@ -390,14 +391,28 @@
 
   <!-- Right: Settings + Queue Toggle + Search -->
   <div class="z-10 flex items-center gap-2">
-    <button
-      class="flex h-7 w-7 items-center justify-center rounded bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content"
-      onclick={() => onSettingsClick?.()}
-      aria-label="Settings"
-      title="Settings ({modKey},)"
-    >
-      <Settings class="h-4 w-4" />
-    </button>
+    {#if updater.updateAvailable}
+      <div class="indicator">
+        <span class="indicator-item status status-primary"></span>
+        <button
+          class="flex h-7 w-7 items-center justify-center rounded bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content"
+          onclick={() => onSettingsClick?.()}
+          aria-label="Settings"
+          title={`Update available (v${updater.version}) - Settings (${modKey},)`}
+        >
+          <Settings class="h-4 w-4" />
+        </button>
+      </div>
+    {:else}
+      <button
+        class="flex h-7 w-7 items-center justify-center rounded bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content"
+        onclick={() => onSettingsClick?.()}
+        aria-label="Settings"
+        title={`Settings (${modKey},)`}
+      >
+        <Settings class="h-4 w-4" />
+      </button>
+    {/if}
     <button
       class="flex h-7 w-7 items-center justify-center rounded transition-colors {queueOpen
         ? 'bg-primary text-primary-content'
