@@ -13,8 +13,20 @@ use error::MutexExt;
 use log::{info, LevelFilter};
 use media::MediaControlsManager;
 use state::AppState;
-use tauri::Manager;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_log::{Target, TargetKind};
+
+/// Focus and show the main window when a second instance tries to open
+fn focus_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        // Unminimize if minimized
+        let _ = window.unminimize();
+        // Show if hidden
+        let _ = window.show();
+        // Bring to front and focus
+        let _ = window.set_focus();
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -33,6 +45,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            info!("Second instance detected, focusing existing window");
+            focus_main_window(app);
+        }))
         .setup(|app| {
             let db_path = db::get_db_path(app.handle())?;
             let index_path = search::get_index_path(app.handle())?;

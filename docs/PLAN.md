@@ -1,6 +1,6 @@
 # Stereodrome Development Plan
 
-Last updated: 2026-01-21
+Last updated: 2026-01-23
 
 ## Current Status
 
@@ -17,6 +17,7 @@ Phase 8: Local Storage & Offline Features
 - [x] Cache settings UI (view stats, clear cache, configurable max size 500MB-50GB)
 - [x] File logging with tauri-plugin-log (replaces println/console.log)
 - [x] OS media controls integration (souvlaki: macOS Control Center, Windows media overlay, Linux MPRIS)
+- [x] Single-instance enforcement (tauri-plugin-single-instance: focus existing window on repeated launch)
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks
 - [ ] Gapless playback
