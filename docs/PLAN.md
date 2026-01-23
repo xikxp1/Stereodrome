@@ -18,6 +18,8 @@ Phase 8: Local Storage & Offline Features
 - [x] File logging with tauri-plugin-log (replaces println/console.log)
 - [x] OS media controls integration (souvlaki: macOS Control Center, Windows media overlay, Linux MPRIS)
 - [x] Single-instance enforcement (tauri-plugin-single-instance: focus existing window on repeated launch)
+- [x] System tray icon with context menu (play/pause, next/prev, show window, quit)
+- [x] Minimize to tray on window close (keeps playback running)
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks
 - [ ] Gapless playback
@@ -162,6 +164,9 @@ src-tauri/src/
 ├── media/
 │   ├── mod.rs          # Module exports
 │   └── controls.rs     # OS media controls via souvlaki (macOS/Windows/Linux)
+├── tray/
+│   ├── mod.rs          # Module exports
+│   └── manager.rs      # TrayManager for system tray icon and menu
 ├── cache/
 │   ├── mod.rs          # Module exports
 │   └── audio.rs        # AudioCache with LRU eviction (5GB max)
@@ -202,7 +207,8 @@ src/lib/
 │   └── nowplaying.svelte.ts  # Server now playing state (for other users)
 ├── services/
 │   ├── notifications.svelte.ts  # Desktop notifications (song change when unfocused)
-│   └── mediaControls.svelte.ts  # Handle OS media button events (play/pause/next/prev)
+│   ├── mediaControls.svelte.ts  # Handle OS media button events (play/pause/next/prev)
+│   └── trayControls.svelte.ts   # Handle system tray menu events
 ├── components/
 │   ├── ServerConnect.svelte   # Login screen
 │   ├── TransportBar.svelte    # Top toolbar with playback controls + now playing (local state)
