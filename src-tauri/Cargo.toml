@@ -19,45 +19,30 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-opener = "2"
+base64 = "0.22.1"
+chrono = { version = "0.4", features = ["serde"] }
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
+log = "0.4.29"
+rand = "0.9"
+ringbuf = "0.4.8"
+rodio = { version = "0.21", features = ["symphonia-all"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
+rustfft = "6.4.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Subsonic API
-submarine = "0.1"
-
-# Async runtime
-tokio = { version = "1.49", features = ["full"] }
-
-# Error handling
-thiserror = "2.0"
-
-# Shuffle support
-rand = "0.9"
-
-# Database
-rusqlite = { version = "0.38", features = ["bundled"] }
-
-# Date/time
-chrono = { version = "0.4", features = ["serde"] }
-
-# Audio playback (Phase 3)
-rodio = { version = "0.21", features = ["symphonia-all"] }
-
-# Search (Phase 6)
-tantivy = "0.25"
-uuid = { version = "1.19.0", features = ["v4"] }
-tauri-plugin-store = "2.4.2"
-base64 = "0.22.1"
-rustfft = "6.4.1"
-ringbuf = "0.4.8"
-tauri-plugin-notification = "2.3.3"
-tauri-plugin-log = "2.8.0"
 souvlaki = "0.8"
-log = "0.4.29"
+submarine = "0.1"
+tantivy = "0.25"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-log = "2.8.0"
+tauri-plugin-notification = "2.3.3"
+tauri-plugin-opener = "2"
+tauri-plugin-prevent-default = "4.0.3"
 tauri-plugin-single-instance = "2.3.7"
-keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
+tauri-plugin-store = "2.4.2"
+thiserror = "2.0"
+tokio = { version = "1.49", features = ["full"] }
+uuid = { version = "1.19.0", features = ["v4"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2.7"

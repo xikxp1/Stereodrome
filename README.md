@@ -12,12 +12,14 @@ A desktop music player for Subsonic-compatible music servers, inspired by the cl
 
 ## Screenshots
 
-*Coming soon*
+_Coming soon_
 
 ## Requirements
 
 ### Subsonic Server
+
 Stereodrome works with any Subsonic-compatible server:
+
 - [Navidrome](https://www.navidrome.org/) (recommended)
 - [Airsonic](https://airsonic.github.io/)
 - [Gonic](https://github.com/sentriz/gonic)
@@ -25,6 +27,7 @@ Stereodrome works with any Subsonic-compatible server:
 - Other Subsonic API-compatible servers
 
 ### System Requirements
+
 - **macOS** 10.15 (Catalina) or later
 - **Windows** 10 or later
 - **Linux** with GTK 3 and WebKit2GTK
@@ -32,6 +35,7 @@ Stereodrome works with any Subsonic-compatible server:
 ## Installation
 
 ### From Release (Recommended)
+
 Download the latest release for your platform from the [Releases](https://github.com/xikxp1/Stereodrome/releases) page.
 
 ### Build from Source
@@ -55,21 +59,21 @@ bun run tauri build
 
 ## Keyboard Shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| `Space` | Play / Pause |
-| `↑` / `↓` | Navigate songs |
-| `Enter` | Play selected song |
-| `Shift + ←` / `→` | Seek backward / forward |
-| `Cmd/Ctrl + ↑` / `↓` | Volume up / down |
-| `Cmd/Ctrl + ←` / `→` | Previous / Next track |
-| `M` | Mute / Unmute |
-| `S` | Cycle shuffle mode |
-| `R` | Cycle repeat mode |
-| `Q` | Toggle queue panel |
-| `V` | Toggle visualizer |
-| `Cmd/Ctrl + K` | Focus search |
-| `Cmd/Ctrl + ,` | Open settings |
+| Shortcut             | Action                  |
+| -------------------- | ----------------------- |
+| `Space`              | Play / Pause            |
+| `↑` / `↓`            | Navigate songs          |
+| `Enter`              | Play selected song      |
+| `Shift + ←` / `→`    | Seek backward / forward |
+| `Cmd/Ctrl + ↑` / `↓` | Volume up / down        |
+| `Cmd/Ctrl + ←` / `→` | Previous / Next track   |
+| `M`                  | Mute / Unmute           |
+| `S`                  | Cycle shuffle mode      |
+| `R`                  | Cycle repeat mode       |
+| `Q`                  | Toggle queue panel      |
+| `V`                  | Toggle visualizer       |
+| `Cmd/Ctrl + K`       | Focus search            |
+| `Cmd/Ctrl + ,`       | Open settings           |
 
 ## Tech Stack
 

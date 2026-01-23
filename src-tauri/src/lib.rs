@@ -52,6 +52,7 @@ pub fn run() {
             info!("Second instance detected, focusing existing window");
             focus_main_window(app);
         }))
+        .plugin(tauri_plugin_prevent_default::debug())
         .setup(|app| {
             let db_path = db::get_db_path(app.handle())?;
             let index_path = search::get_index_path(app.handle())?;

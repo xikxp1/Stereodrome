@@ -416,6 +416,10 @@
         title="Search ({modKey}K)"
         value={searchStore.query}
         oninput={handleInput}
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
         class="h-7 w-24 rounded-full border border-base-300 bg-base-100 px-3 text-xs outline-none transition-all duration-150 placeholder:text-base-content/40 focus:border-primary focus:ring-2 focus:ring-primary/20 sm:w-32 md:w-40 lg:w-44 lg:focus:w-52"
       />
       {#if searchStore.isSearching}

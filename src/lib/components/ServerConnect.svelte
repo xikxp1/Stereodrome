@@ -33,6 +33,10 @@
             bind:value={url}
             placeholder="https://your-server.com"
             class="input input-bordered w-full"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
             required
           />
         </label>
@@ -44,6 +48,10 @@
             bind:value={username}
             placeholder="Username"
             class="input input-bordered w-full"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
             required
           />
         </label>
@@ -55,6 +63,7 @@
             bind:value={password}
             placeholder="Password"
             class="input input-bordered w-full"
+            autocomplete="off"
             required
           />
         </label>

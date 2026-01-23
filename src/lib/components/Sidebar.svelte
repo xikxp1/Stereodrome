@@ -141,6 +141,10 @@
               type="text"
               class="w-full px-2 py-1 text-xs bg-base-100 border border-base-300 rounded focus:outline-none focus:border-primary"
               placeholder="Playlist name..."
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
               bind:value={newPlaylistName}
               onkeydown={(e) => {
                 if (e.key === "Enter") handleCreatePlaylist();
