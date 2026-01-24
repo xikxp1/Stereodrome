@@ -1,6 +1,7 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { getVersion } from "@tauri-apps/api/app";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { error } from "@tauri-apps/plugin-log";
 import { setTrayUpdateAvailable } from "$lib/api/commands";
 
 class UpdaterStore {
@@ -21,7 +22,7 @@ class UpdaterStore {
     try {
       this.currentVersion = await getVersion();
     } catch (e) {
-      console.error("Failed to get app version:", e);
+      error(`Failed to get app version: ${e}`);
     }
   }
 
@@ -38,7 +39,9 @@ class UpdaterStore {
         this.version = update.version;
         this.notes = update.body ?? null;
         // Update tray indicator
-        setTrayUpdateAvailable(update.version).catch(console.error);
+        setTrayUpdateAvailable(update.version).catch((e) =>
+          error(`Failed to set tray update available: ${e}`)
+        );
         return true;
       }
 
@@ -47,7 +50,9 @@ class UpdaterStore {
       this.notes = null;
       this.update = null;
       // Clear tray indicator
-      setTrayUpdateAvailable(null).catch(console.error);
+      setTrayUpdateAvailable(null).catch((e) =>
+        error(`Failed to clear tray update indicator: ${e}`)
+      );
       return false;
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);

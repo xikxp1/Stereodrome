@@ -20,6 +20,7 @@
     syncLibrary,
     type CacheStats,
   } from "$lib/api/commands";
+  import { error } from "@tauri-apps/plugin-log";
   import { connection } from "$lib/stores/connection.svelte";
   import { updater } from "$lib/stores/updater.svelte";
   import { queryClient } from "$lib/db/queryClient";
@@ -86,7 +87,7 @@
         cacheSizeGB = cacheStats.max_size / (1024 * 1024 * 1024);
       }
     } catch (e) {
-      console.error("Failed to load cache stats:", e);
+      error(`Failed to load cache stats: ${e}`);
     } finally {
       loadingStats = false;
     }
@@ -99,7 +100,7 @@
       cacheStats = await setMaxCacheSize(sizeBytes);
       cacheSizeGB = sizeGB;
     } catch (e) {
-      console.error("Failed to set cache size:", e);
+      error(`Failed to set cache size: ${e}`);
     } finally {
       savingSize = false;
     }
@@ -114,7 +115,7 @@
       await clearAudioCache();
       await loadCacheStats();
     } catch (e) {
-      console.error("Failed to clear cache:", e);
+      error(`Failed to clear cache: ${e}`);
     } finally {
       clearing = false;
     }
@@ -125,7 +126,7 @@
     try {
       scanStatus = await getScanStatus();
     } catch (e) {
-      console.error("Failed to load scan status:", e);
+      error(`Failed to load scan status: ${e}`);
     } finally {
       loadingScanStatus = false;
     }
@@ -136,7 +137,7 @@
     try {
       scanStatus = await startScan();
     } catch (e) {
-      console.error("Failed to start scan:", e);
+      error(`Failed to start scan: ${e}`);
     } finally {
       startingScan = false;
     }
@@ -150,7 +151,7 @@
       await queryClient.invalidateQueries({ queryKey: ["albums"] });
       await queryClient.invalidateQueries({ queryKey: ["songs"] });
     } catch (e) {
-      console.error("Failed to sync library:", e);
+      error(`Failed to sync library: ${e}`);
     } finally {
       syncing = false;
     }

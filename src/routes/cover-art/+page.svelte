@@ -3,6 +3,7 @@
   import { Music, Loader2 } from "lucide-svelte";
   import { getCoverArt } from "$lib/api/commands";
   import { listen } from "@tauri-apps/api/event";
+  import { error as logError } from "@tauri-apps/plugin-log";
   import { onMount } from "svelte";
 
   // State from URL params or event updates
@@ -42,7 +43,7 @@
           isLoading = false;
         })
         .catch((e) => {
-          console.error("Failed to fetch cover art:", e);
+          logError(`Failed to fetch cover art: ${e}`);
           error = String(e);
           isLoading = false;
         });

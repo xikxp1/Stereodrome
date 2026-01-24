@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { error } from "@tauri-apps/plugin-log";
 import type { Song } from "$lib/types";
 
 export interface Playlist {
@@ -25,7 +26,7 @@ class PlaylistStore {
     try {
       this.playlists = await invoke<Playlist[]>("get_playlists");
     } catch (e) {
-      console.error("Failed to load playlists:", e);
+      error(`Failed to load playlists: ${e}`);
     } finally {
       this.isLoading = false;
     }
@@ -39,7 +40,7 @@ class PlaylistStore {
         { playlistId }
       );
     } catch (e) {
-      console.error("Failed to load playlist songs:", e);
+      error(`Failed to load playlist songs: ${e}`);
     } finally {
       this.isLoading = false;
     }
@@ -66,7 +67,7 @@ class PlaylistStore {
       await this.loadPlaylists();
       return playlist;
     } catch (e) {
-      console.error("Failed to create playlist:", e);
+      error(`Failed to create playlist: ${e}`);
       return null;
     }
   }
@@ -84,7 +85,7 @@ class PlaylistStore {
         };
       }
     } catch (e) {
-      console.error("Failed to update playlist:", e);
+      error(`Failed to update playlist: ${e}`);
     }
   }
 
@@ -99,7 +100,7 @@ class PlaylistStore {
         this.currentPlaylistSongs = [];
       }
     } catch (e) {
-      console.error("Failed to delete playlist:", e);
+      error(`Failed to delete playlist: ${e}`);
     }
   }
 
@@ -113,7 +114,7 @@ class PlaylistStore {
         await this.loadPlaylistSongs(playlistId);
       }
     } catch (e) {
-      console.error("Failed to add songs to playlist:", e);
+      error(`Failed to add songs to playlist: ${e}`);
     }
   }
 
@@ -127,7 +128,7 @@ class PlaylistStore {
         await this.loadPlaylistSongs(playlistId);
       }
     } catch (e) {
-      console.error("Failed to remove song from playlist:", e);
+      error(`Failed to remove song from playlist: ${e}`);
     }
   }
 
@@ -140,7 +141,7 @@ class PlaylistStore {
         await this.loadPlaylistSongs(playlistId);
       }
     } catch (e) {
-      console.error("Failed to reorder playlist:", e);
+      error(`Failed to reorder playlist: ${e}`);
     }
   }
 }

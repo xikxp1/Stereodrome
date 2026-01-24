@@ -22,6 +22,7 @@
   } from "$lib/api/commands";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { emit } from "@tauri-apps/api/event";
+  import { error } from "@tauri-apps/plugin-log";
   import type { Artist, Album, Song } from "$lib/types";
 
   // View state
@@ -65,7 +66,7 @@
           coverArtUrl = url;
         })
         .catch((e) => {
-          console.error("Failed to fetch cover art thumbnail:", e);
+          error(`Failed to fetch cover art thumbnail: ${e}`);
           coverArtUrl = null;
         });
     } else if (!coverArtId) {
@@ -219,7 +220,7 @@
       // Play with queue context - use filtered songs as the queue
       await queue.playSongWithQueue(song, filteredSongs);
     } catch (e) {
-      console.error("Failed to play song:", e);
+      error(`Failed to play song: ${e}`);
     }
   }
 
@@ -317,7 +318,7 @@
     });
 
     webview.once("tauri://error", (e) => {
-      console.error("Failed to create cover art window:", e);
+      error(`Failed to create cover art window: ${e}`);
     });
   }
 
