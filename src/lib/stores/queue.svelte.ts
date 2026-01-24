@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { error } from "@tauri-apps/plugin-log";
 import type { Song } from "$lib/types";
 
 export type RepeatMode = "Off" | "All" | "One";
@@ -74,7 +75,7 @@ class QueueStore {
       const state = await invoke<QueueState>("get_queue");
       this.updateFromState(state);
     } catch (e) {
-      console.error("Failed to load queue:", e);
+      error(`Failed to load queue: ${e}`);
     }
   }
 
@@ -93,7 +94,7 @@ class QueueStore {
     try {
       await invoke("add_to_queue", { item });
     } catch (e) {
-      console.error("Failed to add to queue:", e);
+      error(`Failed to add to queue: ${e}`);
     }
   }
 
@@ -102,7 +103,7 @@ class QueueStore {
     try {
       await invoke("add_songs_to_queue", { items });
     } catch (e) {
-      console.error("Failed to add songs to queue:", e);
+      error(`Failed to add songs to queue: ${e}`);
     }
   }
 
@@ -113,7 +114,7 @@ class QueueStore {
       try {
         await invoke("insert_next_in_queue", { item });
       } catch (e) {
-        console.error("Failed to insert next:", e);
+        error(`Failed to insert next: ${e}`);
       }
     } else {
       // Play the next song in queue
@@ -122,7 +123,7 @@ class QueueStore {
       try {
         await invoke<boolean>("play_next", { force });
       } catch (e) {
-        console.error("Failed to play next:", e);
+        error(`Failed to play next: ${e}`);
       }
     }
   }
@@ -131,7 +132,7 @@ class QueueStore {
     try {
       await invoke<boolean>("play_previous");
     } catch (e) {
-      console.error("Failed to play previous:", e);
+      error(`Failed to play previous: ${e}`);
     }
   }
 
@@ -139,7 +140,7 @@ class QueueStore {
     try {
       await invoke("play_queue_item", { index });
     } catch (e) {
-      console.error("Failed to play queue item:", e);
+      error(`Failed to play queue item: ${e}`);
     }
   }
 
@@ -147,7 +148,7 @@ class QueueStore {
     try {
       await invoke("remove_from_queue", { index });
     } catch (e) {
-      console.error("Failed to remove from queue:", e);
+      error(`Failed to remove from queue: ${e}`);
     }
   }
 
@@ -155,7 +156,7 @@ class QueueStore {
     try {
       await invoke("clear_queue");
     } catch (e) {
-      console.error("Failed to clear queue:", e);
+      error(`Failed to clear queue: ${e}`);
     }
   }
 
@@ -163,7 +164,7 @@ class QueueStore {
     try {
       await invoke("move_queue_item", { from, to });
     } catch (e) {
-      console.error("Failed to move queue item:", e);
+      error(`Failed to move queue item: ${e}`);
     }
   }
 
@@ -171,7 +172,7 @@ class QueueStore {
     try {
       await invoke<boolean>("toggle_shuffle");
     } catch (e) {
-      console.error("Failed to toggle shuffle:", e);
+      error(`Failed to toggle shuffle: ${e}`);
     }
   }
 
@@ -179,7 +180,7 @@ class QueueStore {
     try {
       await invoke<RepeatMode>("cycle_repeat_mode");
     } catch (e) {
-      console.error("Failed to cycle repeat mode:", e);
+      error(`Failed to cycle repeat mode: ${e}`);
     }
   }
 
@@ -187,7 +188,7 @@ class QueueStore {
     try {
       await invoke("set_repeat_mode", { mode });
     } catch (e) {
-      console.error("Failed to set repeat mode:", e);
+      error(`Failed to set repeat mode: ${e}`);
     }
   }
 

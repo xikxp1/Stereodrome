@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { error } from "@tauri-apps/plugin-log";
 import type { Song } from "$lib/types";
 import { queue } from "./queue.svelte";
 import { notifications } from "$lib/services/notifications.svelte";
@@ -106,7 +107,7 @@ class PlaybackStore {
               this.scrobbledSongId = state.song.id;
               invoke("scrobble_submit", { songId: state.song.id }).catch(
                 (e) => {
-                  console.error("Failed to submit scrobble:", e);
+                  error(`Failed to submit scrobble: ${e}`);
                 }
               );
             }
@@ -137,7 +138,7 @@ class PlaybackStore {
       this.position = 0;
       this.duration = song.duration || 0;
     } catch (e) {
-      console.error("Failed to play song:", e);
+      error(`Failed to play song: ${e}`);
       throw e;
     }
   }
@@ -147,7 +148,7 @@ class PlaybackStore {
       await invoke("pause_playback");
       this.isPlaying = false;
     } catch (e) {
-      console.error("Failed to pause:", e);
+      error(`Failed to pause: ${e}`);
     }
   }
 
@@ -156,7 +157,7 @@ class PlaybackStore {
       await invoke("resume_playback");
       this.isPlaying = true;
     } catch (e) {
-      console.error("Failed to resume:", e);
+      error(`Failed to resume: ${e}`);
     }
   }
 
@@ -182,7 +183,7 @@ class PlaybackStore {
       this.position = 0;
       this.currentTrack = null;
     } catch (e) {
-      console.error("Failed to stop:", e);
+      error(`Failed to stop: ${e}`);
     }
   }
 
@@ -192,7 +193,7 @@ class PlaybackStore {
       await invoke("set_volume", { volume: clamped });
       this.volume = clamped;
     } catch (e) {
-      console.error("Failed to set volume:", e);
+      error(`Failed to set volume: ${e}`);
     }
   }
 
@@ -204,7 +205,7 @@ class PlaybackStore {
       this.duration = status.duration;
       this.volume = status.volume;
     } catch (e) {
-      console.error("Failed to get playback status:", e);
+      error(`Failed to get playback status: ${e}`);
     }
   }
 
