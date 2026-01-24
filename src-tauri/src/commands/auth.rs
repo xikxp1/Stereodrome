@@ -1,10 +1,9 @@
 use log::warn;
 use serde::{Deserialize, Serialize};
-use submarine::{auth::AuthBuilder, Client};
 use tauri::State;
 
 use crate::credentials;
-use crate::error::{AppError, AppResult, MutexExt};
+use crate::error::{AppError, AppResult};
 use crate::state::{AppState, ServerConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,15 +26,10 @@ pub async fn connect_server(
     state: State<'_, AppState>,
     params: ConnectParams,
 ) -> AppResult<ConnectionStatus> {
-    let auth = AuthBuilder::new(&params.username, "1.16.1")
-        .client_name("Stereodrome")
-        .hashed(&params.password);
-
-    let client = Client::new(&params.url, auth);
-
-    // Test connection with ping
-    let ping_result = client
-        .ping()
+    // Connect via client handle (this delegates to the client thread)
+    let result = state
+        .client
+        .connect(&params.url, &params.username, &params.password)
         .await
         .map_err(|e| AppError::Subsonic(e.to_string()))?;
 
@@ -44,17 +38,6 @@ pub async fn connect_server(
         username: params.username.clone(),
         password: params.password.clone(),
     };
-
-    // Store client and config in memory
-    {
-        let mut client_lock = state.client.lock_recover();
-        *client_lock = Some(client);
-    }
-
-    {
-        let mut config_lock = state.server_config.lock_recover();
-        *config_lock = Some(config.clone());
-    }
 
     // Persist credentials to OS keyring
     if let Err(e) = credentials::save_credentials(&config) {
@@ -65,21 +48,18 @@ pub async fn connect_server(
         connected: true,
         server_url: Some(params.url),
         username: Some(params.username),
-        server_version: Some(ping_result.version),
+        server_version: Some(result.server_version),
     })
 }
 
 #[tauri::command]
 pub async fn disconnect_server(state: State<'_, AppState>) -> AppResult<()> {
-    {
-        let mut client_lock = state.client.lock_recover();
-        *client_lock = None;
-    }
-
-    {
-        let mut config_lock = state.server_config.lock_recover();
-        *config_lock = None;
-    }
+    // Disconnect via client handle
+    state
+        .client
+        .disconnect()
+        .await
+        .map_err(|e| AppError::Subsonic(e.to_string()))?;
 
     // Clear credentials from OS keyring
     if let Err(e) = credentials::delete_credentials() {
@@ -91,13 +71,14 @@ pub async fn disconnect_server(state: State<'_, AppState>) -> AppResult<()> {
 
 #[tauri::command]
 pub async fn get_connection_status(state: State<'_, AppState>) -> AppResult<ConnectionStatus> {
-    let config = state.server_config.lock_recover();
+    // Try to load credentials from keyring to get url/username
+    let creds = credentials::load_credentials()?;
 
-    match config.as_ref() {
-        Some(cfg) => Ok(ConnectionStatus {
+    match creds {
+        Some(config) => Ok(ConnectionStatus {
             connected: state.is_connected(),
-            server_url: Some(cfg.url.clone()),
-            username: Some(cfg.username.clone()),
+            server_url: Some(config.url),
+            username: Some(config.username),
             server_version: None,
         }),
         None => Ok(ConnectionStatus {
@@ -112,16 +93,23 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> AppResult<Conn
 /// Attempt to restore session from stored credentials
 #[tauri::command]
 pub async fn restore_session(state: State<'_, AppState>) -> AppResult<ConnectionStatus> {
-    // Check if already connected
+    // Check if already connected - verify with ping
     if state.is_connected() {
-        let config = state.server_config.lock_recover();
-        if let Some(cfg) = config.as_ref() {
-            return Ok(ConnectionStatus {
-                connected: true,
-                server_url: Some(cfg.url.clone()),
-                username: Some(cfg.username.clone()),
-                server_version: None,
-            });
+        if let Ok(Some(config)) = credentials::load_credentials() {
+            // Ping to verify connection is still valid and get server version
+            match state.client.ping().await {
+                Ok(server_version) => {
+                    return Ok(ConnectionStatus {
+                        connected: true,
+                        server_url: Some(config.url),
+                        username: Some(config.username),
+                        server_version: Some(server_version),
+                    });
+                }
+                Err(_) => {
+                    // Connection is stale, will try to reconnect below
+                }
+            }
         }
     }
 
@@ -131,33 +119,18 @@ pub async fn restore_session(state: State<'_, AppState>) -> AppResult<Connection
             let url = config.url.clone();
             let username = config.username.clone();
 
-            // Attempt to reconnect
-            let auth = AuthBuilder::new(&config.username, "1.16.1")
-                .client_name("Stereodrome")
-                .hashed(&config.password);
-
-            let client = Client::new(&config.url, auth);
-
-            // Test connection
-            match client.ping().await {
-                Ok(ping_result) => {
-                    // Store client and config
-                    {
-                        let mut client_lock = state.client.lock_recover();
-                        *client_lock = Some(client);
-                    }
-                    {
-                        let mut config_lock = state.server_config.lock_recover();
-                        *config_lock = Some(config);
-                    }
-
-                    Ok(ConnectionStatus {
-                        connected: true,
-                        server_url: Some(url),
-                        username: Some(username),
-                        server_version: Some(ping_result.version),
-                    })
-                }
+            // Attempt to reconnect via client handle
+            match state
+                .client
+                .connect(&config.url, &config.username, &config.password)
+                .await
+            {
+                Ok(result) => Ok(ConnectionStatus {
+                    connected: true,
+                    server_url: Some(url),
+                    username: Some(username),
+                    server_version: Some(result.server_version),
+                }),
                 Err(_) => {
                     // Connection failed, return disconnected status
                     Ok(ConnectionStatus {

@@ -1,5 +1,6 @@
 mod audio;
 mod cache;
+mod client;
 mod commands;
 mod credentials;
 mod db;
@@ -11,7 +12,7 @@ mod tray;
 
 use std::sync::Arc;
 
-use error::MutexExt;
+use error::MutexExt as _;
 use log::{info, LevelFilter};
 use media::MediaControlsManager;
 use state::AppState;
@@ -58,7 +59,11 @@ pub fn run() {
         .setup(|app| {
             let db_path = db::get_db_path(app.handle())?;
             let index_path = search::get_index_path(app.handle())?;
-            let app_state = AppState::new(&db_path, index_path)?;
+
+            // Spawn the submarine client thread
+            let client_handle = client::spawn();
+
+            let app_state = AppState::new(&db_path, index_path, client_handle.clone())?;
 
             // Initialize database schema
             {
@@ -73,22 +78,11 @@ pub fn run() {
                 audio_player.start_spectrum_emitter(app.handle().clone());
             }
 
-            // Start now playing emitter
+            // Start now playing emitter with the client handle
             let emitter_running = Arc::clone(&app_state.emitter_running);
-
-            // We need a way to get the client that doesn't hold a reference to app_state
-            // So we'll store a weak reference to check for client changes
-            let app_handle = app.handle().clone();
             commands::nowplaying::start_now_playing_emitter(
-                app_handle.clone(),
-                move || {
-                    // Get the app state from the handle
-                    if let Some(state) = app_handle.try_state::<AppState>() {
-                        state.get_client()
-                    } else {
-                        None
-                    }
-                },
+                app.handle().clone(),
+                client_handle,
                 emitter_running,
             );
 
@@ -164,13 +158,12 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::WindowEvent {
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::WindowEvent {
                 label,
                 event: tauri::WindowEvent::CloseRequested { api, .. },
                 ..
-            } = event
-            {
+            } => {
                 if label == "main" {
                     // Hide window instead of closing (minimize to tray)
                     api.prevent_close();
@@ -180,5 +173,13 @@ pub fn run() {
                     }
                 }
             }
+            tauri::RunEvent::Exit => {
+                // Shutdown the client thread gracefully
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    info!("Shutting down client thread");
+                    state.client.shutdown();
+                }
+            }
+            _ => {}
         });
 }

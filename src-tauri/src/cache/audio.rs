@@ -5,11 +5,10 @@ use std::time::SystemTime;
 
 use log::warn;
 use serde::Serialize;
-use submarine::Client;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::audio::fetch_audio_bytes;
+use crate::client::SubsonicClientHandle;
 use crate::error::{AppError, AppResult};
 
 /// Default maximum cache size: 5 GB
@@ -72,7 +71,7 @@ impl AudioCache {
     /// Get audio bytes, either from cache or by fetching from server
     pub async fn get_or_fetch(
         &self,
-        client: &Client,
+        client: &SubsonicClientHandle,
         song_id: &str,
         suffix: &str,
     ) -> AppResult<Vec<u8>> {
@@ -93,8 +92,11 @@ impl AudioCache {
             }
         }
 
-        // Fetch from server
-        let bytes = fetch_audio_bytes(client, song_id).await?;
+        // Fetch from server via client handle
+        let bytes = client
+            .stream(song_id)
+            .await
+            .map_err(|e| AppError::Audio(format!("Failed to fetch audio: {}", e)))?;
 
         // Write to cache (fire-and-forget, don't fail playback if caching fails)
         if let Err(e) = fs::write(&cache_path, &bytes) {
@@ -206,7 +208,7 @@ impl AudioCache {
     /// Skips if the song is already cached or currently being prefetched.
     pub fn prefetch(
         app_handle: AppHandle,
-        client: Client,
+        client: SubsonicClientHandle,
         song_id: String,
         suffix: String,
         max_size: u64,
