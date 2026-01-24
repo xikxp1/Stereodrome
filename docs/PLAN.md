@@ -1,6 +1,6 @@
 # Stereodrome Development Plan
 
-Last updated: 2026-01-23
+Last updated: 2026-01-24
 
 ## Current Status
 
@@ -21,6 +21,7 @@ Phase 8: Local Storage & Offline Features
 - [x] System tray icon with context menu (play/pause, next/prev, show window, quit)
 - [x] Minimize to tray on window close (keeps playback running)
 - [x] Update checker (check for updates on startup, install from Settings modal)
+- [x] Subsonic client thread with message passing (eliminates mutex contention)
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks
 - [ ] Gapless playback
@@ -154,15 +155,19 @@ Phase 8: Local Storage & Offline Features
 src-tauri/src/
 ├── lib.rs              # Tauri setup, state, command registration
 ├── error.rs            # AppError enum with thiserror, MutexExt trait
-├── state.rs            # AppState (client, db, audio_player, queue, search_index)
+├── state.rs            # AppState (client handle, db, audio_player, queue, search_index)
 ├── credentials.rs      # OS keyring integration for secure credential storage
+├── client/
+│   ├── mod.rs          # Module exports, spawn() function
+│   ├── messages.rs     # Request/Response message types, ClientError
+│   ├── handle.rs       # SubsonicClientHandle (lock-free API interface)
+│   └── thread.rs       # Client thread with tokio runtime, processes requests
 ├── audio/
 │   ├── mod.rs          # Module exports
 │   ├── analyzer.rs     # AnalyzingSource wrapper for sample capture
 │   ├── player.rs       # AudioPlayer with Rodio (threaded), media controls integration
 │   ├── queue.rs        # PlayQueue with shuffle/repeat
-│   ├── spectrum.rs     # FFT analysis, SpectrumAnalyzer, band aggregation
-│   └── stream.rs       # Subsonic audio stream fetching
+│   └── spectrum.rs     # FFT analysis, SpectrumAnalyzer, band aggregation
 ├── media/
 │   ├── mod.rs          # Module exports
 │   └── controls.rs     # OS media controls via souvlaki (macOS/Windows/Linux)

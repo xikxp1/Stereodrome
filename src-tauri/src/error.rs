@@ -2,6 +2,8 @@ use serde::Serialize;
 use std::sync::{Mutex, MutexGuard};
 use thiserror::Error;
 
+use crate::client::ClientError;
+
 /// Extension trait for Mutex that provides poison-recovery locking.
 ///
 /// When a thread panics while holding a mutex lock, the mutex becomes "poisoned".
@@ -43,6 +45,22 @@ pub enum AppError {
 
     #[error("Credentials error: {0}")]
     Credentials(String),
+
+    #[error("Client channel error: {0}")]
+    ClientChannel(String),
+}
+
+impl From<ClientError> for AppError {
+    fn from(err: ClientError) -> Self {
+        match err {
+            ClientError::NotConnected => AppError::NotConnected,
+            ClientError::ConnectionFailed(s) => AppError::Subsonic(s),
+            ClientError::ApiError(s) => AppError::Subsonic(s),
+            ClientError::ChannelClosed => {
+                AppError::ClientChannel("Client channel closed".to_string())
+            }
+        }
+    }
 }
 
 impl Serialize for AppError {

@@ -7,11 +7,10 @@ use crate::state::AppState;
 
 /// Prefetch the next song in the queue for gapless playback
 fn prefetch_next_song(app_handle: &AppHandle, state: &AppState) {
-    // Get client
-    let client = match state.client.lock().unwrap().clone() {
-        Some(c) => c,
-        None => return,
-    };
+    // Check if connected
+    if !state.client.is_connected() {
+        return;
+    }
 
     // Get next song info from queue
     let next_song_info: Option<(String, String)> = {
@@ -32,7 +31,7 @@ fn prefetch_next_song(app_handle: &AppHandle, state: &AppState) {
     if let Some((song_id, suffix)) = next_song_info {
         AudioCache::prefetch(
             app_handle.clone(),
-            client,
+            state.client.clone(),
             song_id,
             suffix,
             DEFAULT_MAX_CACHE_SIZE,
@@ -46,13 +45,10 @@ pub async fn play_song(
     state: State<'_, AppState>,
     song_id: String,
 ) -> AppResult<()> {
-    // Get submarine client
-    let client = state
-        .client
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or(AppError::NotConnected)?;
+    // Check if connected
+    if !state.client.is_connected() {
+        return Err(AppError::NotConnected);
+    }
 
     // Get song metadata from database (join with artists and albums for names and cover art)
     let (duration, title, artist, album, cover_art_id, suffix): (
@@ -95,7 +91,7 @@ pub async fn play_song(
 
     // Fetch audio bytes (from cache or server)
     let cache = AudioCache::new(&app_handle, DEFAULT_MAX_CACHE_SIZE)?;
-    let audio_data = cache.get_or_fetch(&client, &song_id, &suffix).await?;
+    let audio_data = cache.get_or_fetch(&state.client, &song_id, &suffix).await?;
 
     // Play the audio
     {
@@ -108,9 +104,7 @@ pub async fn play_song(
 
     // Report "now playing" to Subsonic server
     // Fire and forget - don't fail playback if scrobble fails
-    let _ = client
-        .scrobble(vec![(song_id, None::<usize>)], Some(false))
-        .await;
+    let _ = state.client.scrobble(&song_id, None, Some(false)).await;
 
     Ok(())
 }

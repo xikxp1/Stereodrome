@@ -102,14 +102,14 @@ struct SongData {
 
 #[tauri::command]
 pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
-    let client = {
-        let lock = state.client.lock_recover();
-        lock.clone().ok_or(AppError::NotConnected)?
-    };
+    if !state.client.is_connected() {
+        return Err(AppError::NotConnected);
+    }
 
-    // Fetch all data from server first (no DB lock held)
-    let indexes = client
-        .get_artists(None)
+    // Fetch all data from server via client handle
+    let indexes = state
+        .client
+        .get_artists()
         .await
         .map_err(|e| AppError::Subsonic(e.to_string()))?;
 
@@ -130,7 +130,7 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
             });
 
             // Fetch albums for this artist
-            match client.get_artist(&artist.id).await {
+            match state.client.get_artist(&artist.id).await {
                 Ok(artist_detail) => {
                     for album in artist_detail.album {
                         albums_data.push(AlbumData {
@@ -144,7 +144,7 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
                         });
 
                         // Fetch songs for this album
-                        match client.get_album(&album.id).await {
+                        match state.client.get_album(&album.id).await {
                             Ok(album_detail) => {
                                 for song in album_detail.song {
                                     songs_data.push(SongData {
@@ -457,12 +457,12 @@ pub async fn get_songs(
 
 #[tauri::command]
 pub async fn get_scan_status(state: State<'_, AppState>) -> AppResult<ScanStatus> {
-    let client = {
-        let lock = state.client.lock_recover();
-        lock.clone().ok_or(AppError::NotConnected)?
-    };
+    if !state.client.is_connected() {
+        return Err(AppError::NotConnected);
+    }
 
-    let status = client
+    let status = state
+        .client
         .get_scan_status()
         .await
         .map_err(|e| AppError::Subsonic(e.to_string()))?;
@@ -475,12 +475,12 @@ pub async fn get_scan_status(state: State<'_, AppState>) -> AppResult<ScanStatus
 
 #[tauri::command]
 pub async fn start_scan(state: State<'_, AppState>) -> AppResult<ScanStatus> {
-    let client = {
-        let lock = state.client.lock_recover();
-        lock.clone().ok_or(AppError::NotConnected)?
-    };
+    if !state.client.is_connected() {
+        return Err(AppError::NotConnected);
+    }
 
-    let status = client
+    let status = state
+        .client
         .start_scan()
         .await
         .map_err(|e| AppError::Subsonic(e.to_string()))?;

@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use submarine::Client;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::client::SubsonicClientHandle;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -32,16 +32,14 @@ pub struct NowPlayingEvent {
 /// This should be called when playback starts.
 #[tauri::command]
 pub async fn scrobble_now_playing(state: State<'_, AppState>, song_id: String) -> AppResult<()> {
-    let client = state
-        .client
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or(AppError::NotConnected)?;
+    if !state.client.is_connected() {
+        return Err(AppError::NotConnected);
+    }
 
     // scrobble with submission=false means "now playing" notification
-    client
-        .scrobble(vec![(song_id, None::<usize>)], Some(false))
+    state
+        .client
+        .scrobble(&song_id, None, Some(false))
         .await
         .map_err(|e| AppError::Subsonic(e.to_string()))?;
 
@@ -56,17 +54,15 @@ pub async fn scrobble_submit(
     song_id: String,
     timestamp: Option<u64>,
 ) -> AppResult<()> {
-    let client = state
-        .client
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or(AppError::NotConnected)?;
+    if !state.client.is_connected() {
+        return Err(AppError::NotConnected);
+    }
 
     // scrobble with submission=true (or None, which defaults to true) means submit the scrobble
     let time = timestamp.map(|t| t as usize);
-    client
-        .scrobble(vec![(song_id, time)], Some(true))
+    state
+        .client
+        .scrobble(&song_id, time, Some(true))
         .await
         .map_err(|e| AppError::Subsonic(e.to_string()))?;
 
@@ -76,7 +72,7 @@ pub async fn scrobble_submit(
 /// Start the now playing emitter that polls the server and emits events
 pub fn start_now_playing_emitter(
     app_handle: AppHandle,
-    get_client: impl Fn() -> Option<Client> + Send + 'static,
+    client: SubsonicClientHandle,
     running: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
@@ -94,34 +90,36 @@ pub fn start_now_playing_emitter(
             // Sleep for 5 seconds between polls
             thread::sleep(Duration::from_secs(5));
 
-            // Get client if connected
-            if let Some(client) = get_client() {
-                // Fetch now playing from server
-                let result = runtime.block_on(async { client.get_now_playing().await });
+            // Check connection without lock
+            if !client.is_connected() {
+                continue;
+            }
 
-                match result {
-                    Ok(now_playing) => {
-                        let entries: Vec<NowPlayingEntry> = now_playing
-                            .entry
-                            .into_iter()
-                            .map(|e| NowPlayingEntry {
-                                id: e.child.id,
-                                title: e.child.title,
-                                artist: e.child.artist,
-                                album: e.child.album,
-                                duration: e.child.duration,
-                                cover_art: e.child.cover_art,
-                                username: e.username,
-                                minutes_ago: e.minutes_ago,
-                                player_name: e.player_name,
-                            })
-                            .collect();
+            // Fetch now playing from server via client handle
+            let result = runtime.block_on(async { client.get_now_playing().await });
 
-                        let _ = app_handle.emit("now-playing", NowPlayingEvent { entries });
-                    }
-                    Err(e) => {
-                        warn!("Failed to fetch now playing: {}", e);
-                    }
+            match result {
+                Ok(now_playing) => {
+                    let entries: Vec<NowPlayingEntry> = now_playing
+                        .entry
+                        .into_iter()
+                        .map(|e| NowPlayingEntry {
+                            id: e.child.id,
+                            title: e.child.title,
+                            artist: e.child.artist,
+                            album: e.child.album,
+                            duration: e.child.duration,
+                            cover_art: e.child.cover_art,
+                            username: e.username,
+                            minutes_ago: e.minutes_ago,
+                            player_name: e.player_name,
+                        })
+                        .collect();
+
+                    let _ = app_handle.emit("now-playing", NowPlayingEvent { entries });
+                }
+                Err(e) => {
+                    warn!("Failed to fetch now playing: {}", e);
                 }
             }
         }

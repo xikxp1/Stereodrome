@@ -49,15 +49,14 @@ pub async fn get_cover_art(
         return Ok(format!("data:{};base64,{}", mime, base64));
     }
 
-    // Get submarine client
-    let client = state
-        .client
-        .lock_recover()
-        .clone()
-        .ok_or(AppError::NotConnected)?;
+    // Check if connected
+    if !state.client.is_connected() {
+        return Err(AppError::NotConnected);
+    }
 
-    // Fetch cover art using submarine client
-    let bytes_vec = client
+    // Fetch cover art using client handle
+    let bytes_vec = state
+        .client
         .get_cover_art(&cover_art_id, size)
         .await
         .map_err(|e| AppError::Subsonic(format!("Failed to fetch cover art: {}", e)))?;
@@ -130,15 +129,14 @@ pub async fn get_cover_art_path(
         return Ok(cache_path.to_string_lossy().to_string());
     }
 
-    // Get submarine client
-    let client = state
-        .client
-        .lock_recover()
-        .clone()
-        .ok_or(AppError::NotConnected)?;
+    // Check if connected
+    if !state.client.is_connected() {
+        return Err(AppError::NotConnected);
+    }
 
-    // Fetch cover art using submarine client
-    let bytes_vec = client
+    // Fetch cover art using client handle
+    let bytes_vec = state
+        .client
         .get_cover_art(&cover_art_id, size)
         .await
         .map_err(|e| AppError::Subsonic(format!("Failed to fetch cover art: {}", e)))?;

@@ -4,23 +4,18 @@ use std::sync::{Arc, Mutex};
 
 use log::{debug, info, warn};
 use rusqlite::Connection;
-use submarine::Client;
 
 use crate::audio::{AudioPlayer, PlayQueue};
+use crate::client::SubsonicClientHandle;
 use crate::db::queue::{load_queue_items, load_queue_state};
-use crate::error::{AppResult, MutexExt};
+use crate::error::AppResult;
 use crate::search::IndexManager;
 
-#[derive(Clone)]
-pub struct ServerConfig {
-    pub url: String,
-    pub username: String,
-    pub password: String,
-}
+// Re-export ServerConfig from client module for backward compatibility
+pub use crate::client::ServerConfig;
 
 pub struct AppState {
-    pub client: Mutex<Option<Client>>,
-    pub server_config: Mutex<Option<ServerConfig>>,
+    pub client: SubsonicClientHandle,
     pub db: Mutex<Connection>,
     pub audio_player: Mutex<AudioPlayer>,
     pub queue: Mutex<PlayQueue>,
@@ -32,7 +27,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(db_path: &str, index_path: PathBuf) -> AppResult<Self> {
+    pub fn new(
+        db_path: &str,
+        index_path: PathBuf,
+        client_handle: SubsonicClientHandle,
+    ) -> AppResult<Self> {
         let conn = Connection::open(db_path)?;
         let audio_player = AudioPlayer::new()?;
 
@@ -61,8 +60,7 @@ impl AppState {
         };
 
         Ok(Self {
-            client: Mutex::new(None),
-            server_config: Mutex::new(None),
+            client: client_handle,
             db: Mutex::new(conn),
             audio_player: Mutex::new(audio_player),
             queue: Mutex::new(queue),
@@ -73,11 +71,8 @@ impl AppState {
         })
     }
 
-    pub fn get_client(&self) -> Option<Client> {
-        self.client.lock_recover().clone()
-    }
-
+    /// Check if connected (fast, no lock needed)
     pub fn is_connected(&self) -> bool {
-        self.client.lock_recover().is_some()
+        self.client.is_connected()
     }
 }
