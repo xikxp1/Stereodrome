@@ -53,21 +53,14 @@ impl ClientThread {
     /// Main event loop
     async fn run(&mut self) {
         debug!("Client thread started");
-        loop {
-            match self.request_rx.recv().await {
-                Some(request) => {
-                    if matches!(request, ClientRequest::Shutdown) {
-                        debug!("Client thread shutting down");
-                        break;
-                    }
-                    self.handle_request(request).await;
-                }
-                None => {
-                    debug!("Client channel closed, shutting down");
-                    break;
-                }
+        while let Some(request) = self.request_rx.recv().await {
+            if matches!(request, ClientRequest::Shutdown) {
+                debug!("Client thread shutdown requested");
+                break;
             }
+            self.handle_request(request).await;
         }
+        debug!("Client thread stopped");
     }
 
     /// Handle a single request
@@ -154,6 +147,7 @@ impl ClientThread {
                 let _ = response_tx.send(result);
             }
 
+            // Handled in run loop
             ClientRequest::Shutdown => unreachable!(),
         }
     }

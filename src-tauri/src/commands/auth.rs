@@ -93,16 +93,23 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> AppResult<Conn
 /// Attempt to restore session from stored credentials
 #[tauri::command]
 pub async fn restore_session(state: State<'_, AppState>) -> AppResult<ConnectionStatus> {
-    // Check if already connected
+    // Check if already connected - verify with ping
     if state.is_connected() {
-        // Load credentials to get url/username
         if let Ok(Some(config)) = credentials::load_credentials() {
-            return Ok(ConnectionStatus {
-                connected: true,
-                server_url: Some(config.url),
-                username: Some(config.username),
-                server_version: None,
-            });
+            // Ping to verify connection is still valid and get server version
+            match state.client.ping().await {
+                Ok(server_version) => {
+                    return Ok(ConnectionStatus {
+                        connected: true,
+                        server_url: Some(config.url),
+                        username: Some(config.username),
+                        server_version: Some(server_version),
+                    });
+                }
+                Err(_) => {
+                    // Connection is stale, will try to reconnect below
+                }
+            }
         }
     }
 

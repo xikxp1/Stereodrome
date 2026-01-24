@@ -158,13 +158,12 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::WindowEvent {
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::WindowEvent {
                 label,
                 event: tauri::WindowEvent::CloseRequested { api, .. },
                 ..
-            } = event
-            {
+            } => {
                 if label == "main" {
                     // Hide window instead of closing (minimize to tray)
                     api.prevent_close();
@@ -174,5 +173,13 @@ pub fn run() {
                     }
                 }
             }
+            tauri::RunEvent::Exit => {
+                // Shutdown the client thread gracefully
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    info!("Shutting down client thread");
+                    state.client.shutdown();
+                }
+            }
+            _ => {}
         });
 }
