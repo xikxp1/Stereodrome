@@ -13,6 +13,7 @@
     "opener:default",
     "store:default",
     "notification:default",
-    "log:default"
+    "log:default",
+    "process:default"
   ]
 }
