@@ -1,6 +1,6 @@
 # Stereodrome Development Plan
 
-Last updated: 2026-01-24
+Last updated: 2026-01-27
 
 ## Current Status
 
@@ -22,6 +22,10 @@ Phase 8: Local Storage & Offline Features
 - [x] Minimize to tray on window close (keeps playback running)
 - [x] Update checker (check for updates on startup, install from Settings modal)
 - [x] Subsonic client thread with message passing (eliminates mutex contention)
+- [x] Artist grid view with cover art (sidebar navigation, click to view songs)
+- [x] Album grid view with cover art (sidebar navigation, click to view songs)
+- [x] LazyImage component with IntersectionObserver for efficient cover art loading
+- [x] Search filtering for artist/album grid views
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks
 - [ ] Gapless playback
@@ -146,6 +150,9 @@ Phase 8: Local Storage & Offline Features
 - [x] Cover art display with caching and full-size viewer window
 - [x] Standard base64 encoding (replaced custom implementation)
 - [x] Audio spectrum visualizer in TransportBar (V to toggle)
+- [x] Artist grid view with lazy-loaded cover art
+- [x] Album grid view with lazy-loaded cover art
+- [x] Detail view navigation (click artist/album to see songs, back button)
 
 ## Architecture
 
@@ -225,11 +232,15 @@ src/lib/
 │   ├── StatusBar.svelte       # Bottom status bar
 │   ├── QueuePanel.svelte      # Queue panel with shuffle/repeat controls
 │   ├── SettingsModal.svelte   # Settings modal with cache management and updates
+│   ├── LazyImage.svelte         # Lazy-loading cover art with IntersectionObserver
 │   └── library/
 │       ├── ArtistList.svelte
+│       ├── ArtistGridView.svelte  # Artist grid with cover art and navigation
 │       ├── AlbumGrid.svelte
-│       ├── ColumnBrowser.svelte  # Genre/Artist/Album browser
-│       └── SongList.svelte       # iTunes-style song table
+│       ├── AlbumGridView.svelte   # Album grid with cover art and navigation
+│       ├── ColumnBrowser.svelte   # Genre/Artist/Album browser
+│       ├── DetailHeader.svelte    # Back button header for artist/album detail views
+│       └── SongList.svelte        # iTunes-style song table
 └── types/index.ts      # All TypeScript interfaces
 ```
 
