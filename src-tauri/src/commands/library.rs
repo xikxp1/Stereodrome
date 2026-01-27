@@ -176,30 +176,44 @@ pub async fn sync_library(state: State<'_, AppState>) -> AppResult<SyncResult> {
         }
     }
 
-    // Now write all data to DB (short lock duration, no await)
+    // Now write all data to DB in a single transaction (short lock duration, no await)
     let now = Utc::now().to_rfc3339();
     let db = state.db.lock_recover();
 
-    for artist in &artists_data {
-        db.execute(
-            "INSERT OR REPLACE INTO artists (id, name, album_count, cover_art_id, synced_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![artist.id, artist.name, artist.album_count, artist.cover_art, &now],
-        )?;
-    }
+    db.execute("BEGIN IMMEDIATE", [])?;
 
-    for album in &albums_data {
-        db.execute(
-            "INSERT OR REPLACE INTO albums (id, artist_id, name, year, song_count, duration, cover_art_id, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![album.id, album.artist_id, album.name, album.year, album.song_count, album.duration, album.cover_art, &now],
-        )?;
-    }
+    let result = (|| {
+        for artist in &artists_data {
+            db.execute(
+                "INSERT OR REPLACE INTO artists (id, name, album_count, cover_art_id, synced_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![artist.id, artist.name, artist.album_count, artist.cover_art, &now],
+            )?;
+        }
 
-    for song in &songs_data {
-        db.execute(
-            "INSERT OR REPLACE INTO songs (id, album_id, artist_id, title, track_number, disc_number, duration, bit_rate, size, suffix, content_type, path, year, genre, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            rusqlite::params![song.id, song.album_id, song.artist_id, song.title, song.track, song.disc_number, song.duration, song.bit_rate, song.size, song.suffix, song.content_type, song.path, song.year, song.genre, &now],
-        )?;
-    }
+        for album in &albums_data {
+            db.execute(
+                "INSERT OR REPLACE INTO albums (id, artist_id, name, year, song_count, duration, cover_art_id, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![album.id, album.artist_id, album.name, album.year, album.song_count, album.duration, album.cover_art, &now],
+            )?;
+        }
+
+        for song in &songs_data {
+            db.execute(
+                "INSERT OR REPLACE INTO songs (id, album_id, artist_id, title, track_number, disc_number, duration, bit_rate, size, suffix, content_type, path, year, genre, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                rusqlite::params![song.id, song.album_id, song.artist_id, song.title, song.track, song.disc_number, song.duration, song.bit_rate, song.size, song.suffix, song.content_type, song.path, song.year, song.genre, &now],
+            )?;
+        }
+
+        Ok::<(), crate::error::AppError>(())
+    })();
+
+    match result {
+        Ok(()) => db.execute("COMMIT", [])?,
+        Err(e) => {
+            let _ = db.execute("ROLLBACK", []);
+            return Err(e);
+        }
+    };
 
     // Drop db lock before rebuilding search index
     drop(db);
