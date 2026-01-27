@@ -4,7 +4,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::audio::queue::{PlayQueue, QueueItem, RepeatMode};
-use crate::db::queue::{save_queue_items, save_queue_state};
+use crate::db::queue::save_queue;
 use crate::error::{AppResult, MutexExt};
 use crate::state::AppState;
 
@@ -34,11 +34,11 @@ fn persist_and_emit(state: &AppState, app_handle: &AppHandle) {
     let queue = state.queue.lock_recover();
     let queue_state = QueueState::from_queue(&queue);
 
-    // Save to database
+    // Save to database in a single transaction
     if let Ok(db) = state.db.try_lock() {
-        let _ = save_queue_items(&db, queue_state.items.as_slice());
-        let _ = save_queue_state(
+        let _ = save_queue(
             &db,
+            queue_state.items.as_slice(),
             queue_state.current_index,
             queue_state.shuffle,
             queue_state.repeat_mode,
