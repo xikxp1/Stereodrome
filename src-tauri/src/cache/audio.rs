@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use filetime::FileTime;
 use log::warn;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
@@ -113,11 +114,10 @@ impl AudioCache {
 
     /// Update the access time of a file (for LRU tracking)
     fn touch_file(&self, path: &Path) {
-        // On Unix, we can use filetime crate or just open and close the file
-        // For simplicity, we'll use a platform-independent approach
-        if let Ok(file) = fs::OpenOptions::new().read(true).open(path) {
-            drop(file);
-        }
+        // Use filetime to update access time without opening the file handle
+        // This is much more efficient on Windows where file handle operations are expensive
+        let now = FileTime::now();
+        let _ = filetime::set_file_atime(path, now);
     }
 
     /// Enforce the maximum cache size by removing least recently accessed files
