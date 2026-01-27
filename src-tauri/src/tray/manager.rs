@@ -160,6 +160,7 @@ impl TrayManager {
         // Build tray icon with event handlers
         let tray = match TrayIconBuilder::new()
             .icon(icon)
+            .icon_as_template(true)
             .tooltip("Stereodrome")
             .menu(&menu)
             .on_menu_event(move |app, event| {
