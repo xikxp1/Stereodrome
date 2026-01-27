@@ -34,6 +34,8 @@ pub struct Album {
     pub duration: Option<i32>,
     pub cover_art_id: Option<String>,
     pub synced_at: String,
+    #[serde(rename = "artistName")]
+    pub artist_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -353,7 +355,11 @@ pub async fn get_albums(
 
     let albums: Vec<Album> = if let Some(aid) = artist_id {
         let mut stmt = db.prepare(
-            "SELECT id, artist_id, name, year, song_count, duration, cover_art_id, synced_at FROM albums WHERE artist_id = ?1 ORDER BY year, name",
+            "SELECT al.id, al.artist_id, al.name, al.year, al.song_count, al.duration, al.cover_art_id, al.synced_at, ar.name as artist_name
+             FROM albums al
+             LEFT JOIN artists ar ON al.artist_id = ar.id
+             WHERE al.artist_id = ?1
+             ORDER BY al.year, al.name",
         )?;
         let result: Vec<Album> = stmt
             .query_map([aid], |row| {
@@ -366,13 +372,17 @@ pub async fn get_albums(
                     duration: row.get(5)?,
                     cover_art_id: row.get(6)?,
                     synced_at: row.get(7)?,
+                    artist_name: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         result
     } else {
         let mut stmt = db.prepare(
-            "SELECT id, artist_id, name, year, song_count, duration, cover_art_id, synced_at FROM albums ORDER BY name",
+            "SELECT al.id, al.artist_id, al.name, al.year, al.song_count, al.duration, al.cover_art_id, al.synced_at, ar.name as artist_name
+             FROM albums al
+             LEFT JOIN artists ar ON al.artist_id = ar.id
+             ORDER BY al.name",
         )?;
         let result: Vec<Album> = stmt
             .query_map([], |row| {
@@ -385,6 +395,7 @@ pub async fn get_albums(
                     duration: row.get(5)?,
                     cover_art_id: row.get(6)?,
                     synced_at: row.get(7)?,
+                    artist_name: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

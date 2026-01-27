@@ -4,6 +4,9 @@
   import Sidebar from "$lib/components/Sidebar.svelte";
   import ColumnBrowser from "$lib/components/library/ColumnBrowser.svelte";
   import SongList from "$lib/components/library/SongList.svelte";
+  import ArtistGridView from "$lib/components/library/ArtistGridView.svelte";
+  import AlbumGridView from "$lib/components/library/AlbumGridView.svelte";
+  import DetailHeader from "$lib/components/library/DetailHeader.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
   import QueuePanel from "$lib/components/QueuePanel.svelte";
   import SettingsModal from "$lib/components/SettingsModal.svelte";
@@ -27,6 +30,11 @@
 
   // View state
   let activeView = $state("music");
+  let detailView = $state<{
+    type: "artist" | "album";
+    artist?: Artist;
+    album?: Album;
+  } | null>(null);
   let queueOpen = $state(false);
   let settingsOpen = $state(false);
 
@@ -182,6 +190,41 @@
   );
   const filteredSongs = $derived(filterResult.songs);
 
+  // Filtered data for grid views (uses searchStore directly)
+  const gridFilteredArtists = $derived(
+    searchStore.hasActiveQuery
+      ? artists.filter((a) => searchStore.matchedArtistIds.has(a.id))
+      : artists
+  );
+  const gridFilteredAlbums = $derived(
+    searchStore.hasActiveQuery
+      ? albums.filter((a) => searchStore.matchedAlbumIds.has(a.id))
+      : albums
+  );
+
+  // Songs for detail view
+  const detailSongs = $derived.by(() => {
+    const detail = detailView;
+    if (!detail) return [];
+    if (detail.type === "artist" && detail.artist) {
+      const artistId = detail.artist.id;
+      return songs.filter((s) => s.artist_id === artistId);
+    }
+    if (detail.type === "album" && detail.album) {
+      const albumId = detail.album.id;
+      return songs.filter((s) => s.album_id === albumId);
+    }
+    return [];
+  });
+
+  // Stats for detail view
+  const detailTotalDuration = $derived(
+    detailSongs.reduce((acc, s) => acc + (s.duration || 0), 0)
+  );
+  const detailTotalSize = $derived(
+    detailSongs.reduce((acc, s) => acc + (s.size || 0), 0)
+  );
+
   // Stats for status bar
   const totalDuration = $derived(
     filteredSongs.reduce((acc, s) => acc + (s.duration || 0), 0)
@@ -225,15 +268,15 @@
   }
 
   async function handlePlayPause() {
-    // If queue is empty and we have filtered songs, add them all and start playing
-    if (
-      queue.items.length === 0 &&
-      !playback.isPlaying &&
-      filteredSongs.length > 0
-    ) {
-      await queue.addSongs(filteredSongs);
-      await queue.playQueueItem(0);
-      return;
+    // If queue is empty, populate it based on current view
+    if (queue.items.length === 0 && !playback.isPlaying) {
+      // Use detail songs if viewing an artist/album, otherwise use filtered songs
+      const songsToPlay = detailView ? detailSongs : filteredSongs;
+      if (songsToPlay.length > 0) {
+        await queue.addSongs(songsToPlay);
+        await queue.playQueueItem(0);
+        return;
+      }
     }
     playback.togglePlayPause();
   }
@@ -261,6 +304,28 @@
 
   function handleViewChange(view: string) {
     activeView = view;
+    detailView = null; // Clear detail view when switching top-level views
+  }
+
+  function handleArtistGridSelect(artist: Artist) {
+    detailView = { type: "artist", artist };
+  }
+
+  function handleAlbumGridSelect(album: Album) {
+    detailView = { type: "album", album };
+  }
+
+  function handleDetailBack() {
+    detailView = null;
+  }
+
+  async function handleDetailSongPlay(song: Song) {
+    try {
+      // Play with detail view songs as queue context
+      await queue.playSongWithQueue(song, detailSongs);
+    } catch (e) {
+      error(`Failed to play song: ${e}`);
+    }
   }
 
   function handleQueueToggle() {
@@ -539,40 +604,123 @@
         class:opacity-50={searchStore.isSearching}
         class:pointer-events-none={searchStore.isSearching}
       >
-        <!-- Column Browser -->
-        <ColumnBrowser
-          genres={filteredGenres}
-          artists={filteredArtists}
-          albums={filteredAlbums}
-          {selectedGenre}
-          {selectedArtist}
-          {selectedAlbum}
-          onGenreSelect={handleGenreSelect}
-          onArtistSelect={handleArtistSelect}
-          onAlbumSelect={handleAlbumSelect}
-          {isLoading}
-        />
-
-        <!-- Song List -->
-        <div class="flex-1 overflow-hidden">
-          <SongList
-            songs={filteredSongs}
+        {#if activeView === "music"}
+          <!-- Music View: Column Browser + Song List -->
+          <ColumnBrowser
+            genres={filteredGenres}
+            artists={filteredArtists}
+            albums={filteredAlbums}
+            {selectedGenre}
+            {selectedArtist}
+            {selectedAlbum}
+            onGenreSelect={handleGenreSelect}
+            onArtistSelect={handleArtistSelect}
+            onAlbumSelect={handleAlbumSelect}
             {isLoading}
-            error={loadError}
-            selectedSongId={selectedSong?.id}
-            playingSongId={playback.currentTrack?.id ?? null}
-            {scrollToSongId}
-            onSelect={handleSongSelect}
-            onPlay={handleSongPlay}
           />
-        </div>
 
-        <!-- Status Bar -->
-        <StatusBar
-          itemCount={filteredSongs.length}
-          {totalDuration}
-          {totalSize}
-        />
+          <div class="flex-1 overflow-hidden">
+            <SongList
+              songs={filteredSongs}
+              {isLoading}
+              error={loadError}
+              selectedSongId={selectedSong?.id}
+              playingSongId={playback.currentTrack?.id ?? null}
+              {scrollToSongId}
+              onSelect={handleSongSelect}
+              onPlay={handleSongPlay}
+            />
+          </div>
+
+          <StatusBar
+            itemCount={filteredSongs.length}
+            {totalDuration}
+            {totalSize}
+          />
+        {:else if activeView === "artists"}
+          {#if detailView?.type === "artist" && detailView.artist}
+            <!-- Artist Detail: Header + Song List -->
+            <DetailHeader
+              title={detailView.artist.name}
+              subtitle="{detailView.artist.album_count} {detailView.artist
+                .album_count === 1
+                ? 'album'
+                : 'albums'}"
+              coverArtId={detailView.artist.cover_art_id}
+              onBack={handleDetailBack}
+            />
+
+            <div class="flex-1 overflow-hidden">
+              <SongList
+                songs={detailSongs}
+                {isLoading}
+                error={loadError}
+                selectedSongId={selectedSong?.id}
+                playingSongId={playback.currentTrack?.id ?? null}
+                {scrollToSongId}
+                onSelect={handleSongSelect}
+                onPlay={handleDetailSongPlay}
+              />
+            </div>
+
+            <StatusBar
+              itemCount={detailSongs.length}
+              totalDuration={detailTotalDuration}
+              totalSize={detailTotalSize}
+            />
+          {:else}
+            <!-- Artist Grid -->
+            <ArtistGridView
+              artists={gridFilteredArtists}
+              onSelect={handleArtistGridSelect}
+            />
+
+            <StatusBar
+              itemCount={gridFilteredArtists.length}
+              itemType="artists"
+            />
+          {/if}
+        {:else if activeView === "albums"}
+          {#if detailView?.type === "album" && detailView.album}
+            <!-- Album Detail: Header + Song List -->
+            <DetailHeader
+              title={detailView.album.name}
+              subtitle={detailView.album.artistName ?? ""}
+              coverArtId={detailView.album.cover_art_id}
+              onBack={handleDetailBack}
+            />
+
+            <div class="flex-1 overflow-hidden">
+              <SongList
+                songs={detailSongs}
+                {isLoading}
+                error={loadError}
+                selectedSongId={selectedSong?.id}
+                playingSongId={playback.currentTrack?.id ?? null}
+                {scrollToSongId}
+                onSelect={handleSongSelect}
+                onPlay={handleDetailSongPlay}
+              />
+            </div>
+
+            <StatusBar
+              itemCount={detailSongs.length}
+              totalDuration={detailTotalDuration}
+              totalSize={detailTotalSize}
+            />
+          {:else}
+            <!-- Album Grid -->
+            <AlbumGridView
+              albums={gridFilteredAlbums}
+              onSelect={handleAlbumGridSelect}
+            />
+
+            <StatusBar
+              itemCount={gridFilteredAlbums.length}
+              itemType="albums"
+            />
+          {/if}
+        {/if}
       </main>
 
       <!-- Queue Panel -->
