@@ -132,13 +132,13 @@
           />
           <div class="flex gap-1 mt-1">
             <button
-              class="flex-1 px-2 py-0.5 text-[11px] bg-primary text-primary-content rounded hover:opacity-90"
+              class="flex-1 px-2 py-0.5 text-[11px] bg-primary hover:bg-primary/50 text-primary-content rounded"
               onclick={handleCreatePlaylist}
             >
               Create
             </button>
             <button
-              class="flex-1 px-2 py-0.5 text-[11px] rounded hover:bg-base-300"
+              class="flex-1 px-2 py-0.5 text-[11px] rounded bg-base-300 hover:bg-base-300/50"
               onclick={() => {
                 showCreatePlaylist = false;
                 newPlaylistName = "";
@@ -232,7 +232,7 @@
   }
 
   .sidebar-item:hover {
-    background: oklch(94% 0.008 250);
+    background: oklch(90% 0.08 250);
   }
 
   .sidebar-item.active {
