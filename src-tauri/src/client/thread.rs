@@ -3,13 +3,24 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
-use log::debug;
+use log::{debug, error, warn};
 use submarine::{auth::AuthBuilder, Client};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 use super::handle::SubsonicClientHandle;
 use super::messages::*;
+
+/// Timeout for API requests (get artists, albums, etc.)
+const API_TIMEOUT: Duration = Duration::from_secs(15);
+/// Timeout for streaming audio
+const STREAM_TIMEOUT: Duration = Duration::from_secs(60);
+/// Timeout for ping/connection validation
+const PING_TIMEOUT: Duration = Duration::from_secs(5);
+/// Interval between connection validation pings
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Internal state of the client thread
 struct ClientThread {
@@ -50,17 +61,51 @@ impl ClientThread {
         SubsonicClientHandle::new(request_tx, connected)
     }
 
-    /// Main event loop
+    /// Main event loop with periodic connection validation
     async fn run(&mut self) {
         debug!("Client thread started");
-        while let Some(request) = self.request_rx.recv().await {
-            if matches!(request, ClientRequest::Shutdown) {
-                debug!("Client thread shutdown requested");
-                break;
+        let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                // Heartbeat: validate connection periodically
+                _ = heartbeat.tick() => {
+                    if self.client.is_some() {
+                        if let Err(e) = self.validate_connection().await {
+                            warn!("Connection validation failed: {}, disconnecting", e);
+                            self.handle_disconnect();
+                        }
+                    }
+                }
+                // Handle incoming requests
+                request = self.request_rx.recv() => {
+                    match request {
+                        Some(ClientRequest::Shutdown) => {
+                            debug!("Client thread shutdown requested");
+                            break;
+                        }
+                        Some(req) => self.handle_request(req).await,
+                        None => {
+                            debug!("Client channel closed, shutting down");
+                            break;
+                        }
+                    }
+                }
             }
-            self.handle_request(request).await;
         }
         debug!("Client thread stopped");
+    }
+
+    /// Validate connection by pinging the server
+    async fn validate_connection(&self) -> ClientResult<()> {
+        let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
+        timeout(PING_TIMEOUT, client.ping())
+            .await
+            .map_err(|_| ClientError::Timeout)?
+            .map_err(|e| ClientError::ApiError(e.to_string()))?;
+        debug!("Connection validated");
+        Ok(())
     }
 
     /// Handle a single request
@@ -195,24 +240,42 @@ impl ClientThread {
     }
 
     async fn handle_ping(&self) -> ClientResult<String> {
+        debug!("Pinging server");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
-        let ping = client
-            .ping()
-            .await
-            .map_err(|e| ClientError::ApiError(e.to_string()))?;
-
-        Ok(ping.version)
+        match timeout(PING_TIMEOUT, client.ping()).await {
+            Ok(Ok(ping)) => {
+                debug!("Ping successful: server version {}", ping.version);
+                Ok(ping.version)
+            }
+            Ok(Err(e)) => {
+                error!("Ping API error: {}", e);
+                Err(ClientError::ApiError(e.to_string()))
+            }
+            Err(_) => {
+                error!("Ping timeout after {:?}", PING_TIMEOUT);
+                Err(ClientError::Timeout)
+            }
+        }
     }
 
     async fn handle_get_artists(&self) -> ClientResult<Vec<ArtistIndex>> {
+        debug!("Getting artists");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
-        let indexes = client
-            .get_artists(None)
-            .await
-            .map_err(|e| ClientError::ApiError(e.to_string()))?;
+        let indexes = match timeout(API_TIMEOUT, client.get_artists(None)).await {
+            Ok(Ok(indexes)) => indexes,
+            Ok(Err(e)) => {
+                error!("Get artists API error: {}", e);
+                return Err(ClientError::ApiError(e.to_string()));
+            }
+            Err(_) => {
+                error!("Get artists timeout after {:?}", API_TIMEOUT);
+                return Err(ClientError::Timeout);
+            }
+        };
 
+        debug!("Got {} artist indexes", indexes.len());
         Ok(indexes
             .into_iter()
             .map(|index| ArtistIndex {
@@ -231,13 +294,22 @@ impl ClientThread {
     }
 
     async fn handle_get_artist(&self, artist_id: &str) -> ClientResult<ArtistDetail> {
+        debug!("Getting artist: {}", artist_id);
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
-        let artist = client
-            .get_artist(artist_id)
-            .await
-            .map_err(|e| ClientError::ApiError(e.to_string()))?;
+        let artist = match timeout(API_TIMEOUT, client.get_artist(artist_id)).await {
+            Ok(Ok(artist)) => artist,
+            Ok(Err(e)) => {
+                error!("Get artist {} API error: {}", artist_id, e);
+                return Err(ClientError::ApiError(e.to_string()));
+            }
+            Err(_) => {
+                error!("Get artist {} timeout after {:?}", artist_id, API_TIMEOUT);
+                return Err(ClientError::Timeout);
+            }
+        };
 
+        debug!("Got artist with {} albums", artist.album.len());
         Ok(ArtistDetail {
             album: artist
                 .album
@@ -255,13 +327,22 @@ impl ClientThread {
     }
 
     async fn handle_get_album(&self, album_id: &str) -> ClientResult<AlbumDetail> {
+        debug!("Getting album: {}", album_id);
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
-        let album = client
-            .get_album(album_id)
-            .await
-            .map_err(|e| ClientError::ApiError(e.to_string()))?;
+        let album = match timeout(API_TIMEOUT, client.get_album(album_id)).await {
+            Ok(Ok(album)) => album,
+            Ok(Err(e)) => {
+                error!("Get album {} API error: {}", album_id, e);
+                return Err(ClientError::ApiError(e.to_string()));
+            }
+            Err(_) => {
+                error!("Get album {} timeout after {:?}", album_id, API_TIMEOUT);
+                return Err(ClientError::Timeout);
+            }
+        };
 
+        debug!("Got album with {} songs", album.song.len());
         Ok(AlbumDetail {
             song: album
                 .song
@@ -285,38 +366,64 @@ impl ClientThread {
     }
 
     async fn handle_get_scan_status(&self) -> ClientResult<ScanStatusInfo> {
+        debug!("Getting scan status");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
-        let status = client
-            .get_scan_status()
-            .await
-            .map_err(|e| ClientError::ApiError(e.to_string()))?;
-
-        Ok(ScanStatusInfo {
-            scanning: status.scanning,
-            count: status.count,
-        })
+        match timeout(API_TIMEOUT, client.get_scan_status()).await {
+            Ok(Ok(status)) => {
+                debug!(
+                    "Scan status: scanning={}, count={:?}",
+                    status.scanning, status.count
+                );
+                Ok(ScanStatusInfo {
+                    scanning: status.scanning,
+                    count: status.count,
+                })
+            }
+            Ok(Err(e)) => {
+                error!("Get scan status API error: {}", e);
+                Err(ClientError::ApiError(e.to_string()))
+            }
+            Err(_) => {
+                error!("Get scan status timeout after {:?}", API_TIMEOUT);
+                Err(ClientError::Timeout)
+            }
+        }
     }
 
     async fn handle_start_scan(&self) -> ClientResult<ScanStatusInfo> {
+        debug!("Starting library scan");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
-        let status = client
-            .start_scan()
-            .await
-            .map_err(|e| ClientError::ApiError(e.to_string()))?;
-
-        Ok(ScanStatusInfo {
-            scanning: status.scanning,
-            count: status.count,
-        })
+        match timeout(API_TIMEOUT, client.start_scan()).await {
+            Ok(Ok(status)) => {
+                debug!(
+                    "Scan started: scanning={}, count={:?}",
+                    status.scanning, status.count
+                );
+                Ok(ScanStatusInfo {
+                    scanning: status.scanning,
+                    count: status.count,
+                })
+            }
+            Ok(Err(e)) => {
+                error!("Start scan API error: {}", e);
+                Err(ClientError::ApiError(e.to_string()))
+            }
+            Err(_) => {
+                error!("Start scan timeout after {:?}", API_TIMEOUT);
+                Err(ClientError::Timeout)
+            }
+        }
     }
 
     async fn handle_stream(&self, song_id: &str) -> ClientResult<Vec<u8>> {
+        debug!("Streaming song: {}", song_id);
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
-        client
-            .stream(
+        match timeout(
+            STREAM_TIMEOUT,
+            client.stream(
                 song_id,
                 None::<i32>,    // max_bit_rate
                 None::<String>, // format
@@ -324,9 +431,23 @@ impl ClientThread {
                 None::<String>, // size
                 None,           // estimate_content_length
                 None,           // converted
-            )
-            .await
-            .map_err(|e| ClientError::ApiError(e.to_string()))
+            ),
+        )
+        .await
+        {
+            Ok(Ok(data)) => {
+                debug!("Stream complete for {}: {} bytes", song_id, data.len());
+                Ok(data)
+            }
+            Ok(Err(e)) => {
+                error!("Stream API error for {}: {}", song_id, e);
+                Err(ClientError::ApiError(e.to_string()))
+            }
+            Err(_) => {
+                error!("Stream timeout for {} after {:?}", song_id, STREAM_TIMEOUT);
+                Err(ClientError::Timeout)
+            }
+        }
     }
 
     async fn handle_get_cover_art(
@@ -334,12 +455,26 @@ impl ClientThread {
         cover_art_id: &str,
         size: Option<i32>,
     ) -> ClientResult<Vec<u8>> {
+        debug!("Getting cover art: {}", cover_art_id);
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
-        client
-            .get_cover_art(cover_art_id, size)
-            .await
-            .map_err(|e| ClientError::ApiError(e.to_string()))
+        match timeout(API_TIMEOUT, client.get_cover_art(cover_art_id, size)).await {
+            Ok(Ok(data)) => {
+                debug!("Got cover art {}: {} bytes", cover_art_id, data.len());
+                Ok(data)
+            }
+            Ok(Err(e)) => {
+                error!("Get cover art {} API error: {}", cover_art_id, e);
+                Err(ClientError::ApiError(e.to_string()))
+            }
+            Err(_) => {
+                error!(
+                    "Get cover art {} timeout after {:?}",
+                    cover_art_id, API_TIMEOUT
+                );
+                Err(ClientError::Timeout)
+            }
+        }
     }
 
     async fn handle_scrobble(
@@ -348,23 +483,47 @@ impl ClientThread {
         time: Option<usize>,
         submission: Option<bool>,
     ) -> ClientResult<()> {
+        debug!("Scrobbling song: {} (submission={:?})", song_id, submission);
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
-        client
-            .scrobble(vec![(song_id.to_string(), time)], submission)
-            .await
-            .map(|_| ())
-            .map_err(|e| ClientError::ApiError(e.to_string()))
+        match timeout(
+            API_TIMEOUT,
+            client.scrobble(vec![(song_id.to_string(), time)], submission),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {
+                debug!("Scrobble successful for {}", song_id);
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                error!("Scrobble API error for {}: {}", song_id, e);
+                Err(ClientError::ApiError(e.to_string()))
+            }
+            Err(_) => {
+                error!("Scrobble timeout for {} after {:?}", song_id, API_TIMEOUT);
+                Err(ClientError::Timeout)
+            }
+        }
     }
 
     async fn handle_get_now_playing(&self) -> ClientResult<NowPlayingInfo> {
+        debug!("Getting now playing");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
-        let now_playing = client
-            .get_now_playing()
-            .await
-            .map_err(|e| ClientError::ApiError(e.to_string()))?;
+        let now_playing = match timeout(API_TIMEOUT, client.get_now_playing()).await {
+            Ok(Ok(np)) => np,
+            Ok(Err(e)) => {
+                error!("Get now playing API error: {}", e);
+                return Err(ClientError::ApiError(e.to_string()));
+            }
+            Err(_) => {
+                error!("Get now playing timeout after {:?}", API_TIMEOUT);
+                return Err(ClientError::Timeout);
+            }
+        };
 
+        debug!("Got {} now playing entries", now_playing.entry.len());
         Ok(NowPlayingInfo {
             entry: now_playing
                 .entry

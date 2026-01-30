@@ -48,6 +48,9 @@ pub enum AppError {
 
     #[error("Client channel error: {0}")]
     ClientChannel(String),
+
+    #[error("Request timed out")]
+    Timeout,
 }
 
 impl From<ClientError> for AppError {
@@ -59,6 +62,7 @@ impl From<ClientError> for AppError {
             ClientError::ChannelClosed => {
                 AppError::ClientChannel("Client channel closed".to_string())
             }
+            ClientError::Timeout => AppError::Timeout,
         }
     }
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use filetime::FileTime;
-use log::warn;
+use log::{debug, warn};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex as TokioMutex;
@@ -240,7 +240,10 @@ impl AudioCache {
             }
 
             // Fetch and cache
-            let _ = cache.get_or_fetch(&client, &song_id, &suffix).await;
+            match cache.get_or_fetch(&client, &song_id, &suffix).await {
+                Ok(_) => debug!("Prefetch complete: {}", song_id),
+                Err(e) => warn!("Prefetch failed for {}: {}", song_id, e),
+            }
 
             // Remove from in-progress
             PREFETCH_IN_PROGRESS.lock().await.remove(&song_id);

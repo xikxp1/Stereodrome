@@ -118,6 +118,8 @@ pub enum ClientError {
     ApiError(String),
     /// Channel communication failed
     ChannelClosed,
+    /// Request timed out
+    Timeout,
 }
 
 impl std::fmt::Display for ClientError {
@@ -127,6 +129,7 @@ impl std::fmt::Display for ClientError {
             ClientError::ConnectionFailed(s) => write!(f, "Connection failed: {}", s),
             ClientError::ApiError(s) => write!(f, "API error: {}", s),
             ClientError::ChannelClosed => write!(f, "Client channel closed"),
+            ClientError::Timeout => write!(f, "Request timed out"),
         }
     }
 }

@@ -1,6 +1,6 @@
 # Stereodrome Development Plan
 
-Last updated: 2026-01-27
+Last updated: 2026-01-30
 
 ## Current Status
 
@@ -26,6 +26,7 @@ Phase 8: Local Storage & Offline Features
 - [x] Album grid view with cover art (sidebar navigation, click to view songs)
 - [x] LazyImage component with IntersectionObserver for efficient cover art loading
 - [x] Search filtering for artist/album grid views
+- [x] Connection resilience (request timeouts, heartbeat validation, stale connection detection after sleep)
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks
 - [ ] Gapless playback
@@ -166,9 +167,9 @@ src-tauri/src/
 ├── credentials.rs      # OS keyring integration for secure credential storage
 ├── client/
 │   ├── mod.rs          # Module exports, spawn() function
-│   ├── messages.rs     # Request/Response message types, ClientError
+│   ├── messages.rs     # Request/Response message types, ClientError (incl. Timeout)
 │   ├── handle.rs       # SubsonicClientHandle (lock-free API interface)
-│   └── thread.rs       # Client thread with tokio runtime, processes requests
+│   └── thread.rs       # Client thread with tokio runtime, heartbeat, request timeouts
 ├── audio/
 │   ├── mod.rs          # Module exports
 │   ├── analyzer.rs     # AnalyzingSource wrapper for sample capture
