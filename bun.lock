@@ -6,7 +6,7 @@
       "name": "stereodrome",
       "dependencies": {
         "@tanstack/db": "^0.5.25",
-        "@tanstack/svelte-query": "^6.0.17",
+        "@tanstack/svelte-query": "^6.0.18",
         "@tanstack/svelte-virtual": "^3",
         "@tauri-apps/api": "^2",
         "@tauri-apps/plugin-log": "^2.8.0",
@@ -229,9 +229,9 @@
 
     "@tanstack/pacer-lite": ["@tanstack/pacer-lite@0.2.1", "", {}, "sha512-3PouiFjR4B6x1c969/Pl4ZIJleof1M0n6fNX8NRiC9Sqv1g06CVDlEaXUR4212ycGFyfq4q+t8Gi37Xy+z34iQ=="],
 
-    "@tanstack/query-core": ["@tanstack/query-core@5.90.19", "", {}, "sha512-GLW5sjPVIvH491VV1ufddnfldyVB+teCnpPIvweEfkpRx7CfUmUGhoh9cdcUKBh/KwVxk22aNEDxeTsvmyB/WA=="],
+    "@tanstack/query-core": ["@tanstack/query-core@5.90.20", "", {}, "sha512-OMD2HLpNouXEfZJWcKeVKUgQ5n+n3A2JFmBaScpNDUqSrQSjiveC7dKMe53uJUg1nDG16ttFPz2xfilz6i2uVg=="],
 
-    "@tanstack/svelte-query": ["@tanstack/svelte-query@6.0.17", "", { "dependencies": { "@tanstack/query-core": "5.90.19" }, "peerDependencies": { "svelte": "^5.25.0" } }, "sha512-SFFsW99Z5DCI9rIowJrPBGEJgl5i+Lzimzoup+P1LhHUIrSyJ4R7KcroFlIxTHz0XaYTAqpNjhXuUUvOqjdTHQ=="],
+    "@tanstack/svelte-query": ["@tanstack/svelte-query@6.0.18", "", { "dependencies": { "@tanstack/query-core": "5.90.20" }, "peerDependencies": { "svelte": "^5.25.0" } }, "sha512-iGS8osfrIVUW5pkV4Ig6pspNIMtiNjGnVTNJKDas0m/QaNDFFIKbgg74rCzcjwrTIvO38tMpzb4VUKklvAmjxw=="],
 
     "@tanstack/svelte-virtual": ["@tanstack/svelte-virtual@3.13.18", "", { "dependencies": { "@tanstack/virtual-core": "3.13.18" }, "peerDependencies": { "svelte": "^3.48.0 || ^4.0.0 || ^5.0.0" } }, "sha512-BHh8WkFK58eE9KzLctPQkCkvCj46LnM9tIGkpwo5Unx5YaBPf0uBJBqvSdc2jMwdT8gLXLHFHtCnSujlZP69BA=="],
 
