@@ -128,6 +128,15 @@ class QueueStore {
     }
   }
 
+  async playNextSongs(songs: Song[]) {
+    const items = songs.map((s) => this.songToQueueItem(s));
+    try {
+      await invoke("insert_next_songs_in_queue", { items });
+    } catch (e) {
+      error(`Failed to insert songs next: ${e}`);
+    }
+  }
+
   async playPrevious() {
     try {
       await invoke<boolean>("play_previous");

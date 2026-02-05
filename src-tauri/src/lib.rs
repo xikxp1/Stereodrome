@@ -126,6 +126,7 @@ pub fn run() {
             commands::add_to_queue,
             commands::add_songs_to_queue,
             commands::insert_next_in_queue,
+            commands::insert_next_songs_in_queue,
             commands::remove_from_queue,
             commands::clear_queue,
             commands::move_queue_item,

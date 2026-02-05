@@ -120,6 +120,17 @@ impl PlayQueue {
         self.items.insert(insert_idx.min(self.items.len()), item);
     }
 
+    /// Insert multiple songs at the next position (play next), preserving order
+    pub fn insert_many_next(&mut self, items: Vec<QueueItem>) {
+        let base_idx = self.current_index.map(|i| i + 1).unwrap_or(0);
+        for (offset, item) in items.into_iter().enumerate() {
+            let idx = base_idx + offset;
+            self.original_order
+                .insert(idx.min(self.original_order.len()), item.clone());
+            self.items.insert(idx.min(self.items.len()), item);
+        }
+    }
+
     /// Remove a song at the given index
     pub fn remove(&mut self, index: usize) -> Option<QueueItem> {
         if index >= self.items.len() {

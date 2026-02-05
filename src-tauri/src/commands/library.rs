@@ -423,6 +423,7 @@ pub async fn get_albums(
 pub async fn get_songs(
     state: State<'_, AppState>,
     album_id: Option<String>,
+    artist_id: Option<String>,
 ) -> AppResult<Vec<Song>> {
     let db = state.db.lock_recover();
 
@@ -458,6 +459,16 @@ pub async fn get_songs(
     let songs: Vec<Song> = if let Some(aid) = album_id {
         let query = format!(
             "{} WHERE s.album_id = ?1 ORDER BY s.disc_number, s.track_number",
+            base_query
+        );
+        let mut stmt = db.prepare(&query)?;
+        let result: Vec<Song> = stmt
+            .query_map([aid], map_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        result
+    } else if let Some(aid) = artist_id {
+        let query = format!(
+            "{} WHERE s.artist_id = ?1 ORDER BY al.name COLLATE NOCASE, s.disc_number, s.track_number",
             base_query
         );
         let mut stmt = db.prepare(&query)?;

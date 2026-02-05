@@ -43,8 +43,11 @@ export async function getAlbums(artistId?: string): Promise<Album[]> {
   return invoke<Album[]>("get_albums", { artistId });
 }
 
-export async function getSongs(albumId?: string): Promise<Song[]> {
-  return invoke<Song[]>("get_songs", { albumId });
+export async function getSongs(
+  albumId?: string,
+  artistId?: string
+): Promise<Song[]> {
+  return invoke<Song[]>("get_songs", { albumId, artistId });
 }
 
 // Playback commands
