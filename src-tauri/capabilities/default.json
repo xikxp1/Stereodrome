@@ -14,6 +14,7 @@
     "store:default",
     "notification:default",
     "log:default",
-    "process:default"
+    "process:default",
+    "core:menu:default"
   ]
 }

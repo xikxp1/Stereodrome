@@ -160,6 +160,7 @@ Phase 8: Local Storage & Offline Features
 - [x] Artist grid view with lazy-loaded cover art
 - [x] Album grid view with lazy-loaded cover art
 - [x] Detail view navigation (click artist/album to see songs, back button)
+- [x] Native system context menus via Tauri Menu API (replaced custom HTML/CSS menus)
 
 ## Architecture
 
@@ -228,9 +229,10 @@ src/lib/
 │   ├── nowplaying.svelte.ts  # Server now playing state (for other users)
 │   └── updater.svelte.ts     # App update checker state
 ├── services/
-│   ├── notifications.svelte.ts  # Desktop notifications (song change when unfocused)
-│   ├── mediaControls.svelte.ts  # Handle OS media button events (play/pause/next/prev)
-│   └── trayControls.svelte.ts   # Handle system tray menu events
+│   ├── contextMenu.ts             # Native system context menus via Tauri Menu API
+│   ├── notifications.svelte.ts    # Desktop notifications (song change when unfocused)
+│   ├── mediaControls.svelte.ts    # Handle OS media button events (play/pause/next/prev)
+│   └── trayControls.svelte.ts     # Handle system tray menu events
 ├── components/
 │   ├── ServerConnect.svelte   # Login screen
 │   ├── TransportBar.svelte    # Top toolbar with playback controls + now playing (local state)
