@@ -192,6 +192,51 @@ impl ClientThread {
                 let _ = response_tx.send(result);
             }
 
+            // === Playlists ===
+            ClientRequest::GetPlaylists { response_tx } => {
+                let result = self.handle_get_playlists().await;
+                let _ = response_tx.send(result);
+            }
+            ClientRequest::GetPlaylist {
+                playlist_id,
+                response_tx,
+            } => {
+                let result = self.handle_get_playlist(&playlist_id).await;
+                let _ = response_tx.send(result);
+            }
+            ClientRequest::CreatePlaylist {
+                name,
+                song_ids,
+                response_tx,
+            } => {
+                let result = self.handle_create_playlist(&name, song_ids).await;
+                let _ = response_tx.send(result);
+            }
+            ClientRequest::UpdatePlaylist {
+                playlist_id,
+                name,
+                song_ids_to_add,
+                song_indexes_to_remove,
+                response_tx,
+            } => {
+                let result = self
+                    .handle_update_playlist(
+                        &playlist_id,
+                        name,
+                        song_ids_to_add,
+                        song_indexes_to_remove,
+                    )
+                    .await;
+                let _ = response_tx.send(result);
+            }
+            ClientRequest::DeletePlaylist {
+                playlist_id,
+                response_tx,
+            } => {
+                let result = self.handle_delete_playlist(&playlist_id).await;
+                let _ = response_tx.send(result);
+            }
+
             // Handled in run loop
             ClientRequest::Shutdown => unreachable!(),
         }
@@ -543,6 +588,211 @@ impl ClientThread {
                 })
                 .collect(),
         })
+    }
+
+    // === Playlist handlers ===
+
+    async fn handle_get_playlists(&self) -> ClientResult<Vec<PlaylistInfo>> {
+        debug!("Getting playlists");
+        let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
+
+        match timeout(API_TIMEOUT, client.get_playlists(None::<String>)).await {
+            Ok(Ok(playlists)) => {
+                debug!("Got {} playlists", playlists.len());
+                Ok(playlists
+                    .into_iter()
+                    .map(|p| PlaylistInfo {
+                        id: p.id,
+                        name: p.name,
+                        song_count: p.song_count,
+                        duration: p.duration,
+                        owner: p.owner,
+                        cover_art: p.cover_art,
+                        created: p.created.to_rfc3339(),
+                        changed: p.changed.to_rfc3339(),
+                    })
+                    .collect())
+            }
+            Ok(Err(e)) => {
+                error!("Get playlists API error: {}", e);
+                Err(ClientError::ApiError(e.to_string()))
+            }
+            Err(_) => {
+                error!("Get playlists timeout after {:?}", API_TIMEOUT);
+                Err(ClientError::Timeout)
+            }
+        }
+    }
+
+    async fn handle_get_playlist(&self, playlist_id: &str) -> ClientResult<PlaylistDetail> {
+        debug!("Getting playlist: {}", playlist_id);
+        let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
+
+        match timeout(API_TIMEOUT, client.get_playlist(playlist_id)).await {
+            Ok(Ok(playlist)) => {
+                debug!(
+                    "Got playlist '{}' with {} entries",
+                    playlist.base.name,
+                    playlist.entry.len()
+                );
+                let info = PlaylistInfo {
+                    id: playlist.base.id,
+                    name: playlist.base.name,
+                    song_count: playlist.base.song_count,
+                    duration: playlist.base.duration,
+                    owner: playlist.base.owner,
+                    cover_art: playlist.base.cover_art,
+                    created: playlist.base.created.to_rfc3339(),
+                    changed: playlist.base.changed.to_rfc3339(),
+                };
+                let entries = playlist
+                    .entry
+                    .into_iter()
+                    .map(|c| SongInfo {
+                        id: c.id,
+                        title: c.title,
+                        track: c.track,
+                        disc_number: c.disc_number,
+                        duration: c.duration,
+                        bit_rate: c.bit_rate,
+                        size: c.size,
+                        suffix: c.suffix,
+                        content_type: c.content_type,
+                        path: c.path,
+                        year: c.year,
+                        genre: c.genre,
+                    })
+                    .collect();
+                Ok(PlaylistDetail { info, entries })
+            }
+            Ok(Err(e)) => {
+                error!("Get playlist {} API error: {}", playlist_id, e);
+                Err(ClientError::ApiError(e.to_string()))
+            }
+            Err(_) => {
+                error!(
+                    "Get playlist {} timeout after {:?}",
+                    playlist_id, API_TIMEOUT
+                );
+                Err(ClientError::Timeout)
+            }
+        }
+    }
+
+    async fn handle_create_playlist(
+        &self,
+        name: &str,
+        song_ids: Vec<String>,
+    ) -> ClientResult<PlaylistDetail> {
+        debug!("Creating playlist: {}", name);
+        let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
+
+        match timeout(API_TIMEOUT, client.create_playlist(name, song_ids)).await {
+            Ok(Ok(playlist)) => {
+                debug!("Created playlist: {}", playlist.base.id);
+                let info = PlaylistInfo {
+                    id: playlist.base.id,
+                    name: playlist.base.name,
+                    song_count: playlist.base.song_count,
+                    duration: playlist.base.duration,
+                    owner: playlist.base.owner,
+                    cover_art: playlist.base.cover_art,
+                    created: playlist.base.created.to_rfc3339(),
+                    changed: playlist.base.changed.to_rfc3339(),
+                };
+                let entries = playlist
+                    .entry
+                    .into_iter()
+                    .map(|c| SongInfo {
+                        id: c.id,
+                        title: c.title,
+                        track: c.track,
+                        disc_number: c.disc_number,
+                        duration: c.duration,
+                        bit_rate: c.bit_rate,
+                        size: c.size,
+                        suffix: c.suffix,
+                        content_type: c.content_type,
+                        path: c.path,
+                        year: c.year,
+                        genre: c.genre,
+                    })
+                    .collect();
+                Ok(PlaylistDetail { info, entries })
+            }
+            Ok(Err(e)) => {
+                error!("Create playlist API error: {}", e);
+                Err(ClientError::ApiError(e.to_string()))
+            }
+            Err(_) => {
+                error!("Create playlist timeout after {:?}", API_TIMEOUT);
+                Err(ClientError::Timeout)
+            }
+        }
+    }
+
+    async fn handle_update_playlist(
+        &self,
+        playlist_id: &str,
+        name: Option<String>,
+        song_ids_to_add: Vec<String>,
+        song_indexes_to_remove: Vec<i64>,
+    ) -> ClientResult<()> {
+        debug!("Updating playlist: {}", playlist_id);
+        let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
+
+        match timeout(
+            API_TIMEOUT,
+            client.update_playlist(
+                playlist_id,
+                name,
+                None::<String>,
+                None,
+                song_ids_to_add,
+                song_indexes_to_remove,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {
+                debug!("Updated playlist: {}", playlist_id);
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                error!("Update playlist {} API error: {}", playlist_id, e);
+                Err(ClientError::ApiError(e.to_string()))
+            }
+            Err(_) => {
+                error!(
+                    "Update playlist {} timeout after {:?}",
+                    playlist_id, API_TIMEOUT
+                );
+                Err(ClientError::Timeout)
+            }
+        }
+    }
+
+    async fn handle_delete_playlist(&self, playlist_id: &str) -> ClientResult<()> {
+        debug!("Deleting playlist: {}", playlist_id);
+        let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
+
+        match timeout(API_TIMEOUT, client.delete_playlist(playlist_id)).await {
+            Ok(Ok(_)) => {
+                debug!("Deleted playlist: {}", playlist_id);
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                error!("Delete playlist {} API error: {}", playlist_id, e);
+                Err(ClientError::ApiError(e.to_string()))
+            }
+            Err(_) => {
+                error!(
+                    "Delete playlist {} timeout after {:?}",
+                    playlist_id, API_TIMEOUT
+                );
+                Err(ClientError::Timeout)
+            }
+        }
     }
 }
 

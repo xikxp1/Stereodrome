@@ -1,15 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { error } from "@tauri-apps/plugin-log";
-import type { Song } from "$lib/types";
-
-export interface Playlist {
-  id: string;
-  name: string;
-  song_count: number;
-  duration: number;
-  created_at: string;
-  changed_at: string;
-}
+import type { Playlist, Song } from "$lib/types";
 
 export interface PlaylistSong extends Song {
   position: number;
@@ -20,6 +11,15 @@ class PlaylistStore {
   currentPlaylist = $state<Playlist | null>(null);
   currentPlaylistSongs = $state<PlaylistSong[]>([]);
   isLoading = $state(false);
+
+  async syncPlaylists() {
+    try {
+      await invoke("sync_playlists");
+      await this.loadPlaylists();
+    } catch (e) {
+      error(`Failed to sync playlists: ${e}`);
+    }
+  }
 
   async loadPlaylists() {
     this.isLoading = true;
@@ -118,9 +118,9 @@ class PlaylistStore {
     }
   }
 
-  async removeSongFromPlaylist(playlistId: string, songId: string) {
+  async removeSongFromPlaylist(playlistId: string, position: number) {
     try {
-      await invoke("remove_song_from_playlist", { playlistId, songId });
+      await invoke("remove_song_from_playlist", { playlistId, position });
       await this.loadPlaylists();
 
       // Refresh current playlist songs if affected
@@ -129,19 +129,6 @@ class PlaylistStore {
       }
     } catch (e) {
       error(`Failed to remove song from playlist: ${e}`);
-    }
-  }
-
-  async reorderPlaylist(playlistId: string, songIds: string[]) {
-    try {
-      await invoke("reorder_playlist", { playlistId, songIds });
-
-      // Refresh current playlist songs if affected
-      if (this.currentPlaylist?.id === playlistId) {
-        await this.loadPlaylistSongs(playlistId);
-      }
-    } catch (e) {
-      error(`Failed to reorder playlist: ${e}`);
     }
   }
 }

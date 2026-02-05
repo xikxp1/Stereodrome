@@ -45,16 +45,18 @@ CREATE TABLE IF NOT EXISTS playlists (
     name TEXT NOT NULL,
     song_count INTEGER DEFAULT 0,
     duration INTEGER DEFAULT 0,
+    owner TEXT,
+    cover_art_id TEXT,
     created_at TEXT NOT NULL,
     changed_at TEXT NOT NULL,
     synced_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS playlist_songs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     playlist_id TEXT NOT NULL,
     song_id TEXT NOT NULL,
     position INTEGER NOT NULL,
-    PRIMARY KEY (playlist_id, song_id),
     FOREIGN KEY (playlist_id) REFERENCES playlists(id),
     FOREIGN KEY (song_id) REFERENCES songs(id)
 );

@@ -60,9 +60,10 @@ export interface Playlist {
   name: string;
   song_count: number;
   duration: number;
+  owner: string | null;
+  cover_art_id: string | null;
   created_at: string;
   changed_at: string;
-  synced_at: string;
 }
 
 // Playback types

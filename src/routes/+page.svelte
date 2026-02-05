@@ -26,7 +26,8 @@
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { emit } from "@tauri-apps/api/event";
   import { error } from "@tauri-apps/plugin-log";
-  import type { Artist, Album, Song } from "$lib/types";
+  import { playlistStore } from "$lib/stores/playlist.svelte";
+  import type { Artist, Album, Song, Playlist } from "$lib/types";
 
   // View state
   let activeView = $state("music");
@@ -37,6 +38,7 @@
   } | null>(null);
   let queueOpen = $state(false);
   let settingsOpen = $state(false);
+  let selectedPlaylist = $state<Playlist | null>(null);
 
   // Keyboard shortcut state
   let previousVolume = $state(100); // For mute/unmute toggle (0-100 scale)
@@ -225,6 +227,22 @@
     detailSongs.reduce((acc, s) => acc + (s.size || 0), 0)
   );
 
+  // Keep selectedPlaylist in sync with store (e.g., after rename)
+  const selectedPlaylistData = $derived.by(() => {
+    const current = selectedPlaylist;
+    if (!current) return null;
+    return playlistStore.playlists.find((p) => p.id === current.id) ?? current;
+  });
+
+  // Playlist view stats
+  const playlistSongs = $derived(playlistStore.currentPlaylistSongs as Song[]);
+  const playlistTotalDuration = $derived(
+    playlistSongs.reduce((acc, s) => acc + (s.duration || 0), 0)
+  );
+  const playlistTotalSize = $derived(
+    playlistSongs.reduce((acc, s) => acc + (s.size || 0), 0)
+  );
+
   // Stats for status bar
   const totalDuration = $derived(
     filteredSongs.reduce((acc, s) => acc + (s.duration || 0), 0)
@@ -270,8 +288,11 @@
   async function handlePlayPause() {
     // If queue is empty, populate it based on current view
     if (queue.items.length === 0 && !playback.isPlaying) {
-      // Use detail songs if viewing an artist/album, otherwise use filtered songs
-      const songsToPlay = detailView ? detailSongs : filteredSongs;
+      const songsToPlay = selectedPlaylist
+        ? playlistSongs
+        : detailView
+          ? detailSongs
+          : filteredSongs;
       if (songsToPlay.length > 0) {
         await queue.addSongs(songsToPlay);
         await queue.playQueueItem(0);
@@ -305,6 +326,25 @@
   function handleViewChange(view: string) {
     activeView = view;
     detailView = null; // Clear detail view when switching top-level views
+    selectedPlaylist = null; // Deselect playlist when changing library views
+  }
+
+  function handlePlaylistSelect(playlist: Playlist | null) {
+    selectedPlaylist = playlist;
+    if (playlist) {
+      playlistStore.selectPlaylist(playlist);
+      detailView = null;
+    } else {
+      playlistStore.selectPlaylist(null);
+    }
+  }
+
+  async function handlePlaylistSongPlay(song: Song) {
+    try {
+      await queue.playSongWithQueue(song, playlistSongs);
+    } catch (e) {
+      error(`Failed to play song: ${e}`);
+    }
   }
 
   function handleArtistGridSelect(artist: Artist) {
@@ -590,10 +630,12 @@
     <!-- Main Content Area -->
     <div class="flex-1 flex overflow-hidden">
       <!-- Sidebar -->
-      <aside class="w-48 flex-shrink-0">
+      <aside class="w-48 shrink-0">
         <Sidebar
           {activeView}
           onViewChange={handleViewChange}
+          onPlaylistSelect={handlePlaylistSelect}
+          selectedPlaylistId={selectedPlaylist?.id}
           onSync={loadLibraryData}
         />
       </aside>
@@ -604,7 +646,37 @@
         class:opacity-50={searchStore.isSearching}
         class:pointer-events-none={searchStore.isSearching}
       >
-        {#if activeView === "music"}
+        {#if selectedPlaylistData}
+          <!-- Playlist View -->
+          <DetailHeader
+            title={selectedPlaylistData.name}
+            subtitle="{selectedPlaylistData.song_count} {selectedPlaylistData.song_count ===
+            1
+              ? 'song'
+              : 'songs'}"
+            coverArtId={selectedPlaylistData.cover_art_id}
+            onBack={() => handlePlaylistSelect(null)}
+          />
+
+          <div class="flex-1 overflow-hidden">
+            <SongList
+              songs={playlistSongs}
+              isLoading={playlistStore.isLoading}
+              selectedSongId={selectedSong?.id}
+              playingSongId={playback.currentTrack?.id ?? null}
+              {scrollToSongId}
+              playlistId={selectedPlaylist?.id}
+              onSelect={handleSongSelect}
+              onPlay={handlePlaylistSongPlay}
+            />
+          </div>
+
+          <StatusBar
+            itemCount={playlistSongs.length}
+            totalDuration={playlistTotalDuration}
+            totalSize={playlistTotalSize}
+          />
+        {:else if activeView === "music"}
           <!-- Music View: Column Browser + Song List -->
           <ColumnBrowser
             genres={filteredGenres}

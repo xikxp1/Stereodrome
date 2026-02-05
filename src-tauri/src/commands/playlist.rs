@@ -1,7 +1,6 @@
-use chrono::Utc;
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use uuid::Uuid;
 
 use crate::error::{AppResult, MutexExt};
 use crate::state::AppState;
@@ -12,6 +11,8 @@ pub struct Playlist {
     pub name: String,
     pub song_count: i32,
     pub duration: i32,
+    pub owner: Option<String>,
+    pub cover_art_id: Option<String>,
     pub created_at: String,
     pub changed_at: String,
 }
@@ -36,11 +37,87 @@ pub struct PlaylistSong {
     pub album: Option<String>,
 }
 
+/// Sync playlists from Subsonic server to local cache
+#[tauri::command]
+pub async fn sync_playlists(state: State<'_, AppState>) -> AppResult<i32> {
+    info!("Syncing playlists from server");
+
+    // Fetch all playlists from server
+    let playlists = state.client.get_playlists().await?;
+    let playlist_count = playlists.len() as i32;
+
+    // Fetch songs for each playlist
+    let mut playlist_details = Vec::new();
+    for playlist_info in &playlists {
+        match state.client.get_playlist(&playlist_info.id).await {
+            Ok(detail) => playlist_details.push(detail),
+            Err(e) => {
+                debug!(
+                    "Failed to fetch playlist '{}': {}, skipping",
+                    playlist_info.name, e
+                );
+            }
+        }
+    }
+
+    // Write to local database in a transaction
+    let db = state.db.lock_recover();
+    db.execute_batch("BEGIN TRANSACTION")?;
+
+    // Clear existing playlist data
+    db.execute("DELETE FROM playlist_songs", [])?;
+    db.execute("DELETE FROM playlists", [])?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Insert playlists and their songs
+    for detail in &playlist_details {
+        let info = &detail.info;
+        db.execute(
+            "INSERT INTO playlists (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                &info.id,
+                &info.name,
+                info.song_count,
+                info.duration,
+                &info.owner,
+                &info.cover_art,
+                &info.created,
+                &info.changed,
+                &now,
+            ],
+        )?;
+
+        // Insert playlist songs (only those that exist in the local songs table)
+        for (position, entry) in detail.entries.iter().enumerate() {
+            // Check if song exists in local library
+            let song_exists: bool = db
+                .query_row("SELECT 1 FROM songs WHERE id = ?1", [&entry.id], |_| {
+                    Ok(true)
+                })
+                .unwrap_or(false);
+
+            if song_exists {
+                db.execute(
+                    "INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![&info.id, &entry.id, position as i32],
+                )?;
+            }
+        }
+    }
+
+    db.execute_batch("COMMIT")?;
+
+    info!("Synced {} playlists with songs", playlist_details.len());
+    Ok(playlist_count)
+}
+
+/// Get all playlists from local cache
 #[tauri::command]
 pub fn get_playlists(state: State<'_, AppState>) -> AppResult<Vec<Playlist>> {
     let db = state.db.lock_recover();
     let mut stmt = db.prepare(
-        "SELECT id, name, song_count, duration, created_at, changed_at FROM playlists ORDER BY name",
+        "SELECT id, name, song_count, duration, owner, cover_art_id, created_at, changed_at FROM playlists ORDER BY name",
     )?;
 
     let playlists: Vec<Playlist> = stmt
@@ -50,8 +127,10 @@ pub fn get_playlists(state: State<'_, AppState>) -> AppResult<Vec<Playlist>> {
                 name: row.get(1)?,
                 song_count: row.get(2)?,
                 duration: row.get(3)?,
-                created_at: row.get(4)?,
-                changed_at: row.get(5)?,
+                owner: row.get(4)?,
+                cover_art_id: row.get(5)?,
+                created_at: row.get(6)?,
+                changed_at: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -59,6 +138,7 @@ pub fn get_playlists(state: State<'_, AppState>) -> AppResult<Vec<Playlist>> {
     Ok(playlists)
 }
 
+/// Get songs for a playlist from local cache
 #[tauri::command]
 pub fn get_playlist_songs(
     state: State<'_, AppState>,
@@ -67,7 +147,7 @@ pub fn get_playlist_songs(
     let db = state.db.lock_recover();
     let mut stmt = db.prepare(
         r#"
-        SELECT 
+        SELECT
             s.id, s.album_id, s.artist_id, s.title, s.track_number, s.disc_number,
             s.duration, s.bit_rate, s.size, s.suffix, s.content_type, s.path,
             ps.position,
@@ -107,64 +187,80 @@ pub fn get_playlist_songs(
     Ok(songs)
 }
 
+/// Create a new playlist on server and cache locally
 #[tauri::command]
-pub fn create_playlist(
+pub async fn create_playlist(
     state: State<'_, AppState>,
     name: String,
     song_ids: Option<Vec<String>>,
 ) -> AppResult<Playlist> {
-    let now = Utc::now().to_rfc3339();
-    let id = Uuid::new_v4().to_string();
+    let ids = song_ids.unwrap_or_default();
+    let detail = state.client.create_playlist(&name, ids).await?;
+    let info = &detail.info;
 
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Cache locally
     let db = state.db.lock_recover();
-
-    // Create the playlist
     db.execute(
-        "INSERT INTO playlists (id, name, song_count, duration, created_at, changed_at, synced_at) VALUES (?1, ?2, 0, 0, ?3, ?3, ?3)",
-        rusqlite::params![&id, &name, &now],
+        "INSERT OR REPLACE INTO playlists (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            &info.id,
+            &info.name,
+            info.song_count,
+            info.duration,
+            &info.owner,
+            &info.cover_art,
+            &info.created,
+            &info.changed,
+            &now,
+        ],
     )?;
 
-    // Add songs if provided
-    if let Some(songs) = song_ids {
-        for (position, song_id) in songs.iter().enumerate() {
+    // Insert playlist songs
+    for (position, entry) in detail.entries.iter().enumerate() {
+        let song_exists: bool = db
+            .query_row("SELECT 1 FROM songs WHERE id = ?1", [&entry.id], |_| {
+                Ok(true)
+            })
+            .unwrap_or(false);
+
+        if song_exists {
             db.execute(
                 "INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES (?1, ?2, ?3)",
-                rusqlite::params![&id, song_id, position as i32],
+                rusqlite::params![&info.id, &entry.id, position as i32],
             )?;
         }
-
-        // Update playlist stats
-        update_playlist_stats(&db, &id)?;
     }
 
-    // Fetch and return the created playlist
-    let playlist = db.query_row(
-        "SELECT id, name, song_count, duration, created_at, changed_at FROM playlists WHERE id = ?1",
-        [&id],
-        |row| {
-            Ok(Playlist {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                song_count: row.get(2)?,
-                duration: row.get(3)?,
-                created_at: row.get(4)?,
-                changed_at: row.get(5)?,
-            })
-        },
-    )?;
-
-    Ok(playlist)
+    Ok(Playlist {
+        id: info.id.clone(),
+        name: info.name.clone(),
+        song_count: info.song_count,
+        duration: info.duration,
+        owner: info.owner.clone(),
+        cover_art_id: info.cover_art.clone(),
+        created_at: info.created.clone(),
+        changed_at: info.changed.clone(),
+    })
 }
 
+/// Rename a playlist on server and update local cache
 #[tauri::command]
-pub fn update_playlist(
+pub async fn update_playlist(
     state: State<'_, AppState>,
     playlist_id: String,
     name: String,
 ) -> AppResult<()> {
-    let now = Utc::now().to_rfc3339();
-    let db = state.db.lock_recover();
+    // Update on server
+    state
+        .client
+        .update_playlist(&playlist_id, Some(name.clone()), vec![], vec![])
+        .await?;
 
+    // Update local cache
+    let now = chrono::Utc::now().to_rfc3339();
+    let db = state.db.lock_recover();
     db.execute(
         "UPDATE playlists SET name = ?1, changed_at = ?2 WHERE id = ?3",
         rusqlite::params![&name, &now, &playlist_id],
@@ -173,167 +269,122 @@ pub fn update_playlist(
     Ok(())
 }
 
+/// Delete a playlist from server and local cache
 #[tauri::command]
-pub fn delete_playlist(state: State<'_, AppState>, playlist_id: String) -> AppResult<()> {
-    let db = state.db.lock_recover();
+pub async fn delete_playlist(state: State<'_, AppState>, playlist_id: String) -> AppResult<()> {
+    // Delete from server
+    state.client.delete_playlist(&playlist_id).await?;
 
-    // Delete playlist songs first
+    // Delete from local cache
+    let db = state.db.lock_recover();
     db.execute(
         "DELETE FROM playlist_songs WHERE playlist_id = ?1",
         [&playlist_id],
     )?;
-
-    // Delete playlist
     db.execute("DELETE FROM playlists WHERE id = ?1", [&playlist_id])?;
 
     Ok(())
 }
 
+/// Add songs to a playlist on server and refresh local cache
 #[tauri::command]
-pub fn add_songs_to_playlist(
+pub async fn add_songs_to_playlist(
     state: State<'_, AppState>,
     playlist_id: String,
     song_ids: Vec<String>,
 ) -> AppResult<()> {
-    let now = Utc::now().to_rfc3339();
-    let db = state.db.lock_recover();
+    // Filter out songs already in the playlist
+    let new_song_ids: Vec<String> = {
+        let db = state.db.lock_recover();
+        let mut stmt = db.prepare("SELECT song_id FROM playlist_songs WHERE playlist_id = ?1")?;
+        let existing: std::collections::HashSet<String> = stmt
+            .query_map([&playlist_id], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        song_ids
+            .into_iter()
+            .filter(|id| !existing.contains(id))
+            .collect()
+    };
 
-    // Get current max position
-    let max_position: i32 = db
-        .query_row(
-            "SELECT COALESCE(MAX(position), -1) FROM playlist_songs WHERE playlist_id = ?1",
-            [&playlist_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(-1);
-
-    // Add songs
-    for (i, song_id) in song_ids.iter().enumerate() {
-        // Skip if song already in playlist
-        let exists: bool = db
-            .query_row(
-                "SELECT 1 FROM playlist_songs WHERE playlist_id = ?1 AND song_id = ?2",
-                rusqlite::params![&playlist_id, song_id],
-                |_| Ok(true),
-            )
-            .unwrap_or(false);
-
-        if !exists {
-            let position = max_position + 1 + i as i32;
-            db.execute(
-                "INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES (?1, ?2, ?3)",
-                rusqlite::params![&playlist_id, song_id, position],
-            )?;
-        }
+    if new_song_ids.is_empty() {
+        return Ok(());
     }
 
-    // Update stats
-    update_playlist_stats(&db, &playlist_id)?;
+    // Add songs on server
+    state
+        .client
+        .update_playlist(&playlist_id, None, new_song_ids, vec![])
+        .await?;
 
-    // Update changed_at
-    db.execute(
-        "UPDATE playlists SET changed_at = ?1 WHERE id = ?2",
-        rusqlite::params![&now, &playlist_id],
-    )?;
+    // Re-fetch playlist from server and update local cache
+    refresh_playlist_cache(&state, &playlist_id).await?;
 
     Ok(())
 }
 
+/// Remove a song from a playlist by position on server and refresh local cache
 #[tauri::command]
-pub fn remove_song_from_playlist(
+pub async fn remove_song_from_playlist(
     state: State<'_, AppState>,
     playlist_id: String,
-    song_id: String,
+    position: i32,
 ) -> AppResult<()> {
-    let now = Utc::now().to_rfc3339();
-    let db = state.db.lock_recover();
+    // Remove by index on server
+    state
+        .client
+        .update_playlist(&playlist_id, None, vec![], vec![position as i64])
+        .await?;
 
-    db.execute(
-        "DELETE FROM playlist_songs WHERE playlist_id = ?1 AND song_id = ?2",
-        rusqlite::params![&playlist_id, &song_id],
-    )?;
-
-    // Reorder remaining songs
-    reorder_playlist_positions(&db, &playlist_id)?;
-
-    // Update stats
-    update_playlist_stats(&db, &playlist_id)?;
-
-    // Update changed_at
-    db.execute(
-        "UPDATE playlists SET changed_at = ?1 WHERE id = ?2",
-        rusqlite::params![&now, &playlist_id],
-    )?;
+    // Re-fetch playlist from server and update local cache
+    refresh_playlist_cache(&state, &playlist_id).await?;
 
     Ok(())
 }
 
-#[tauri::command]
-pub fn reorder_playlist(
-    state: State<'_, AppState>,
-    playlist_id: String,
-    song_ids: Vec<String>,
-) -> AppResult<()> {
-    let now = Utc::now().to_rfc3339();
+/// Re-fetch a single playlist from server and update local cache
+async fn refresh_playlist_cache(state: &State<'_, AppState>, playlist_id: &str) -> AppResult<()> {
+    let detail = state.client.get_playlist(playlist_id).await?;
+    let info = &detail.info;
+    let now = chrono::Utc::now().to_rfc3339();
+
     let db = state.db.lock_recover();
 
-    // Update positions for each song
-    for (position, song_id) in song_ids.iter().enumerate() {
-        db.execute(
-            "UPDATE playlist_songs SET position = ?1 WHERE playlist_id = ?2 AND song_id = ?3",
-            rusqlite::params![position as i32, &playlist_id, song_id],
-        )?;
-    }
-
-    // Update changed_at
+    // Update playlist metadata
     db.execute(
-        "UPDATE playlists SET changed_at = ?1 WHERE id = ?2",
-        rusqlite::params![&now, &playlist_id],
+        "INSERT OR REPLACE INTO playlists (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            &info.id,
+            &info.name,
+            info.song_count,
+            info.duration,
+            &info.owner,
+            &info.cover_art,
+            &info.created,
+            &info.changed,
+            &now,
+        ],
     )?;
 
-    Ok(())
-}
-
-// Helper function to update playlist song count and duration
-fn update_playlist_stats(
-    db: &rusqlite::Connection,
-    playlist_id: &str,
-) -> Result<(), rusqlite::Error> {
+    // Replace playlist songs
     db.execute(
-        r#"
-        UPDATE playlists SET
-            song_count = (SELECT COUNT(*) FROM playlist_songs WHERE playlist_id = ?1),
-            duration = (
-                SELECT COALESCE(SUM(s.duration), 0)
-                FROM playlist_songs ps
-                JOIN songs s ON s.id = ps.song_id
-                WHERE ps.playlist_id = ?1
-            )
-        WHERE id = ?1
-        "#,
+        "DELETE FROM playlist_songs WHERE playlist_id = ?1",
         [playlist_id],
     )?;
-    Ok(())
-}
 
-// Helper function to reorder positions after deletion
-fn reorder_playlist_positions(
-    db: &rusqlite::Connection,
-    playlist_id: &str,
-) -> Result<(), rusqlite::Error> {
-    // Get all song_ids in order
-    let mut stmt =
-        db.prepare("SELECT song_id FROM playlist_songs WHERE playlist_id = ?1 ORDER BY position")?;
-    let song_ids: Vec<String> = stmt
-        .query_map([playlist_id], |row| row.get(0))?
-        .collect::<Result<Vec<_>, _>>()?;
+    for (position, entry) in detail.entries.iter().enumerate() {
+        let song_exists: bool = db
+            .query_row("SELECT 1 FROM songs WHERE id = ?1", [&entry.id], |_| {
+                Ok(true)
+            })
+            .unwrap_or(false);
 
-    // Update positions
-    for (position, song_id) in song_ids.iter().enumerate() {
-        db.execute(
-            "UPDATE playlist_songs SET position = ?1 WHERE playlist_id = ?2 AND song_id = ?3",
-            rusqlite::params![position as i32, playlist_id, song_id],
-        )?;
+        if song_exists {
+            db.execute(
+                "INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES (?1, ?2, ?3)",
+                rusqlite::params![playlist_id, &entry.id, position as i32],
+            )?;
+        }
     }
 
     Ok(())
