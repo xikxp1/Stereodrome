@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Song } from "$lib/types";
   import { playlistStore } from "$lib/stores/playlist.svelte";
+  import { queue } from "$lib/stores/queue.svelte";
   import { createVirtualizer } from "@tanstack/svelte-virtual";
   import {
     CircleAlert,
@@ -9,6 +10,8 @@
     ListPlus,
     ListX,
     Plus,
+    ListEnd,
+    SkipForward,
   } from "lucide-svelte";
 
   interface Props {
@@ -151,6 +154,37 @@
       contextMenu = null;
     }
   }
+
+  async function addToQueue() {
+    if (!contextMenu) return;
+    const song = contextMenu.song;
+    const alreadyInQueue = queue.items.some((item) => item.song_id === song.id);
+    if (!alreadyInQueue) {
+      await queue.addSong(song);
+    }
+    contextMenu = null;
+  }
+
+  async function playNextInQueue() {
+    if (!contextMenu) return;
+    const song = contextMenu.song;
+    const existingIndex = queue.items.findIndex(
+      (item) => item.song_id === song.id
+    );
+    if (existingIndex >= 0) {
+      const nextPos = queue.currentIndex !== null ? queue.currentIndex + 1 : 0;
+      if (existingIndex !== nextPos) {
+        if (existingIndex < nextPos) {
+          await queue.moveItem(existingIndex, nextPos - 1);
+        } else {
+          await queue.moveItem(existingIndex, nextPos);
+        }
+      }
+    } else {
+      await queue.playNext(song);
+    }
+    contextMenu = null;
+  }
 </script>
 
 <div class="song-list-container flex flex-col h-full bg-white select-none">
@@ -247,6 +281,27 @@
     class="ctx-menu"
     style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
   >
+    <button
+      class="ctx-item"
+      onclick={(e) => {
+        e.stopPropagation();
+        playNextInQueue();
+      }}
+    >
+      <SkipForward class="size-3" />
+      Play Next
+    </button>
+    <button
+      class="ctx-item"
+      onclick={(e) => {
+        e.stopPropagation();
+        addToQueue();
+      }}
+    >
+      <ListEnd class="size-3" />
+      Add to Queue
+    </button>
+    <div class="ctx-divider"></div>
     {#if playlistId}
       <button
         class="ctx-item"
