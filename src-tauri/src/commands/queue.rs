@@ -98,6 +98,20 @@ pub fn insert_next_in_queue(
 }
 
 #[tauri::command]
+pub fn insert_next_songs_in_queue(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+    items: Vec<QueueItem>,
+) -> AppResult<()> {
+    {
+        let mut queue = state.queue.lock_recover();
+        queue.insert_many_next(items);
+    }
+    persist_and_emit(&state, &app_handle);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn remove_from_queue(
     state: State<'_, AppState>,
     app_handle: AppHandle,
