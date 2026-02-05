@@ -302,11 +302,17 @@
     class="bg-base-100 border border-base-300 rounded-lg shadow-lg fixed z-1000 min-w-35 py-1"
     style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
   >
-    <button class="context-menu-item" onclick={() => startRename(contextMenu!.playlist)}>
+    <button
+      class="context-menu-item"
+      onclick={() => startRename(contextMenu!.playlist)}
+    >
       <Pencil class="size-3" />
       Rename
     </button>
-    <button class="context-menu-item text-error" onclick={() => handleDelete(contextMenu!.playlist)}>
+    <button
+      class="context-menu-item text-error"
+      onclick={() => handleDelete(contextMenu!.playlist)}
+    >
       <Trash2 class="size-3" />
       Delete
     </button>
