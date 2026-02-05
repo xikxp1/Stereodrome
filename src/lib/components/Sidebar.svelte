@@ -12,9 +12,8 @@
     ListMusic,
     RefreshCw,
     LogOut,
-    Pencil,
-    Trash2,
   } from "lucide-svelte";
+  import { showPlaylistContextMenu } from "$lib/services/contextMenu";
 
   interface Props {
     activeView?: string;
@@ -37,13 +36,6 @@
   let showCreatePlaylist = $state(false);
   let newPlaylistName = $state("");
 
-  // Context menu state
-  let contextMenu = $state<{
-    x: number;
-    y: number;
-    playlist: Playlist;
-  } | null>(null);
-
   // Rename state
   let renamingPlaylistId = $state<string | null>(null);
   let renameValue = $state("");
@@ -52,17 +44,6 @@
   $effect(() => {
     if (connection.status.connected) {
       playlistStore.loadPlaylists();
-    }
-  });
-
-  // Close context menu on click outside
-  $effect(() => {
-    if (contextMenu) {
-      const handler = () => {
-        contextMenu = null;
-      };
-      window.addEventListener("click", handler);
-      return () => window.removeEventListener("click", handler);
     }
   });
 
@@ -104,13 +85,18 @@
 
   function handlePlaylistContextMenu(e: MouseEvent, playlist: Playlist) {
     e.preventDefault();
-    contextMenu = { x: e.clientX, y: e.clientY, playlist };
-  }
-
-  function startRename(playlist: Playlist) {
-    contextMenu = null;
-    renamingPlaylistId = playlist.id;
-    renameValue = playlist.name;
+    showPlaylistContextMenu({
+      onRename: () => {
+        renamingPlaylistId = playlist.id;
+        renameValue = playlist.name;
+      },
+      onDelete: async () => {
+        await playlistStore.deletePlaylist(playlist.id);
+        if (selectedPlaylistId === playlist.id) {
+          onPlaylistSelect?.(null);
+        }
+      },
+    });
   }
 
   async function handleRename() {
@@ -123,14 +109,6 @@
   function cancelRename() {
     renamingPlaylistId = null;
     renameValue = "";
-  }
-
-  async function handleDelete(playlist: Playlist) {
-    contextMenu = null;
-    await playlistStore.deletePlaylist(playlist.id);
-    if (selectedPlaylistId === playlist.id) {
-      onPlaylistSelect?.(null);
-    }
   }
 </script>
 
@@ -296,29 +274,6 @@
   </div>
 </div>
 
-<!-- Context menu -->
-{#if contextMenu}
-  <div
-    class="bg-base-100 border border-base-300 rounded-lg shadow-lg fixed z-1000 min-w-35 py-1"
-    style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
-  >
-    <button
-      class="context-menu-item"
-      onclick={() => startRename(contextMenu!.playlist)}
-    >
-      <Pencil class="size-3" />
-      Rename
-    </button>
-    <button
-      class="context-menu-item text-error"
-      onclick={() => handleDelete(contextMenu!.playlist)}
-    >
-      <Trash2 class="size-3" />
-      Delete
-    </button>
-  </div>
-{/if}
-
 <style>
   .sidebar-title {
     padding: 0.25rem 0.75rem;
@@ -362,23 +317,5 @@
       oklch(58% 0.2 250),
       oklch(52% 0.22 250)
     );
-  }
-
-  .context-menu-item {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    width: 100%;
-    padding: 0.25rem 0.5rem;
-    font-size: 0.75rem;
-    text-align: left;
-    color: oklch(30% 0.01 250);
-    border: none;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .context-menu-item:hover {
-    background: oklch(90% 0.08 250);
   }
 </style>
