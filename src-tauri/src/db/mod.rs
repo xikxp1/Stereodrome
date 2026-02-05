@@ -61,6 +61,31 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
         conn.execute_batch(SCHEMA)?;
     }
 
+    // Check if playlists table has all required columns (owner, cover_art_id added for server sync)
+    let playlist_columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(playlists)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let required_playlist_columns = ["owner", "cover_art_id"];
+    let missing_playlist: Vec<_> = required_playlist_columns
+        .iter()
+        .filter(|c| !playlist_columns.contains(&c.to_string()))
+        .collect();
+
+    if !missing_playlist.is_empty() {
+        warn!(
+            "Playlists table missing columns {:?}, recreating playlist tables",
+            missing_playlist
+        );
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS playlist_songs;
+             DROP TABLE IF EXISTS playlists;",
+        )?;
+        conn.execute_batch(SCHEMA)?;
+    }
+
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 # Stereodrome Development Plan
 
-Last updated: 2026-01-30
+Last updated: 2026-02-05
 
 ## Current Status
 
@@ -109,6 +109,12 @@ Phase 8: Local Storage & Offline Features
 - [x] Playlist commands (create, update, delete, add/remove songs)
 - [x] Playlist store with CRUD operations
 - [x] Sidebar playlists section with create/select
+- [x] Server-synced playlists via Subsonic API (server-first CRUD, local SQLite cache)
+- [x] Playlist view in main content area (click playlist in sidebar to view songs)
+- [x] Playlist context menu (right-click to rename/delete)
+- [x] "Add to Playlist" context menu on songs (right-click song row)
+- [x] Playlist sync during library sync (sync_playlists command)
+- [x] Position-based song removal (Subsonic API index-based removal)
 
 ### Phase 6: Search
 
@@ -124,7 +130,7 @@ Phase 8: Local Storage & Offline Features
 - [x] Library browsing (artists, albums, songs)
 - [x] Playback controls (play, pause, skip, volume)
 - [x] Queue management
-- [x] Playlist support
+- [x] Playlist support (server-synced via Subsonic API)
 - [x] Search functionality
 
 ### Local Storage
@@ -167,7 +173,7 @@ src-tauri/src/
 ├── credentials.rs      # OS keyring integration for secure credential storage
 ├── client/
 │   ├── mod.rs          # Module exports, spawn() function
-│   ├── messages.rs     # Request/Response message types, ClientError (incl. Timeout)
+│   ├── messages.rs     # Request/Response message types, ClientError (incl. Timeout, Playlist types)
 │   ├── handle.rs       # SubsonicClientHandle (lock-free API interface)
 │   └── thread.rs       # Client thread with tokio runtime, heartbeat, request timeouts
 ├── audio/
@@ -192,7 +198,7 @@ src-tauri/src/
 │   ├── library.rs      # sync_library, get_artists, get_albums, get_songs
 │   ├── playback.rs     # play_song, pause, resume, stop, set_volume
 │   ├── queue.rs        # Queue management commands
-│   ├── playlist.rs     # Playlist CRUD commands
+│   ├── playlist.rs     # Playlist CRUD commands (server-first sync via Subsonic API)
 │   ├── search.rs       # Tantivy full-text search
 │   ├── nowplaying.rs   # Scrobbling, now playing emitter (events)
 │   └── coverart.rs     # Cover art fetching with local cache
@@ -216,7 +222,7 @@ src/lib/
 │   ├── connection.svelte.ts  # Connection state (runes)
 │   ├── playback.svelte.ts    # Playback state with combined event (position + song info)
 │   ├── queue.svelte.ts       # Queue management store
-│   ├── playlist.svelte.ts    # Playlist store
+│   ├── playlist.svelte.ts    # Playlist store (server-synced CRUD)
 │   ├── search.svelte.ts      # Search with debounce
 │   ├── spectrum.svelte.ts    # Spectrum visualizer state (30Hz band updates)
 │   ├── nowplaying.svelte.ts  # Server now playing state (for other users)
@@ -229,7 +235,7 @@ src/lib/
 │   ├── ServerConnect.svelte   # Login screen
 │   ├── TransportBar.svelte    # Top toolbar with playback controls + now playing (local state)
 │   ├── SpectrumBars.svelte    # Audio spectrum visualizer (8 bars)
-│   ├── Sidebar.svelte         # Navigation + playlists
+│   ├── Sidebar.svelte         # Navigation + playlists (context menu for rename/delete)
 │   ├── StatusBar.svelte       # Bottom status bar
 │   ├── QueuePanel.svelte      # Queue panel with shuffle/repeat controls
 │   ├── SettingsModal.svelte   # Settings modal with cache management and updates
@@ -241,7 +247,7 @@ src/lib/
 │       ├── AlbumGridView.svelte   # Album grid with cover art and navigation
 │       ├── ColumnBrowser.svelte   # Genre/Artist/Album browser
 │       ├── DetailHeader.svelte    # Back button header for artist/album detail views
-│       └── SongList.svelte        # iTunes-style song table
+│       └── SongList.svelte        # iTunes-style song table (right-click "Add to Playlist")
 └── types/index.ts      # All TypeScript interfaces
 ```
 

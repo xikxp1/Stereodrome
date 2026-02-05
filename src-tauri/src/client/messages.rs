@@ -136,6 +136,26 @@ impl std::fmt::Display for ClientError {
 
 impl std::error::Error for ClientError {}
 
+/// Playlist info from server
+#[derive(Debug, Clone)]
+pub struct PlaylistInfo {
+    pub id: String,
+    pub name: String,
+    pub song_count: i32,
+    pub duration: i32,
+    pub owner: Option<String>,
+    pub cover_art: Option<String>,
+    pub created: String,
+    pub changed: String,
+}
+
+/// Playlist with song entries from server
+#[derive(Debug, Clone)]
+pub struct PlaylistDetail {
+    pub info: PlaylistInfo,
+    pub entries: Vec<SongInfo>,
+}
+
 /// All possible requests to the Subsonic client thread
 pub enum ClientRequest {
     // === Authentication ===
@@ -205,6 +225,36 @@ pub enum ClientRequest {
     /// Get now playing list from server
     GetNowPlaying {
         response_tx: oneshot::Sender<ClientResult<NowPlayingInfo>>,
+    },
+
+    // === Playlists ===
+    /// Get all playlists
+    GetPlaylists {
+        response_tx: oneshot::Sender<ClientResult<Vec<PlaylistInfo>>>,
+    },
+    /// Get playlist with songs
+    GetPlaylist {
+        playlist_id: String,
+        response_tx: oneshot::Sender<ClientResult<PlaylistDetail>>,
+    },
+    /// Create a new playlist
+    CreatePlaylist {
+        name: String,
+        song_ids: Vec<String>,
+        response_tx: oneshot::Sender<ClientResult<PlaylistDetail>>,
+    },
+    /// Update a playlist (rename, add/remove songs)
+    UpdatePlaylist {
+        playlist_id: String,
+        name: Option<String>,
+        song_ids_to_add: Vec<String>,
+        song_indexes_to_remove: Vec<i64>,
+        response_tx: oneshot::Sender<ClientResult<()>>,
+    },
+    /// Delete a playlist
+    DeletePlaylist {
+        playlist_id: String,
+        response_tx: oneshot::Sender<ClientResult<()>>,
     },
 
     // === Control ===

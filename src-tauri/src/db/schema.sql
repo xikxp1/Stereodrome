@@ -45,16 +45,18 @@ CREATE TABLE IF NOT EXISTS playlists (
     name TEXT NOT NULL,
     song_count INTEGER DEFAULT 0,
     duration INTEGER DEFAULT 0,
+    owner TEXT,
+    cover_art_id TEXT,
     created_at TEXT NOT NULL,
     changed_at TEXT NOT NULL,
     synced_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS playlist_songs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     playlist_id TEXT NOT NULL,
     song_id TEXT NOT NULL,
     position INTEGER NOT NULL,
-    PRIMARY KEY (playlist_id, song_id),
     FOREIGN KEY (playlist_id) REFERENCES playlists(id),
     FOREIGN KEY (song_id) REFERENCES songs(id)
 );
@@ -88,4 +90,5 @@ CREATE TABLE IF NOT EXISTS queue_state (
 CREATE INDEX IF NOT EXISTS idx_albums_artist_id ON albums(artist_id);
 CREATE INDEX IF NOT EXISTS idx_songs_album_id ON songs(album_id);
 CREATE INDEX IF NOT EXISTS idx_songs_artist_id ON songs(artist_id);
-CREATE INDEX IF NOT EXISTS idx_playlist_songs_playlist_id ON playlist_songs(playlist_id);
+CREATE INDEX IF NOT EXISTS idx_playlist_songs_playlist_id ON playlist_songs(playlist_id, position);
+CREATE INDEX IF NOT EXISTS idx_playlist_songs_song_id ON playlist_songs(song_id);

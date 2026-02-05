@@ -221,6 +221,94 @@ impl SubsonicClientHandle {
         response_rx.await.map_err(|_| ClientError::ChannelClosed)?
     }
 
+    // === Playlists ===
+
+    /// Get all playlists from server
+    pub async fn get_playlists(&self) -> ClientResult<Vec<PlaylistInfo>> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.request_tx
+            .send(ClientRequest::GetPlaylists { response_tx })
+            .await
+            .map_err(|_| ClientError::ChannelClosed)?;
+
+        response_rx.await.map_err(|_| ClientError::ChannelClosed)?
+    }
+
+    /// Get playlist with songs from server
+    pub async fn get_playlist(&self, playlist_id: &str) -> ClientResult<PlaylistDetail> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.request_tx
+            .send(ClientRequest::GetPlaylist {
+                playlist_id: playlist_id.to_string(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| ClientError::ChannelClosed)?;
+
+        response_rx.await.map_err(|_| ClientError::ChannelClosed)?
+    }
+
+    /// Create a new playlist on server
+    pub async fn create_playlist(
+        &self,
+        name: &str,
+        song_ids: Vec<String>,
+    ) -> ClientResult<PlaylistDetail> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.request_tx
+            .send(ClientRequest::CreatePlaylist {
+                name: name.to_string(),
+                song_ids,
+                response_tx,
+            })
+            .await
+            .map_err(|_| ClientError::ChannelClosed)?;
+
+        response_rx.await.map_err(|_| ClientError::ChannelClosed)?
+    }
+
+    /// Update a playlist on server (rename, add/remove songs)
+    pub async fn update_playlist(
+        &self,
+        playlist_id: &str,
+        name: Option<String>,
+        song_ids_to_add: Vec<String>,
+        song_indexes_to_remove: Vec<i64>,
+    ) -> ClientResult<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.request_tx
+            .send(ClientRequest::UpdatePlaylist {
+                playlist_id: playlist_id.to_string(),
+                name,
+                song_ids_to_add,
+                song_indexes_to_remove,
+                response_tx,
+            })
+            .await
+            .map_err(|_| ClientError::ChannelClosed)?;
+
+        response_rx.await.map_err(|_| ClientError::ChannelClosed)?
+    }
+
+    /// Delete a playlist from server
+    pub async fn delete_playlist(&self, playlist_id: &str) -> ClientResult<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.request_tx
+            .send(ClientRequest::DeletePlaylist {
+                playlist_id: playlist_id.to_string(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| ClientError::ChannelClosed)?;
+
+        response_rx.await.map_err(|_| ClientError::ChannelClosed)?
+    }
+
     // === Control ===
 
     /// Shutdown the client thread (called on app exit)

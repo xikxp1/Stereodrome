@@ -122,16 +122,16 @@
 >
   <!-- Header -->
   <div
-    class="flex items-center gap-1.5 px-2 py-1.5 border-b border-base-300 bg-gradient-to-b from-base-200 to-base-300"
+    class="flex items-center gap-1.5 px-2 py-1.5 border-b border-base-300 bg-linear-to-b from-base-200 to-base-300"
   >
     <div class="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
-      <ListMusic class="w-3.5 h-3.5 text-base-content/60 flex-shrink-0" />
+      <ListMusic class="w-3.5 h-3.5 text-base-content/60 shrink-0" />
       <span class="text-xs font-medium truncate">Queue</span>
-      <span class="text-[10px] text-base-content/50 flex-shrink-0"
+      <span class="text-[10px] text-base-content/50 shrink-0"
         >{queue.items.length}</span
       >
     </div>
-    <div class="flex items-center flex-shrink-0">
+    <div class="flex items-center shrink-0">
       <!-- Shuffle -->
       <button
         class="queue-header-btn"
