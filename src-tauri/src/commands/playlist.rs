@@ -31,6 +31,9 @@ pub struct PlaylistSong {
     pub suffix: Option<String>,
     pub content_type: Option<String>,
     pub path: Option<String>,
+    pub year: Option<i32>,
+    pub genre: Option<String>,
+    pub synced_at: String,
     pub position: i32,
     // Joined fields
     pub artist: Option<String>,
@@ -150,6 +153,7 @@ pub fn get_playlist_songs(
         SELECT
             s.id, s.album_id, s.artist_id, s.title, s.track_number, s.disc_number,
             s.duration, s.bit_rate, s.size, s.suffix, s.content_type, s.path,
+            s.year, s.genre, s.synced_at,
             ps.position,
             a.name as artist_name,
             al.name as album_name
@@ -177,9 +181,12 @@ pub fn get_playlist_songs(
                 suffix: row.get(9)?,
                 content_type: row.get(10)?,
                 path: row.get(11)?,
-                position: row.get(12)?,
-                artist: row.get(13)?,
-                album: row.get(14)?,
+                year: row.get(12)?,
+                genre: row.get(13)?,
+                synced_at: row.get(14)?,
+                position: row.get(15)?,
+                artist: row.get(16)?,
+                album: row.get(17)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

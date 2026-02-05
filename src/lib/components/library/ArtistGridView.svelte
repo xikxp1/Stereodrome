@@ -50,9 +50,7 @@
 
 <div class="flex-1 overflow-auto p-4">
   {#if artists.length > 0}
-    <div
-      class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2"
-    >
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
       {#each artists as artist (artist.id)}
         <button
           class="flex flex-col bg-base-200 hover:bg-base-300 transition-colors cursor-pointer text-left rounded-lg p-3"

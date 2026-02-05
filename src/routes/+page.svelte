@@ -236,11 +236,16 @@
 
   // Playlist view stats
   const playlistSongs = $derived(playlistStore.currentPlaylistSongs as Song[]);
+  const filteredPlaylistSongs = $derived(
+    searchStore.hasActiveQuery
+      ? playlistSongs.filter((s) => searchStore.matchedSongIds.has(s.id))
+      : playlistSongs
+  );
   const playlistTotalDuration = $derived(
-    playlistSongs.reduce((acc, s) => acc + (s.duration || 0), 0)
+    filteredPlaylistSongs.reduce((acc, s) => acc + (s.duration || 0), 0)
   );
   const playlistTotalSize = $derived(
-    playlistSongs.reduce((acc, s) => acc + (s.size || 0), 0)
+    filteredPlaylistSongs.reduce((acc, s) => acc + (s.size || 0), 0)
   );
 
   // Stats for status bar
@@ -289,7 +294,7 @@
     // If queue is empty, populate it based on current view
     if (queue.items.length === 0 && !playback.isPlaying) {
       const songsToPlay = selectedPlaylist
-        ? playlistSongs
+        ? filteredPlaylistSongs
         : detailView
           ? detailSongs
           : filteredSongs;
@@ -341,7 +346,7 @@
 
   async function handlePlaylistSongPlay(song: Song) {
     try {
-      await queue.playSongWithQueue(song, playlistSongs);
+      await queue.playSongWithQueue(song, filteredPlaylistSongs);
     } catch (e) {
       error(`Failed to play song: ${e}`);
     }
@@ -660,7 +665,7 @@
 
           <div class="flex-1 overflow-hidden">
             <SongList
-              songs={playlistSongs}
+              songs={filteredPlaylistSongs}
               isLoading={playlistStore.isLoading}
               selectedSongId={selectedSong?.id}
               playingSongId={playback.currentTrack?.id ?? null}
@@ -672,7 +677,7 @@
           </div>
 
           <StatusBar
-            itemCount={playlistSongs.length}
+            itemCount={filteredPlaylistSongs.length}
             totalDuration={playlistTotalDuration}
             totalSize={playlistTotalSize}
           />
