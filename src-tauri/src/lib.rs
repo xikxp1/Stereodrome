@@ -156,6 +156,12 @@ pub fn run() {
             commands::get_scan_status,
             commands::start_scan,
             commands::set_tray_update_available,
+            commands::get_normalization_settings,
+            commands::set_normalization_settings,
+            commands::get_normalization_stats,
+            commands::get_analysis_progress,
+            commands::analyze_all_songs,
+            commands::clear_normalization_data,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

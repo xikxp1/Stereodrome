@@ -55,7 +55,8 @@
   --radius-field: 0.25rem;
   --radius-box: 0.375rem;
 
-  /* Border color */
+  /* Border */
+  --border: 1px;
   --color-base-border: oklch(78% 0.008 250);
 }
 
@@ -138,6 +139,11 @@ textarea,
   width: 13px;
   height: 13px;
   accent-color: oklch(55% 0.2 250);
+}
+
+.checkbox:not(:checked),
+.radio:not(:checked) {
+  border-color: oklch(55% 0.01 250) !important;
 }
 
 /* Loading spinner */

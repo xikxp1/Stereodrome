@@ -134,6 +134,28 @@ export interface SearchResults {
   artists: SearchResultArtist[];
 }
 
+// Normalization types
+export interface NormalizationSettings {
+  enabled: boolean;
+  mode: "track" | "album";
+  target_lufs: number;
+  pre_amp_db: number;
+  prevent_clipping: boolean;
+}
+
+export interface NormalizationStats {
+  analyzed_count: number;
+  total_count: number;
+}
+
+export interface AnalysisProgress {
+  analyzed: number;
+  total: number;
+  current_song: string;
+  analyzed_count: number;
+  total_count: number;
+}
+
 // Now Playing types
 export interface NowPlayingEntry {
   id: string;

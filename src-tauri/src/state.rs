@@ -7,6 +7,7 @@ use rusqlite::Connection;
 
 use crate::audio::{AudioPlayer, PlayQueue};
 use crate::client::SubsonicClientHandle;
+use crate::commands::normalization::AnalysisProgress;
 use crate::db::queue::{load_queue_items, load_queue_state};
 use crate::error::AppResult;
 use crate::search::IndexManager;
@@ -24,6 +25,8 @@ pub struct AppState {
     pub emitter_running: Arc<AtomicBool>,
     /// Prevents race conditions when rapidly clicking next/previous
     pub navigating: AtomicBool,
+    /// Current analysis progress (set by analyze_all_songs, cleared on completion)
+    pub analysis_progress: Arc<Mutex<Option<AnalysisProgress>>>,
 }
 
 impl AppState {
@@ -68,6 +71,7 @@ impl AppState {
             index_path,
             emitter_running: Arc::new(AtomicBool::new(true)),
             navigating: AtomicBool::new(false),
+            analysis_progress: Arc::new(Mutex::new(None)),
         })
     }
 

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::analyzer::AnalyzingSource;
+use crate::audio::normalizer::NormalizingSource;
 use crate::error::{AppError, AppResult};
 use crate::media::MediaControlsManager;
 use crate::tray::TrayManager;
@@ -51,6 +52,7 @@ enum AudioCommand {
         audio_data: Vec<u8>,
         metadata: SongMetadata,
         duration_secs: f64,
+        normalization_gain: Option<f32>,
     },
     Pause,
     Resume,
@@ -192,12 +194,14 @@ impl AudioPlayer {
         audio_data: Vec<u8>,
         metadata: SongMetadata,
         duration_secs: f64,
+        normalization_gain: Option<f32>,
     ) -> AppResult<()> {
         self.command_tx
             .send(AudioCommand::Play {
                 audio_data,
                 metadata,
                 duration_secs,
+                normalization_gain,
             })
             .map_err(|e| AppError::Audio(format!("Failed to send play command: {}", e)))
     }
@@ -495,6 +499,7 @@ fn run_audio_thread(
                     audio_data,
                     metadata,
                     duration_secs,
+                    normalization_gain,
                 } => {
                     // Stop any existing playback
                     if let Some(sink) = current_sink.take() {
@@ -516,10 +521,16 @@ fn run_audio_thread(
                             let analyzing_source =
                                 AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
 
+                            // Wrap with normalizer for loudness normalization
+                            let normalizing_source = NormalizingSource::new(
+                                analyzing_source,
+                                normalization_gain.unwrap_or(1.0),
+                            );
+
                             let sink = Sink::connect_new(stream.mixer());
                             let volume = shared_state.read_inner().volume;
                             sink.set_volume(volume);
-                            sink.append(analyzing_source);
+                            sink.append(normalizing_source);
 
                             // Update shared state (single lock acquisition)
                             {

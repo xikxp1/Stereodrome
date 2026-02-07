@@ -10,6 +10,8 @@
     Monitor,
     Activity,
     Download,
+    Volume2,
+    ShieldCheck,
   } from "lucide-svelte";
   import {
     getAudioCacheStats,
@@ -18,14 +20,26 @@
     getScanStatus,
     startScan,
     syncLibrary,
+    getNormalizationSettings,
+    setNormalizationSettings,
+    getNormalizationStats,
+    getAnalysisProgress,
+    analyzeAllSongs,
+    clearNormalizationData,
     type CacheStats,
   } from "$lib/api/commands";
   import { error } from "@tauri-apps/plugin-log";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { connection } from "$lib/stores/connection.svelte";
   import { updater } from "$lib/stores/updater.svelte";
   import { queryClient } from "$lib/db/queryClient";
   import { spectrum } from "$lib/stores/spectrum.svelte";
-  import type { ScanStatus } from "$lib/types";
+  import type {
+    ScanStatus,
+    NormalizationSettings,
+    NormalizationStats,
+    AnalysisProgress,
+  } from "$lib/types";
 
   interface Props {
     open: boolean;
@@ -47,6 +61,18 @@
   let syncing = $state(false);
   let scanPollInterval = $state<ReturnType<typeof setInterval> | null>(null);
 
+  // Normalization state
+  let normSettings = $state<NormalizationSettings | null>(null);
+  let normStats = $state<NormalizationStats | null>(null);
+  let loadingNorm = $state(false);
+  let savingNorm = $state(false);
+  let analyzing = $state(false);
+  let clearingNorm = $state(false);
+  let analysisProgress = $state<AnalysisProgress | null>(null);
+  let normUnlisten = $state<UnlistenFn | null>(null);
+
+  const lufsPresets = [-18, -16, -14, -12, -10];
+
   // Cache size in GB for the slider (0.5 to 50 GB)
   let cacheSizeGB = $state(5);
 
@@ -58,6 +84,7 @@
     if (open) {
       loadCacheStats();
       loadScanStatus();
+      loadNormalization();
       updater.loadCurrentVersion();
     } else {
       // Clean up polling when modal closes
@@ -65,6 +92,15 @@
         clearInterval(scanPollInterval);
         scanPollInterval = null;
       }
+      if (normUnlisten) {
+        normUnlisten();
+        normUnlisten = null;
+      }
+      // Reset stale state so reopening shows fresh data
+      normSettings = null;
+      normStats = null;
+      analyzing = false;
+      analysisProgress = null;
     }
   });
 
@@ -160,6 +196,91 @@
   async function handleDisconnect() {
     await connection.disconnect();
     onClose();
+  }
+
+  async function loadNormalization() {
+    loadingNorm = true;
+    try {
+      normSettings = await getNormalizationSettings();
+      normStats = await getNormalizationStats();
+      // Check if analysis is already in progress
+      const currentProgress = await getAnalysisProgress();
+      if (currentProgress && normStats) {
+        analyzing = true;
+        analysisProgress = currentProgress;
+        normStats.analyzed_count = currentProgress.analyzed_count;
+        normStats.total_count = currentProgress.total_count;
+      }
+      // Always listen for progress events while modal is open
+      // (analysis may already be running from a previous session)
+      if (!normUnlisten) {
+        normUnlisten = await listen<AnalysisProgress>(
+          "normalization-progress",
+          (event) => {
+            analysisProgress = event.payload;
+            analyzing = true;
+            if (normStats) {
+              normStats.analyzed_count = event.payload.analyzed_count;
+              normStats.total_count = event.payload.total_count;
+            }
+            if (
+              event.payload.analyzed >= event.payload.total &&
+              event.payload.total > 0
+            ) {
+              analyzing = false;
+              analysisProgress = null;
+              loadNormalization();
+            }
+          }
+        );
+      }
+    } catch (e) {
+      error(`Failed to load normalization settings: ${e}`);
+    } finally {
+      loadingNorm = false;
+    }
+  }
+
+  async function handleNormSettingChange(
+    update: Partial<NormalizationSettings>
+  ) {
+    if (!normSettings) return;
+    savingNorm = true;
+    try {
+      const updated = { ...normSettings, ...update };
+      await setNormalizationSettings(updated);
+      normSettings = updated;
+    } catch (e) {
+      error(`Failed to save normalization settings: ${e}`);
+    } finally {
+      savingNorm = false;
+    }
+  }
+
+  async function handleAnalyzeAll() {
+    analyzing = true;
+    analysisProgress = null;
+    try {
+      await analyzeAllSongs();
+    } catch (e) {
+      error(`Failed to start analysis: ${e}`);
+      analyzing = false;
+    }
+  }
+
+  async function handleClearNormData() {
+    if (!confirm("Clear all normalization data? Songs will be re-analyzed.")) {
+      return;
+    }
+    clearingNorm = true;
+    try {
+      await clearNormalizationData();
+      await loadNormalization();
+    } catch (e) {
+      error(`Failed to clear normalization data: ${e}`);
+    } finally {
+      clearingNorm = false;
+    }
   }
 
   function formatBytes(bytes: number): string {
@@ -404,6 +525,220 @@
           </div>
         </div>
 
+        <!-- Volume Normalization Section -->
+        <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
+          <div class="mb-3 flex items-center gap-2">
+            <Volume2 class="h-4 w-4 text-base-content/60" />
+            <h3 class="font-medium">Volume Normalization</h3>
+          </div>
+
+          {#if loadingNorm}
+            <div class="flex items-center gap-2 text-sm text-base-content/60">
+              <RefreshCw class="h-4 w-4 animate-spin" />
+              Loading...
+            </div>
+          {:else if normSettings}
+            <div class="space-y-3">
+              <!-- Enable toggle -->
+              <label class="flex cursor-pointer items-center justify-between">
+                <span class="text-sm">Enable normalization</span>
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-sm checkbox-primary"
+                  checked={normSettings.enabled}
+                  onchange={(e) =>
+                    handleNormSettingChange({
+                      enabled: e.currentTarget.checked,
+                    })}
+                />
+              </label>
+
+              {#if normSettings.enabled}
+                <!-- Mode selection -->
+                <div>
+                  <div class="mb-1 text-sm text-base-content/60">Mode</div>
+                  <div class="flex gap-3">
+                    <label class="flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="norm-mode"
+                        class="radio radio-sm radio-primary"
+                        checked={normSettings.mode === "track"}
+                        onchange={() =>
+                          handleNormSettingChange({ mode: "track" })}
+                      />
+                      <span class="text-sm">Track</span>
+                    </label>
+                    <label class="flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="norm-mode"
+                        class="radio radio-sm radio-primary"
+                        checked={normSettings.mode === "album"}
+                        onchange={() =>
+                          handleNormSettingChange({ mode: "album" })}
+                      />
+                      <span class="text-sm">Album</span>
+                    </label>
+                  </div>
+                  <p class="mt-1 text-xs text-base-content/50">
+                    {normSettings.mode === "album"
+                      ? "Preserves relative dynamics within albums."
+                      : "Each track normalized independently."}
+                  </p>
+                </div>
+
+                <!-- Target LUFS presets -->
+                <div>
+                  <div class="mb-2 flex items-center justify-between text-sm">
+                    <span class="text-base-content/60">Target level</span>
+                    <span class="text-xs text-base-content/50"
+                      >{normSettings.target_lufs} LUFS</span
+                    >
+                  </div>
+                  <div class="flex flex-wrap gap-1">
+                    {#each lufsPresets as preset (preset)}
+                      <button
+                        class="btn btn-xs h-6 min-h-0 px-2 {normSettings.target_lufs ===
+                        preset
+                          ? 'btn-primary'
+                          : 'btn-ghost'}"
+                        onclick={() =>
+                          handleNormSettingChange({ target_lufs: preset })}
+                        disabled={savingNorm}
+                      >
+                        {preset}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+
+                <!-- Pre-amp slider -->
+                <div>
+                  <div class="mb-1 flex items-center justify-between text-sm">
+                    <span class="text-base-content/60">Pre-amp</span>
+                    <span class="text-xs text-base-content/50"
+                      >{normSettings.pre_amp_db > 0
+                        ? "+"
+                        : ""}{normSettings.pre_amp_db.toFixed(1)} dB</span
+                    >
+                  </div>
+                  <input
+                    type="range"
+                    min="-6"
+                    max="6"
+                    step="0.5"
+                    class="preamp-slider w-full"
+                    value={normSettings.pre_amp_db}
+                    oninput={(e) => {
+                      if (normSettings)
+                        normSettings.pre_amp_db = parseFloat(
+                          e.currentTarget.value
+                        );
+                    }}
+                    onchange={(e) =>
+                      handleNormSettingChange({
+                        pre_amp_db: parseFloat(e.currentTarget.value),
+                      })}
+                  />
+                </div>
+
+                <!-- Prevent clipping -->
+                <label class="flex cursor-pointer items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <ShieldCheck class="h-4 w-4 text-base-content/60" />
+                    <span class="text-sm">Prevent clipping</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm checkbox-primary"
+                    checked={normSettings.prevent_clipping}
+                    onchange={(e) =>
+                      handleNormSettingChange({
+                        prevent_clipping: e.currentTarget.checked,
+                      })}
+                  />
+                </label>
+              {/if}
+
+              <!-- Analysis stats -->
+              {#if normStats}
+                <div class="border-t border-base-300 pt-3">
+                  <div class="flex justify-between text-sm">
+                    <span class="text-base-content/60">Songs analyzed</span>
+                    <span class="font-medium">
+                      {normStats.analyzed_count.toLocaleString()} / {normStats.total_count.toLocaleString()}
+                    </span>
+                  </div>
+
+                  <!-- Progress bar -->
+                  <div class="mt-2">
+                    <div
+                      class="h-2 w-full overflow-hidden rounded-full bg-base-300"
+                    >
+                      <div
+                        class="h-full bg-primary transition-all"
+                        style="width: {normStats.total_count > 0
+                          ? Math.min(
+                              100,
+                              (normStats.analyzed_count /
+                                normStats.total_count) *
+                                100
+                            )
+                          : 0}%"
+                      ></div>
+                    </div>
+                    {#if analyzing && analysisProgress}
+                      <div class="mt-1 text-right text-xs text-base-content/50">
+                        Analyzing... {analysisProgress.analyzed} / {analysisProgress.total}
+                      </div>
+                    {:else}
+                      <div class="mt-1 text-right text-xs text-base-content/50">
+                        {normStats.total_count > 0
+                          ? (
+                              (normStats.analyzed_count /
+                                normStats.total_count) *
+                              100
+                            ).toFixed(1)
+                          : "0.0"}% analyzed
+                      </div>
+                    {/if}
+                  </div>
+
+                  <div class="mt-3 flex gap-2">
+                    <button
+                      class="btn btn-sm btn-ghost gap-1"
+                      onclick={handleAnalyzeAll}
+                      disabled={analyzing ||
+                        normStats.analyzed_count >= normStats.total_count}
+                    >
+                      {#if analyzing}
+                        <RefreshCw class="h-3.5 w-3.5 animate-spin" />
+                        Analyzing...
+                      {:else}
+                        <RefreshCw class="h-3.5 w-3.5" />
+                        Analyze All
+                      {/if}
+                    </button>
+                    <button
+                      class="btn btn-sm btn-error btn-outline gap-1"
+                      onclick={handleClearNormData}
+                      disabled={clearingNorm || normStats.analyzed_count === 0}
+                    >
+                      <Trash2 class="h-3.5 w-3.5" />
+                      {clearingNorm ? "Clearing..." : "Clear Data"}
+                    </button>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {:else}
+            <div class="text-sm text-base-content/60">
+              Unable to load normalization settings
+            </div>
+          {/if}
+        </div>
+
         <!-- Audio Cache Section -->
         <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
           <div class="mb-3 flex items-center gap-2">
@@ -511,3 +846,25 @@
     </div>
   </div>
 {/if}
+
+<style>
+  .preamp-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: oklch(0.3 0 0);
+    outline: none;
+    cursor: pointer;
+  }
+
+  .preamp-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: oklch(0.58 0.2 250);
+    cursor: pointer;
+  }
+</style>
