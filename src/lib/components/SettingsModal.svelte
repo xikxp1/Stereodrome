@@ -31,6 +31,7 @@
     setPlaybackSettings,
     type CacheStats,
   } from "$lib/api/commands";
+  import { marked } from "marked";
   import { error } from "@tauri-apps/plugin-log";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -404,9 +405,10 @@
               </div>
               {#if updater.notes}
                 <div
-                  class="mt-2 rounded border border-base-300 bg-base-300/50 p-2 text-xs text-base-content/70"
+                  class="prose prose-xs mt-2 max-h-48 max-w-none overflow-y-auto rounded border border-base-300 bg-base-300/50 p-2 text-base-content/70"
                 >
-                  {updater.notes}
+                  <!-- eslint-disable-next-line svelte/no-at-html-tags -- Trusted content from app updater -->
+                  {@html marked.parse(updater.notes, { async: false })}
                 </div>
               {/if}
             {/if}
