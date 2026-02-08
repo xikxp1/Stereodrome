@@ -85,6 +85,14 @@ pub fn set_normalization_settings(app_handle: AppHandle, mut settings: Normaliza
 pub struct PlaybackSettings {
     #[serde(default = "default_true")]
     pub gapless_enabled: bool,
+    #[serde(default)]
+    pub crossfade_enabled: bool,
+    #[serde(default = "default_crossfade_duration")]
+    pub crossfade_duration_ms: u32,
+}
+
+fn default_crossfade_duration() -> u32 {
+    5000
 }
 
 fn default_true() -> bool {
@@ -95,6 +103,8 @@ impl Default for PlaybackSettings {
     fn default() -> Self {
         Self {
             gapless_enabled: true,
+            crossfade_enabled: false,
+            crossfade_duration_ms: 5000,
         }
     }
 }
@@ -125,6 +135,7 @@ pub fn get_playback_settings(app_handle: AppHandle) -> PlaybackSettings {
 }
 
 #[tauri::command]
-pub fn set_playback_settings(app_handle: AppHandle, settings: PlaybackSettings) {
+pub fn set_playback_settings(app_handle: AppHandle, mut settings: PlaybackSettings) {
+    settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(1000, 12000);
     write_playback_settings(&app_handle, &settings);
 }

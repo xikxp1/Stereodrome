@@ -214,7 +214,30 @@ pub async fn play_next(
         persist_and_emit(&state, &app_handle);
 
         if let Some(song_id) = next_song {
-            crate::commands::play_song(app_handle.clone(), state.clone(), song_id).await?;
+            // Check if crossfade should be used (only when currently playing)
+            let should_crossfade = {
+                let audio_player = state.audio_player.lock_recover();
+                let status = audio_player.get_status();
+                if status.is_playing {
+                    let settings = crate::commands::settings::read_playback_settings(&app_handle);
+                    settings.crossfade_enabled
+                } else {
+                    false
+                }
+            };
+
+            if should_crossfade {
+                let settings = crate::commands::settings::read_playback_settings(&app_handle);
+                crate::commands::playback::crossfade_play_by_id(
+                    &app_handle,
+                    &state,
+                    &song_id,
+                    settings.crossfade_duration_ms,
+                )
+                .await?;
+            } else {
+                crate::commands::play_song(app_handle.clone(), state.clone(), song_id).await?;
+            }
             Ok(true)
         } else {
             let _ = app_handle.emit("queue-ended", ());

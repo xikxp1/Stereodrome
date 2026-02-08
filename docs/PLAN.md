@@ -30,7 +30,7 @@ Phase 8: Local Storage & Offline Features
 - [x] Volume normalization (EBU R128 loudness analysis, per-track/album gain, Settings UI, prefetch analysis)
 - [x] Dynamics processing (soft-knee RMS compressor + fundsp look-ahead limiter, Light/Medium/Heavy presets, Settings UI)
 - [ ] Incremental library sync
-- [ ] Crossfade between tracks
+- [x] Crossfade between tracks (dual-sink equal-power volume ramping, auto-trigger + manual next, Settings UI with duration presets)
 - [x] Gapless playback (same-album consecutive tracks via Rodio Sink append, segment-aware position tracking)
 
 ## Completed
@@ -186,7 +186,7 @@ src-tauri/src/
 │   ├── dynamics.rs     # DynamicsSource wrapper (compressor + fundsp limiter)
 │   ├── loudness.rs     # EBU R128 loudness analysis (ebur128 crate)
 │   ├── normalizer.rs   # NormalizingSource wrapper for gain adjustment
-│   ├── player.rs       # AudioPlayer with Rodio (threaded), media controls integration
+│   ├── player.rs       # AudioPlayer with Rodio (threaded), media controls, crossfade (dual-sink)
 │   ├── queue.rs        # PlayQueue with shuffle/repeat
 │   └── spectrum.rs     # FFT analysis, SpectrumAnalyzer, band aggregation
 ├── media/
@@ -266,8 +266,8 @@ src/lib/
 
 ## Next Steps
 
-1. **Phase 8 In Progress** - Gapless playback implemented, continue with incremental sync and crossfade
-2. **Phase 9** - Audio enhancements (crossfade between non-album tracks)
+1. **Phase 8 In Progress** - Crossfade implemented, continue with incremental sync
+2. **Phase 9** - Additional audio enhancements
 
 ---
 
