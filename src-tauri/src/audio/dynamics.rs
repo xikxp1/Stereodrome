@@ -2,7 +2,7 @@
 //! Pipeline: inner source → soft-knee compressor → fundsp limiter → output.
 
 use fundsp::audiounit::AudioUnit;
-use fundsp::hacker32::{limiter, limiter_stereo};
+use fundsp::prelude32::{limiter, limiter_stereo};
 use rodio::source::SeekError;
 use rodio::Source;
 use std::time::Duration;
