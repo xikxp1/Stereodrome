@@ -29,6 +29,7 @@
     type CacheStats,
   } from "$lib/api/commands";
   import { error } from "@tauri-apps/plugin-log";
+  import { ask } from "@tauri-apps/plugin-dialog";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { connection } from "$lib/stores/connection.svelte";
   import { updater } from "$lib/stores/updater.svelte";
@@ -151,9 +152,11 @@
   }
 
   async function handleClearCache() {
-    if (!confirm("Clear all cached audio files? This cannot be undone.")) {
-      return;
-    }
+    const confirmed = await ask(
+      "Clear all cached audio files? This cannot be undone.",
+      { title: "Clear Cache", kind: "warning" }
+    );
+    if (!confirmed) return;
     clearing = true;
     try {
       await clearAudioCache();
@@ -277,9 +280,11 @@
   }
 
   async function handleClearNormData() {
-    if (!confirm("Clear all normalization data? Songs will be re-analyzed.")) {
-      return;
-    }
+    const confirmed = await ask(
+      "Clear all normalization data? Songs will be re-analyzed.",
+      { title: "Clear Data", kind: "warning" }
+    );
+    if (!confirmed) return;
     clearingNorm = true;
     try {
       await clearNormalizationData();
