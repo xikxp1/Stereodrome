@@ -12,6 +12,7 @@ import type {
   NormalizationSettings,
   NormalizationStats,
   AnalysisProgress,
+  PlaybackSettings,
 } from "$lib/types";
 
 // Auth commands
@@ -168,6 +169,17 @@ export async function analyzeAllSongs(): Promise<void> {
 
 export async function clearNormalizationData(): Promise<void> {
   return invoke("clear_normalization_data");
+}
+
+// Playback settings commands
+export async function getPlaybackSettings(): Promise<PlaybackSettings> {
+  return invoke<PlaybackSettings>("get_playback_settings");
+}
+
+export async function setPlaybackSettings(
+  settings: PlaybackSettings
+): Promise<void> {
+  return invoke("set_playback_settings", { settings });
 }
 
 // Tray commands

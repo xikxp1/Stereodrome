@@ -31,7 +31,7 @@ Phase 8: Local Storage & Offline Features
 - [x] Dynamics processing (soft-knee RMS compressor + fundsp look-ahead limiter, Light/Medium/Heavy presets, Settings UI)
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks
-- [ ] Gapless playback
+- [x] Gapless playback (same-album consecutive tracks via Rodio Sink append, segment-aware position tracking)
 
 ## Completed
 
@@ -266,8 +266,8 @@ src/lib/
 
 ## Next Steps
 
-1. **Phase 8 In Progress** - Local audio cache implemented, continue with settings UI and incremental sync
-2. **Phase 9** - Audio enhancements (crossfade, gapless playback)
+1. **Phase 8 In Progress** - Gapless playback implemented, continue with incremental sync and crossfade
+2. **Phase 9** - Audio enhancements (crossfade between non-album tracks)
 
 ---
 

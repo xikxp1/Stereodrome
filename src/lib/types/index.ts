@@ -160,6 +160,10 @@ export interface AnalysisProgress {
   total_count: number;
 }
 
+export interface PlaybackSettings {
+  gapless_enabled: boolean;
+}
+
 // Now Playing types
 export interface NowPlayingEntry {
   id: string;

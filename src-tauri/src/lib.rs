@@ -163,6 +163,8 @@ pub fn run() {
             commands::get_analysis_progress,
             commands::analyze_all_songs,
             commands::clear_normalization_data,
+            commands::get_playback_settings,
+            commands::set_playback_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

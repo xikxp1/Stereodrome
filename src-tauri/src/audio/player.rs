@@ -62,7 +62,25 @@ enum AudioCommand {
     Stop,
     SetVolume(f32),
     Seek(f64),
+    /// Append a song to the existing Sink for gapless playback.
+    /// Unlike Play, this does NOT create a new Sink.
+    AppendGapless {
+        audio_data: Vec<u8>,
+        metadata: SongMetadata,
+        duration_secs: f64,
+        normalization_gain: Option<f32>,
+        dynamics_preset: Option<DynamicsPreset>,
+    },
     Shutdown,
+}
+
+/// A segment within a gapless playback chain.
+/// Each segment represents one song appended to the same Rodio Sink.
+#[derive(Debug, Clone)]
+struct GaplessSegment {
+    metadata: SongMetadata,
+    duration: f64,         // this segment's duration in seconds
+    cumulative_start: f64, // sum of all previous segments' durations
 }
 
 /// Inner playback state consolidated into a single struct for efficient locking
@@ -73,6 +91,9 @@ struct PlaybackInner {
     playback_start: Option<Instant>,
     paused_position: f64,
     duration: f64,
+    /// Gapless playback segments. When multiple consecutive album tracks are
+    /// appended to the same Sink, each gets a segment for position tracking.
+    gapless_segments: Vec<GaplessSegment>,
 }
 
 impl Default for PlaybackInner {
@@ -84,6 +105,7 @@ impl Default for PlaybackInner {
             playback_start: None,
             paused_position: 0.0,
             duration: 0.0,
+            gapless_segments: Vec::new(),
         }
     }
 }
@@ -133,25 +155,61 @@ impl SharedState {
         }
     }
 
-    fn get_state(&self) -> PlaybackState {
+    /// Get playback state with segment-aware position/metadata and the current segment index.
+    /// When gapless segments are active, returns per-song position and metadata
+    /// instead of cumulative position across the chain.
+    fn get_gapless_state(&self) -> (PlaybackState, usize) {
         let inner = self.read_inner();
-        PlaybackState {
-            is_playing: self.is_playing.load(Ordering::SeqCst),
-            position: self.calculate_position(&inner),
-            duration: inner.duration,
-            volume: inner.volume,
-            song: inner.current_song.clone(),
+        let is_playing = self.is_playing.load(Ordering::SeqCst);
+        let cumulative_pos = self.calculate_position(&inner);
+
+        if inner.gapless_segments.len() > 1 {
+            // Find which segment we're in
+            let mut seg_idx = 0;
+            for (i, seg) in inner.gapless_segments.iter().enumerate() {
+                if cumulative_pos < seg.cumulative_start + seg.duration {
+                    seg_idx = i;
+                    break;
+                }
+                seg_idx = i; // default to last segment
+            }
+            let seg = &inner.gapless_segments[seg_idx];
+            let song_pos = (cumulative_pos - seg.cumulative_start)
+                .max(0.0)
+                .min(seg.duration);
+
+            (
+                PlaybackState {
+                    is_playing,
+                    position: song_pos,
+                    duration: seg.duration,
+                    volume: inner.volume,
+                    song: Some(seg.metadata.clone()),
+                },
+                seg_idx,
+            )
+        } else {
+            (
+                PlaybackState {
+                    is_playing,
+                    position: cumulative_pos,
+                    duration: inner.duration,
+                    volume: inner.volume,
+                    song: inner.current_song.clone(),
+                },
+                0,
+            )
         }
     }
 
     fn get_status(&self) -> PlaybackStatus {
-        let inner = self.read_inner();
+        let (state, _) = self.get_gapless_state();
         PlaybackStatus {
-            is_playing: self.is_playing.load(Ordering::SeqCst),
-            current_song_id: inner.current_song.as_ref().map(|s| s.id.clone()),
-            position: self.calculate_position(&inner),
-            duration: inner.duration,
-            volume: inner.volume,
+            is_playing: state.is_playing,
+            current_song_id: state.song.map(|s| s.id),
+            position: state.position,
+            duration: state.duration,
+            volume: state.volume,
         }
     }
 }
@@ -209,6 +267,27 @@ impl AudioPlayer {
                 dynamics_preset,
             })
             .map_err(|e| AppError::Audio(format!("Failed to send play command: {}", e)))
+    }
+
+    /// Append a song to the existing Sink for gapless playback.
+    /// The song's audio pipeline is decoded and appended without stopping the current Sink.
+    pub fn append_gapless(
+        &self,
+        audio_data: Vec<u8>,
+        metadata: SongMetadata,
+        duration_secs: f64,
+        normalization_gain: Option<f32>,
+        dynamics_preset: Option<DynamicsPreset>,
+    ) -> AppResult<()> {
+        self.command_tx
+            .send(AudioCommand::AppendGapless {
+                audio_data,
+                metadata,
+                duration_secs,
+                normalization_gain,
+                dynamics_preset,
+            })
+            .map_err(|e| AppError::Audio(format!("Failed to send gapless command: {}", e)))
     }
 
     pub fn pause(&self) -> AppResult<()> {
@@ -343,11 +422,12 @@ impl AudioPlayer {
             let mut last_song_id: Option<String> = None;
             let mut last_is_playing = false;
             let mut position_update_counter: u8 = 0;
+            let mut last_segment_idx: usize = 0;
 
             loop {
                 thread::sleep(Duration::from_millis(100)); // 10Hz updates
 
-                let state = shared_state.get_state();
+                let (state, segment_idx) = shared_state.get_gapless_state();
 
                 // Only emit when playing or when we have a song (to update paused state)
                 if !state.is_playing && state.song.is_none() {
@@ -363,14 +443,24 @@ impl AudioPlayer {
                         }
                         last_song_id = None;
                         last_is_playing = false;
+                        last_segment_idx = 0;
                     }
                     continue;
                 }
 
-                // Check if playback ended naturally (position reached end)
-                // This handles both cases:
-                // 1. We catch it while is_playing is still true
-                // 2. Audio thread already set is_playing to false but song still exists
+                // Detect gapless segment transition (song changed within the same Sink)
+                if segment_idx > last_segment_idx && state.song.is_some() {
+                    last_segment_idx = segment_idx;
+                    // Spawn async task to advance queue and handle transition
+                    let app = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        crate::commands::handle_gapless_transition(&app).await;
+                    });
+                }
+
+                // Check if playback ended naturally (entire gapless chain finished)
+                // The audio thread sets is_playing=false and paused_position=duration
+                // when sink.empty(). With gapless, this means ALL appended sources finished.
                 let playback_finished = state.duration > 0.0
                     && state.position >= state.duration - 0.2 // Small tolerance for timing
                     && state.song.is_some()
@@ -383,6 +473,7 @@ impl AudioPlayer {
                         inner.current_song = None;
                         inner.paused_position = 0.0;
                         inner.duration = 0.0;
+                        inner.gapless_segments.clear();
                     }
 
                     // Clear media controls
@@ -398,6 +489,7 @@ impl AudioPlayer {
 
                     last_song_id = None;
                     last_is_playing = false;
+                    last_segment_idx = 0;
 
                     let _ = app_handle.emit("playback-ended", ());
                     continue;
@@ -554,10 +646,16 @@ fn run_audio_thread(
                             {
                                 let mut inner = shared_state.write_inner();
                                 inner.current_audio_data = Some((audio_data, byte_len));
-                                inner.current_song = Some(metadata);
+                                inner.current_song = Some(metadata.clone());
                                 inner.playback_start = Some(Instant::now());
                                 inner.paused_position = 0.0;
                                 inner.duration = duration_secs;
+                                // Initialize gapless segments with this first song
+                                inner.gapless_segments = vec![GaplessSegment {
+                                    metadata,
+                                    duration: duration_secs,
+                                    cumulative_start: 0.0,
+                                }];
                             }
                             shared_state.is_playing.store(true, Ordering::SeqCst);
 
@@ -608,6 +706,7 @@ fn run_audio_thread(
                         inner.playback_start = None;
                         inner.paused_position = 0.0;
                         inner.duration = 0.0;
+                        inner.gapless_segments.clear();
                     }
                 }
                 AudioCommand::SetVolume(volume) => {
@@ -617,14 +716,98 @@ fn run_audio_thread(
                 }
                 AudioCommand::Seek(position_secs) => {
                     if let Some(ref sink) = current_sink {
-                        let seek_duration = Duration::from_secs_f64(position_secs);
+                        // Frontend sends segment-relative position (from get_gapless_state).
+                        // sink.try_seek() operates on the currently-playing Rodio source,
+                        // so we pass the segment-relative position directly.
+                        // But paused_position must be cumulative for calculate_position().
+                        let (seek_pos, cumulative_pos) = {
+                            let inner = shared_state.read_inner();
+                            if inner.gapless_segments.len() > 1 {
+                                // Find current segment from cumulative position
+                                let cumulative = shared_state.calculate_position(&inner);
+                                let mut seg_idx = 0;
+                                for (i, seg) in inner.gapless_segments.iter().enumerate() {
+                                    if cumulative < seg.cumulative_start + seg.duration {
+                                        seg_idx = i;
+                                        break;
+                                    }
+                                    seg_idx = i;
+                                }
+                                let seg = &inner.gapless_segments[seg_idx];
+                                let clamped = position_secs.clamp(0.0, seg.duration);
+                                (clamped, seg.cumulative_start + clamped)
+                            } else {
+                                let clamped = position_secs.clamp(0.0, inner.duration);
+                                (clamped, clamped)
+                            }
+                        };
+                        let seek_duration = Duration::from_secs_f64(seek_pos);
                         if let Err(e) = sink.try_seek(seek_duration) {
                             warn!("Seek failed: {:?}", e);
                         } else {
-                            // Update position tracking (single lock acquisition)
                             let mut inner = shared_state.write_inner();
-                            inner.paused_position = position_secs;
+                            inner.paused_position = cumulative_pos;
                             inner.playback_start = Some(Instant::now());
+                        }
+                    }
+                }
+                AudioCommand::AppendGapless {
+                    audio_data,
+                    metadata,
+                    duration_secs,
+                    normalization_gain,
+                    dynamics_preset,
+                } => {
+                    if let Some(ref sink) = current_sink {
+                        let byte_len = audio_data.len() as u64;
+                        let cursor = Cursor::new(audio_data);
+                        match Decoder::builder()
+                            .with_data(cursor)
+                            .with_byte_len(byte_len)
+                            .with_coarse_seek(true)
+                            .build()
+                        {
+                            Ok(source) => {
+                                let analyzing_source =
+                                    AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
+
+                                // Build same pipeline as Play
+                                if let Some(ref preset) = dynamics_preset {
+                                    let normalizing_source = NormalizingSource::with_clamp(
+                                        analyzing_source,
+                                        normalization_gain.unwrap_or(1.0),
+                                        false,
+                                    );
+                                    let dynamics_source =
+                                        DynamicsSource::new(normalizing_source, preset);
+                                    sink.append(dynamics_source);
+                                } else {
+                                    let normalizing_source = NormalizingSource::new(
+                                        analyzing_source,
+                                        normalization_gain.unwrap_or(1.0),
+                                    );
+                                    sink.append(normalizing_source);
+                                }
+
+                                // Add gapless segment and update total duration
+                                {
+                                    let mut inner = shared_state.write_inner();
+                                    let cumulative_start = inner
+                                        .gapless_segments
+                                        .last()
+                                        .map(|s| s.cumulative_start + s.duration)
+                                        .unwrap_or(inner.duration);
+                                    inner.gapless_segments.push(GaplessSegment {
+                                        metadata,
+                                        duration: duration_secs,
+                                        cumulative_start,
+                                    });
+                                    inner.duration = cumulative_start + duration_secs;
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to decode gapless audio: {:?}", e);
+                            }
                         }
                     }
                 }
