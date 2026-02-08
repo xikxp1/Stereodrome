@@ -592,6 +592,53 @@
               <p class="text-xs text-base-content/50">
                 Seamless transitions between consecutive album tracks.
               </p>
+
+              <div class="border-t border-base-300 pt-3"></div>
+
+              <label class="flex cursor-pointer items-center justify-between">
+                <span class="text-sm">Crossfade</span>
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-sm checkbox-primary"
+                  checked={playbackSettings.crossfade_enabled}
+                  onchange={(e) =>
+                    handlePlaybackSettingChange({
+                      crossfade_enabled: e.currentTarget.checked,
+                    })}
+                />
+              </label>
+              <p class="text-xs text-base-content/50">
+                Smooth volume transitions between non-album tracks.
+              </p>
+
+              {#if playbackSettings.crossfade_enabled}
+                <div>
+                  <div class="mb-2 flex items-center justify-between text-sm">
+                    <span class="text-base-content/60">Duration</span>
+                    <span class="text-xs text-base-content/50"
+                      >{(playbackSettings.crossfade_duration_ms / 1000).toFixed(
+                        0
+                      )}s</span
+                    >
+                  </div>
+                  <div class="flex flex-wrap gap-1">
+                    {#each [1000, 3000, 5000, 8000, 12000] as duration (duration)}
+                      <button
+                        class="btn btn-xs h-6 min-h-0 px-2 {playbackSettings.crossfade_duration_ms ===
+                        duration
+                          ? 'btn-primary'
+                          : 'btn-ghost'}"
+                        onclick={() =>
+                          handlePlaybackSettingChange({
+                            crossfade_duration_ms: duration,
+                          })}
+                      >
+                        {duration / 1000}s
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
             </div>
           {/if}
         </div>

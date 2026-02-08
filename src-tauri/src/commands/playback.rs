@@ -1,6 +1,7 @@
 use log::{info, warn};
 use tauri::{AppHandle, Manager, State};
 
+use crate::audio::compressor::DynamicsPreset;
 use crate::audio::loudness;
 use crate::audio::queue::RepeatMode;
 use crate::audio::{PlaybackStatus, SongMetadata};
@@ -12,6 +13,91 @@ use crate::commands::settings::{
 use crate::db;
 use crate::error::{AppError, AppResult, MutexExt};
 use crate::state::AppState;
+
+/// Common song data needed for playback.
+struct SongData {
+    audio_data: Vec<u8>,
+    metadata: SongMetadata,
+    duration: f64,
+    album_id: String,
+    suffix: String,
+    normalization_gain: Option<f32>,
+    dynamics_preset: Option<DynamicsPreset>,
+}
+
+/// Fetch all data needed to play a song: metadata, audio bytes, normalization gain.
+async fn fetch_song_data(
+    app_handle: &AppHandle,
+    state: &AppState,
+    song_id: &str,
+) -> AppResult<SongData> {
+    let (duration, title, artist, album, album_id, cover_art_id, suffix): (
+        f64,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+    ) = {
+        let conn = state.db.lock_recover();
+        conn.query_row(
+            "SELECT s.duration, s.title, a.name, al.name, s.album_id, al.cover_art_id, s.suffix
+             FROM songs s
+             LEFT JOIN artists a ON s.artist_id = a.id
+             LEFT JOIN albums al ON s.album_id = al.id
+             WHERE s.id = ?",
+            [song_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?.unwrap_or(0) as f64,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                ))
+            },
+        )
+        .map_err(AppError::Database)?
+    };
+
+    let metadata = SongMetadata {
+        id: song_id.to_string(),
+        title,
+        artist,
+        album,
+        cover_art_id,
+    };
+
+    let cache = AudioCache::new(app_handle)?;
+    let audio_data = cache.get_or_fetch(&state.client, song_id, &suffix).await?;
+
+    let norm_settings = read_normalization_settings(app_handle);
+    let normalization_gain = if norm_settings.enabled {
+        let conn = state.db.lock_recover();
+        get_normalization_gain(&conn, song_id, &album_id, &norm_settings)
+    } else {
+        None
+    };
+
+    let dynamics_preset = if norm_settings.dynamics_enabled {
+        Some(norm_settings.dynamics_preset.clone())
+    } else {
+        None
+    };
+
+    Ok(SongData {
+        audio_data,
+        metadata,
+        duration,
+        album_id,
+        suffix,
+        normalization_gain,
+        dynamics_preset,
+    })
+}
 
 /// Prefetch the next song in the queue for gapless playback.
 /// Also triggers normalization analysis if enabled and no data exists.
@@ -83,102 +169,190 @@ pub async fn play_song(
     state: State<'_, AppState>,
     song_id: String,
 ) -> AppResult<()> {
-    // Check if connected
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);
     }
 
-    // Get song metadata from database (join with artists and albums for names and cover art)
-    let (duration, title, artist, album, album_id, cover_art_id, suffix): (
-        f64,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        String,
-    ) = {
-        let conn = state.db.lock_recover();
-        conn.query_row(
-            "SELECT s.duration, s.title, a.name, al.name, s.album_id, al.cover_art_id, s.suffix
-             FROM songs s
-             LEFT JOIN artists a ON s.artist_id = a.id
-             LEFT JOIN albums al ON s.album_id = al.id
-             WHERE s.id = ?",
-            [&song_id],
-            |row| {
-                Ok((
-                    row.get::<_, Option<i64>>(0)?.unwrap_or(0) as f64,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?.unwrap_or_default(),
-                ))
-            },
-        )
-        .map_err(AppError::Database)?
-    };
-
-    let metadata = SongMetadata {
-        id: song_id.clone(),
-        title,
-        artist,
-        album,
-        cover_art_id,
-    };
-
-    // Fetch audio bytes (from cache or server)
-    let cache = AudioCache::new(&app_handle)?;
-    let audio_data = cache.get_or_fetch(&state.client, &song_id, &suffix).await?;
-
-    // Calculate normalization gain if enabled
-    let norm_settings = read_normalization_settings(&app_handle);
-    let normalization_gain = if norm_settings.enabled {
-        let conn = state.db.lock_recover();
-        get_normalization_gain(&conn, &song_id, &album_id, &norm_settings)
-    } else {
-        None
-    };
-
-    // Get dynamics preset if enabled
-    let dynamics_preset = if norm_settings.dynamics_enabled {
-        Some(norm_settings.dynamics_preset.clone())
-    } else {
-        None
-    };
+    let data = fetch_song_data(&app_handle, &state, &song_id).await?;
 
     // Play the audio
     {
         let audio_player = state.audio_player.lock_recover();
         audio_player.play(
-            audio_data,
-            metadata,
-            duration,
-            normalization_gain,
-            dynamics_preset,
+            data.audio_data,
+            data.metadata,
+            data.duration,
+            data.normalization_gain,
+            data.dynamics_preset,
         )?;
     }
 
     // Spawn background loudness analysis if normalization is enabled but no data exists
+    spawn_loudness_analysis_if_needed(
+        &app_handle,
+        &song_id,
+        &data.album_id,
+        &data.suffix,
+        data.normalization_gain,
+    );
+
+    // Prefetch next song for gapless playback
+    prefetch_next_song(&app_handle, &state);
+
+    // Check if next song is gapless-eligible and queue it on the same Sink
+    check_and_queue_gapless(&app_handle, &state);
+
+    // Report "now playing" to Subsonic server
+    // Fire and forget - don't fail playback if scrobble fails
+    let _ = state.client.scrobble(&song_id, None, Some(false)).await;
+
+    Ok(())
+}
+
+/// Play a song with crossfade transition from the currently playing track.
+pub async fn crossfade_play_by_id(
+    app_handle: &AppHandle,
+    state: &AppState,
+    song_id: &str,
+    crossfade_duration_ms: u32,
+) -> AppResult<()> {
+    let data = fetch_song_data(app_handle, state, song_id).await?;
+
+    {
+        let audio_player = state.audio_player.lock_recover();
+        audio_player.crossfade_play(
+            data.audio_data,
+            data.metadata,
+            data.duration,
+            data.normalization_gain,
+            data.dynamics_preset,
+            crossfade_duration_ms,
+        )?;
+    }
+
+    spawn_loudness_analysis_if_needed(
+        app_handle,
+        song_id,
+        &data.album_id,
+        &data.suffix,
+        data.normalization_gain,
+    );
+
+    prefetch_next_song(app_handle, state);
+    check_and_queue_gapless(app_handle, state);
+
+    let _ = state.client.scrobble(song_id, None, Some(false)).await;
+
+    Ok(())
+}
+
+/// Initiate a crossfade transition to the next song in the queue.
+/// Called by the position emitter when playback enters the crossfade window.
+pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u32) {
+    let state: State<'_, AppState> = app_handle.state();
+
+    // Get current and next song IDs
+    let (current_song_id, next_song_id) = {
+        let queue = state.queue.lock_recover();
+        let current_id = queue.current_item().map(|i| i.song_id.clone());
+        let next_id = queue.peek_next().map(|i| i.song_id.clone());
+        match (current_id, next_id) {
+            (Some(curr), Some(next)) => (curr, next),
+            _ => return,
+        }
+    };
+
+    // Don't crossfade if next song is gapless-eligible (gapless takes priority)
+    let playback_settings = read_playback_settings(app_handle);
+    if playback_settings.gapless_enabled {
+        let eligible = {
+            let conn = state.db.lock_recover();
+            is_gapless_eligible(&conn, &current_song_id, &next_song_id)
+        };
+        if eligible {
+            return;
+        }
+    }
+
+    // Don't crossfade in repeat-one mode
+    let repeat_mode = {
+        let queue = state.queue.lock_recover();
+        queue.repeat_mode()
+    };
+    if repeat_mode == RepeatMode::One {
+        return;
+    }
+
+    info!("Initiating crossfade to song {}", next_song_id);
+
+    let data = match fetch_song_data(app_handle, &state, &next_song_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("Crossfade: failed to fetch song data: {e}");
+            return;
+        }
+    };
+
+    // Send CrossfadePlay command
+    {
+        let audio_player = state.audio_player.lock_recover();
+        if let Err(e) = audio_player.crossfade_play(
+            data.audio_data,
+            data.metadata,
+            data.duration,
+            data.normalization_gain,
+            data.dynamics_preset,
+            crossfade_duration_ms,
+        ) {
+            warn!("Crossfade: failed to start: {e}");
+            return;
+        }
+    }
+
+    // Advance the queue (the new song is now playing)
+    {
+        let mut queue = state.queue.lock_recover();
+        queue.next(false);
+    }
+    persist_and_emit(&state, app_handle);
+
+    // Scrobble the new song
+    let _ = state
+        .client
+        .scrobble(&next_song_id, None, Some(false))
+        .await;
+
+    // Prefetch next-next and check gapless eligibility
+    prefetch_next_song(app_handle, &state);
+    check_and_queue_gapless(app_handle, &state);
+}
+
+/// Spawn background loudness analysis if normalization is enabled but no data exists.
+fn spawn_loudness_analysis_if_needed(
+    app_handle: &AppHandle,
+    song_id: &str,
+    album_id: &str,
+    suffix: &str,
+    normalization_gain: Option<f32>,
+) {
+    let norm_settings = read_normalization_settings(app_handle);
     if normalization_gain.is_none() && norm_settings.enabled {
-        let song_id_clone = song_id.clone();
-        let album_id_clone = album_id;
-        let app_handle_clone = app_handle.clone();
-        let suffix_clone = suffix.clone();
+        let song_id = song_id.to_string();
+        let album_id = album_id.to_string();
+        let suffix = suffix.to_string();
+        let app_handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
-            let cache = match AudioCache::new(&app_handle_clone) {
+            let cache = match AudioCache::new(&app_handle) {
                 Ok(c) => c,
                 Err(_) => return,
             };
-            let cache_path = cache.get_cache_path(&song_id_clone, &suffix_clone);
+            let cache_path = cache.get_cache_path(&song_id, &suffix);
             let audio_data = match tokio::fs::read(&cache_path).await {
                 Ok(data) => data,
                 Err(_) => return,
             };
-            let song_id_inner = song_id_clone.clone();
-            let app_handle_inner = app_handle_clone.clone();
+            let song_id_inner = song_id.clone();
+            let app_handle_inner = app_handle.clone();
             let _ =
                 tauri::async_runtime::spawn_blocking(move || {
                     match loudness::analyze_loudness(audio_data) {
@@ -187,7 +361,7 @@ pub async fn play_song(
                                 let _ = db::save_normalization_result(
                                     std::path::Path::new(&db_path),
                                     &song_id_inner,
-                                    &album_id_clone,
+                                    &album_id,
                                     result.integrated_lufs,
                                     result.true_peak,
                                 );
@@ -201,18 +375,6 @@ pub async fn play_song(
                 .await;
         });
     }
-
-    // Prefetch next song for gapless playback
-    prefetch_next_song(&app_handle, &state);
-
-    // Check if next song is gapless-eligible and queue it on the same Sink
-    check_and_queue_gapless(&app_handle, &state);
-
-    // Report "now playing" to Subsonic server
-    // Fire and forget - don't fail playback if scrobble fails
-    let _ = state.client.scrobble(&song_id, None, Some(false)).await;
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -340,87 +502,25 @@ fn check_and_queue_gapless(app_handle: &AppHandle, state: &AppState) {
 
     // Spawn async task to fetch audio and send AppendGapless command
     let app = app_handle.clone();
-    let client = state.client.clone();
     tauri::async_runtime::spawn(async move {
         let state: State<'_, AppState> = app.state();
 
-        // Get song metadata from database
-        let (duration, title, artist, album, album_id, cover_art_id, suffix) = {
-            let conn = state.db.lock_recover();
-            match conn.query_row(
-                "SELECT s.duration, s.title, a.name, al.name, s.album_id, al.cover_art_id, s.suffix
-                 FROM songs s
-                 LEFT JOIN artists a ON s.artist_id = a.id
-                 LEFT JOIN albums al ON s.album_id = al.id
-                 WHERE s.id = ?",
-                [&next_song_id],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<i64>>(0)?.unwrap_or(0) as f64,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                        row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                        row.get::<_, String>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, Option<String>>(6)?.unwrap_or_default(),
-                    ))
-                },
-            ) {
-                Ok(data) => data,
-                Err(e) => {
-                    warn!("Gapless: failed to get song metadata: {e}");
-                    return;
-                }
-            }
-        };
-
-        let metadata = SongMetadata {
-            id: next_song_id.clone(),
-            title,
-            artist,
-            album,
-            cover_art_id,
-        };
-
-        // Fetch audio from cache (should already be prefetched)
-        let cache = match AudioCache::new(&app) {
-            Ok(c) => c,
+        let data = match fetch_song_data(&app, &state, &next_song_id).await {
+            Ok(d) => d,
             Err(e) => {
-                warn!("Gapless: failed to create cache: {e}");
+                warn!("Gapless: failed to fetch song data: {e}");
                 return;
             }
-        };
-        let audio_data = match cache.get_or_fetch(&client, &next_song_id, &suffix).await {
-            Ok(data) => data,
-            Err(e) => {
-                warn!("Gapless: failed to fetch audio: {e}");
-                return;
-            }
-        };
-
-        // Get normalization gain
-        let norm_settings = read_normalization_settings(&app);
-        let normalization_gain = if norm_settings.enabled {
-            let conn = state.db.lock_recover();
-            get_normalization_gain(&conn, &next_song_id, &album_id, &norm_settings)
-        } else {
-            None
-        };
-
-        let dynamics_preset = if norm_settings.dynamics_enabled {
-            Some(norm_settings.dynamics_preset.clone())
-        } else {
-            None
         };
 
         // Append to existing Sink for gapless transition
         let audio_player = state.audio_player.lock_recover();
         if let Err(e) = audio_player.append_gapless(
-            audio_data,
-            metadata,
-            duration,
-            normalization_gain,
-            dynamics_preset,
+            data.audio_data,
+            data.metadata,
+            data.duration,
+            data.normalization_gain,
+            data.dynamics_preset,
         ) {
             warn!("Gapless: failed to append: {e}");
         }

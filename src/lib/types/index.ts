@@ -162,6 +162,8 @@ export interface AnalysisProgress {
 
 export interface PlaybackSettings {
   gapless_enabled: boolean;
+  crossfade_enabled: boolean;
+  crossfade_duration_ms: number;
 }
 
 // Now Playing types

@@ -71,6 +71,16 @@ enum AudioCommand {
         normalization_gain: Option<f32>,
         dynamics_preset: Option<DynamicsPreset>,
     },
+    /// Crossfade to a new song: keep the current sink fading out
+    /// while a new sink fades in over the specified duration.
+    CrossfadePlay {
+        audio_data: Vec<u8>,
+        metadata: SongMetadata,
+        duration_secs: f64,
+        normalization_gain: Option<f32>,
+        dynamics_preset: Option<DynamicsPreset>,
+        crossfade_duration_ms: u32,
+    },
     Shutdown,
 }
 
@@ -114,6 +124,7 @@ impl Default for PlaybackInner {
 /// Uses a single RwLock for efficient concurrent reads (position emitter at 10Hz).
 struct SharedState {
     is_playing: AtomicBool,
+    crossfade_initiated: AtomicBool,
     inner: RwLock<PlaybackInner>,
 }
 
@@ -121,6 +132,7 @@ impl SharedState {
     fn new() -> Self {
         Self {
             is_playing: AtomicBool::new(false),
+            crossfade_initiated: AtomicBool::new(false),
             inner: RwLock::new(PlaybackInner::default()),
         }
     }
@@ -288,6 +300,40 @@ impl AudioPlayer {
                 dynamics_preset,
             })
             .map_err(|e| AppError::Audio(format!("Failed to send gapless command: {}", e)))
+    }
+
+    /// Start a crossfade transition: fade out current song while fading in a new one.
+    pub fn crossfade_play(
+        &self,
+        audio_data: Vec<u8>,
+        metadata: SongMetadata,
+        duration_secs: f64,
+        normalization_gain: Option<f32>,
+        dynamics_preset: Option<DynamicsPreset>,
+        crossfade_duration_ms: u32,
+    ) -> AppResult<()> {
+        self.command_tx
+            .send(AudioCommand::CrossfadePlay {
+                audio_data,
+                metadata,
+                duration_secs,
+                normalization_gain,
+                dynamics_preset,
+                crossfade_duration_ms,
+            })
+            .map_err(|e| AppError::Audio(format!("Failed to send crossfade command: {}", e)))
+    }
+
+    #[allow(dead_code)]
+    pub fn is_crossfade_initiated(&self) -> bool {
+        self.shared_state.crossfade_initiated.load(Ordering::SeqCst)
+    }
+
+    #[allow(dead_code)]
+    pub fn set_crossfade_initiated(&self, value: bool) {
+        self.shared_state
+            .crossfade_initiated
+            .store(value, Ordering::SeqCst);
     }
 
     pub fn pause(&self) -> AppResult<()> {
@@ -458,13 +504,49 @@ impl AudioPlayer {
                     });
                 }
 
+                // Crossfade trigger: detect when approaching end of song/chain
+                if state.is_playing && state.song.is_some() {
+                    let is_last_segment = {
+                        let inner = shared_state.read_inner();
+                        inner.gapless_segments.len() <= 1
+                            || segment_idx == inner.gapless_segments.len() - 1
+                    };
+
+                    if is_last_segment && !shared_state.crossfade_initiated.load(Ordering::SeqCst) {
+                        let settings =
+                            crate::commands::settings::read_playback_settings(&app_handle);
+                        if settings.crossfade_enabled {
+                            let cf_secs = settings.crossfade_duration_ms as f64 / 1000.0;
+                            let remaining = state.duration - state.position;
+
+                            if remaining <= cf_secs && remaining > 0.5 {
+                                shared_state
+                                    .crossfade_initiated
+                                    .store(true, Ordering::SeqCst);
+
+                                let app = app_handle.clone();
+                                let cf_duration_ms = settings.crossfade_duration_ms;
+                                tauri::async_runtime::spawn(async move {
+                                    crate::commands::playback::initiate_crossfade(
+                                        &app,
+                                        cf_duration_ms,
+                                    )
+                                    .await;
+                                });
+                            }
+                        }
+                    }
+                }
+
                 // Check if playback ended naturally (entire gapless chain finished)
                 // The audio thread sets is_playing=false and paused_position=duration
                 // when sink.empty(). With gapless, this means ALL appended sources finished.
+                let crossfade_active = shared_state.crossfade_initiated.load(Ordering::SeqCst);
                 let playback_finished = state.duration > 0.0
                     && state.position >= state.duration - 0.2 // Small tolerance for timing
                     && state.song.is_some()
-                    && !state.is_playing;
+                    && !state.is_playing
+                    && !crossfade_active;
 
                 if playback_finished {
                     // Clear the current song so frontend updates
@@ -568,6 +650,54 @@ impl Drop for AudioPlayer {
     }
 }
 
+/// Tracks crossfade timing state for volume ramping in the audio thread.
+struct CrossfadeState {
+    start: Instant,
+    duration_secs: f64,
+    /// Accumulated elapsed time before pauses
+    elapsed_before_pause: f64,
+    paused: bool,
+}
+
+impl CrossfadeState {
+    fn new(duration_ms: u32) -> Self {
+        Self {
+            start: Instant::now(),
+            duration_secs: duration_ms as f64 / 1000.0,
+            elapsed_before_pause: 0.0,
+            paused: false,
+        }
+    }
+
+    /// Get crossfade progress from 0.0 to 1.0
+    fn progress(&self) -> f64 {
+        if self.paused {
+            (self.elapsed_before_pause / self.duration_secs).min(1.0)
+        } else {
+            let elapsed = self.start.elapsed().as_secs_f64() + self.elapsed_before_pause;
+            (elapsed / self.duration_secs).min(1.0)
+        }
+    }
+
+    fn pause(&mut self) {
+        if !self.paused {
+            self.elapsed_before_pause += self.start.elapsed().as_secs_f64();
+            self.paused = true;
+        }
+    }
+
+    fn resume(&mut self) {
+        if self.paused {
+            self.start = Instant::now();
+            self.paused = false;
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.progress() >= 1.0
+    }
+}
+
 /// Main audio thread function
 fn run_audio_thread(
     command_rx: Receiver<AudioCommand>,
@@ -587,6 +717,8 @@ fn run_audio_thread(
     };
 
     let mut current_sink: Option<Sink> = None;
+    let mut crossfade_sink: Option<Sink> = None;
+    let mut crossfade_state: Option<CrossfadeState> = None;
 
     loop {
         // Use recv_timeout to allow periodic checks
@@ -599,10 +731,17 @@ fn run_audio_thread(
                     normalization_gain,
                     dynamics_preset,
                 } => {
-                    // Stop any existing playback
+                    // Stop any existing playback including crossfade
                     if let Some(sink) = current_sink.take() {
                         sink.stop();
                     }
+                    if let Some(cf_sink) = crossfade_sink.take() {
+                        cf_sink.stop();
+                    }
+                    crossfade_state = None;
+                    shared_state
+                        .crossfade_initiated
+                        .store(false, Ordering::SeqCst);
 
                     // Decode and play with coarse seek enabled for better seeking
                     let byte_len = audio_data.len() as u64;
@@ -680,6 +819,15 @@ fn run_audio_thread(
                             }
 
                             sink.pause();
+
+                            // Also pause crossfade sink and freeze timer
+                            if let Some(ref cf_sink) = crossfade_sink {
+                                cf_sink.pause();
+                            }
+                            if let Some(ref mut cf_state) = crossfade_state {
+                                cf_state.pause();
+                            }
+
                             shared_state.is_playing.store(false, Ordering::SeqCst);
                         }
                     }
@@ -689,6 +837,15 @@ fn run_audio_thread(
                         if sink.is_paused() {
                             shared_state.write_inner().playback_start = Some(Instant::now());
                             sink.play();
+
+                            // Also resume crossfade sink and timer
+                            if let Some(ref cf_sink) = crossfade_sink {
+                                cf_sink.play();
+                            }
+                            if let Some(ref mut cf_state) = crossfade_state {
+                                cf_state.resume();
+                            }
+
                             shared_state.is_playing.store(true, Ordering::SeqCst);
                         }
                     }
@@ -697,6 +854,13 @@ fn run_audio_thread(
                     if let Some(sink) = current_sink.take() {
                         sink.stop();
                     }
+                    if let Some(cf_sink) = crossfade_sink.take() {
+                        cf_sink.stop();
+                    }
+                    crossfade_state = None;
+                    shared_state
+                        .crossfade_initiated
+                        .store(false, Ordering::SeqCst);
                     shared_state.is_playing.store(false, Ordering::SeqCst);
                     // Reset all state in single lock acquisition
                     {
@@ -710,11 +874,26 @@ fn run_audio_thread(
                     }
                 }
                 AudioCommand::SetVolume(volume) => {
-                    if let Some(ref sink) = current_sink {
-                        sink.set_volume(volume);
+                    // During crossfade, let the idle loop handle proportional volumes
+                    if crossfade_state.is_none() {
+                        if let Some(ref sink) = current_sink {
+                            sink.set_volume(volume);
+                        }
                     }
                 }
                 AudioCommand::Seek(position_secs) => {
+                    // If crossfade is active, abort it and restore full volume
+                    if crossfade_state.is_some() {
+                        if let Some(cf_sink) = crossfade_sink.take() {
+                            cf_sink.stop();
+                        }
+                        crossfade_state = None;
+                        let vol = shared_state.read_inner().volume;
+                        if let Some(ref sink) = current_sink {
+                            sink.set_volume(vol);
+                        }
+                    }
+
                     if let Some(ref sink) = current_sink {
                         // Frontend sends segment-relative position (from get_gapless_state).
                         // sink.try_seek() operates on the currently-playing Rodio source,
@@ -811,14 +990,131 @@ fn run_audio_thread(
                         }
                     }
                 }
+                AudioCommand::CrossfadePlay {
+                    audio_data,
+                    metadata,
+                    duration_secs,
+                    normalization_gain,
+                    dynamics_preset,
+                    crossfade_duration_ms,
+                } => {
+                    // Stop any previous crossfade that's still running
+                    if let Some(old_cf_sink) = crossfade_sink.take() {
+                        old_cf_sink.stop();
+                    }
+                    // Move current sink to crossfade_sink (it keeps playing, fading out)
+                    crossfade_sink = current_sink.take();
+
+                    let byte_len = audio_data.len() as u64;
+                    let cursor = Cursor::new(audio_data.clone());
+                    match Decoder::builder()
+                        .with_data(cursor)
+                        .with_byte_len(byte_len)
+                        .with_coarse_seek(true)
+                        .build()
+                    {
+                        Ok(source) => {
+                            let analyzing_source =
+                                AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
+
+                            let new_sink = Sink::connect_new(stream.mixer());
+                            new_sink.set_volume(0.0); // Start silent, will ramp up
+
+                            // Build pipeline: normalizer → optional dynamics
+                            if let Some(ref preset) = dynamics_preset {
+                                let normalizing_source = NormalizingSource::with_clamp(
+                                    analyzing_source,
+                                    normalization_gain.unwrap_or(1.0),
+                                    false,
+                                );
+                                let dynamics_source =
+                                    DynamicsSource::new(normalizing_source, preset);
+                                new_sink.append(dynamics_source);
+                            } else {
+                                let normalizing_source = NormalizingSource::new(
+                                    analyzing_source,
+                                    normalization_gain.unwrap_or(1.0),
+                                );
+                                new_sink.append(normalizing_source);
+                            }
+
+                            // Update shared state for the new song
+                            {
+                                let mut inner = shared_state.write_inner();
+                                inner.current_audio_data = Some((audio_data, byte_len));
+                                inner.current_song = Some(metadata.clone());
+                                inner.playback_start = Some(Instant::now());
+                                inner.paused_position = 0.0;
+                                inner.duration = duration_secs;
+                                inner.gapless_segments = vec![GaplessSegment {
+                                    metadata,
+                                    duration: duration_secs,
+                                    cumulative_start: 0.0,
+                                }];
+                            }
+                            shared_state.is_playing.store(true, Ordering::SeqCst);
+                            shared_state
+                                .crossfade_initiated
+                                .store(false, Ordering::SeqCst);
+
+                            current_sink = Some(new_sink);
+                            crossfade_state = Some(CrossfadeState::new(crossfade_duration_ms));
+                        }
+                        Err(e) => {
+                            error!("Failed to decode crossfade audio: {:?}", e);
+                            // Restore original sink if decode fails
+                            current_sink = crossfade_sink.take();
+                        }
+                    }
+                }
                 AudioCommand::Shutdown => {
                     if let Some(sink) = current_sink.take() {
                         sink.stop();
+                    }
+                    if let Some(cf_sink) = crossfade_sink.take() {
+                        cf_sink.stop();
                     }
                     break;
                 }
             },
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Crossfade volume ramping (~20Hz with 50ms timeout)
+                if let Some(ref cf_state) = crossfade_state {
+                    let progress = cf_state.progress();
+                    let user_vol = shared_state.read_inner().volume;
+
+                    // Equal-power crossfade curves
+                    let fade_out_vol =
+                        user_vol * ((progress * std::f64::consts::FRAC_PI_2).cos() as f32);
+                    let fade_in_vol =
+                        user_vol * ((progress * std::f64::consts::FRAC_PI_2).sin() as f32);
+
+                    if let Some(ref old_sink) = crossfade_sink {
+                        if old_sink.empty() {
+                            // Old song ended before crossfade completed
+                        } else {
+                            old_sink.set_volume(fade_out_vol);
+                        }
+                    }
+                    if let Some(ref cur) = current_sink {
+                        cur.set_volume(fade_in_vol);
+                    }
+
+                    if cf_state.is_complete()
+                        || crossfade_sink.as_ref().is_some_and(|s| s.empty())
+                    {
+                        // Crossfade done: drop old sink, restore full volume
+                        if let Some(cf_sink) = crossfade_sink.take() {
+                            cf_sink.stop();
+                        }
+                        crossfade_state = None;
+                        let vol = shared_state.read_inner().volume;
+                        if let Some(ref cur) = current_sink {
+                            cur.set_volume(vol);
+                        }
+                    }
+                }
+
                 // Check if current playback has ended
                 if let Some(ref sink) = current_sink {
                     if sink.empty() && shared_state.is_playing.load(Ordering::SeqCst) {
