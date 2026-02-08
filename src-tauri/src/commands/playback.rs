@@ -1,11 +1,13 @@
-use log::warn;
-use tauri::{AppHandle, State};
+use log::{info, warn};
+use tauri::{AppHandle, Manager, State};
 
 use crate::audio::loudness;
+use crate::audio::queue::RepeatMode;
 use crate::audio::{PlaybackStatus, SongMetadata};
 use crate::cache::AudioCache;
+use crate::commands::queue::persist_and_emit;
 use crate::commands::settings::{
-    read_normalization_settings, NormalizationMode, NormalizationSettings,
+    read_normalization_settings, read_playback_settings, NormalizationMode, NormalizationSettings,
 };
 use crate::db;
 use crate::error::{AppError, AppResult, MutexExt};
@@ -203,6 +205,9 @@ pub async fn play_song(
     // Prefetch next song for gapless playback
     prefetch_next_song(&app_handle, &state);
 
+    // Check if next song is gapless-eligible and queue it on the same Sink
+    check_and_queue_gapless(&app_handle, &state);
+
     // Report "now playing" to Subsonic server
     // Fire and forget - don't fail playback if scrobble fails
     let _ = state.client.scrobble(&song_id, None, Some(false)).await;
@@ -244,6 +249,208 @@ pub fn seek_playback(state: State<'_, AppState>, position: f64) -> AppResult<()>
 pub fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
     let audio_player = state.audio_player.lock_recover();
     audio_player.get_status()
+}
+
+/// Check if two songs should transition gaplessly.
+/// Returns true if they're on the same album and consecutive tracks.
+fn is_gapless_eligible(
+    conn: &rusqlite::Connection,
+    current_song_id: &str,
+    next_song_id: &str,
+) -> bool {
+    let get_track_info = |song_id: &str| -> Option<(String, i32, i32)> {
+        conn.query_row(
+            "SELECT album_id, disc_number, track_number FROM songs WHERE id = ?",
+            [song_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i32>>(1)?.unwrap_or(1),
+                    row.get::<_, Option<i32>>(2)?.unwrap_or(0),
+                ))
+            },
+        )
+        .ok()
+    };
+
+    let current = match get_track_info(current_song_id) {
+        Some(info) => info,
+        None => return false,
+    };
+    let next = match get_track_info(next_song_id) {
+        Some(info) => info,
+        None => return false,
+    };
+
+    // Must be same album
+    if current.0 != next.0 {
+        return false;
+    }
+
+    // Same disc, next track number
+    let same_disc_consecutive = current.1 == next.1 && next.2 == current.2 + 1;
+    // Next disc, first track
+    let next_disc_first_track = next.1 == current.1 + 1 && next.2 == 1;
+
+    same_disc_consecutive || next_disc_first_track
+}
+
+/// Check if the next song in queue is gapless-eligible and append it to the current Sink.
+fn check_and_queue_gapless(app_handle: &AppHandle, state: &AppState) {
+    if !state.client.is_connected() {
+        return;
+    }
+
+    // Check if gapless playback is enabled in settings
+    if !read_playback_settings(app_handle).gapless_enabled {
+        return;
+    }
+
+    // Don't attempt gapless in repeat-one mode
+    let repeat_mode = {
+        let queue = state.queue.lock_recover();
+        queue.repeat_mode()
+    };
+    if repeat_mode == RepeatMode::One {
+        return;
+    }
+
+    // Get current and next song IDs
+    let (current_song_id, next_song_id) = {
+        let queue = state.queue.lock_recover();
+        let current_id = queue.current_item().map(|i| i.song_id.clone());
+        let next_id = queue.peek_next().map(|i| i.song_id.clone());
+        match (current_id, next_id) {
+            (Some(curr), Some(next)) if curr != next => (curr, next),
+            _ => return,
+        }
+    };
+
+    // Check gapless eligibility
+    let eligible = {
+        let conn = state.db.lock_recover();
+        is_gapless_eligible(&conn, &current_song_id, &next_song_id)
+    };
+
+    if !eligible {
+        return;
+    }
+
+    info!("Gapless eligible: queuing next song {}", next_song_id);
+
+    // Spawn async task to fetch audio and send AppendGapless command
+    let app = app_handle.clone();
+    let client = state.client.clone();
+    tauri::async_runtime::spawn(async move {
+        let state: State<'_, AppState> = app.state();
+
+        // Get song metadata from database
+        let (duration, title, artist, album, album_id, cover_art_id, suffix) = {
+            let conn = state.db.lock_recover();
+            match conn.query_row(
+                "SELECT s.duration, s.title, a.name, al.name, s.album_id, al.cover_art_id, s.suffix
+                 FROM songs s
+                 LEFT JOIN artists a ON s.artist_id = a.id
+                 LEFT JOIN albums al ON s.album_id = al.id
+                 WHERE s.id = ?",
+                [&next_song_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<i64>>(0)?.unwrap_or(0) as f64,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                    ))
+                },
+            ) {
+                Ok(data) => data,
+                Err(e) => {
+                    warn!("Gapless: failed to get song metadata: {e}");
+                    return;
+                }
+            }
+        };
+
+        let metadata = SongMetadata {
+            id: next_song_id.clone(),
+            title,
+            artist,
+            album,
+            cover_art_id,
+        };
+
+        // Fetch audio from cache (should already be prefetched)
+        let cache = match AudioCache::new(&app) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Gapless: failed to create cache: {e}");
+                return;
+            }
+        };
+        let audio_data = match cache.get_or_fetch(&client, &next_song_id, &suffix).await {
+            Ok(data) => data,
+            Err(e) => {
+                warn!("Gapless: failed to fetch audio: {e}");
+                return;
+            }
+        };
+
+        // Get normalization gain
+        let norm_settings = read_normalization_settings(&app);
+        let normalization_gain = if norm_settings.enabled {
+            let conn = state.db.lock_recover();
+            get_normalization_gain(&conn, &next_song_id, &album_id, &norm_settings)
+        } else {
+            None
+        };
+
+        let dynamics_preset = if norm_settings.dynamics_enabled {
+            Some(norm_settings.dynamics_preset.clone())
+        } else {
+            None
+        };
+
+        // Append to existing Sink for gapless transition
+        let audio_player = state.audio_player.lock_recover();
+        if let Err(e) = audio_player.append_gapless(
+            audio_data,
+            metadata,
+            duration,
+            normalization_gain,
+            dynamics_preset,
+        ) {
+            warn!("Gapless: failed to append: {e}");
+        }
+    });
+}
+
+/// Handle a gapless transition: advance the queue, scrobble, and check next song.
+/// Called by the position emitter when it detects the audible segment has changed.
+pub async fn handle_gapless_transition(app_handle: &AppHandle) {
+    let state: State<'_, AppState> = app_handle.state();
+
+    // Advance the queue (the next song is already playing on the Sink)
+    let next_song_id = {
+        let mut queue = state.queue.lock_recover();
+        queue.next(false).map(|item| item.song_id.clone())
+    };
+
+    // Persist queue state and notify frontend
+    persist_and_emit(&state, app_handle);
+
+    if let Some(ref song_id) = next_song_id {
+        info!("Gapless transition to song {}", song_id);
+
+        // Scrobble the new song
+        let _ = state.client.scrobble(song_id, None, Some(false)).await;
+    }
+
+    // Prefetch the next-next song and check if it's also gapless-eligible
+    prefetch_next_song(app_handle, &state);
+    check_and_queue_gapless(app_handle, &state);
 }
 
 /// Read normalization data from DB and compute gain for a song.

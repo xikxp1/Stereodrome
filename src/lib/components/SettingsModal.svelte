@@ -12,6 +12,7 @@
     Download,
     Volume2,
     ShieldCheck,
+    Disc3,
   } from "lucide-svelte";
   import {
     getAudioCacheStats,
@@ -26,6 +27,8 @@
     getAnalysisProgress,
     analyzeAllSongs,
     clearNormalizationData,
+    getPlaybackSettings,
+    setPlaybackSettings,
     type CacheStats,
   } from "$lib/api/commands";
   import { error } from "@tauri-apps/plugin-log";
@@ -41,6 +44,7 @@
     NormalizationStats,
     AnalysisProgress,
     DynamicsPreset,
+    PlaybackSettings,
   } from "$lib/types";
 
   const dynamicsPresets: DynamicsPreset[] = ["light", "medium", "heavy"];
@@ -70,6 +74,9 @@
   let syncing = $state(false);
   let scanPollInterval = $state<ReturnType<typeof setInterval> | null>(null);
 
+  // Playback state
+  let playbackSettings = $state<PlaybackSettings | null>(null);
+
   // Normalization state
   let normSettings = $state<NormalizationSettings | null>(null);
   let normStats = $state<NormalizationStats | null>(null);
@@ -94,6 +101,7 @@
       loadCacheStats();
       loadScanStatus();
       loadNormalization();
+      loadPlaybackSettings();
       updater.loadCurrentVersion();
     } else {
       // Clean up polling when modal closes
@@ -106,6 +114,7 @@
         normUnlisten = null;
       }
       // Reset stale state so reopening shows fresh data
+      playbackSettings = null;
       normSettings = null;
       normStats = null;
       analyzing = false;
@@ -207,6 +216,27 @@
   async function handleDisconnect() {
     await connection.disconnect();
     onClose();
+  }
+
+  async function loadPlaybackSettings() {
+    try {
+      playbackSettings = await getPlaybackSettings();
+    } catch (e) {
+      error(`Failed to load playback settings: ${e}`);
+    }
+  }
+
+  async function handlePlaybackSettingChange(
+    update: Partial<PlaybackSettings>
+  ) {
+    if (!playbackSettings) return;
+    try {
+      const updated = { ...playbackSettings, ...update };
+      await setPlaybackSettings(updated);
+      playbackSettings = updated;
+    } catch (e) {
+      error(`Failed to save playback settings: ${e}`);
+    }
   }
 
   async function loadNormalization() {
@@ -536,6 +566,34 @@
               Show audio spectrum bars in Now Playing. Press V to toggle.
             </p>
           </div>
+        </div>
+
+        <!-- Playback Section -->
+        <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
+          <div class="mb-3 flex items-center gap-2">
+            <Disc3 class="h-4 w-4 text-base-content/60" />
+            <h3 class="font-medium">Playback</h3>
+          </div>
+
+          {#if playbackSettings}
+            <div class="space-y-3">
+              <label class="flex cursor-pointer items-center justify-between">
+                <span class="text-sm">Gapless playback</span>
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-sm checkbox-primary"
+                  checked={playbackSettings.gapless_enabled}
+                  onchange={(e) =>
+                    handlePlaybackSettingChange({
+                      gapless_enabled: e.currentTarget.checked,
+                    })}
+                />
+              </label>
+              <p class="text-xs text-base-content/50">
+                Seamless transitions between consecutive album tracks.
+              </p>
+            </div>
+          {/if}
         </div>
 
         <!-- Volume Normalization Section -->

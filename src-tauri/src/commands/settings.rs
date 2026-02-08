@@ -5,6 +5,7 @@ use crate::audio::compressor::DynamicsPreset;
 
 const STORE_FILE: &str = "settings.json";
 const KEY_NORMALIZATION: &str = "normalization";
+const KEY_PLAYBACK: &str = "playback";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -76,4 +77,54 @@ pub fn set_normalization_settings(app_handle: AppHandle, mut settings: Normaliza
     settings.target_lufs = settings.target_lufs.clamp(-30.0, 0.0);
     settings.pre_amp_db = settings.pre_amp_db.clamp(-10.0, 10.0);
     write_normalization_settings(&app_handle, &settings);
+}
+
+// --- Playback Settings ---
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PlaybackSettings {
+    #[serde(default = "default_true")]
+    pub gapless_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for PlaybackSettings {
+    fn default() -> Self {
+        Self {
+            gapless_enabled: true,
+        }
+    }
+}
+
+pub fn read_playback_settings(app_handle: &AppHandle) -> PlaybackSettings {
+    if let Ok(store) = app_handle.store(STORE_FILE) {
+        if let Some(value) = store.get(KEY_PLAYBACK) {
+            if let Ok(settings) = serde_json::from_value(value.clone()) {
+                return settings;
+            }
+        }
+    }
+    PlaybackSettings::default()
+}
+
+fn write_playback_settings(app_handle: &AppHandle, settings: &PlaybackSettings) {
+    if let Ok(store) = app_handle.store(STORE_FILE) {
+        if let Ok(value) = serde_json::to_value(settings) {
+            store.set(KEY_PLAYBACK, value);
+            let _ = store.save();
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_playback_settings(app_handle: AppHandle) -> PlaybackSettings {
+    read_playback_settings(&app_handle)
+}
+
+#[tauri::command]
+pub fn set_playback_settings(app_handle: AppHandle, settings: PlaybackSettings) {
+    write_playback_settings(&app_handle, &settings);
 }

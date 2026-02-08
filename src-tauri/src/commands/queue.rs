@@ -30,7 +30,7 @@ impl QueueState {
 }
 
 /// Save queue to database and emit queue-changed event
-fn persist_and_emit(state: &AppState, app_handle: &AppHandle) {
+pub(crate) fn persist_and_emit(state: &AppState, app_handle: &AppHandle) {
     let queue = state.queue.lock_recover();
     let queue_state = QueueState::from_queue(&queue);
 
