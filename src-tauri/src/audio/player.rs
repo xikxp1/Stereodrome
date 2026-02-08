@@ -1100,8 +1100,7 @@ fn run_audio_thread(
                         cur.set_volume(fade_in_vol);
                     }
 
-                    if cf_state.is_complete()
-                        || crossfade_sink.as_ref().is_some_and(|s| s.empty())
+                    if cf_state.is_complete() || crossfade_sink.as_ref().is_some_and(|s| s.empty())
                     {
                         // Crossfade done: drop old sink, restore full volume
                         if let Some(cf_sink) = crossfade_sink.take() {
