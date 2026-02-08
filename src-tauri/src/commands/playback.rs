@@ -527,19 +527,11 @@ fn check_and_queue_gapless(app_handle: &AppHandle, state: &AppState) {
     });
 }
 
-/// Handle a gapless transition: advance the queue, scrobble, and check next song.
-/// Called by the position emitter when it detects the audible segment has changed.
-pub async fn handle_gapless_transition(app_handle: &AppHandle) {
+/// Handle the async portion of a gapless transition: scrobble, prefetch, and queue next.
+/// The queue has already been advanced synchronously by the position emitter to prevent
+/// a race with playback_finished detection.
+pub async fn after_gapless_transition(app_handle: &AppHandle, next_song_id: Option<String>) {
     let state: State<'_, AppState> = app_handle.state();
-
-    // Advance the queue (the next song is already playing on the Sink)
-    let next_song_id = {
-        let mut queue = state.queue.lock_recover();
-        queue.next(false).map(|item| item.song_id.clone())
-    };
-
-    // Persist queue state and notify frontend
-    persist_and_emit(&state, app_handle);
 
     if let Some(ref song_id) = next_song_id {
         info!("Gapless transition to song {}", song_id);

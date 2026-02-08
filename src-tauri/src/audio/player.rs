@@ -13,7 +13,7 @@ use crate::audio::analyzer::AnalyzingSource;
 use crate::audio::compressor::DynamicsPreset;
 use crate::audio::dynamics::DynamicsSource;
 use crate::audio::normalizer::NormalizingSource;
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, MutexExt};
 use crate::media::MediaControlsManager;
 use crate::tray::TrayManager;
 
@@ -494,13 +494,36 @@ impl AudioPlayer {
                     continue;
                 }
 
+                // Reset segment tracking when a new gapless chain starts.
+                // A fresh Play command resets segments to [new_song] with seg_idx=0,
+                // but last_segment_idx may still hold the value from the previous chain.
+                if segment_idx < last_segment_idx {
+                    last_segment_idx = 0;
+                }
+
                 // Detect gapless segment transition (song changed within the same Sink)
                 if segment_idx > last_segment_idx && state.song.is_some() {
                     last_segment_idx = segment_idx;
-                    // Spawn async task to advance queue and handle transition
+
+                    // Advance queue synchronously to prevent race with playback_finished.
+                    // If we only spawned an async task, the queue might not advance before
+                    // the next tick detects playback_finished and emits playback-ended.
+                    let next_song_id = {
+                        let app_state: tauri::State<'_, crate::state::AppState> =
+                            app_handle.state();
+                        let song_id = {
+                            let mut q = app_state.queue.lock_recover();
+                            q.next(false).map(|item| item.song_id.clone())
+                        };
+                        crate::commands::queue::persist_and_emit(&app_state, &app_handle);
+                        song_id
+                    };
+
+                    // Spawn async task for scrobble, prefetch, and next gapless check
                     let app = app_handle.clone();
                     tauri::async_runtime::spawn(async move {
-                        crate::commands::handle_gapless_transition(&app).await;
+                        crate::commands::playback::after_gapless_transition(&app, next_song_id)
+                            .await;
                     });
                 }
 
