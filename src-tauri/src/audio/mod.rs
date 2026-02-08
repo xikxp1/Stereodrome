@@ -1,4 +1,6 @@
 pub mod analyzer;
+pub mod compressor;
+pub mod dynamics;
 pub mod loudness;
 pub mod normalizer;
 pub mod player;

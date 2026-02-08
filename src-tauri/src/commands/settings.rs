@@ -1,6 +1,8 @@
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
+use crate::audio::compressor::DynamicsPreset;
+
 const STORE_FILE: &str = "settings.json";
 const KEY_NORMALIZATION: &str = "normalization";
 
@@ -18,6 +20,14 @@ pub struct NormalizationSettings {
     pub target_lufs: f64,
     pub pre_amp_db: f64,
     pub prevent_clipping: bool,
+    #[serde(default)]
+    pub dynamics_enabled: bool,
+    #[serde(default = "default_dynamics_preset")]
+    pub dynamics_preset: DynamicsPreset,
+}
+
+fn default_dynamics_preset() -> DynamicsPreset {
+    DynamicsPreset::Medium
 }
 
 impl Default for NormalizationSettings {
@@ -28,6 +38,8 @@ impl Default for NormalizationSettings {
             target_lufs: -14.0,
             pre_amp_db: 0.0,
             prevent_clipping: true,
+            dynamics_enabled: false,
+            dynamics_preset: DynamicsPreset::Medium,
         }
     }
 }

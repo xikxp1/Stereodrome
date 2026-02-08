@@ -135,12 +135,16 @@ export interface SearchResults {
 }
 
 // Normalization types
+export type DynamicsPreset = "light" | "medium" | "heavy";
+
 export interface NormalizationSettings {
   enabled: boolean;
   mode: "track" | "album";
   target_lufs: number;
   pre_amp_db: number;
   prevent_clipping: boolean;
+  dynamics_enabled: boolean;
+  dynamics_preset: DynamicsPreset;
 }
 
 export interface NormalizationStats {

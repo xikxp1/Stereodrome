@@ -140,10 +140,23 @@ pub async fn play_song(
         None
     };
 
+    // Get dynamics preset if enabled
+    let dynamics_preset = if norm_settings.dynamics_enabled {
+        Some(norm_settings.dynamics_preset.clone())
+    } else {
+        None
+    };
+
     // Play the audio
     {
         let audio_player = state.audio_player.lock_recover();
-        audio_player.play(audio_data, metadata, duration, normalization_gain)?;
+        audio_player.play(
+            audio_data,
+            metadata,
+            duration,
+            normalization_gain,
+            dynamics_preset,
+        )?;
     }
 
     // Spawn background loudness analysis if normalization is enabled but no data exists

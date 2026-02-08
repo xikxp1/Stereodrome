@@ -39,7 +39,15 @@
     NormalizationSettings,
     NormalizationStats,
     AnalysisProgress,
+    DynamicsPreset,
   } from "$lib/types";
+
+  const dynamicsPresets: DynamicsPreset[] = ["light", "medium", "heavy"];
+  const dynamicsDescriptions: Record<DynamicsPreset, string> = {
+    light: "Gentle compression. Preserves dynamics.",
+    medium: "Balanced compression for mixed playlists.",
+    heavy: "Strong compression. Maximum consistency.",
+  };
 
   interface Props {
     open: boolean;
@@ -659,6 +667,49 @@
                       })}
                   />
                 </label>
+
+                <!-- Dynamics processing -->
+                <label class="flex cursor-pointer items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <Activity class="h-4 w-4 text-base-content/60" />
+                    <span class="text-sm">Dynamics processing</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm checkbox-primary"
+                    checked={normSettings.dynamics_enabled}
+                    onchange={(e) =>
+                      handleNormSettingChange({
+                        dynamics_enabled: e.currentTarget.checked,
+                      })}
+                  />
+                </label>
+
+                {#if normSettings.dynamics_enabled}
+                  <div>
+                    <div class="mb-2 text-sm text-base-content/60">Amount</div>
+                    <div class="flex flex-wrap gap-1">
+                      {#each dynamicsPresets as preset (preset)}
+                        <button
+                          class="btn btn-xs h-6 min-h-0 px-3 {normSettings.dynamics_preset ===
+                          preset
+                            ? 'btn-primary'
+                            : 'btn-ghost'}"
+                          onclick={() =>
+                            handleNormSettingChange({
+                              dynamics_preset: preset,
+                            })}
+                          disabled={savingNorm}
+                        >
+                          {preset.charAt(0).toUpperCase() + preset.slice(1)}
+                        </button>
+                      {/each}
+                    </div>
+                    <p class="mt-1 text-xs text-base-content/50">
+                      {dynamicsDescriptions[normSettings.dynamics_preset]}
+                    </p>
+                  </div>
+                {/if}
               {/if}
 
               <!-- Analysis stats -->

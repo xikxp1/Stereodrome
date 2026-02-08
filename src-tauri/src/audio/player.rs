@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::analyzer::AnalyzingSource;
+use crate::audio::compressor::DynamicsPreset;
+use crate::audio::dynamics::DynamicsSource;
 use crate::audio::normalizer::NormalizingSource;
 use crate::error::{AppError, AppResult};
 use crate::media::MediaControlsManager;
@@ -53,6 +55,7 @@ enum AudioCommand {
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
+        dynamics_preset: Option<DynamicsPreset>,
     },
     Pause,
     Resume,
@@ -195,6 +198,7 @@ impl AudioPlayer {
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
+        dynamics_preset: Option<DynamicsPreset>,
     ) -> AppResult<()> {
         self.command_tx
             .send(AudioCommand::Play {
@@ -202,6 +206,7 @@ impl AudioPlayer {
                 metadata,
                 duration_secs,
                 normalization_gain,
+                dynamics_preset,
             })
             .map_err(|e| AppError::Audio(format!("Failed to send play command: {}", e)))
     }
@@ -500,6 +505,7 @@ fn run_audio_thread(
                     metadata,
                     duration_secs,
                     normalization_gain,
+                    dynamics_preset,
                 } => {
                     // Stop any existing playback
                     if let Some(sink) = current_sink.take() {
@@ -521,16 +527,28 @@ fn run_audio_thread(
                             let analyzing_source =
                                 AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
 
-                            // Wrap with normalizer for loudness normalization
-                            let normalizing_source = NormalizingSource::new(
-                                analyzing_source,
-                                normalization_gain.unwrap_or(1.0),
-                            );
-
                             let sink = Sink::connect_new(stream.mixer());
                             let volume = shared_state.read_inner().volume;
                             sink.set_volume(volume);
-                            sink.append(normalizing_source);
+
+                            // Build pipeline: normalizer → optional dynamics
+                            if let Some(ref preset) = dynamics_preset {
+                                // Disable hard clamp when dynamics is active (limiter handles peaks)
+                                let normalizing_source = NormalizingSource::with_clamp(
+                                    analyzing_source,
+                                    normalization_gain.unwrap_or(1.0),
+                                    false,
+                                );
+                                let dynamics_source =
+                                    DynamicsSource::new(normalizing_source, preset);
+                                sink.append(dynamics_source);
+                            } else {
+                                let normalizing_source = NormalizingSource::new(
+                                    analyzing_source,
+                                    normalization_gain.unwrap_or(1.0),
+                                );
+                                sink.append(normalizing_source);
+                            }
 
                             // Update shared state (single lock acquisition)
                             {

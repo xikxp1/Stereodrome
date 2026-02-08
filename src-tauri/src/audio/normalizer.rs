@@ -13,6 +13,7 @@ where
 {
     inner: S,
     gain: f32,
+    clamp: bool,
 }
 
 impl<S> NormalizingSource<S>
@@ -23,6 +24,17 @@ where
         Self {
             inner: source,
             gain,
+            clamp: true,
+        }
+    }
+
+    /// Create with explicit clamp control. When dynamics processing is active,
+    /// the limiter handles peak control, so clamping is unnecessary.
+    pub fn with_clamp(source: S, gain: f32, clamp: bool) -> Self {
+        Self {
+            inner: source,
+            gain,
+            clamp,
         }
     }
 }
@@ -35,7 +47,12 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let sample = self.inner.next()?;
-        Some((sample * self.gain).clamp(-1.0, 1.0))
+        let normalized = sample * self.gain;
+        if self.clamp {
+            Some(normalized.clamp(-1.0, 1.0))
+        } else {
+            Some(normalized)
+        }
     }
 }
 
