@@ -40,6 +40,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -51,7 +54,7 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: init Rust cache
+      - name: Init Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -89,6 +92,16 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
+      - name: Install git-cliff
+        run: cargo install git-cliff || true
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          echo 'changelog<<EOF' >> $GITHUB_OUTPUT
+          git-cliff --latest --strip all --use-branch-tags >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -102,7 +115,7 @@ jobs:
           tagName: v__VERSION__
           releaseName: "Stereodrome v__VERSION__"
           releaseBody: |
-            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+            ${{ steps.changelog.outputs.changelog }}
 
             ## Installation
 

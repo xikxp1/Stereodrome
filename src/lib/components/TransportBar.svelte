@@ -135,7 +135,7 @@
 
 <!-- Toolbar -->
 <div
-  class="relative flex h-20 items-center justify-between border-b border-base-300 bg-gradient-to-b from-base-200 to-base-300 px-3 select-none"
+  class="relative flex h-20 items-center justify-between border-b border-base-300 bg-linear-to-b from-base-200 to-base-300 px-3 select-none"
 >
   <!-- Left: Playback Controls -->
   <div class="z-10 flex items-center gap-4">
@@ -267,7 +267,7 @@
     </div>
 
     <!-- Shuffle/Repeat -->
-    <div class="flex items-center gap-1">
+    <div class="flex items-center">
       <button
         class="flex h-6 w-6 items-center justify-center rounded transition-colors disabled:cursor-not-allowed disabled:text-base-content/20 {queue.shuffle
           ? 'text-primary'
