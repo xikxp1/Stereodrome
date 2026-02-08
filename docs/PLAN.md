@@ -1,6 +1,6 @@
 # Stereodrome Development Plan
 
-Last updated: 2026-02-05
+Last updated: 2026-02-08
 
 ## Current Status
 
@@ -27,6 +27,8 @@ Phase 8: Local Storage & Offline Features
 - [x] LazyImage component with IntersectionObserver for efficient cover art loading
 - [x] Search filtering for artist/album grid views
 - [x] Connection resilience (request timeouts, heartbeat validation, stale connection detection after sleep)
+- [x] Volume normalization (EBU R128 loudness analysis, per-track/album gain, Settings UI, prefetch analysis)
+- [x] Dynamics processing (soft-knee RMS compressor + fundsp look-ahead limiter, Light/Medium/Heavy presets, Settings UI)
 - [ ] Incremental library sync
 - [ ] Crossfade between tracks
 - [ ] Gapless playback
@@ -180,6 +182,10 @@ src-tauri/src/
 ├── audio/
 │   ├── mod.rs          # Module exports
 │   ├── analyzer.rs     # AnalyzingSource wrapper for sample capture
+│   ├── compressor.rs   # Soft-knee RMS compressor (DynamicsPreset, Compressor)
+│   ├── dynamics.rs     # DynamicsSource wrapper (compressor + fundsp limiter)
+│   ├── loudness.rs     # EBU R128 loudness analysis (ebur128 crate)
+│   ├── normalizer.rs   # NormalizingSource wrapper for gain adjustment
 │   ├── player.rs       # AudioPlayer with Rodio (threaded), media controls integration
 │   ├── queue.rs        # PlayQueue with shuffle/repeat
 │   └── spectrum.rs     # FFT analysis, SpectrumAnalyzer, band aggregation
@@ -201,6 +207,7 @@ src-tauri/src/
 │   ├── queue.rs        # Queue management commands
 │   ├── playlist.rs     # Playlist CRUD commands (server-first sync via Subsonic API)
 │   ├── search.rs       # Tantivy full-text search
+│   ├── normalization.rs # Volume normalization settings and batch analysis
 │   ├── nowplaying.rs   # Scrobbling, now playing emitter (events)
 │   └── coverart.rs     # Cover art fetching with local cache
 ├── search/

@@ -15,6 +15,7 @@
     "notification:default",
     "log:default",
     "process:default",
-    "core:menu:default"
+    "core:menu:default",
+    "dialog:default"
   ]
 }

@@ -9,6 +9,9 @@ import type {
   ScanStatus,
   PlaybackState,
   SearchResults,
+  NormalizationSettings,
+  NormalizationStats,
+  AnalysisProgress,
 } from "$lib/types";
 
 // Auth commands
@@ -138,6 +141,33 @@ export async function getScanStatus(): Promise<ScanStatus> {
 
 export async function startScan(): Promise<ScanStatus> {
   return invoke<ScanStatus>("start_scan");
+}
+
+// Normalization commands
+export async function getNormalizationSettings(): Promise<NormalizationSettings> {
+  return invoke<NormalizationSettings>("get_normalization_settings");
+}
+
+export async function setNormalizationSettings(
+  settings: NormalizationSettings
+): Promise<void> {
+  return invoke("set_normalization_settings", { settings });
+}
+
+export async function getNormalizationStats(): Promise<NormalizationStats> {
+  return invoke<NormalizationStats>("get_normalization_stats");
+}
+
+export async function getAnalysisProgress(): Promise<AnalysisProgress | null> {
+  return invoke<AnalysisProgress | null>("get_analysis_progress");
+}
+
+export async function analyzeAllSongs(): Promise<void> {
+  return invoke("analyze_all_songs");
+}
+
+export async function clearNormalizationData(): Promise<void> {
+  return invoke("clear_normalization_data");
 }
 
 // Tray commands

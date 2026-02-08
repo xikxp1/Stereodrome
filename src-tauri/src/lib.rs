@@ -55,6 +55,7 @@ pub fn run() {
             info!("Second instance detected, focusing existing window");
             focus_main_window(app);
         }))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_prevent_default::debug())
         .setup(|app| {
             let db_path = db::get_db_path(app.handle())?;
@@ -156,6 +157,12 @@ pub fn run() {
             commands::get_scan_status,
             commands::start_scan,
             commands::set_tray_update_available,
+            commands::get_normalization_settings,
+            commands::set_normalization_settings,
+            commands::get_normalization_stats,
+            commands::get_analysis_progress,
+            commands::analyze_all_songs,
+            commands::clear_normalization_data,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

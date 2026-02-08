@@ -7,13 +7,34 @@ use filetime::FileTime;
 use log::{debug, warn};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex as TokioMutex;
 
+use crate::audio::loudness;
 use crate::client::SubsonicClientHandle;
+use crate::db;
 use crate::error::{AppError, AppResult};
 
 /// Default maximum cache size: 5 GB
 pub const DEFAULT_MAX_CACHE_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+/// Minimum cache size: 500 MB
+pub const MIN_CACHE_SIZE: u64 = 500 * 1024 * 1024;
+/// Maximum cache size: 50 GB
+pub const MAX_CACHE_SIZE: u64 = 50 * 1024 * 1024 * 1024;
+pub const STORE_FILE: &str = "settings.json";
+pub const KEY_MAX_CACHE_SIZE: &str = "max_cache_size";
+
+/// Read the configured max cache size from settings store
+fn read_max_cache_size(app_handle: &AppHandle) -> u64 {
+    if let Ok(store) = app_handle.store(STORE_FILE) {
+        if let Some(value) = store.get(KEY_MAX_CACHE_SIZE) {
+            if let Some(size) = value.as_u64() {
+                return size.clamp(MIN_CACHE_SIZE, MAX_CACHE_SIZE);
+            }
+        }
+    }
+    DEFAULT_MAX_CACHE_SIZE
+}
 
 /// Statistics about the audio cache
 #[derive(Debug, Clone, Serialize)]
@@ -38,8 +59,9 @@ pub struct AudioCache {
 }
 
 impl AudioCache {
-    /// Create a new AudioCache instance
-    pub fn new(app_handle: &AppHandle, max_size: u64) -> AppResult<Self> {
+    /// Create a new AudioCache instance, reading max size from settings
+    pub fn new(app_handle: &AppHandle) -> AppResult<Self> {
+        let max_size = read_max_cache_size(app_handle);
         let data_dir = app_handle
             .path()
             .app_data_dir()
@@ -53,7 +75,7 @@ impl AudioCache {
     }
 
     /// Get the cache file path for a song
-    fn get_cache_path(&self, song_id: &str, suffix: &str) -> PathBuf {
+    pub fn get_cache_path(&self, song_id: &str, suffix: &str) -> PathBuf {
         // Sanitize song_id for filesystem (replace problematic characters)
         let safe_id = song_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
         let filename = if suffix.is_empty() {
@@ -206,12 +228,13 @@ impl AudioCache {
     /// Prefetch a song to cache in the background.
     /// Returns immediately - the fetch happens asynchronously.
     /// Skips if the song is already cached or currently being prefetched.
+    /// If `album_id` is provided, also runs loudness analysis for normalization.
     pub fn prefetch(
         app_handle: AppHandle,
         client: SubsonicClientHandle,
         song_id: String,
         suffix: String,
-        max_size: u64,
+        album_id: Option<String>,
     ) {
         tauri::async_runtime::spawn(async move {
             // Check if already being prefetched
@@ -224,7 +247,7 @@ impl AudioCache {
             }
 
             // Create cache instance
-            let cache = match AudioCache::new(&app_handle, max_size) {
+            let cache = match AudioCache::new(&app_handle) {
                 Ok(c) => c,
                 Err(_) => {
                     // Remove from in-progress on error
@@ -233,16 +256,63 @@ impl AudioCache {
                 }
             };
 
-            // Skip if already cached
-            if cache.is_cached(&song_id, &suffix) {
-                PREFETCH_IN_PROGRESS.lock().await.remove(&song_id);
-                return;
-            }
+            let was_cached = cache.is_cached(&song_id, &suffix);
 
-            // Fetch and cache
-            match cache.get_or_fetch(&client, &song_id, &suffix).await {
-                Ok(_) => debug!("Prefetch complete: {}", song_id),
-                Err(e) => warn!("Prefetch failed for {}: {}", song_id, e),
+            // Fetch and cache if not already cached
+            let audio_data = if was_cached {
+                None
+            } else {
+                match cache.get_or_fetch(&client, &song_id, &suffix).await {
+                    Ok(data) => {
+                        debug!("Prefetch complete: {}", song_id);
+                        Some(data)
+                    }
+                    Err(e) => {
+                        warn!("Prefetch failed for {}: {}", song_id, e);
+                        PREFETCH_IN_PROGRESS.lock().await.remove(&song_id);
+                        return;
+                    }
+                }
+            };
+
+            // Run loudness analysis if album_id is provided (normalization needed)
+            if let Some(album_id) = album_id {
+                // Get audio data: use what we just fetched, or read from cache
+                let data_for_analysis = match audio_data {
+                    Some(data) => Some(data),
+                    None => std::fs::read(cache.get_cache_path(&song_id, &suffix)).ok(),
+                };
+
+                if let Some(data) = data_for_analysis {
+                    let song_id_clone = song_id.clone();
+                    let app_handle_clone = app_handle.clone();
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        match loudness::analyze_loudness(data) {
+                            Ok(result) => {
+                                if let Ok(db_path) = db::get_db_path(&app_handle_clone) {
+                                    let _ = db::save_normalization_result(
+                                        std::path::Path::new(&db_path),
+                                        &song_id_clone,
+                                        &album_id,
+                                        result.integrated_lufs,
+                                        result.true_peak,
+                                    );
+                                    debug!(
+                                        "Prefetch normalization complete: {} ({:.1} LUFS)",
+                                        song_id_clone, result.integrated_lufs
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Prefetch loudness analysis failed for {}: {}",
+                                    song_id_clone, e
+                                );
+                            }
+                        }
+                    })
+                    .await;
+                }
             }
 
             // Remove from in-progress

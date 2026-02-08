@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS queue_state (
     repeat_mode TEXT NOT NULL DEFAULT 'Off'
 );
 
+-- Normalization data (EBU R128 loudness analysis results)
+CREATE TABLE IF NOT EXISTS normalization_data (
+    song_id TEXT PRIMARY KEY,
+    track_loudness_lufs REAL NOT NULL,
+    track_peak REAL NOT NULL,
+    album_id TEXT,
+    source TEXT NOT NULL DEFAULT 'ebur128',
+    analyzed_at TEXT NOT NULL,
+    FOREIGN KEY (song_id) REFERENCES songs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_normalization_album ON normalization_data(album_id);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_albums_artist_id ON albums(artist_id);
 CREATE INDEX IF NOT EXISTS idx_songs_album_id ON songs(album_id);
