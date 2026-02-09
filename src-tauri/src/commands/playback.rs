@@ -183,6 +183,60 @@ fn prefetch_next_song(app_handle: &AppHandle, state: &AppState) {
     }
 }
 
+/// Rebuild the currently playing song with the latest persisted playback settings.
+/// Uses a restart+seek strategy and preserves play/pause state.
+pub(crate) async fn reapply_settings_to_current_song(
+    app_handle: &AppHandle,
+    state: &AppState,
+) -> AppResult<bool> {
+    let status = {
+        let audio_player = state.audio_player.lock_recover();
+        audio_player.get_status()
+    };
+
+    let Some(song_id) = status.current_song_id else {
+        return Ok(false);
+    };
+
+    let was_playing = status.is_playing;
+    let position = status.position;
+    let data = fetch_song_data(app_handle, state, &song_id).await?;
+
+    {
+        let audio_player = state.audio_player.lock_recover();
+        audio_player.play(
+            data.audio_data,
+            data.metadata,
+            data.duration,
+            data.normalization_gain,
+            data.dynamics_preset,
+            data.binaural_preset,
+            data.equalizer_settings,
+        )?;
+
+        if was_playing {
+            audio_player.seek(position)?;
+        } else {
+            // Keep paused state while still restoring segment-relative position.
+            audio_player.pause()?;
+            audio_player.seek(position)?;
+        }
+    }
+
+    spawn_loudness_analysis_if_needed(
+        app_handle,
+        &song_id,
+        &data.album_id,
+        &data.suffix,
+        data.normalization_gain,
+    );
+
+    prefetch_next_song(app_handle, state);
+    check_and_queue_gapless(app_handle, state);
+
+    Ok(true)
+}
+
 #[tauri::command]
 pub async fn play_song(
     app_handle: AppHandle,
