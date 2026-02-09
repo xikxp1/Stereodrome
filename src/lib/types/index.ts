@@ -136,6 +136,7 @@ export interface SearchResults {
 
 // Normalization types
 export type DynamicsPreset = "light" | "medium" | "heavy";
+export type BinauralPreset = "default" | "cmoy" | "jmeier" | "aggressive";
 
 export interface NormalizationSettings {
   enabled: boolean;
@@ -164,6 +165,8 @@ export interface PlaybackSettings {
   gapless_enabled: boolean;
   crossfade_enabled: boolean;
   crossfade_duration_ms: number;
+  binaural_enabled: boolean;
+  binaural_preset: BinauralPreset;
 }
 
 // Now Playing types

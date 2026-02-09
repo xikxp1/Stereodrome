@@ -1,6 +1,7 @@
 use log::{info, warn};
 use tauri::{AppHandle, Manager, State};
 
+use crate::audio::binaural::BinauralPreset;
 use crate::audio::compressor::DynamicsPreset;
 use crate::audio::loudness;
 use crate::audio::queue::RepeatMode;
@@ -23,6 +24,7 @@ struct SongData {
     suffix: String,
     normalization_gain: Option<f32>,
     dynamics_preset: Option<DynamicsPreset>,
+    binaural_preset: Option<BinauralPreset>,
 }
 
 /// Fetch all data needed to play a song: metadata, audio bytes, normalization gain.
@@ -87,6 +89,12 @@ async fn fetch_song_data(
     } else {
         None
     };
+    let playback_settings = read_playback_settings(app_handle);
+    let binaural_preset = if playback_settings.binaural_enabled {
+        Some(playback_settings.binaural_preset.clone())
+    } else {
+        None
+    };
 
     Ok(SongData {
         audio_data,
@@ -96,6 +104,7 @@ async fn fetch_song_data(
         suffix,
         normalization_gain,
         dynamics_preset,
+        binaural_preset,
     })
 }
 
@@ -184,6 +193,7 @@ pub async fn play_song(
             data.duration,
             data.normalization_gain,
             data.dynamics_preset,
+            data.binaural_preset,
         )?;
     }
 
@@ -226,6 +236,7 @@ pub async fn crossfade_play_by_id(
             data.duration,
             data.normalization_gain,
             data.dynamics_preset,
+            data.binaural_preset,
             crossfade_duration_ms,
         )?;
     }
@@ -302,6 +313,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
             data.duration,
             data.normalization_gain,
             data.dynamics_preset,
+            data.binaural_preset,
             crossfade_duration_ms,
         ) {
             warn!("Crossfade: failed to start: {e}");
@@ -521,6 +533,7 @@ fn check_and_queue_gapless(app_handle: &AppHandle, state: &AppState) {
             data.duration,
             data.normalization_gain,
             data.dynamics_preset,
+            data.binaural_preset,
         ) {
             warn!("Gapless: failed to append: {e}");
         }
