@@ -171,6 +171,15 @@ export interface PlaybackSettings {
   equalizer_bands_db: number[];
 }
 
+export interface MiniPlayerPosition {
+  x: number;
+  y: number;
+}
+
+export interface MiniPlayerHoverState {
+  hovered: boolean;
+}
+
 // Now Playing types
 export interface NowPlayingEntry {
   id: string;

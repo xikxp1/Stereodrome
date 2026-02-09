@@ -1,9 +1,9 @@
 //! BinauralSource wraps a Rodio Source with bs2b stereo crossfeed processing.
 //! Pipeline: inner source -> bs2b crossfeed -> output.
 
-use bs2b::{streaming::CallbackAdapter, Bs2b, Level};
-use rodio::source::SeekError;
+use bs2b::{Bs2b, Level, streaming::CallbackAdapter};
 use rodio::Source;
+use rodio::source::SeekError;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

@@ -3,8 +3,8 @@
 
 use fundsp::audiounit::AudioUnit;
 use fundsp::prelude32::{limiter, limiter_stereo};
-use rodio::source::SeekError;
 use rodio::Source;
+use rodio::source::SeekError;
 use std::time::Duration;
 
 use crate::audio::compressor::{Compressor, DynamicsPreset};

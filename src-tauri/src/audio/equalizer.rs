@@ -3,8 +3,8 @@
 
 use fundsp::audionode::AudioNode;
 use fundsp::biquad::{Biquad, BiquadCoefs};
-use rodio::source::SeekError;
 use rodio::Source;
+use rodio::source::SeekError;
 use std::time::Duration;
 
 pub const EQ_BAND_COUNT: usize = 12;

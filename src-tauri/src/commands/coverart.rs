@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use log::warn;
 use tauri::{AppHandle, Manager, State};
 

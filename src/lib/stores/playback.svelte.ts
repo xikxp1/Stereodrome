@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { error } from "@tauri-apps/plugin-log";
 import type { Song } from "$lib/types";
 import { queue } from "./queue.svelte";
@@ -52,6 +53,8 @@ class PlaybackStore {
   // Event listeners
   private unlistenState: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
+  private readonly shouldHandleSideEffects =
+    getCurrentWindow().label === "main";
 
   constructor() {
     this.setupEventListeners();
@@ -81,7 +84,7 @@ class PlaybackStore {
           }
 
           // Notify song change when app is not focused
-          if (songChanged) {
+          if (songChanged && this.shouldHandleSideEffects) {
             notifications.notifySongChange(
               state.song.title,
               state.song.artist,
@@ -98,7 +101,7 @@ class PlaybackStore {
           };
 
           // Check scrobble threshold (50% of song played)
-          if (state.duration > 0) {
+          if (this.shouldHandleSideEffects && state.duration > 0) {
             const threshold = state.duration * 0.5;
             if (
               state.position >= threshold &&

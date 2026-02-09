@@ -1,5 +1,5 @@
 use log::{error, warn};
-use ringbuf::{traits::Split, HeapCons, HeapProd, HeapRb};
+use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
 use rodio::{Decoder, OutputStreamBuilder, Sink, Source};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -485,10 +485,10 @@ impl AudioPlayer {
                 }
 
                 // Process samples and emit if we have data
-                if let Ok(mut cons) = consumer.try_lock() {
-                    if let Some(spectrum_data) = analyzer.process(&mut cons) {
-                        let _ = app_handle.emit("spectrum-data", spectrum_data);
-                    }
+                if let Ok(mut cons) = consumer.try_lock()
+                    && let Some(spectrum_data) = analyzer.process(&mut cons)
+                {
+                    let _ = app_handle.emit("spectrum-data", spectrum_data);
                 }
             }
         });
@@ -690,10 +690,11 @@ impl AudioPlayer {
 
                 // Throttled position updates to OS media controls (~1Hz instead of 10Hz)
                 position_update_counter = (position_update_counter + 1) % 10;
-                if position_update_counter == 0 && state.is_playing {
-                    if let Some(media_controls) = app_handle.try_state::<MediaControlsManager>() {
-                        media_controls.set_playback_status(state.is_playing, state.position);
-                    }
+                if position_update_counter == 0
+                    && state.is_playing
+                    && let Some(media_controls) = app_handle.try_state::<MediaControlsManager>()
+                {
+                    media_controls.set_playback_status(state.is_playing, state.position);
                 }
 
                 let _ = app_handle.emit("playback-state", &state);
@@ -921,48 +922,48 @@ fn run_audio_thread(
                     }
                 }
                 AudioCommand::Pause => {
-                    if let Some(ref sink) = current_sink {
-                        if !sink.is_paused() {
-                            // Save current position (single lock acquisition)
-                            {
-                                let mut inner = shared_state.write_inner();
-                                if let Some(instant) = inner.playback_start {
-                                    let elapsed =
-                                        instant.elapsed().as_secs_f64() + inner.paused_position;
-                                    inner.paused_position = elapsed;
-                                }
+                    if let Some(ref sink) = current_sink
+                        && !sink.is_paused()
+                    {
+                        // Save current position (single lock acquisition)
+                        {
+                            let mut inner = shared_state.write_inner();
+                            if let Some(instant) = inner.playback_start {
+                                let elapsed =
+                                    instant.elapsed().as_secs_f64() + inner.paused_position;
+                                inner.paused_position = elapsed;
                             }
-
-                            sink.pause();
-
-                            // Also pause crossfade sink and freeze timer
-                            if let Some(ref cf_sink) = crossfade_sink {
-                                cf_sink.pause();
-                            }
-                            if let Some(ref mut cf_state) = crossfade_state {
-                                cf_state.pause();
-                            }
-
-                            shared_state.is_playing.store(false, Ordering::SeqCst);
                         }
+
+                        sink.pause();
+
+                        // Also pause crossfade sink and freeze timer
+                        if let Some(ref cf_sink) = crossfade_sink {
+                            cf_sink.pause();
+                        }
+                        if let Some(ref mut cf_state) = crossfade_state {
+                            cf_state.pause();
+                        }
+
+                        shared_state.is_playing.store(false, Ordering::SeqCst);
                     }
                 }
                 AudioCommand::Resume => {
-                    if let Some(ref sink) = current_sink {
-                        if sink.is_paused() {
-                            shared_state.write_inner().playback_start = Some(Instant::now());
-                            sink.play();
+                    if let Some(ref sink) = current_sink
+                        && sink.is_paused()
+                    {
+                        shared_state.write_inner().playback_start = Some(Instant::now());
+                        sink.play();
 
-                            // Also resume crossfade sink and timer
-                            if let Some(ref cf_sink) = crossfade_sink {
-                                cf_sink.play();
-                            }
-                            if let Some(ref mut cf_state) = crossfade_state {
-                                cf_state.resume();
-                            }
-
-                            shared_state.is_playing.store(true, Ordering::SeqCst);
+                        // Also resume crossfade sink and timer
+                        if let Some(ref cf_sink) = crossfade_sink {
+                            cf_sink.play();
                         }
+                        if let Some(ref mut cf_state) = crossfade_state {
+                            cf_state.resume();
+                        }
+
+                        shared_state.is_playing.store(true, Ordering::SeqCst);
                     }
                 }
                 AudioCommand::Stop => {
@@ -990,10 +991,10 @@ fn run_audio_thread(
                 }
                 AudioCommand::SetVolume(volume) => {
                     // During crossfade, let the idle loop handle proportional volumes
-                    if crossfade_state.is_none() {
-                        if let Some(ref sink) = current_sink {
-                            sink.set_volume(volume);
-                        }
+                    if crossfade_state.is_none()
+                        && let Some(ref sink) = current_sink
+                    {
+                        sink.set_volume(volume);
                     }
                 }
                 AudioCommand::Seek(position_secs) => {
@@ -1216,15 +1217,16 @@ fn run_audio_thread(
                 }
 
                 // Check if current playback has ended
-                if let Some(ref sink) = current_sink {
-                    if sink.empty() && shared_state.is_playing.load(Ordering::SeqCst) {
-                        // Set paused_position to duration so position emitter can detect end
-                        {
-                            let mut inner = shared_state.write_inner();
-                            inner.paused_position = inner.duration;
-                        }
-                        shared_state.is_playing.store(false, Ordering::SeqCst);
+                if let Some(ref sink) = current_sink
+                    && sink.empty()
+                    && shared_state.is_playing.load(Ordering::SeqCst)
+                {
+                    // Set paused_position to duration so position emitter can detect end
+                    {
+                        let mut inner = shared_state.write_inner();
+                        inner.paused_position = inner.duration;
                     }
+                    shared_state.is_playing.store(false, Ordering::SeqCst);
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {

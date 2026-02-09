@@ -51,6 +51,9 @@ pub enum AppError {
 
     #[error("Request timed out")]
     Timeout,
+
+    #[error("Window error: {0}")]
+    Window(String),
 }
 
 impl From<ClientError> for AppError {

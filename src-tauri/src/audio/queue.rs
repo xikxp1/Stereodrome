@@ -153,10 +153,10 @@ impl PlayQueue {
             if index < current {
                 self.current_index = Some(current - 1);
                 // Also adjust pending navigation if set
-                if let Some(pending) = self.pending_navigation_index {
-                    if index <= pending {
-                        self.pending_navigation_index = Some(pending.saturating_sub(1));
-                    }
+                if let Some(pending) = self.pending_navigation_index
+                    && index <= pending
+                {
+                    self.pending_navigation_index = Some(pending.saturating_sub(1));
                 }
             } else if index == current {
                 // Current song was removed - set pending navigation index
@@ -241,12 +241,12 @@ impl PlayQueue {
             RepeatMode::One if !force => {
                 // Stay on current song (only when auto-advancing, not user-initiated)
                 // But if current was removed, we need to move to the pending position
-                if self.current_index.is_none() {
-                    if let Some(pending) = self.pending_navigation_index.take() {
-                        let idx = pending.min(self.items.len() - 1);
-                        self.current_index = Some(idx);
-                        return self.items.get(idx);
-                    }
+                if self.current_index.is_none()
+                    && let Some(pending) = self.pending_navigation_index.take()
+                {
+                    let idx = pending.min(self.items.len() - 1);
+                    self.current_index = Some(idx);
+                    return self.items.get(idx);
                 }
                 self.current_item()
             }
@@ -299,12 +299,12 @@ impl PlayQueue {
         match self.repeat_mode {
             RepeatMode::One => {
                 // Stay on current song, but if removed, go to previous position
-                if self.current_index.is_none() {
-                    if let Some(pending) = self.pending_navigation_index.take() {
-                        let idx = pending.saturating_sub(1).min(self.items.len() - 1);
-                        self.current_index = Some(idx);
-                        return self.items.get(idx);
-                    }
+                if self.current_index.is_none()
+                    && let Some(pending) = self.pending_navigation_index.take()
+                {
+                    let idx = pending.saturating_sub(1).min(self.items.len() - 1);
+                    self.current_index = Some(idx);
+                    return self.items.get(idx);
                 }
                 self.current_item()
             }
@@ -360,11 +360,11 @@ impl PlayQueue {
             self.items.shuffle(&mut rng);
 
             // Move current song back to its original position
-            if let (Some(current), Some(idx)) = (current_item, self.current_index) {
-                if let Some(pos) = self.items.iter().position(|i| i.song_id == current.song_id) {
-                    let item = self.items.remove(pos);
-                    self.items.insert(idx.min(self.items.len()), item);
-                }
+            if let (Some(current), Some(idx)) = (current_item, self.current_index)
+                && let Some(pos) = self.items.iter().position(|i| i.song_id == current.song_id)
+            {
+                let item = self.items.remove(pos);
+                self.items.insert(idx.min(self.items.len()), item);
             }
         } else {
             // Restore original order

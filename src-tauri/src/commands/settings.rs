@@ -49,23 +49,22 @@ impl Default for NormalizationSettings {
 
 /// Read normalization settings from settings.json
 pub fn read_normalization_settings(app_handle: &AppHandle) -> NormalizationSettings {
-    if let Ok(store) = app_handle.store(STORE_FILE) {
-        if let Some(value) = store.get(KEY_NORMALIZATION) {
-            if let Ok(settings) = serde_json::from_value(value.clone()) {
-                return settings;
-            }
-        }
+    if let Ok(store) = app_handle.store(STORE_FILE)
+        && let Some(value) = store.get(KEY_NORMALIZATION)
+        && let Ok(settings) = serde_json::from_value(value.clone())
+    {
+        return settings;
     }
     NormalizationSettings::default()
 }
 
 /// Write normalization settings to settings.json
 fn write_normalization_settings(app_handle: &AppHandle, settings: &NormalizationSettings) {
-    if let Ok(store) = app_handle.store(STORE_FILE) {
-        if let Ok(value) = serde_json::to_value(settings) {
-            store.set(KEY_NORMALIZATION, value);
-            let _ = store.save();
-        }
+    if let Ok(store) = app_handle.store(STORE_FILE)
+        && let Ok(value) = serde_json::to_value(settings)
+    {
+        store.set(KEY_NORMALIZATION, value);
+        let _ = store.save();
     }
 }
 
@@ -132,22 +131,21 @@ impl Default for PlaybackSettings {
 }
 
 pub fn read_playback_settings(app_handle: &AppHandle) -> PlaybackSettings {
-    if let Ok(store) = app_handle.store(STORE_FILE) {
-        if let Some(value) = store.get(KEY_PLAYBACK) {
-            if let Ok(settings) = serde_json::from_value(value.clone()) {
-                return settings;
-            }
-        }
+    if let Ok(store) = app_handle.store(STORE_FILE)
+        && let Some(value) = store.get(KEY_PLAYBACK)
+        && let Ok(settings) = serde_json::from_value(value.clone())
+    {
+        return settings;
     }
     PlaybackSettings::default()
 }
 
 fn write_playback_settings(app_handle: &AppHandle, settings: &PlaybackSettings) {
-    if let Ok(store) = app_handle.store(STORE_FILE) {
-        if let Ok(value) = serde_json::to_value(settings) {
-            store.set(KEY_PLAYBACK, value);
-            let _ = store.save();
-        }
+    if let Ok(store) = app_handle.store(STORE_FILE)
+        && let Ok(value) = serde_json::to_value(settings)
+    {
+        store.set(KEY_PLAYBACK, value);
+        let _ = store.save();
     }
 }
 

@@ -1,9 +1,9 @@
 //! Spectrum analyzer using FFT to compute frequency band magnitudes.
 //! Processes audio samples from a ring buffer and emits spectrum data via Tauri events.
 
-use ringbuf::traits::Consumer;
 use ringbuf::HeapCons;
-use rustfft::{num_complex::Complex, FftPlanner};
+use ringbuf::traits::Consumer;
+use rustfft::{FftPlanner, num_complex::Complex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -236,10 +236,10 @@ pub fn start_spectrum_emitter(
             }
 
             // Process samples and emit if we have data
-            if let Ok(mut cons) = consumer.try_lock() {
-                if let Some(spectrum) = analyzer.process(&mut cons) {
-                    let _ = app_handle.emit("spectrum-data", spectrum);
-                }
+            if let Ok(mut cons) = consumer.try_lock()
+                && let Some(spectrum) = analyzer.process(&mut cons)
+            {
+                let _ = app_handle.emit("spectrum-data", spectrum);
             }
         }
     });
