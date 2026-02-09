@@ -1,9 +1,12 @@
-use tauri::AppHandle;
+use log::warn;
+use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 
 use crate::audio::binaural::BinauralPreset;
 use crate::audio::compressor::DynamicsPreset;
 use crate::audio::equalizer::{default_bands_db, sanitize_bands_db};
+use crate::error::AppResult;
+use crate::state::AppState;
 
 const STORE_FILE: &str = "settings.json";
 const KEY_NORMALIZATION: &str = "normalization";
@@ -75,10 +78,22 @@ pub fn get_normalization_settings(app_handle: AppHandle) -> NormalizationSetting
 }
 
 #[tauri::command]
-pub fn set_normalization_settings(app_handle: AppHandle, mut settings: NormalizationSettings) {
+pub async fn set_normalization_settings(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    mut settings: NormalizationSettings,
+) -> AppResult<()> {
     settings.target_lufs = settings.target_lufs.clamp(-30.0, 0.0);
     settings.pre_amp_db = settings.pre_amp_db.clamp(-10.0, 10.0);
     write_normalization_settings(&app_handle, &settings);
+
+    if let Err(e) =
+        crate::commands::playback::reapply_settings_to_current_song(&app_handle, &state).await
+    {
+        warn!("Failed to reapply normalization settings to current playback: {e}");
+    }
+
+    Ok(())
 }
 
 // --- Playback Settings ---
@@ -157,8 +172,20 @@ pub fn get_playback_settings(app_handle: AppHandle) -> PlaybackSettings {
 }
 
 #[tauri::command]
-pub fn set_playback_settings(app_handle: AppHandle, mut settings: PlaybackSettings) {
+pub async fn set_playback_settings(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    mut settings: PlaybackSettings,
+) -> AppResult<()> {
     settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(1000, 12000);
     settings.equalizer_bands_db = sanitize_bands_db(&settings.equalizer_bands_db);
     write_playback_settings(&app_handle, &settings);
+
+    if let Err(e) =
+        crate::commands::playback::reapply_settings_to_current_song(&app_handle, &state).await
+    {
+        warn!("Failed to reapply playback settings to current playback: {e}");
+    }
+
+    Ok(())
 }
