@@ -422,14 +422,6 @@
     });
   }
 
-  async function resetEqualizer() {
-    const flat = eqPresets.find((preset) => preset.id === "flat");
-    if (!flat) return;
-    await handlePlaybackSettingChange({
-      equalizer_bands_db: [...flat.bands],
-    });
-  }
-
   async function loadNormalization() {
     loadingNorm = true;
     try {
@@ -917,7 +909,7 @@
                 </p>
 
                 <div
-                  class="eq-grid rounded border border-base-300/70 bg-gradient-to-b from-base-200/60 to-base-300/20 p-2"
+                  class="eq-grid rounded border border-base-300/70 bg-linear-to-b from-base-200/60 to-base-300/20 p-2"
                   class:opacity-60={!playbackSettings.equalizer_enabled}
                 >
                   {#each EQ_BAND_LABELS as label, index (`eq-band-${label}`)}
