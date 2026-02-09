@@ -11,6 +11,7 @@
     Download,
     Volume2,
     Disc3,
+    SlidersHorizontal,
   } from "lucide-svelte";
   import {
     getAudioCacheStats,
@@ -65,6 +66,115 @@
     jmeier: "Jan Meier profile with the most subtle crossfeed effect.",
     aggressive: "Max-strength crossfeed for obvious A/B testing.",
   };
+
+  const EQ_MIN_DB = -12;
+  const EQ_MAX_DB = 12;
+  const EQ_BANDS = 12;
+  const EQ_BAND_LABELS = [
+    "32",
+    "64",
+    "125",
+    "250",
+    "500",
+    "1k",
+    "2k",
+    "4k",
+    "8k",
+    "12k",
+    "16k",
+    "20k",
+  ] as const;
+
+  type EqPresetId =
+    | "flat"
+    | "bass_boost"
+    | "treble_sparkle"
+    | "vocal_clarity"
+    | "electronic_punch"
+    | "acoustic_warm"
+    | "late_night"
+    | "rock";
+
+  interface EqPreset {
+    id: EqPresetId;
+    label: string;
+    description: string;
+    bands: number[];
+  }
+
+  const eqPresets: EqPreset[] = [
+    {
+      id: "flat",
+      label: "Flat",
+      description: "Neutral response with no tonal shaping.",
+      bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    },
+    {
+      id: "bass_boost",
+      label: "Bass Boost",
+      description: "Adds low-end weight while keeping mids clear.",
+      bands: [5, 4, 3, 2, 1, 0, -1, -2, -2, -1, 0, 0],
+    },
+    {
+      id: "treble_sparkle",
+      label: "Treble Sparkle",
+      description: "Brightens cymbals, air, and detail.",
+      bands: [-2, -2, -1, 0, 0, 0, 1, 2, 3, 4, 4, 3],
+    },
+    {
+      id: "vocal_clarity",
+      label: "Vocal Clarity",
+      description: "Pushes vocal presence and reduces boom.",
+      bands: [-2, -1, 0, 2, 3, 3, 2, 1, -1, -2, -2, -2],
+    },
+    {
+      id: "electronic_punch",
+      label: "Electronic Punch",
+      description: "Tight lows with crisp top-end for EDM.",
+      bands: [4, 3, 2, 1, 0, 1, 2, 3, 2, 1, 0, -1],
+    },
+    {
+      id: "acoustic_warm",
+      label: "Acoustic Warm",
+      description: "Natural warmth for strings and live recordings.",
+      bands: [1, 2, 2, 1, 0, 0, 1, 1, 0, -1, -1, -1],
+    },
+    {
+      id: "late_night",
+      label: "Late Night",
+      description: "Low-volume friendly smile curve.",
+      bands: [3, 2, 1, 0, 0, 1, 2, 2, 1, 0, -1, -1],
+    },
+    {
+      id: "rock",
+      label: "Rock",
+      description: "Adds punch and edge for guitars and drums.",
+      bands: [3, 2, 1, 0, -1, 0, 1, 3, 3, 2, 1, 0],
+    },
+  ];
+
+  function sanitizeEqBands(bands: number[] | undefined): number[] {
+    const output = new Array<number>(EQ_BANDS).fill(0);
+    if (!bands) return output;
+
+    for (let i = 0; i < Math.min(EQ_BANDS, bands.length); i += 1) {
+      output[i] = Math.min(EQ_MAX_DB, Math.max(EQ_MIN_DB, bands[i] ?? 0));
+    }
+    return output;
+  }
+
+  function getEqPreset(bands: number[]): EqPresetId | null {
+    const tolerance = 0.05;
+    const normalized = sanitizeEqBands(bands);
+
+    for (const preset of eqPresets) {
+      const matches = preset.bands.every(
+        (value, index) => Math.abs(normalized[index] - value) <= tolerance
+      );
+      if (matches) return preset.id;
+    }
+    return null;
+  }
 
   interface Props {
     open: boolean;
@@ -232,7 +342,11 @@
 
   async function loadPlaybackSettings() {
     try {
-      playbackSettings = await getPlaybackSettings();
+      const settings = await getPlaybackSettings();
+      playbackSettings = {
+        ...settings,
+        equalizer_bands_db: sanitizeEqBands(settings.equalizer_bands_db),
+      };
     } catch (e) {
       error(`Failed to load playback settings: ${e}`);
     }
@@ -243,12 +357,69 @@
   ) {
     if (!playbackSettings) return;
     try {
-      const updated = { ...playbackSettings, ...update };
+      const updated = {
+        ...playbackSettings,
+        ...update,
+        equalizer_bands_db: sanitizeEqBands(
+          update.equalizer_bands_db ?? playbackSettings.equalizer_bands_db
+        ),
+      };
       await setPlaybackSettings(updated);
       playbackSettings = updated;
     } catch (e) {
       error(`Failed to save playback settings: ${e}`);
     }
+  }
+
+  const activeEqPreset = $derived.by(() => {
+    if (!playbackSettings) return null;
+    return getEqPreset(playbackSettings.equalizer_bands_db);
+  });
+
+  const activeEqDescription = $derived.by(() => {
+    if (!activeEqPreset) {
+      return "Custom EQ curve.";
+    }
+    return (
+      eqPresets.find((preset) => preset.id === activeEqPreset)?.description ??
+      "Custom EQ curve."
+    );
+  });
+
+  function formatDb(value: number): string {
+    return `${value >= 0 ? "+" : ""}${value.toFixed(1)} dB`;
+  }
+
+  function getEqBandValue(index: number): number {
+    return playbackSettings
+      ? sanitizeEqBands(playbackSettings.equalizer_bands_db)[index]
+      : 0;
+  }
+
+  function previewEqBand(index: number, value: number) {
+    if (!playbackSettings) return;
+    const bands = sanitizeEqBands(playbackSettings.equalizer_bands_db);
+    bands[index] = Math.min(EQ_MAX_DB, Math.max(EQ_MIN_DB, value));
+    playbackSettings = {
+      ...playbackSettings,
+      equalizer_bands_db: bands,
+    };
+  }
+
+  async function commitEqBand(index: number, value: number) {
+    if (!playbackSettings) return;
+    const bands = sanitizeEqBands(playbackSettings.equalizer_bands_db);
+    bands[index] = Math.min(EQ_MAX_DB, Math.max(EQ_MIN_DB, value));
+    await handlePlaybackSettingChange({ equalizer_bands_db: bands });
+  }
+
+  async function applyEqPreset(presetId: EqPresetId) {
+    const preset = eqPresets.find((entry) => entry.id === presetId);
+    if (!preset) return;
+    await handlePlaybackSettingChange({
+      equalizer_enabled: true,
+      equalizer_bands_db: [...preset.bands],
+    });
   }
 
   async function loadNormalization() {
@@ -698,6 +869,79 @@
                   </p>
                 </div>
               {/if}
+
+              <div class="border-t border-base-300 pt-3"></div>
+
+              <div
+                class="eq-card rounded-md border border-base-300/80 bg-base-100/60 p-3"
+              >
+                <div class="mb-3 flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <SlidersHorizontal class="h-4 w-4 text-primary" />
+                    <span class="text-sm font-medium">Equalizer</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm checkbox-primary"
+                    checked={playbackSettings.equalizer_enabled}
+                    onchange={(e) =>
+                      handlePlaybackSettingChange({
+                        equalizer_enabled: e.currentTarget.checked,
+                      })}
+                  />
+                </div>
+
+                <div class="mb-2 flex flex-wrap gap-1">
+                  {#each eqPresets as preset (preset.id)}
+                    <button
+                      class="btn btn-xs h-6 min-h-0 px-2 {activeEqPreset ===
+                      preset.id
+                        ? 'btn-primary'
+                        : 'btn-ghost'}"
+                      onclick={() => applyEqPreset(preset.id)}
+                    >
+                      {preset.label}
+                    </button>
+                  {/each}
+                </div>
+                <p class="mb-3 text-xs text-base-content/55">
+                  {activeEqDescription}
+                </p>
+
+                <div
+                  class="eq-grid rounded border border-base-300/70 bg-linear-to-b from-base-200/60 to-base-300/20 p-2"
+                  class:opacity-60={!playbackSettings.equalizer_enabled}
+                >
+                  {#each EQ_BAND_LABELS as label, index (`eq-band-${label}`)}
+                    <div class="eq-band">
+                      <div class="eq-band-value">
+                        {formatDb(getEqBandValue(index))}
+                      </div>
+                      <div class="eq-slider-wrap">
+                        <input
+                          type="range"
+                          min={EQ_MIN_DB}
+                          max={EQ_MAX_DB}
+                          step="0.5"
+                          class="eq-slider"
+                          value={getEqBandValue(index)}
+                          oninput={(e) =>
+                            previewEqBand(
+                              index,
+                              parseFloat(e.currentTarget.value)
+                            )}
+                          onchange={(e) =>
+                            commitEqBand(
+                              index,
+                              parseFloat(e.currentTarget.value)
+                            )}
+                        />
+                      </div>
+                      <div class="eq-band-label">{label}</div>
+                    </div>
+                  {/each}
+                </div>
+              </div>
             </div>
           {/if}
         </div>
@@ -1062,6 +1306,80 @@
 {/if}
 
 <style>
+  .eq-card {
+    box-shadow:
+      inset 0 1px 0 oklch(1 0 0 / 0.7),
+      0 8px 20px oklch(0.42 0.02 250 / 0.08);
+  }
+
+  .eq-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .eq-band {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .eq-band-value {
+    font-size: 0.65rem;
+    line-height: 1;
+    color: oklch(0.48 0.02 250);
+    min-height: 0.75rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .eq-band-label {
+    font-size: 0.65rem;
+    line-height: 1;
+    color: oklch(0.42 0.01 250);
+    letter-spacing: 0.01em;
+  }
+
+  .eq-slider-wrap {
+    height: 92px;
+    width: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .eq-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 92px;
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(
+      to right,
+      oklch(0.72 0.05 245 / 0.9),
+      oklch(0.45 0.12 250 / 0.9)
+    );
+    transform: rotate(-90deg);
+    cursor: ns-resize;
+    outline: none;
+  }
+
+  .eq-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: oklch(0.97 0.01 250);
+    border: 1px solid oklch(0.52 0.04 250);
+    box-shadow: 0 1px 3px oklch(0 0 0 / 0.28);
+  }
+
+  .eq-slider:focus-visible::-webkit-slider-thumb {
+    outline: 2px solid oklch(0.58 0.2 250);
+    outline-offset: 2px;
+  }
+
   .preamp-slider {
     -webkit-appearance: none;
     appearance: none;
@@ -1080,5 +1398,11 @@
     border-radius: 50%;
     background: oklch(0.58 0.2 250);
     cursor: pointer;
+  }
+
+  @media (min-width: 540px) {
+    .eq-grid {
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+    }
   }
 </style>

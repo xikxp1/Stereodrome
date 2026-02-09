@@ -3,6 +3,7 @@ use tauri_plugin_store::StoreExt;
 
 use crate::audio::binaural::BinauralPreset;
 use crate::audio::compressor::DynamicsPreset;
+use crate::audio::equalizer::{default_bands_db, sanitize_bands_db};
 
 const STORE_FILE: &str = "settings.json";
 const KEY_NORMALIZATION: &str = "normalization";
@@ -94,6 +95,10 @@ pub struct PlaybackSettings {
     pub binaural_enabled: bool,
     #[serde(default = "default_binaural_preset")]
     pub binaural_preset: BinauralPreset,
+    #[serde(default)]
+    pub equalizer_enabled: bool,
+    #[serde(default = "default_equalizer_bands_db")]
+    pub equalizer_bands_db: Vec<f32>,
 }
 
 fn default_crossfade_duration() -> u32 {
@@ -108,6 +113,10 @@ fn default_binaural_preset() -> BinauralPreset {
     BinauralPreset::Default
 }
 
+fn default_equalizer_bands_db() -> Vec<f32> {
+    default_bands_db()
+}
+
 impl Default for PlaybackSettings {
     fn default() -> Self {
         Self {
@@ -116,6 +125,8 @@ impl Default for PlaybackSettings {
             crossfade_duration_ms: 5000,
             binaural_enabled: false,
             binaural_preset: BinauralPreset::Default,
+            equalizer_enabled: false,
+            equalizer_bands_db: default_bands_db(),
         }
     }
 }
@@ -148,5 +159,6 @@ pub fn get_playback_settings(app_handle: AppHandle) -> PlaybackSettings {
 #[tauri::command]
 pub fn set_playback_settings(app_handle: AppHandle, mut settings: PlaybackSettings) {
     settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(1000, 12000);
+    settings.equalizer_bands_db = sanitize_bands_db(&settings.equalizer_bands_db);
     write_playback_settings(&app_handle, &settings);
 }
