@@ -88,6 +88,17 @@ enum AudioCommand {
     Shutdown,
 }
 
+#[derive(Debug)]
+pub struct CrossfadePlayRequest {
+    pub audio_data: Vec<u8>,
+    pub metadata: SongMetadata,
+    pub duration_secs: f64,
+    pub normalization_gain: Option<f32>,
+    pub dynamics_preset: Option<DynamicsPreset>,
+    pub binaural_preset: Option<BinauralPreset>,
+    pub crossfade_duration_ms: u32,
+}
+
 /// A segment within a gapless playback chain.
 /// Each segment represents one song appended to the same Rodio Sink.
 #[derive(Debug, Clone)]
@@ -311,16 +322,17 @@ impl AudioPlayer {
     }
 
     /// Start a crossfade transition: fade out current song while fading in a new one.
-    pub fn crossfade_play(
-        &self,
-        audio_data: Vec<u8>,
-        metadata: SongMetadata,
-        duration_secs: f64,
-        normalization_gain: Option<f32>,
-        dynamics_preset: Option<DynamicsPreset>,
-        binaural_preset: Option<BinauralPreset>,
-        crossfade_duration_ms: u32,
-    ) -> AppResult<()> {
+    pub fn crossfade_play(&self, request: CrossfadePlayRequest) -> AppResult<()> {
+        let CrossfadePlayRequest {
+            audio_data,
+            metadata,
+            duration_secs,
+            normalization_gain,
+            dynamics_preset,
+            binaural_preset,
+            crossfade_duration_ms,
+        } = request;
+
         self.command_tx
             .send(AudioCommand::CrossfadePlay {
                 audio_data,

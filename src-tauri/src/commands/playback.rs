@@ -4,6 +4,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::audio::binaural::BinauralPreset;
 use crate::audio::compressor::DynamicsPreset;
 use crate::audio::loudness;
+use crate::audio::player::CrossfadePlayRequest;
 use crate::audio::queue::RepeatMode;
 use crate::audio::{PlaybackStatus, SongMetadata};
 use crate::cache::AudioCache;
@@ -230,15 +231,15 @@ pub async fn crossfade_play_by_id(
 
     {
         let audio_player = state.audio_player.lock_recover();
-        audio_player.crossfade_play(
-            data.audio_data,
-            data.metadata,
-            data.duration,
-            data.normalization_gain,
-            data.dynamics_preset,
-            data.binaural_preset,
+        audio_player.crossfade_play(CrossfadePlayRequest {
+            audio_data: data.audio_data,
+            metadata: data.metadata,
+            duration_secs: data.duration,
+            normalization_gain: data.normalization_gain,
+            dynamics_preset: data.dynamics_preset,
+            binaural_preset: data.binaural_preset,
             crossfade_duration_ms,
-        )?;
+        })?;
     }
 
     spawn_loudness_analysis_if_needed(
@@ -307,15 +308,15 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
     // Send CrossfadePlay command
     {
         let audio_player = state.audio_player.lock_recover();
-        if let Err(e) = audio_player.crossfade_play(
-            data.audio_data,
-            data.metadata,
-            data.duration,
-            data.normalization_gain,
-            data.dynamics_preset,
-            data.binaural_preset,
+        if let Err(e) = audio_player.crossfade_play(CrossfadePlayRequest {
+            audio_data: data.audio_data,
+            metadata: data.metadata,
+            duration_secs: data.duration,
+            normalization_gain: data.normalization_gain,
+            dynamics_preset: data.dynamics_preset,
+            binaural_preset: data.binaural_preset,
             crossfade_duration_ms,
-        ) {
+        }) {
             warn!("Crossfade: failed to start: {e}");
             return;
         }

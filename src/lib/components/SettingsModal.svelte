@@ -8,10 +8,8 @@
     Database,
     LogOut,
     Monitor,
-    Activity,
     Download,
     Volume2,
-    ShieldCheck,
     Disc3,
   } from "lucide-svelte";
   import {
