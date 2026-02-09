@@ -460,6 +460,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bs2b"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd71006d2e9f65886c2a9a874b735f9d6d57e35533eafe06afc36bd70f3aff4e"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5101,6 +5110,7 @@ name = "stereodrome"
 version = "0.1.6"
 dependencies = [
  "base64 0.22.1",
+ "bs2b",
  "chrono",
  "ebur128",
  "filetime",

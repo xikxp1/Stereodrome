@@ -1,4 +1,5 @@
 pub mod analyzer;
+pub mod binaural;
 pub mod compressor;
 pub mod dynamics;
 pub mod loudness;

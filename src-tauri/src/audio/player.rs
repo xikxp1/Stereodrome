@@ -1,6 +1,6 @@
 use log::{error, warn};
 use ringbuf::{traits::Split, HeapCons, HeapProd, HeapRb};
-use rodio::{Decoder, OutputStreamBuilder, Sink};
+use rodio::{Decoder, OutputStreamBuilder, Sink, Source};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::analyzer::AnalyzingSource;
+use crate::audio::binaural::{BinauralPreset, BinauralSource};
 use crate::audio::compressor::DynamicsPreset;
 use crate::audio::dynamics::DynamicsSource;
 use crate::audio::normalizer::NormalizingSource;
@@ -56,6 +57,7 @@ enum AudioCommand {
         duration_secs: f64,
         normalization_gain: Option<f32>,
         dynamics_preset: Option<DynamicsPreset>,
+        binaural_preset: Option<BinauralPreset>,
     },
     Pause,
     Resume,
@@ -70,6 +72,7 @@ enum AudioCommand {
         duration_secs: f64,
         normalization_gain: Option<f32>,
         dynamics_preset: Option<DynamicsPreset>,
+        binaural_preset: Option<BinauralPreset>,
     },
     /// Crossfade to a new song: keep the current sink fading out
     /// while a new sink fades in over the specified duration.
@@ -79,9 +82,21 @@ enum AudioCommand {
         duration_secs: f64,
         normalization_gain: Option<f32>,
         dynamics_preset: Option<DynamicsPreset>,
+        binaural_preset: Option<BinauralPreset>,
         crossfade_duration_ms: u32,
     },
     Shutdown,
+}
+
+#[derive(Debug)]
+pub struct CrossfadePlayRequest {
+    pub audio_data: Vec<u8>,
+    pub metadata: SongMetadata,
+    pub duration_secs: f64,
+    pub normalization_gain: Option<f32>,
+    pub dynamics_preset: Option<DynamicsPreset>,
+    pub binaural_preset: Option<BinauralPreset>,
+    pub crossfade_duration_ms: u32,
 }
 
 /// A segment within a gapless playback chain.
@@ -269,6 +284,7 @@ impl AudioPlayer {
         duration_secs: f64,
         normalization_gain: Option<f32>,
         dynamics_preset: Option<DynamicsPreset>,
+        binaural_preset: Option<BinauralPreset>,
     ) -> AppResult<()> {
         self.command_tx
             .send(AudioCommand::Play {
@@ -277,6 +293,7 @@ impl AudioPlayer {
                 duration_secs,
                 normalization_gain,
                 dynamics_preset,
+                binaural_preset,
             })
             .map_err(|e| AppError::Audio(format!("Failed to send play command: {}", e)))
     }
@@ -290,6 +307,7 @@ impl AudioPlayer {
         duration_secs: f64,
         normalization_gain: Option<f32>,
         dynamics_preset: Option<DynamicsPreset>,
+        binaural_preset: Option<BinauralPreset>,
     ) -> AppResult<()> {
         self.command_tx
             .send(AudioCommand::AppendGapless {
@@ -298,20 +316,23 @@ impl AudioPlayer {
                 duration_secs,
                 normalization_gain,
                 dynamics_preset,
+                binaural_preset,
             })
             .map_err(|e| AppError::Audio(format!("Failed to send gapless command: {}", e)))
     }
 
     /// Start a crossfade transition: fade out current song while fading in a new one.
-    pub fn crossfade_play(
-        &self,
-        audio_data: Vec<u8>,
-        metadata: SongMetadata,
-        duration_secs: f64,
-        normalization_gain: Option<f32>,
-        dynamics_preset: Option<DynamicsPreset>,
-        crossfade_duration_ms: u32,
-    ) -> AppResult<()> {
+    pub fn crossfade_play(&self, request: CrossfadePlayRequest) -> AppResult<()> {
+        let CrossfadePlayRequest {
+            audio_data,
+            metadata,
+            duration_secs,
+            normalization_gain,
+            dynamics_preset,
+            binaural_preset,
+            crossfade_duration_ms,
+        } = request;
+
         self.command_tx
             .send(AudioCommand::CrossfadePlay {
                 audio_data,
@@ -319,6 +340,7 @@ impl AudioPlayer {
                 duration_secs,
                 normalization_gain,
                 dynamics_preset,
+                binaural_preset,
                 crossfade_duration_ms,
             })
             .map_err(|e| AppError::Audio(format!("Failed to send crossfade command: {}", e)))
@@ -721,6 +743,41 @@ impl CrossfadeState {
     }
 }
 
+fn append_processed_source<S>(
+    sink: &Sink,
+    source: S,
+    normalization_gain: Option<f32>,
+    dynamics_preset: Option<&DynamicsPreset>,
+    binaural_preset: Option<&BinauralPreset>,
+) where
+    S: Source<Item = f32> + Send + 'static,
+{
+    let gain = normalization_gain.unwrap_or(1.0);
+
+    match (dynamics_preset, binaural_preset) {
+        (Some(dynamics), Some(binaural)) => {
+            let normalizing_source = NormalizingSource::with_clamp(source, gain, false);
+            let dynamics_source = DynamicsSource::new(normalizing_source, dynamics);
+            let binaural_source = BinauralSource::new(dynamics_source, binaural);
+            sink.append(binaural_source);
+        }
+        (Some(dynamics), None) => {
+            let normalizing_source = NormalizingSource::with_clamp(source, gain, false);
+            let dynamics_source = DynamicsSource::new(normalizing_source, dynamics);
+            sink.append(dynamics_source);
+        }
+        (None, Some(binaural)) => {
+            let normalizing_source = NormalizingSource::new(source, gain);
+            let binaural_source = BinauralSource::new(normalizing_source, binaural);
+            sink.append(binaural_source);
+        }
+        (None, None) => {
+            let normalizing_source = NormalizingSource::new(source, gain);
+            sink.append(normalizing_source);
+        }
+    }
+}
+
 /// Main audio thread function
 fn run_audio_thread(
     command_rx: Receiver<AudioCommand>,
@@ -753,6 +810,7 @@ fn run_audio_thread(
                     duration_secs,
                     normalization_gain,
                     dynamics_preset,
+                    binaural_preset,
                 } => {
                     // Stop any existing playback including crossfade
                     if let Some(sink) = current_sink.take() {
@@ -785,24 +843,13 @@ fn run_audio_thread(
                             let volume = shared_state.read_inner().volume;
                             sink.set_volume(volume);
 
-                            // Build pipeline: normalizer → optional dynamics
-                            if let Some(ref preset) = dynamics_preset {
-                                // Disable hard clamp when dynamics is active (limiter handles peaks)
-                                let normalizing_source = NormalizingSource::with_clamp(
-                                    analyzing_source,
-                                    normalization_gain.unwrap_or(1.0),
-                                    false,
-                                );
-                                let dynamics_source =
-                                    DynamicsSource::new(normalizing_source, preset);
-                                sink.append(dynamics_source);
-                            } else {
-                                let normalizing_source = NormalizingSource::new(
-                                    analyzing_source,
-                                    normalization_gain.unwrap_or(1.0),
-                                );
-                                sink.append(normalizing_source);
-                            }
+                            append_processed_source(
+                                &sink,
+                                analyzing_source,
+                                normalization_gain,
+                                dynamics_preset.as_ref(),
+                                binaural_preset.as_ref(),
+                            );
 
                             // Update shared state (single lock acquisition)
                             {
@@ -959,6 +1006,7 @@ fn run_audio_thread(
                     duration_secs,
                     normalization_gain,
                     dynamics_preset,
+                    binaural_preset,
                 } => {
                     if let Some(ref sink) = current_sink {
                         let byte_len = audio_data.len() as u64;
@@ -973,23 +1021,13 @@ fn run_audio_thread(
                                 let analyzing_source =
                                     AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
 
-                                // Build same pipeline as Play
-                                if let Some(ref preset) = dynamics_preset {
-                                    let normalizing_source = NormalizingSource::with_clamp(
-                                        analyzing_source,
-                                        normalization_gain.unwrap_or(1.0),
-                                        false,
-                                    );
-                                    let dynamics_source =
-                                        DynamicsSource::new(normalizing_source, preset);
-                                    sink.append(dynamics_source);
-                                } else {
-                                    let normalizing_source = NormalizingSource::new(
-                                        analyzing_source,
-                                        normalization_gain.unwrap_or(1.0),
-                                    );
-                                    sink.append(normalizing_source);
-                                }
+                                append_processed_source(
+                                    sink,
+                                    analyzing_source,
+                                    normalization_gain,
+                                    dynamics_preset.as_ref(),
+                                    binaural_preset.as_ref(),
+                                );
 
                                 // Add gapless segment and update total duration
                                 {
@@ -1019,6 +1057,7 @@ fn run_audio_thread(
                     duration_secs,
                     normalization_gain,
                     dynamics_preset,
+                    binaural_preset,
                     crossfade_duration_ms,
                 } => {
                     // Stop any previous crossfade that's still running
@@ -1043,23 +1082,13 @@ fn run_audio_thread(
                             let new_sink = Sink::connect_new(stream.mixer());
                             new_sink.set_volume(0.0); // Start silent, will ramp up
 
-                            // Build pipeline: normalizer → optional dynamics
-                            if let Some(ref preset) = dynamics_preset {
-                                let normalizing_source = NormalizingSource::with_clamp(
-                                    analyzing_source,
-                                    normalization_gain.unwrap_or(1.0),
-                                    false,
-                                );
-                                let dynamics_source =
-                                    DynamicsSource::new(normalizing_source, preset);
-                                new_sink.append(dynamics_source);
-                            } else {
-                                let normalizing_source = NormalizingSource::new(
-                                    analyzing_source,
-                                    normalization_gain.unwrap_or(1.0),
-                                );
-                                new_sink.append(normalizing_source);
-                            }
+                            append_processed_source(
+                                &new_sink,
+                                analyzing_source,
+                                normalization_gain,
+                                dynamics_preset.as_ref(),
+                                binaural_preset.as_ref(),
+                            );
 
                             // Update shared state for the new song
                             {

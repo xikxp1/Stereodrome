@@ -8,10 +8,8 @@
     Database,
     LogOut,
     Monitor,
-    Activity,
     Download,
     Volume2,
-    ShieldCheck,
     Disc3,
   } from "lucide-svelte";
   import {
@@ -44,6 +42,7 @@
     NormalizationSettings,
     NormalizationStats,
     AnalysisProgress,
+    BinauralPreset,
     DynamicsPreset,
     PlaybackSettings,
   } from "$lib/types";
@@ -53,6 +52,18 @@
     light: "Gentle compression. Preserves dynamics.",
     medium: "Balanced compression for mixed playlists.",
     heavy: "Strong compression. Maximum consistency.",
+  };
+  const binauralPresets: BinauralPreset[] = [
+    "default",
+    "cmoy",
+    "jmeier",
+    "aggressive",
+  ];
+  const binauralDescriptions: Record<BinauralPreset, string> = {
+    default: "Moderate crossfeed (700Hz / 4.5dB).",
+    cmoy: "Subtle crossffed that matches famous Chu Moy analog circuit.",
+    jmeier: "Jan Meier profile with the most subtle crossfeed effect.",
+    aggressive: "Max-strength crossfeed for obvious A/B testing.",
   };
 
   interface Props {
@@ -549,10 +560,7 @@
 
           <div class="space-y-3">
             <label class="flex cursor-pointer items-center justify-between">
-              <div class="flex items-center gap-2">
-                <Activity class="h-4 w-4 text-base-content/60" />
-                <span class="text-sm">Spectrum Visualizer</span>
-              </div>
+              <span class="text-sm">Spectrum Visualizer</span>
               <input
                 type="checkbox"
                 class="checkbox checkbox-sm checkbox-primary"
@@ -639,6 +647,55 @@
                       </button>
                     {/each}
                   </div>
+                </div>
+              {/if}
+
+              <div class="border-t border-base-300 pt-3"></div>
+
+              <label class="flex cursor-pointer items-center justify-between">
+                <span class="text-sm">Binaural crossfeed</span>
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-sm checkbox-primary"
+                  checked={playbackSettings.binaural_enabled}
+                  onchange={(e) =>
+                    handlePlaybackSettingChange({
+                      binaural_enabled: e.currentTarget.checked,
+                    })}
+                />
+              </label>
+              <p class="text-xs text-base-content/50">
+                Convert stereo to binaural-style headphone playback with bs2b.
+              </p>
+
+              {#if playbackSettings.binaural_enabled}
+                <div>
+                  <div class="mb-2 text-sm text-base-content/60">Preset</div>
+                  <div class="flex flex-wrap gap-1">
+                    {#each binauralPresets as preset (preset)}
+                      <button
+                        class="btn btn-xs h-6 min-h-0 px-3 {playbackSettings.binaural_preset ===
+                        preset
+                          ? 'btn-primary'
+                          : 'btn-ghost'}"
+                        onclick={() =>
+                          handlePlaybackSettingChange({
+                            binaural_preset: preset,
+                          })}
+                      >
+                        {preset === "default"
+                          ? "Default"
+                          : preset === "cmoy"
+                            ? "C-Moy"
+                            : preset === "jmeier"
+                              ? "JMeier"
+                              : "Aggressive"}
+                      </button>
+                    {/each}
+                  </div>
+                  <p class="mt-1 text-xs text-base-content/50">
+                    {binauralDescriptions[playbackSettings.binaural_preset]}
+                  </p>
                 </div>
               {/if}
             </div>
@@ -765,10 +822,7 @@
 
                 <!-- Prevent clipping -->
                 <label class="flex cursor-pointer items-center justify-between">
-                  <div class="flex items-center gap-2">
-                    <ShieldCheck class="h-4 w-4 text-base-content/60" />
-                    <span class="text-sm">Prevent clipping</span>
-                  </div>
+                  <span class="text-sm">Prevent clipping</span>
                   <input
                     type="checkbox"
                     class="checkbox checkbox-sm checkbox-primary"
@@ -782,10 +836,7 @@
 
                 <!-- Dynamics processing -->
                 <label class="flex cursor-pointer items-center justify-between">
-                  <div class="flex items-center gap-2">
-                    <Activity class="h-4 w-4 text-base-content/60" />
-                    <span class="text-sm">Dynamics processing</span>
-                  </div>
+                  <span class="text-sm">Dynamics processing</span>
                   <input
                     type="checkbox"
                     class="checkbox checkbox-sm checkbox-primary"

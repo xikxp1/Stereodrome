@@ -1,6 +1,7 @@
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
+use crate::audio::binaural::BinauralPreset;
 use crate::audio::compressor::DynamicsPreset;
 
 const STORE_FILE: &str = "settings.json";
@@ -89,6 +90,10 @@ pub struct PlaybackSettings {
     pub crossfade_enabled: bool,
     #[serde(default = "default_crossfade_duration")]
     pub crossfade_duration_ms: u32,
+    #[serde(default)]
+    pub binaural_enabled: bool,
+    #[serde(default = "default_binaural_preset")]
+    pub binaural_preset: BinauralPreset,
 }
 
 fn default_crossfade_duration() -> u32 {
@@ -99,12 +104,18 @@ fn default_true() -> bool {
     true
 }
 
+fn default_binaural_preset() -> BinauralPreset {
+    BinauralPreset::Default
+}
+
 impl Default for PlaybackSettings {
     fn default() -> Self {
         Self {
             gapless_enabled: true,
             crossfade_enabled: false,
             crossfade_duration_ms: 5000,
+            binaural_enabled: false,
+            binaural_preset: BinauralPreset::Default,
         }
     }
 }
