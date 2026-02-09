@@ -26,12 +26,11 @@ pub const KEY_MAX_CACHE_SIZE: &str = "max_cache_size";
 
 /// Read the configured max cache size from settings store
 fn read_max_cache_size(app_handle: &AppHandle) -> u64 {
-    if let Ok(store) = app_handle.store(STORE_FILE) {
-        if let Some(value) = store.get(KEY_MAX_CACHE_SIZE) {
-            if let Some(size) = value.as_u64() {
-                return size.clamp(MIN_CACHE_SIZE, MAX_CACHE_SIZE);
-            }
-        }
+    if let Ok(store) = app_handle.store(STORE_FILE)
+        && let Some(value) = store.get(KEY_MAX_CACHE_SIZE)
+        && let Some(size) = value.as_u64()
+    {
+        return size.clamp(MIN_CACHE_SIZE, MAX_CACHE_SIZE);
     }
     DEFAULT_MAX_CACHE_SIZE
 }
@@ -204,21 +203,21 @@ impl AudioCache {
         let read_dir = fs::read_dir(&self.cache_dir)?;
         for entry in read_dir.flatten() {
             let path = entry.path();
-            if path.is_file() {
-                if let Ok(metadata) = entry.metadata() {
-                    let size = metadata.len();
-                    // Use modified time as a fallback for accessed time
-                    // (some filesystems don't update atime)
-                    let accessed = metadata
-                        .accessed()
-                        .or_else(|_| metadata.modified())
-                        .unwrap_or(SystemTime::UNIX_EPOCH);
-                    entries.push(CacheEntry {
-                        path,
-                        size,
-                        accessed,
-                    });
-                }
+            if path.is_file()
+                && let Ok(metadata) = entry.metadata()
+            {
+                let size = metadata.len();
+                // Use modified time as a fallback for accessed time
+                // (some filesystems don't update atime)
+                let accessed = metadata
+                    .accessed()
+                    .or_else(|_| metadata.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                entries.push(CacheEntry {
+                    path,
+                    size,
+                    accessed,
+                });
             }
         }
 

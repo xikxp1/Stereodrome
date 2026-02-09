@@ -10,6 +10,7 @@ pub mod queue;
 pub mod search;
 pub mod settings;
 pub mod updater;
+pub mod windowing;
 
 pub use auth::*;
 pub use cache::*;
@@ -23,3 +24,4 @@ pub use queue::*;
 pub use search::*;
 pub use settings::*;
 pub use updater::*;
+pub use windowing::*;

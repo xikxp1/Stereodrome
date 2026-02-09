@@ -1,12 +1,12 @@
 //! Client thread that processes submarine client requests.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use log::{debug, error, warn};
-use submarine::{auth::AuthBuilder, Client};
+use submarine::{Client, auth::AuthBuilder};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -71,12 +71,11 @@ impl ClientThread {
             tokio::select! {
                 // Heartbeat: validate connection periodically
                 _ = heartbeat.tick() => {
-                    if self.client.is_some() {
-                        if let Err(e) = self.validate_connection().await {
+                    if self.client.is_some()
+                        && let Err(e) = self.validate_connection().await {
                             warn!("Connection validation failed: {}, disconnecting", e);
                             self.handle_disconnect();
                         }
-                    }
                 }
                 // Handle incoming requests
                 request = self.request_rx.recv() => {

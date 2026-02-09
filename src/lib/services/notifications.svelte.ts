@@ -11,8 +11,14 @@ class NotificationService {
   private isFocused = $state(true);
   private permissionGranted = $state(false);
   private unlistenFocus: UnlistenFn | null = null;
+  private initialized = false;
+  private readonly shouldNotify = getCurrentWindow().label === "main";
 
   async init() {
+    if (this.initialized) return;
+    this.initialized = true;
+    if (!this.shouldNotify) return;
+
     // Check/request notification permission
     let granted = await isPermissionGranted();
     if (!granted) {
@@ -37,6 +43,7 @@ class NotificationService {
     artist: string,
     coverArtId: string | null
   ) {
+    if (!this.shouldNotify) return;
     if (!this.permissionGranted || this.isFocused) {
       return;
     }
@@ -65,9 +72,12 @@ class NotificationService {
   }
 
   destroy() {
+    if (!this.initialized) return;
     if (this.unlistenFocus) {
       this.unlistenFocus();
     }
+    this.unlistenFocus = null;
+    this.initialized = false;
   }
 }
 

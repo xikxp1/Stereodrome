@@ -11,7 +11,7 @@ use crate::audio::{PlaybackStatus, SongMetadata};
 use crate::cache::AudioCache;
 use crate::commands::queue::persist_and_emit;
 use crate::commands::settings::{
-    read_normalization_settings, read_playback_settings, NormalizationMode, NormalizationSettings,
+    NormalizationMode, NormalizationSettings, read_normalization_settings, read_playback_settings,
 };
 use crate::db;
 use crate::error::{AppError, AppResult, MutexExt};

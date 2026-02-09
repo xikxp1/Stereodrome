@@ -13,6 +13,7 @@ import type {
   NormalizationStats,
   AnalysisProgress,
   PlaybackSettings,
+  MiniPlayerPosition,
 } from "$lib/types";
 
 // Auth commands
@@ -104,6 +105,20 @@ export async function getSongCoverArt(
   size?: number
 ): Promise<string | null> {
   return invoke<string | null>("get_song_cover_art", { songId, size });
+}
+
+export async function openMiniPlayer(
+  position: MiniPlayerPosition
+): Promise<void> {
+  return invoke("open_mini_player", { position });
+}
+
+export async function closeMiniPlayer(): Promise<void> {
+  return invoke("close_mini_player");
+}
+
+export async function restoreMainWindow(): Promise<void> {
+  return invoke("restore_main_window");
 }
 
 // Audio cache commands

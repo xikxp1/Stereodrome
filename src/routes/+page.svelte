@@ -22,12 +22,24 @@
     getSongs,
     seekPlayback,
     getCoverArt,
+    openMiniPlayer,
   } from "$lib/api/commands";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { emit } from "@tauri-apps/api/event";
+  import {
+    availableMonitors,
+    currentMonitor,
+    type Monitor,
+  } from "@tauri-apps/api/window";
   import { error } from "@tauri-apps/plugin-log";
   import { playlistStore } from "$lib/stores/playlist.svelte";
-  import type { Artist, Album, Song, Playlist } from "$lib/types";
+  import type {
+    Artist,
+    Album,
+    Song,
+    Playlist,
+    MiniPlayerPosition,
+  } from "$lib/types";
 
   // View state
   let activeView = $state("music");
@@ -64,6 +76,18 @@
   // Cover art state
   let coverArtUrl = $state<string | null>(null);
   let lastCoverArtId = $state<string | null>(null);
+
+  const MINI_PLAYER_POSITION_KEY = "mini_player_position_v1";
+  const MINI_PLAYER_WIDTH = 320;
+  const MINI_PLAYER_HEIGHT = 72;
+  const MINI_PLAYER_MARGIN = 8;
+
+  interface LogicalMonitorBounds {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }
 
   // Fetch cover art thumbnail when track changes
   $effect(() => {
@@ -141,6 +165,93 @@
     } finally {
       isLoading = false;
     }
+  }
+
+  function readStoredMiniPlayerPosition(): MiniPlayerPosition | null {
+    const stored = localStorage.getItem(MINI_PLAYER_POSITION_KEY);
+    if (!stored) return null;
+
+    try {
+      const parsed = JSON.parse(stored) as MiniPlayerPosition;
+      if (Number.isFinite(parsed.x) && Number.isFinite(parsed.y)) {
+        return parsed;
+      }
+    } catch {
+      // Ignore malformed saved coordinates.
+    }
+
+    return null;
+  }
+
+  function getLogicalMonitorBounds(monitor: Monitor): LogicalMonitorBounds {
+    const scale = monitor.scaleFactor || 1;
+    return {
+      x: monitor.workArea.position.x / scale,
+      y: monitor.workArea.position.y / scale,
+      width: monitor.workArea.size.width / scale,
+      height: monitor.workArea.size.height / scale,
+    };
+  }
+
+  function clampPositionToMonitor(
+    position: MiniPlayerPosition,
+    bounds: LogicalMonitorBounds
+  ): MiniPlayerPosition {
+    const maxX = bounds.x + Math.max(0, bounds.width - MINI_PLAYER_WIDTH);
+    const maxY = bounds.y + Math.max(0, bounds.height - MINI_PLAYER_HEIGHT);
+
+    return {
+      x: Math.round(Math.min(Math.max(position.x, bounds.x), maxX)),
+      y: Math.round(Math.min(Math.max(position.y, bounds.y), maxY)),
+    };
+  }
+
+  function monitorContainsPosition(
+    bounds: LogicalMonitorBounds,
+    position: MiniPlayerPosition
+  ): boolean {
+    return (
+      position.x >= bounds.x &&
+      position.y >= bounds.y &&
+      position.x < bounds.x + bounds.width &&
+      position.y < bounds.y + bounds.height
+    );
+  }
+
+  function getDefaultMiniPlayerPosition(bounds: LogicalMonitorBounds) {
+    const maxX = bounds.x + Math.max(0, bounds.width - MINI_PLAYER_WIDTH);
+    const x = Math.max(bounds.x, Math.round(maxX - MINI_PLAYER_MARGIN));
+    const y = Math.round(
+      Math.min(
+        bounds.y + MINI_PLAYER_MARGIN,
+        bounds.y + Math.max(0, bounds.height - MINI_PLAYER_HEIGHT)
+      )
+    );
+    return { x, y };
+  }
+
+  async function resolveMiniPlayerPosition(): Promise<MiniPlayerPosition> {
+    const [monitors, activeMonitor] = await Promise.all([
+      availableMonitors(),
+      currentMonitor(),
+    ]);
+    const fallbackMonitor = activeMonitor ?? monitors[0] ?? null;
+
+    if (!fallbackMonitor) {
+      return { x: 100, y: 100 };
+    }
+
+    const fallbackBounds = getLogicalMonitorBounds(fallbackMonitor);
+    const savedPosition = readStoredMiniPlayerPosition();
+    if (savedPosition) {
+      const boundsForSavedPosition = monitors
+        .map(getLogicalMonitorBounds)
+        .find((bounds) => monitorContainsPosition(bounds, savedPosition));
+      const targetBounds = boundsForSavedPosition ?? fallbackBounds;
+      return clampPositionToMonitor(savedPosition, targetBounds);
+    }
+
+    return getDefaultMiniPlayerPosition(fallbackBounds);
   }
 
   // Compute filtered data - all columns derived from shown songs
@@ -383,6 +494,15 @@
 
   function handleSettingsClose() {
     settingsOpen = false;
+  }
+
+  async function handleMiniPlayerToggle() {
+    try {
+      const position = await resolveMiniPlayerPosition();
+      await openMiniPlayer(position);
+    } catch (e) {
+      error(`Failed to open mini player: ${e}`);
+    }
   }
 
   function handleQueueItemClick(songId: string) {
@@ -630,6 +750,7 @@
       onQueueToggle={handleQueueToggle}
       onCoverArtClick={handleCoverArtClick}
       onSettingsClick={handleSettingsToggle}
+      onMiniPlayerToggle={handleMiniPlayerToggle}
     />
 
     <!-- Main Content Area -->

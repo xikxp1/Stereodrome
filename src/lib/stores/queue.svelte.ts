@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { error } from "@tauri-apps/plugin-log";
 import type { Song } from "$lib/types";
 
@@ -33,6 +34,7 @@ class QueueStore {
   private unlistenChanged: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
   private unlistenQueueEnded: UnlistenFn | null = null;
+  private readonly shouldAutoAdvance = getCurrentWindow().label === "main";
 
   constructor() {
     this.init();
@@ -52,9 +54,11 @@ class QueueStore {
 
     // Listen for playback ended to auto-advance
     // Pass force=false to respect repeat mode (e.g., RepeatMode::One will replay current song)
-    this.unlistenEnded = await listen("playback-ended", async () => {
-      await this.playNext(undefined, false);
-    });
+    if (this.shouldAutoAdvance) {
+      this.unlistenEnded = await listen("playback-ended", async () => {
+        await this.playNext(undefined, false);
+      });
+    }
 
     // Listen for queue ended
     this.unlistenQueueEnded = await listen("queue-ended", () => {

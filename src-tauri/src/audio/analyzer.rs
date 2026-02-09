@@ -1,10 +1,10 @@
 //! Audio sample analyzer that wraps a Rodio Source to capture PCM samples
 //! for spectrum analysis while forwarding audio to the sink.
 
-use ringbuf::traits::Producer;
 use ringbuf::HeapProd;
-use rodio::source::SeekError;
+use ringbuf::traits::Producer;
 use rodio::Source;
+use rodio::source::SeekError;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;

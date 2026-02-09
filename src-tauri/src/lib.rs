@@ -13,7 +13,7 @@ mod tray;
 use std::sync::Arc;
 
 use error::MutexExt as _;
-use log::{info, LevelFilter};
+use log::{LevelFilter, info};
 use media::MediaControlsManager;
 use state::AppState;
 use tauri::{AppHandle, Manager};
@@ -34,7 +34,7 @@ fn focus_main_window(app: &AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(
@@ -56,7 +56,12 @@ pub fn run() {
             focus_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_prevent_default::debug())
+        .plugin(tauri_plugin_prevent_default::debug());
+
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+
+    builder
         .setup(|app| {
             let db_path = db::get_db_path(app.handle())?;
             let index_path = search::get_index_path(app.handle())?;
@@ -165,6 +170,9 @@ pub fn run() {
             commands::clear_normalization_data,
             commands::get_playback_settings,
             commands::set_playback_settings,
+            commands::open_mini_player,
+            commands::close_mini_player,
+            commands::restore_main_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

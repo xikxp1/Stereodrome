@@ -2,14 +2,14 @@ use std::path::Path;
 
 use log::{debug, info, warn};
 use tantivy::{
+    Index, IndexReader, IndexSettings, IndexWriter, TantivyDocument,
     collector::TopDocs,
     directory::MmapDirectory,
     query::QueryParser,
     schema::{
-        Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, STORED, STRING,
+        Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
     },
     tokenizer::{LowerCaser, NgramTokenizer, TextAnalyzer},
-    Index, IndexReader, IndexSettings, IndexWriter, TantivyDocument,
 };
 
 use crate::error::{AppError, AppResult};

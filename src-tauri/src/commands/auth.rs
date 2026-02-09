@@ -94,21 +94,21 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> AppResult<Conn
 #[tauri::command]
 pub async fn restore_session(state: State<'_, AppState>) -> AppResult<ConnectionStatus> {
     // Check if already connected - verify with ping
-    if state.is_connected() {
-        if let Ok(Some(config)) = credentials::load_credentials() {
-            // Ping to verify connection is still valid and get server version
-            match state.client.ping().await {
-                Ok(server_version) => {
-                    return Ok(ConnectionStatus {
-                        connected: true,
-                        server_url: Some(config.url),
-                        username: Some(config.username),
-                        server_version: Some(server_version),
-                    });
-                }
-                Err(_) => {
-                    // Connection is stale, will try to reconnect below
-                }
+    if state.is_connected()
+        && let Ok(Some(config)) = credentials::load_credentials()
+    {
+        // Ping to verify connection is still valid and get server version
+        match state.client.ping().await {
+            Ok(server_version) => {
+                return Ok(ConnectionStatus {
+                    connected: true,
+                    server_url: Some(config.url),
+                    username: Some(config.username),
+                    server_version: Some(server_version),
+                });
+            }
+            Err(_) => {
+                // Connection is stale, will try to reconnect below
             }
         }
     }
