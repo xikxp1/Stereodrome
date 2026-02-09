@@ -2,6 +2,7 @@ pub mod analyzer;
 pub mod binaural;
 pub mod compressor;
 pub mod dynamics;
+pub mod equalizer;
 pub mod loudness;
 pub mod normalizer;
 pub mod player;

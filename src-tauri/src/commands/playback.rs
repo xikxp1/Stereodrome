@@ -3,6 +3,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::audio::binaural::BinauralPreset;
 use crate::audio::compressor::DynamicsPreset;
+use crate::audio::equalizer::EqualizerSettings;
 use crate::audio::loudness;
 use crate::audio::player::CrossfadePlayRequest;
 use crate::audio::queue::RepeatMode;
@@ -26,6 +27,7 @@ struct SongData {
     normalization_gain: Option<f32>,
     dynamics_preset: Option<DynamicsPreset>,
     binaural_preset: Option<BinauralPreset>,
+    equalizer_settings: Option<EqualizerSettings>,
 }
 
 /// Fetch all data needed to play a song: metadata, audio bytes, normalization gain.
@@ -96,6 +98,13 @@ async fn fetch_song_data(
     } else {
         None
     };
+    let equalizer_settings = if playback_settings.equalizer_enabled {
+        Some(EqualizerSettings::new(
+            playback_settings.equalizer_bands_db.clone(),
+        ))
+    } else {
+        None
+    };
 
     Ok(SongData {
         audio_data,
@@ -106,6 +115,7 @@ async fn fetch_song_data(
         normalization_gain,
         dynamics_preset,
         binaural_preset,
+        equalizer_settings,
     })
 }
 
@@ -195,6 +205,7 @@ pub async fn play_song(
             data.normalization_gain,
             data.dynamics_preset,
             data.binaural_preset,
+            data.equalizer_settings,
         )?;
     }
 
@@ -238,6 +249,7 @@ pub async fn crossfade_play_by_id(
             normalization_gain: data.normalization_gain,
             dynamics_preset: data.dynamics_preset,
             binaural_preset: data.binaural_preset,
+            equalizer_settings: data.equalizer_settings,
             crossfade_duration_ms,
         })?;
     }
@@ -315,6 +327,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
             normalization_gain: data.normalization_gain,
             dynamics_preset: data.dynamics_preset,
             binaural_preset: data.binaural_preset,
+            equalizer_settings: data.equalizer_settings,
             crossfade_duration_ms,
         }) {
             warn!("Crossfade: failed to start: {e}");
@@ -535,6 +548,7 @@ fn check_and_queue_gapless(app_handle: &AppHandle, state: &AppState) {
             data.normalization_gain,
             data.dynamics_preset,
             data.binaural_preset,
+            data.equalizer_settings,
         ) {
             warn!("Gapless: failed to append: {e}");
         }

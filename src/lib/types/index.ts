@@ -167,6 +167,8 @@ export interface PlaybackSettings {
   crossfade_duration_ms: number;
   binaural_enabled: boolean;
   binaural_preset: BinauralPreset;
+  equalizer_enabled: boolean;
+  equalizer_bands_db: number[];
 }
 
 // Now Playing types
