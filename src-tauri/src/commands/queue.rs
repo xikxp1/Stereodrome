@@ -220,7 +220,7 @@ pub async fn play_next(
                 let status = audio_player.get_status();
                 if status.is_playing {
                     let settings = crate::commands::settings::read_playback_settings(&app_handle);
-                    settings.crossfade_enabled
+                    settings.crossfade_enabled && settings.crossfade_on_manual_queue_advance
                 } else {
                     false
                 }

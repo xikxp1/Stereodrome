@@ -164,6 +164,7 @@ export interface AnalysisProgress {
 export interface PlaybackSettings {
   gapless_enabled: boolean;
   crossfade_enabled: boolean;
+  crossfade_on_manual_queue_advance: boolean;
   crossfade_duration_ms: number;
   binaural_enabled: boolean;
   binaural_preset: BinauralPreset;

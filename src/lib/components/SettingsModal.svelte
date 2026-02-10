@@ -819,6 +819,23 @@
                     {/each}
                   </div>
                 </div>
+
+                <label class="flex cursor-pointer items-center justify-between">
+                  <span class="text-sm">Manual Next crossfade</span>
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm checkbox-primary"
+                    checked={playbackSettings.crossfade_on_manual_queue_advance}
+                    onchange={(e) =>
+                      handlePlaybackSettingChange({
+                        crossfade_on_manual_queue_advance:
+                          e.currentTarget.checked,
+                      })}
+                  />
+                </label>
+                <p class="text-xs text-base-content/50">
+                  Apply crossfade when you manually advance the queue with Next.
+                </p>
               {/if}
 
               <div class="border-t border-base-300 pt-3"></div>

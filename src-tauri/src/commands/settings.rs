@@ -103,6 +103,8 @@ pub struct PlaybackSettings {
     pub gapless_enabled: bool,
     #[serde(default)]
     pub crossfade_enabled: bool,
+    #[serde(default = "default_true")]
+    pub crossfade_on_manual_queue_advance: bool,
     #[serde(default = "default_crossfade_duration")]
     pub crossfade_duration_ms: u32,
     #[serde(default)]
@@ -136,6 +138,7 @@ impl Default for PlaybackSettings {
         Self {
             gapless_enabled: true,
             crossfade_enabled: false,
+            crossfade_on_manual_queue_advance: true,
             crossfade_duration_ms: 5000,
             binaural_enabled: false,
             binaural_preset: BinauralPreset::Default,
