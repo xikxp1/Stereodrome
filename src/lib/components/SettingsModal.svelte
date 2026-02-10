@@ -8,6 +8,7 @@
     Database,
     LogOut,
     Monitor,
+    Bell,
     Download,
     Volume2,
     Disc3,
@@ -28,6 +29,8 @@
     clearNormalizationData,
     getPlaybackSettings,
     setPlaybackSettings,
+    getNotificationSettings,
+    setNotificationSettings,
     type CacheStats,
   } from "$lib/api/commands";
   import { marked } from "marked";
@@ -46,6 +49,7 @@
     BinauralPreset,
     DynamicsPreset,
     PlaybackSettings,
+    NotificationSettings,
   } from "$lib/types";
 
   const dynamicsPresets: DynamicsPreset[] = ["light", "medium", "heavy"];
@@ -198,6 +202,9 @@
 
   // Playback state
   let playbackSettings = $state<PlaybackSettings | null>(null);
+  let notificationSettings = $state<NotificationSettings | null>(null);
+  let loadingNotifications = $state(false);
+  let savingNotifications = $state(false);
 
   // Normalization state
   let normSettings = $state<NormalizationSettings | null>(null);
@@ -224,6 +231,7 @@
       loadScanStatus();
       loadNormalization();
       loadPlaybackSettings();
+      loadNotificationSettings();
       updater.loadCurrentVersion();
     } else {
       // Clean up polling when modal closes
@@ -237,6 +245,7 @@
       }
       // Reset stale state so reopening shows fresh data
       playbackSettings = null;
+      notificationSettings = null;
       normSettings = null;
       normStats = null;
       analyzing = false;
@@ -368,6 +377,33 @@
       playbackSettings = updated;
     } catch (e) {
       error(`Failed to save playback settings: ${e}`);
+    }
+  }
+
+  async function loadNotificationSettings() {
+    loadingNotifications = true;
+    try {
+      notificationSettings = await getNotificationSettings();
+    } catch (e) {
+      error(`Failed to load notification settings: ${e}`);
+    } finally {
+      loadingNotifications = false;
+    }
+  }
+
+  async function handleNotificationSettingChange(
+    update: Partial<NotificationSettings>
+  ) {
+    if (!notificationSettings) return;
+    savingNotifications = true;
+    try {
+      const updated = { ...notificationSettings, ...update };
+      await setNotificationSettings(updated);
+      notificationSettings = updated;
+    } catch (e) {
+      error(`Failed to save notification settings: ${e}`);
+    } finally {
+      savingNotifications = false;
     }
   }
 
@@ -749,6 +785,79 @@
           </div>
         </div>
 
+        <!-- Notifications Section -->
+        <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
+          <div class="mb-3 flex items-center gap-2">
+            <Bell class="h-4 w-4 text-base-content/60" />
+            <h3 class="font-medium">Desktop Notifications</h3>
+          </div>
+
+          {#if loadingNotifications && !notificationSettings}
+            <div class="flex items-center gap-2 text-sm text-base-content/60">
+              <RefreshCw class="h-4 w-4 animate-spin" />
+              Loading...
+            </div>
+          {:else if notificationSettings}
+            <div class="space-y-3">
+              <label class="flex cursor-pointer items-center justify-between">
+                <span class="text-sm">Enable</span>
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-sm checkbox-primary"
+                  checked={notificationSettings.enabled}
+                  onchange={(e) =>
+                    handleNotificationSettingChange({
+                      enabled: e.currentTarget.checked,
+                    })}
+                  disabled={savingNotifications}
+                />
+              </label>
+
+              {#if notificationSettings.enabled}
+                <div class="border-t border-base-300 pt-3"></div>
+
+                <label class="flex cursor-pointer items-center justify-between">
+                  <span class="text-sm">Notify when app is focused</span>
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm checkbox-primary"
+                    checked={notificationSettings.notify_when_focused}
+                    onchange={(e) =>
+                      handleNotificationSettingChange({
+                        notify_when_focused: e.currentTarget.checked,
+                      })}
+                    disabled={savingNotifications}
+                  />
+                </label>
+                <p class="text-xs text-base-content/50">
+                  Show notifications while app is focused.
+                </p>
+
+                <label class="flex cursor-pointer items-center justify-between">
+                  <span class="text-sm">Notify when mini player is open</span>
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm checkbox-primary"
+                    checked={notificationSettings.notify_when_miniplayer_open}
+                    onchange={(e) =>
+                      handleNotificationSettingChange({
+                        notify_when_miniplayer_open: e.currentTarget.checked,
+                      })}
+                    disabled={savingNotifications}
+                  />
+                </label>
+                <p class="text-xs text-base-content/50">
+                  Show notifications while the mini player window is visible.
+                </p>
+              {/if}
+            </div>
+          {:else}
+            <div class="text-sm text-base-content/60">
+              Unable to load notification settings
+            </div>
+          {/if}
+        </div>
+
         <!-- Playback Section -->
         <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
           <div class="mb-3 flex items-center gap-2">
@@ -979,7 +1088,7 @@
             <div class="space-y-3">
               <!-- Enable toggle -->
               <label class="flex cursor-pointer items-center justify-between">
-                <span class="text-sm">Enable normalization</span>
+                <span class="text-sm">Enable</span>
                 <input
                   type="checkbox"
                   class="checkbox checkbox-sm checkbox-primary"
