@@ -170,6 +170,8 @@ pub fn run() {
             commands::clear_normalization_data,
             commands::get_playback_settings,
             commands::set_playback_settings,
+            commands::get_notification_settings,
+            commands::set_notification_settings,
             commands::open_mini_player,
             commands::close_mini_player,
             commands::restore_main_window,

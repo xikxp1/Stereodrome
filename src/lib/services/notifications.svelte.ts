@@ -1,11 +1,17 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
 import {
   isPermissionGranted,
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
+import { error } from "@tauri-apps/plugin-log";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getNotificationSettings } from "$lib/api/commands";
+import type { NotificationSettings } from "$lib/types";
+
+const MINI_PLAYER_LABEL = "mini-player";
 
 class NotificationService {
   private isFocused = $state(true);
@@ -19,14 +25,6 @@ class NotificationService {
     this.initialized = true;
     if (!this.shouldNotify) return;
 
-    // Check/request notification permission
-    let granted = await isPermissionGranted();
-    if (!granted) {
-      const permission = await requestPermission();
-      granted = permission === "granted";
-    }
-    this.permissionGranted = granted;
-
     // Track window focus state
     this.unlistenFocus = await getCurrentWindow().onFocusChanged(
       ({ payload: focused }) => {
@@ -38,13 +36,57 @@ class NotificationService {
     this.isFocused = await getCurrentWindow().isFocused();
   }
 
+  private async ensurePermissionGranted(): Promise<boolean> {
+    if (this.permissionGranted) return true;
+
+    let granted = await isPermissionGranted();
+    if (!granted) {
+      const permission = await requestPermission();
+      granted = permission === "granted";
+    }
+
+    this.permissionGranted = granted;
+    return granted;
+  }
+
+  private async isMiniPlayerVisible(): Promise<boolean> {
+    const miniPlayer = await WebviewWindow.getByLabel(MINI_PLAYER_LABEL);
+    if (!miniPlayer) return false;
+
+    try {
+      return await miniPlayer.isVisible();
+    } catch {
+      return false;
+    }
+  }
+
   async notifySongChange(
     title: string,
     artist: string,
     coverArtId: string | null
   ) {
     if (!this.shouldNotify) return;
-    if (!this.permissionGranted || this.isFocused) {
+    let settings: NotificationSettings;
+    try {
+      settings = await getNotificationSettings();
+    } catch (e) {
+      error(`Failed to read notification settings: ${e}`);
+      return;
+    }
+
+    if (!settings.enabled) {
+      return;
+    }
+    if (!settings.notify_when_focused && this.isFocused) {
+      return;
+    }
+    if (
+      !settings.notify_when_miniplayer_open &&
+      (await this.isMiniPlayerVisible())
+    ) {
+      return;
+    }
+    if (!(await this.ensurePermissionGranted())) {
       return;
     }
 
