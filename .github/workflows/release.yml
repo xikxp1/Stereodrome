@@ -30,7 +30,7 @@ jobs:
         include:
           - platform: macos-latest
             args: --target universal-apple-darwin
-          - platform: ubuntu-22.04
+          - platform: ubuntu-latest
             args: ""
           - platform: windows-latest
             args: ""
@@ -97,9 +97,32 @@ jobs:
 
       - name: Generate changelog
         id: changelog
+        shell: bash
         run: |
           echo 'changelog<<EOF' >> $GITHUB_OUTPUT
           git-cliff --latest --strip all --use-branch-tags >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+
+      - name: Compose release body
+        id: release_body
+        shell: bash
+        run: |
+          echo 'release_body<<EOF' >> $GITHUB_OUTPUT
+          echo "${{ steps.changelog.outputs.changelog }}" >> $GITHUB_OUTPUT
+          cat <<'MARKDOWN' >> $GITHUB_OUTPUT
+
+          ## Installation
+
+          | Platform | Download |
+          |----------|----------|
+          | macOS (Universal) | `.dmg` |
+          | Windows | `.msi` or `.exe` |
+          | Linux | `.AppImage` or `.deb` |
+
+          ## Auto-Update
+
+          Existing installations will automatically receive this update.
+          MARKDOWN
           echo 'EOF' >> $GITHUB_OUTPUT
 
       - name: Build Tauri app
@@ -114,20 +137,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Stereodrome v__VERSION__"
-          releaseBody: |
-            ${{ steps.changelog.outputs.changelog }}
-
-            ## Installation
-
-            | Platform | Download |
-            |----------|----------|
-            | macOS (Universal) | `.dmg` |
-            | Windows | `.msi` or `.exe` |
-            | Linux | `.AppImage` or `.deb` |
-
-            ## Auto-Update
-
-            Existing installations will automatically receive this update.
+          releaseBody: ${{ steps.release_body.outputs.release_body }}
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
