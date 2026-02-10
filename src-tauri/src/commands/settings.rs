@@ -11,6 +11,7 @@ use crate::state::AppState;
 const STORE_FILE: &str = "settings.json";
 const KEY_NORMALIZATION: &str = "normalization";
 const KEY_PLAYBACK: &str = "playback";
+const KEY_NOTIFICATION: &str = "notification";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -92,6 +93,69 @@ pub async fn set_normalization_settings(
         warn!("Failed to reapply normalization settings to current playback: {e}");
     }
 
+    Ok(())
+}
+
+// --- Notification Settings ---
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NotificationSettings {
+    #[serde(default = "default_notifications_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub notify_when_focused: bool,
+    #[serde(default = "default_notify_when_miniplayer_open")]
+    pub notify_when_miniplayer_open: bool,
+}
+
+fn default_notifications_enabled() -> bool {
+    true
+}
+
+fn default_notify_when_miniplayer_open() -> bool {
+    true
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            notify_when_focused: false,
+            notify_when_miniplayer_open: true,
+        }
+    }
+}
+
+pub fn read_notification_settings(app_handle: &AppHandle) -> NotificationSettings {
+    if let Ok(store) = app_handle.store(STORE_FILE)
+        && let Some(value) = store.get(KEY_NOTIFICATION)
+        && let Ok(settings) = serde_json::from_value(value.clone())
+    {
+        return settings;
+    }
+    NotificationSettings::default()
+}
+
+fn write_notification_settings(app_handle: &AppHandle, settings: &NotificationSettings) {
+    if let Ok(store) = app_handle.store(STORE_FILE)
+        && let Ok(value) = serde_json::to_value(settings)
+    {
+        store.set(KEY_NOTIFICATION, value);
+        let _ = store.save();
+    }
+}
+
+#[tauri::command]
+pub fn get_notification_settings(app_handle: AppHandle) -> NotificationSettings {
+    read_notification_settings(&app_handle)
+}
+
+#[tauri::command]
+pub fn set_notification_settings(
+    app_handle: AppHandle,
+    settings: NotificationSettings,
+) -> AppResult<()> {
+    write_notification_settings(&app_handle, &settings);
     Ok(())
 }
 

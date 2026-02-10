@@ -172,6 +172,12 @@ export interface PlaybackSettings {
   equalizer_bands_db: number[];
 }
 
+export interface NotificationSettings {
+  enabled: boolean;
+  notify_when_focused: boolean;
+  notify_when_miniplayer_open: boolean;
+}
+
 export interface MiniPlayerPosition {
   x: number;
   y: number;

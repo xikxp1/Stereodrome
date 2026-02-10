@@ -13,6 +13,7 @@ import type {
   NormalizationStats,
   AnalysisProgress,
   PlaybackSettings,
+  NotificationSettings,
   MiniPlayerPosition,
 } from "$lib/types";
 
@@ -209,6 +210,17 @@ export async function setPlaybackSettings(
   settings: PlaybackSettings
 ): Promise<void> {
   return invoke("set_playback_settings", { settings });
+}
+
+// Notification settings commands
+export async function getNotificationSettings(): Promise<NotificationSettings> {
+  return invoke<NotificationSettings>("get_notification_settings");
+}
+
+export async function setNotificationSettings(
+  settings: NotificationSettings
+): Promise<void> {
+  return invoke("set_notification_settings", { settings });
 }
 
 // Tray commands

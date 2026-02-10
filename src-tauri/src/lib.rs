@@ -182,6 +182,8 @@ pub fn run() {
             commands::set_persisted_volume,
             commands::get_mini_player_position,
             commands::set_mini_player_position,
+            commands::get_notification_settings,
+            commands::set_notification_settings,
             commands::open_mini_player,
             commands::close_mini_player,
             commands::restore_main_window,
