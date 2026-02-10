@@ -77,6 +77,10 @@ export async function setVolume(volume: number): Promise<void> {
   return invoke("set_volume", { volume });
 }
 
+export async function setPersistedVolume(volume: number): Promise<void> {
+  return invoke("set_persisted_volume", { volume });
+}
+
 export async function seekPlayback(position: number): Promise<void> {
   return invoke("seek_playback", { position });
 }
@@ -120,6 +124,16 @@ export async function closeMiniPlayer(): Promise<void> {
 
 export async function restoreMainWindow(): Promise<void> {
   return invoke("restore_main_window");
+}
+
+export async function getMiniPlayerPosition(): Promise<MiniPlayerPosition | null> {
+  return invoke<MiniPlayerPosition | null>("get_mini_player_position");
+}
+
+export async function setMiniPlayerPosition(
+  position: MiniPlayerPosition
+): Promise<void> {
+  return invoke("set_mini_player_position", { position });
 }
 
 // Audio cache commands

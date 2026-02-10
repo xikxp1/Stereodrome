@@ -13,7 +13,7 @@ mod tray;
 use std::sync::Arc;
 
 use error::MutexExt as _;
-use log::{LevelFilter, info};
+use log::{LevelFilter, info, warn};
 use media::MediaControlsManager;
 use state::AppState;
 use tauri::{AppHandle, Manager};
@@ -75,6 +75,15 @@ pub fn run() {
             {
                 let conn = app_state.db.lock_recover();
                 db::init_db(&conn)?;
+            }
+
+            // Restore persisted runtime volume before UI starts consuming playback state.
+            {
+                let persisted_volume = commands::read_persisted_volume(app.handle());
+                let audio_player = app_state.audio_player.lock_recover();
+                if let Err(e) = audio_player.set_volume(persisted_volume) {
+                    warn!("Failed to apply persisted runtime volume: {e}");
+                }
             }
 
             // Start position emitter for audio playback
@@ -170,6 +179,9 @@ pub fn run() {
             commands::clear_normalization_data,
             commands::get_playback_settings,
             commands::set_playback_settings,
+            commands::set_persisted_volume,
+            commands::get_mini_player_position,
+            commands::set_mini_player_position,
             commands::get_notification_settings,
             commands::set_notification_settings,
             commands::open_mini_player,
