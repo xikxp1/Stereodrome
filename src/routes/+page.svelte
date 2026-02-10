@@ -22,6 +22,7 @@
     getSongs,
     seekPlayback,
     getCoverArt,
+    getMiniPlayerPosition,
     openMiniPlayer,
   } from "$lib/api/commands";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -77,7 +78,6 @@
   let coverArtUrl = $state<string | null>(null);
   let lastCoverArtId = $state<string | null>(null);
 
-  const MINI_PLAYER_POSITION_KEY = "mini_player_position_v1";
   const MINI_PLAYER_WIDTH = 320;
   const MINI_PLAYER_HEIGHT = 72;
   const MINI_PLAYER_MARGIN = 8;
@@ -167,22 +167,6 @@
     }
   }
 
-  function readStoredMiniPlayerPosition(): MiniPlayerPosition | null {
-    const stored = localStorage.getItem(MINI_PLAYER_POSITION_KEY);
-    if (!stored) return null;
-
-    try {
-      const parsed = JSON.parse(stored) as MiniPlayerPosition;
-      if (Number.isFinite(parsed.x) && Number.isFinite(parsed.y)) {
-        return parsed;
-      }
-    } catch {
-      // Ignore malformed saved coordinates.
-    }
-
-    return null;
-  }
-
   function getLogicalMonitorBounds(monitor: Monitor): LogicalMonitorBounds {
     const scale = monitor.scaleFactor || 1;
     return {
@@ -242,7 +226,14 @@
     }
 
     const fallbackBounds = getLogicalMonitorBounds(fallbackMonitor);
-    const savedPosition = readStoredMiniPlayerPosition();
+    let savedPosition: MiniPlayerPosition | null = null;
+
+    try {
+      savedPosition = await getMiniPlayerPosition();
+    } catch (e) {
+      error(`Failed to load mini player position: ${e}`);
+    }
+
     if (savedPosition) {
       const boundsForSavedPosition = monitors
         .map(getLogicalMonitorBounds)

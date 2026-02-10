@@ -4,6 +4,7 @@
     closeMiniPlayer as closeMiniPlayerCommand,
     getCoverArt,
     restoreMainWindow as restoreMainWindowCommand,
+    setMiniPlayerPosition,
     seekPlayback,
   } from "$lib/api/commands";
   import { playback } from "$lib/stores/playback.svelte";
@@ -15,7 +16,7 @@
   import { GripHorizontal, MonitorUp, X } from "lucide-svelte";
   import type { MiniPlayerHoverState } from "$lib/types";
 
-  const MINI_PLAYER_POSITION_KEY = "mini_player_position_v1";
+  const POSITION_PERSIST_DEBOUNCE_MS = 250;
 
   const currentTrack = $derived(playback.currentTrack);
 
@@ -23,6 +24,11 @@
   let lastCoverArtId = $state<string | null>(null);
   let closing = $state(false);
   let isHovered = $state(false);
+  let persistedMiniPlayerX = $state<number | null>(null);
+  let persistedMiniPlayerY = $state<number | null>(null);
+  let persistPositionTimeout = $state<ReturnType<typeof setTimeout> | null>(
+    null
+  );
 
   // Reveal controls immediately on hover; force-hide them when window blurs.
   const miniControlsVisible = $derived(isHovered);
@@ -52,6 +58,9 @@
   async function handleDragStart() {
     try {
       await getCurrentWindow().startDragging();
+      // Some platforms/window types do not emit moved events consistently while dragging.
+      // Persist once at drag end so position updates are never missed.
+      await captureAndScheduleCurrentWindowPosition();
     } catch (e) {
       error(`Failed to start mini player drag: ${e}`);
     }
@@ -65,11 +74,82 @@
     }
   }
 
+  function latestPersistedMiniPlayerPosition(): {
+    x: number;
+    y: number;
+  } | null {
+    if (persistedMiniPlayerX === null || persistedMiniPlayerY === null) {
+      return null;
+    }
+
+    // Return a plain object so invoke payload is never a reactive proxy.
+    return {
+      x: persistedMiniPlayerX,
+      y: persistedMiniPlayerY,
+    };
+  }
+
+  async function persistMiniPlayerPosition(position: {
+    x: number;
+    y: number;
+  }): Promise<void> {
+    await setMiniPlayerPosition({
+      x: position.x,
+      y: position.y,
+    });
+  }
+
+  function schedulePositionPersistence(position: { x: number; y: number }) {
+    persistedMiniPlayerX = position.x;
+    persistedMiniPlayerY = position.y;
+    if (persistPositionTimeout) {
+      clearTimeout(persistPositionTimeout);
+    }
+
+    persistPositionTimeout = setTimeout(() => {
+      const latestPosition = latestPersistedMiniPlayerPosition();
+      if (!latestPosition) return;
+      void persistMiniPlayerPosition(latestPosition).catch((e) => {
+        error(`Failed to persist mini player position: ${e}`);
+      });
+      persistPositionTimeout = null;
+    }, POSITION_PERSIST_DEBOUNCE_MS);
+  }
+
+  async function persistCurrentWindowPosition(): Promise<void> {
+    const currentWindow = getCurrentWindow();
+    const [scale, outerPosition] = await Promise.all([
+      currentWindow.scaleFactor(),
+      currentWindow.outerPosition(),
+    ]);
+    await persistMiniPlayerPosition({
+      x: outerPosition.x / scale,
+      y: outerPosition.y / scale,
+    });
+  }
+
+  async function captureAndScheduleCurrentWindowPosition(): Promise<void> {
+    const currentWindow = getCurrentWindow();
+    const [scale, outerPosition] = await Promise.all([
+      currentWindow.scaleFactor(),
+      currentWindow.outerPosition(),
+    ]);
+    schedulePositionPersistence({
+      x: outerPosition.x / scale,
+      y: outerPosition.y / scale,
+    });
+  }
+
   async function closeMiniPlayer() {
     if (closing) return;
     closing = true;
 
     try {
+      if (persistPositionTimeout) {
+        clearTimeout(persistPositionTimeout);
+        persistPositionTimeout = null;
+      }
+      await persistCurrentWindowPosition();
       await closeMiniPlayerCommand();
     } catch (e) {
       error(`Failed to close mini player window: ${e}`);
@@ -95,12 +175,10 @@
       void (async () => {
         try {
           const scale = await currentWindow.scaleFactor();
-          const x = event.payload.x / scale;
-          const y = event.payload.y / scale;
-          localStorage.setItem(
-            MINI_PLAYER_POSITION_KEY,
-            JSON.stringify({ x, y })
-          );
+          schedulePositionPersistence({
+            x: event.payload.x / scale,
+            y: event.payload.y / scale,
+          });
         } catch (e) {
           error(`Failed to persist mini player position: ${e}`);
         }
@@ -125,6 +203,16 @@
       movedPromise.then((unlisten) => unlisten());
       focusChangedPromise.then((unlisten) => unlisten());
       hoverChangedPromise.then((unlisten) => unlisten());
+      if (persistPositionTimeout) {
+        clearTimeout(persistPositionTimeout);
+        persistPositionTimeout = null;
+        const latestPosition = latestPersistedMiniPlayerPosition();
+        if (latestPosition) {
+          void persistMiniPlayerPosition(latestPosition).catch((e) => {
+            error(`Failed to persist mini player position: ${e}`);
+          });
+        }
+      }
     };
   });
 </script>

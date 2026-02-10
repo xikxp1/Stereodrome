@@ -9,6 +9,7 @@ pub mod playlist;
 pub mod queue;
 pub mod search;
 pub mod settings;
+pub mod ui_state;
 pub mod updater;
 pub mod windowing;
 
@@ -23,5 +24,6 @@ pub use playlist::*;
 pub use queue::*;
 pub use search::*;
 pub use settings::*;
+pub use ui_state::*;
 pub use updater::*;
 pub use windowing::*;

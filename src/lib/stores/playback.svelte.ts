@@ -5,6 +5,7 @@ import { error } from "@tauri-apps/plugin-log";
 import type { Song } from "$lib/types";
 import { queue } from "./queue.svelte";
 import { notifications } from "$lib/services/notifications.svelte";
+import { setPersistedVolume } from "$lib/api/commands";
 
 interface PlaybackStatus {
   is_playing: boolean;
@@ -31,6 +32,8 @@ interface PlaybackState {
 }
 
 class PlaybackStore {
+  private static readonly PERSIST_DEBOUNCE_MS = 250;
+
   // State
   isPlaying = $state(false);
   position = $state(0);
@@ -53,6 +56,7 @@ class PlaybackStore {
   // Event listeners
   private unlistenState: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
+  private persistVolumeTimeout: ReturnType<typeof setTimeout> | null = null;
   private readonly shouldHandleSideEffects =
     getCurrentWindow().label === "main";
 
@@ -132,6 +136,9 @@ class PlaybackStore {
       this.scrobbledSongId = null;
       this.lastPosition = 0;
     });
+
+    // Sync startup UI state with backend-applied runtime values (e.g. restored volume).
+    void this.refreshStatus();
   }
 
   async playSong(song: Song) {
@@ -195,9 +202,25 @@ class PlaybackStore {
     try {
       await invoke("set_volume", { volume: clamped });
       this.volume = clamped;
+      this.scheduleVolumePersistence(clamped);
     } catch (e) {
       error(`Failed to set volume: ${e}`);
     }
+  }
+
+  private scheduleVolumePersistence(volume: number) {
+    if (!this.shouldHandleSideEffects) return;
+
+    if (this.persistVolumeTimeout) {
+      clearTimeout(this.persistVolumeTimeout);
+    }
+
+    this.persistVolumeTimeout = setTimeout(() => {
+      void setPersistedVolume(volume).catch((e) => {
+        error(`Failed to persist volume: ${e}`);
+      });
+      this.persistVolumeTimeout = null;
+    }, PlaybackStore.PERSIST_DEBOUNCE_MS);
   }
 
   async refreshStatus() {
@@ -219,6 +242,10 @@ class PlaybackStore {
     }
     if (this.unlistenEnded) {
       this.unlistenEnded();
+    }
+    if (this.persistVolumeTimeout) {
+      clearTimeout(this.persistVolumeTimeout);
+      this.persistVolumeTimeout = null;
     }
   }
 }
