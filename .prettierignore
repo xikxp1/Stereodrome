@@ -6,3 +6,4 @@ src-tauri/target/
 src-tauri/gen/
 .serena/
 bun.lockb
+src-tauri/bundle/linux/main.desktop.hbs
