@@ -62,6 +62,7 @@ Download the latest build for your platform from [Releases](https://github.com/x
 | `Cmd/Ctrl + ←` / `→` | Previous / Next track             |
 | `M`                  | Mute / Unmute                     |
 | `S`                  | Toggle shuffle                    |
+| `D`                  | Reroll next song                  |
 | `R`                  | Cycle repeat mode                 |
 | `Q`                  | Toggle queue panel                |
 | `V`                  | Toggle spectrum visualizer        |
