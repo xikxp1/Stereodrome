@@ -4,6 +4,7 @@
   import { updater } from "$lib/stores/updater.svelte";
   import NowPlayingCenter from "./NowPlayingCenter.svelte";
   import {
+    Dices,
     SkipBack,
     Play,
     Pause,
@@ -124,40 +125,51 @@
 >
   <!-- Left: Playback Controls -->
   <div class="z-10 flex items-center gap-4">
-    <!-- Button Group -->
-    <div class="flex rounded bg-base-300 p-0.5 shadow-sm">
+    <!-- Playback Controls -->
+    <div class="relative flex items-center">
+      <div class="flex rounded bg-base-300 p-0.5 shadow-sm">
+        <button
+          class="flex h-7 w-7 items-center justify-center rounded-l bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
+          onclick={() => onPrevious?.()}
+          disabled={!queue.hasPrevious}
+          aria-label="Previous track"
+          title={prevTooltip}
+        >
+          <SkipBack class="h-3 w-3" fill="currentColor" />
+        </button>
+        <button
+          class="flex h-7 w-8 items-center justify-center border-x border-base-300 bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
+          onclick={() => onPlayPause?.()}
+          disabled={queue.items.length === 0 &&
+            !queue.currentSong &&
+            filteredSongsCount === 0}
+          aria-label={isPlaying ? "Pause" : "Play"}
+          title={playTooltip}
+        >
+          {#if isPlaying}
+            <Pause class="h-3.5 w-3.5" fill="currentColor" />
+          {:else}
+            <Play class="ml-0.5 h-3.5 w-3.5" fill="currentColor" />
+          {/if}
+        </button>
+        <button
+          class="flex h-7 w-7 items-center justify-center rounded-r bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
+          onclick={() => onNext?.()}
+          disabled={!queue.hasNext}
+          aria-label="Next track"
+          title={nextTooltip}
+        >
+          <SkipForward class="h-3 w-3" fill="currentColor" />
+        </button>
+      </div>
       <button
-        class="flex h-7 w-7 items-center justify-center rounded-l bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
-        onclick={() => onPrevious?.()}
-        disabled={!queue.hasPrevious}
-        aria-label="Previous track"
-        title={prevTooltip}
+        class="absolute right-0.5 top-full mt-0.75 flex h-4 w-7 items-center justify-center rounded border border-base-300 bg-base-100 text-base-content/55 transition-colors hover:bg-base-200 hover:text-base-content disabled:cursor-not-allowed disabled:text-base-content/25 disabled:hover:bg-base-100"
+        onclick={() => queue.rerollNext()}
+        disabled={!queue.canRerollNext}
+        title="Reroll next track (D)"
+        aria-label="Reroll next track (D)"
       >
-        <SkipBack class="h-3 w-3" fill="currentColor" />
-      </button>
-      <button
-        class="flex h-7 w-8 items-center justify-center border-x border-base-300 bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
-        onclick={() => onPlayPause?.()}
-        disabled={queue.items.length === 0 &&
-          !queue.currentSong &&
-          filteredSongsCount === 0}
-        aria-label={isPlaying ? "Pause" : "Play"}
-        title={playTooltip}
-      >
-        {#if isPlaying}
-          <Pause class="h-3.5 w-3.5" fill="currentColor" />
-        {:else}
-          <Play class="ml-0.5 h-3.5 w-3.5" fill="currentColor" />
-        {/if}
-      </button>
-      <button
-        class="flex h-7 w-7 items-center justify-center rounded-r bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
-        onclick={() => onNext?.()}
-        disabled={!queue.hasNext}
-        aria-label="Next track"
-        title={nextTooltip}
-      >
-        <SkipForward class="h-3 w-3" fill="currentColor" />
+        <Dices class="h-3 w-3" />
       </button>
     </div>
 

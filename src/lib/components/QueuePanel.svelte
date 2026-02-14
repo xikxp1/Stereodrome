@@ -2,6 +2,7 @@
   import { queue } from "$lib/stores/queue.svelte";
   import { createVirtualizer } from "@tanstack/svelte-virtual";
   import {
+    Dices,
     X,
     Shuffle,
     Repeat,
@@ -107,6 +108,10 @@
     await queue.cycleRepeatMode();
   }
 
+  async function handleRerollNext() {
+    await queue.rerollNext();
+  }
+
   function handleScrollToCurrent() {
     if (queue.currentIndex !== null && scrollContainer) {
       $virtualizer.scrollToIndex(queue.currentIndex, {
@@ -137,7 +142,7 @@
         class="queue-header-btn"
         class:active={queue.shuffle}
         onclick={handleToggleShuffle}
-        title="Shuffle"
+        title="Shuffle (S)"
       >
         <Shuffle class="w-3 h-3" />
       </button>
@@ -146,13 +151,23 @@
         class="queue-header-btn"
         class:active={queue.repeatMode !== "Off"}
         onclick={handleCycleRepeat}
-        title="Repeat: {queue.repeatMode}"
+        title="Repeat: {queue.repeatMode} (R)"
       >
         {#if queue.repeatMode === "One"}
           <Repeat1 class="w-3 h-3" />
         {:else}
           <Repeat class="w-3 h-3" />
         {/if}
+      </button>
+      <!-- Reroll -->
+      <button
+        class="queue-header-btn"
+        onclick={handleRerollNext}
+        title="Reroll next track (D)"
+        aria-label="Reroll next track"
+        disabled={!queue.canRerollNext}
+      >
+        <Dices class="w-3 h-3" />
       </button>
       <!-- Scroll to current -->
       <button

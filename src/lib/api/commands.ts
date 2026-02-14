@@ -90,6 +90,11 @@ export async function getPlaybackStatus(): Promise<PlaybackState> {
   return invoke<PlaybackState>("get_playback_status");
 }
 
+// Queue commands
+export async function rerollNextQueueItem(): Promise<boolean> {
+  return invoke<boolean>("reroll_next_queue_item");
+}
+
 // Search commands
 export async function searchLibrary(
   query: string,

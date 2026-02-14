@@ -3,6 +3,7 @@
   import {
     closeMiniPlayer as closeMiniPlayerCommand,
     getCoverArt,
+    getPlaybackSettings,
     restoreMainWindow as restoreMainWindowCommand,
     setMiniPlayerMode,
     setMiniPlayerPosition,
@@ -19,14 +20,13 @@
   } from "@tauri-apps/api/window";
   import { error } from "@tauri-apps/plugin-log";
   import { onMount } from "svelte";
-  import {
-    AudioLines,
-    GripHorizontal,
-    Minimize2,
-    MonitorUp,
-    X,
-  } from "lucide-svelte";
-  import type { MiniPlayerHoverState, MiniPlayerPosition } from "$lib/types";
+  import { AudioLines as AnimatedAudioLines } from "@jis3r/icons";
+  import { GripHorizontal, Minimize2, MonitorUp, X } from "lucide-svelte";
+  import type {
+    MiniPlayerHoverState,
+    MiniPlayerPosition,
+    PlaybackSettings,
+  } from "$lib/types";
 
   const POSITION_PERSIST_DEBOUNCE_MS = 250;
   const MINI_PLAYER_WIDTH = 320;
@@ -52,6 +52,8 @@
   let persistedMiniPlayerY = $state<number | null>(null);
   let preNanoMiniPlayerX = $state<number | null>(null);
   let preNanoMiniPlayerY = $state<number | null>(null);
+  let showNextSongInMiniPlayer = $state(true);
+  let nanoAnimatedIconHost = $state<HTMLSpanElement | null>(null);
   let persistPositionTimeout = $state<ReturnType<typeof setTimeout> | null>(
     null
   );
@@ -109,8 +111,28 @@
     }
   });
 
+  // Drive @jis3r/icons hover-based animation from playback state.
+  $effect(() => {
+    const animatedIconRoot = nanoAnimatedIconHost?.firstElementChild;
+    if (!(animatedIconRoot instanceof HTMLElement)) return;
+
+    const eventName = playback.isPlaying ? "mouseenter" : "mouseleave";
+    animatedIconRoot.dispatchEvent(
+      new MouseEvent(eventName, { bubbles: true, cancelable: true })
+    );
+  });
+
   function handleSeek(position: number) {
     void seekPlayback(position);
+  }
+
+  async function loadMiniPlayerDisplaySettings() {
+    try {
+      const settings = await getPlaybackSettings();
+      showNextSongInMiniPlayer = settings.show_next_song_in_miniplayer;
+    } catch (e) {
+      error(`Failed to load mini player display settings: ${e}`);
+    }
   }
 
   async function handleDragStart() {
@@ -371,6 +393,8 @@
   }
 
   onMount(() => {
+    void loadMiniPlayerDisplaySettings();
+
     const currentWindow = getCurrentWindow();
 
     const closeRequestedPromise = currentWindow.onCloseRequested((event) => {
@@ -402,6 +426,8 @@
     const focusChangedPromise = currentWindow.onFocusChanged((event) => {
       if (!event.payload) {
         isHovered = false;
+      } else {
+        void loadMiniPlayerDisplaySettings();
       }
     });
 
@@ -412,11 +438,20 @@
       }
     );
 
+    const playbackSettingsChangedPromise = listen<PlaybackSettings>(
+      "playback-settings-changed",
+      (event) => {
+        showNextSongInMiniPlayer =
+          event.payload.show_next_song_in_miniplayer ?? true;
+      }
+    );
+
     return () => {
       closeRequestedPromise.then((unlisten) => unlisten());
       movedPromise.then((unlisten) => unlisten());
       focusChangedPromise.then((unlisten) => unlisten());
       hoverChangedPromise.then((unlisten) => unlisten());
+      playbackSettingsChangedPromise.then((unlisten) => unlisten());
 
       if (persistPositionTimeout) {
         clearTimeout(persistPositionTimeout);
@@ -464,19 +499,27 @@
   {#if isNanoMode}
     <button
       type="button"
-      class="relative flex h-full w-full items-center justify-center overflow-hidden border border-base-content/30 bg-transparent text-base-content/90 transition-colors"
+      class="nano-player-btn relative flex h-full w-full items-center justify-center overflow-hidden border border-base-content/30 bg-transparent text-base-content/90 transition-colors"
+      class:nano-playing={playback.isPlaying}
       onclick={restoreFromNanoPlayer}
       aria-label="Restore mini player"
       title={nanoPlayerTooltip}
     >
       <span
-        class="pointer-events-none absolute inset-0 bg-base-100 opacity-25 transition-opacity hover:opacity-35 active:opacity-45"
+        class="nano-overlay pointer-events-none absolute inset-0 bg-base-100 opacity-25 transition-opacity hover:opacity-35 active:opacity-45"
       ></span>
-      <AudioLines class="relative z-10 h-4 w-4" />
+      <span class="nano-ripple nano-ripple-a"></span>
+      <span class="nano-ripple nano-ripple-b"></span>
+      <span
+        bind:this={nanoAnimatedIconHost}
+        class="nano-icon pointer-events-none relative z-10 inline-flex h-4 w-4 items-center justify-center"
+      >
+        <AnimatedAudioLines size={16} strokeWidth={2.1} />
+      </span>
     </button>
   {:else}
     <div
-      class={`absolute left-[4.25rem] top-1 z-30 flex items-center gap-1 transition-opacity ${
+      class={`absolute left-17 top-1 z-30 flex items-center gap-1 transition-opacity ${
         miniControlsVisible
           ? "opacity-100 pointer-events-auto"
           : "opacity-0 pointer-events-none"
@@ -540,12 +583,97 @@
       canPlayPause={queue.items.length > 0 || !!queue.currentSong}
       canPrevious={queue.hasPrevious}
       canNext={queue.hasNext}
+      canReroll={queue.canRerollNext}
+      {showNextSongInMiniPlayer}
+      nextTrack={queue.nextSong
+        ? {
+            title: queue.nextSong.title,
+            artist: queue.nextSong.artist,
+            album: queue.nextSong.album,
+          }
+        : null}
       previousTrackTooltip={miniPreviousTooltip}
       nextTrackTooltip={miniNextTooltip}
+      rerollTrackTooltip="Reroll next track"
       onPlayPause={() => playback.togglePlayPause()}
       onPrevious={() => queue.playPrevious()}
       onNext={() => queue.playNext()}
+      onReroll={() => queue.rerollNext()}
       onSeek={handleSeek}
     />
   {/if}
 </div>
+
+<style>
+  .nano-player-btn {
+    isolation: isolate;
+  }
+
+  .nano-ripple {
+    position: absolute;
+    inset: 3px;
+    border-radius: 9999px;
+    border: 1px solid oklch(52% 0.12 240 / 0.45);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .nano-playing .nano-ripple-a {
+    animation: nano-ripple 1.8s ease-out infinite;
+  }
+
+  .nano-playing .nano-ripple-b {
+    animation: nano-ripple 1.8s ease-out 0.9s infinite;
+  }
+
+  .nano-playing .nano-overlay {
+    animation: nano-overlay-pulse 1.4s ease-in-out infinite;
+  }
+
+  .nano-playing .nano-icon {
+    animation: nano-icon-breathe 1.1s ease-in-out infinite alternate;
+    filter: drop-shadow(0 0 4px oklch(55% 0.12 240 / 0.55));
+  }
+
+  @keyframes nano-ripple {
+    0% {
+      opacity: 0;
+      transform: scale(0.86);
+    }
+    40% {
+      opacity: 0.45;
+    }
+    100% {
+      opacity: 0;
+      transform: scale(1.35);
+    }
+  }
+
+  @keyframes nano-overlay-pulse {
+    0%,
+    100% {
+      opacity: 0.22;
+    }
+    50% {
+      opacity: 0.36;
+    }
+  }
+
+  @keyframes nano-icon-breathe {
+    0% {
+      transform: translateY(0) scale(0.94);
+    }
+    100% {
+      transform: translateY(-0.5px) scale(1.08);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .nano-playing .nano-ripple-a,
+    .nano-playing .nano-ripple-b,
+    .nano-playing .nano-overlay,
+    .nano-playing .nano-icon {
+      animation: none;
+    }
+  }
+</style>

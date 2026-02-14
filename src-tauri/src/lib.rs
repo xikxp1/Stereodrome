@@ -145,6 +145,7 @@ pub fn run() {
             commands::remove_from_queue,
             commands::clear_queue,
             commands::move_queue_item,
+            commands::reroll_next_queue_item,
             commands::play_queue_item,
             commands::play_next,
             commands::play_previous,

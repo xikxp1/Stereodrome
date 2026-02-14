@@ -1,6 +1,6 @@
 {
   "name": "stereodrome",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "",
   "type": "module",
   "scripts": {
@@ -17,6 +17,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@jis3r/icons": "^2.4.0",
     "@tanstack/db": "^0.5.25",
     "@tanstack/svelte-query": "^6.0.18",
     "@tanstack/svelte-virtual": "^3.13.18",
