@@ -14,6 +14,7 @@ import type {
   AnalysisProgress,
   PlaybackSettings,
   NotificationSettings,
+  MiniPlayerMode,
   MiniPlayerPosition,
 } from "$lib/types";
 
@@ -134,6 +135,13 @@ export async function setMiniPlayerPosition(
   position: MiniPlayerPosition
 ): Promise<void> {
   return invoke("set_mini_player_position", { position });
+}
+
+export async function setMiniPlayerMode(
+  mode: MiniPlayerMode,
+  position: MiniPlayerPosition
+): Promise<void> {
+  return invoke("set_mini_player_mode", { mode, position });
 }
 
 // Audio cache commands

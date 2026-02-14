@@ -185,6 +185,7 @@ pub fn run() {
             commands::get_notification_settings,
             commands::set_notification_settings,
             commands::open_mini_player,
+            commands::set_mini_player_mode,
             commands::close_mini_player,
             commands::restore_main_window,
         ])

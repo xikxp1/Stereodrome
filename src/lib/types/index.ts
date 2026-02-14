@@ -183,6 +183,8 @@ export interface MiniPlayerPosition {
   y: number;
 }
 
+export type MiniPlayerMode = "mini" | "nano";
+
 export interface MiniPlayerHoverState {
   hovered: boolean;
 }

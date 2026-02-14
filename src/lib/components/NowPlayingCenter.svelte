@@ -28,6 +28,8 @@
     canNext?: boolean;
     showSpectrum?: boolean;
     miniControlsVisible?: boolean;
+    previousTrackTooltip?: string;
+    nextTrackTooltip?: string;
     onSeek?: (time: number) => void;
     onCoverArtClick?: () => void;
     onPlayPause?: () => void;
@@ -48,6 +50,8 @@
     canNext = true,
     showSpectrum = true,
     miniControlsVisible = false,
+    previousTrackTooltip = "Previous",
+    nextTrackTooltip = "Next",
     onSeek,
     onCoverArtClick,
     onPlayPause,
@@ -253,7 +257,7 @@
             onclick={() => onPrevious?.()}
             disabled={!canPrevious}
             aria-label="Previous track"
-            title="Previous"
+            title={previousTrackTooltip}
           >
             <SkipBack
               class="h-3.5 w-3.5 text-base-content/80"
@@ -300,7 +304,7 @@
             onclick={() => onNext?.()}
             disabled={!canNext}
             aria-label="Next track"
-            title="Next"
+            title={nextTrackTooltip}
           >
             <SkipForward
               class="h-3.5 w-3.5 text-base-content/80"
