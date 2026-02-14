@@ -170,6 +170,7 @@ export interface PlaybackSettings {
   binaural_preset: BinauralPreset;
   equalizer_enabled: boolean;
   equalizer_bands_db: number[];
+  show_next_song_in_miniplayer: boolean;
 }
 
 export interface NotificationSettings {

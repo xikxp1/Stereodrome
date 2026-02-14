@@ -1,5 +1,5 @@
 use log::warn;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_store::StoreExt;
 
 use crate::audio::binaural::BinauralPreset;
@@ -179,6 +179,8 @@ pub struct PlaybackSettings {
     pub equalizer_enabled: bool,
     #[serde(default = "default_equalizer_bands_db")]
     pub equalizer_bands_db: Vec<f32>,
+    #[serde(default = "default_show_next_song_in_miniplayer")]
+    pub show_next_song_in_miniplayer: bool,
 }
 
 fn default_crossfade_duration() -> u32 {
@@ -197,6 +199,10 @@ fn default_equalizer_bands_db() -> Vec<f32> {
     default_bands_db()
 }
 
+fn default_show_next_song_in_miniplayer() -> bool {
+    true
+}
+
 impl Default for PlaybackSettings {
     fn default() -> Self {
         Self {
@@ -208,6 +214,7 @@ impl Default for PlaybackSettings {
             binaural_preset: BinauralPreset::Default,
             equalizer_enabled: false,
             equalizer_bands_db: default_bands_db(),
+            show_next_song_in_miniplayer: true,
         }
     }
 }
@@ -245,6 +252,7 @@ pub async fn set_playback_settings(
     settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(1000, 12000);
     settings.equalizer_bands_db = sanitize_bands_db(&settings.equalizer_bands_db);
     write_playback_settings(&app_handle, &settings);
+    let _ = app_handle.emit("playback-settings-changed", &settings);
 
     if let Err(e) =
         crate::commands::playback::reapply_settings_to_current_song(&app_handle, &state).await

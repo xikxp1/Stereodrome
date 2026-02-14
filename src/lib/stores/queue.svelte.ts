@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { error } from "@tauri-apps/plugin-log";
+import { rerollNextQueueItem } from "$lib/api/commands";
 import type { Song } from "$lib/types";
 
 export type RepeatMode = "Off" | "All" | "One";
@@ -205,6 +206,19 @@ class QueueStore {
     }
   }
 
+  async rerollNext(): Promise<boolean> {
+    if (!this.canRerollNext) {
+      return false;
+    }
+
+    try {
+      return await rerollNextQueueItem();
+    } catch (e) {
+      error(`Failed to reroll next track: ${e}`);
+      return false;
+    }
+  }
+
   // Get the current song
   get currentSong(): QueueItem | null {
     if (this.currentIndex === null || this.currentIndex >= this.items.length) {
@@ -287,6 +301,15 @@ class QueueStore {
   // Check if there's a next track available
   get hasNext(): boolean {
     return this.nextSong !== null;
+  }
+
+  // Check if reroll can swap the next track with another queue item
+  get canRerollNext(): boolean {
+    return (
+      this.items.length > 2 &&
+      this.currentSong !== null &&
+      this.nextSong !== null
+    );
   }
 
   // Helper to play a song and set up queue

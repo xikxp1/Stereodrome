@@ -1,3 +1,4 @@
+use rand::prelude::IndexedRandom;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 
@@ -278,6 +279,59 @@ impl PlayQueue {
                 next_idx.and_then(|i| self.items.get(i))
             }
         }
+    }
+
+    /// Resolve the queue index that would be selected by a manual next action.
+    /// This mirrors `next(force = true)` without mutating queue state.
+    fn manual_next_index(&self) -> Option<usize> {
+        if self.items.is_empty() {
+            return None;
+        }
+
+        let effective_index = self.current_index.or(self.pending_navigation_index);
+
+        match self.repeat_mode {
+            RepeatMode::One | RepeatMode::All => match effective_index {
+                Some(i) if self.current_index.is_some() => Some((i + 1) % self.items.len()),
+                Some(i) => Some(i.min(self.items.len() - 1)),
+                None => Some(0),
+            },
+            RepeatMode::Off => match effective_index {
+                Some(i) if self.current_index.is_some() => {
+                    if i + 1 < self.items.len() {
+                        Some(i + 1)
+                    } else {
+                        None
+                    }
+                }
+                Some(i) => Some(i.min(self.items.len() - 1)),
+                None => Some(0),
+            },
+        }
+    }
+
+    /// Swap the upcoming next track with a random eligible queue item.
+    /// Excludes current and next positions from random selection.
+    pub fn reroll_next(&mut self) -> bool {
+        let Some(current_idx) = self.current_index else {
+            return false;
+        };
+
+        let Some(next_idx) = self.manual_next_index() else {
+            return false;
+        };
+
+        let candidates: Vec<usize> = (0..self.items.len())
+            .filter(|idx| *idx != current_idx && *idx != next_idx)
+            .collect();
+
+        let mut rng = rand::rng();
+        let Some(random_idx) = candidates.choose(&mut rng).copied() else {
+            return false;
+        };
+
+        self.items.swap(next_idx, random_idx);
+        true
     }
 
     /// Get the previous song to play

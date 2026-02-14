@@ -430,6 +430,10 @@
     queue.playNext();
   }
 
+  function handleRerollNext() {
+    queue.rerollNext();
+  }
+
   function handleViewChange(view: string) {
     activeView = view;
     detailView = null; // Clear detail view when switching top-level views
@@ -667,6 +671,14 @@
         if (!isMod) {
           // V - toggle spectrum visualizer
           spectrum.toggle();
+        }
+        break;
+
+      case "d":
+      case "D":
+        if (!isMod) {
+          // D - reroll next track
+          handleRerollNext();
         }
         break;
 

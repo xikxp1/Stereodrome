@@ -782,6 +782,27 @@
             <p class="text-xs text-base-content/50">
               Show audio spectrum bars in Now Playing. Press V to toggle.
             </p>
+
+            {#if playbackSettings}
+              <div class="border-t border-base-300 pt-3"></div>
+
+              <label class="flex cursor-pointer items-center justify-between">
+                <span class="text-sm">Mini Player shows Next song</span>
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-sm checkbox-primary"
+                  checked={playbackSettings.show_next_song_in_miniplayer}
+                  onchange={(e) =>
+                    handlePlaybackSettingChange({
+                      show_next_song_in_miniplayer: e.currentTarget.checked,
+                    })}
+                />
+              </label>
+              <p class="text-xs text-base-content/50">
+                On: second line shows upcoming Next track. Off: show Artist —
+                Album.
+              </p>
+            {/if}
           </div>
         </div>
 

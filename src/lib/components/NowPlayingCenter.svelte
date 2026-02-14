@@ -2,6 +2,7 @@
   import SpectrumBars from "./SpectrumBars.svelte";
   import SyncedMarquee from "./SyncedMarquee.svelte";
   import {
+    Dices,
     Music,
     Pause,
     PictureInPicture2,
@@ -13,7 +14,7 @@
   interface TrackInfo {
     title: string;
     artist: string;
-    album: string;
+    album?: string;
   }
 
   interface Props {
@@ -26,15 +27,20 @@
     canPlayPause?: boolean;
     canPrevious?: boolean;
     canNext?: boolean;
+    canReroll?: boolean;
+    showNextSongInMiniPlayer?: boolean;
     showSpectrum?: boolean;
     miniControlsVisible?: boolean;
     previousTrackTooltip?: string;
     nextTrackTooltip?: string;
+    rerollTrackTooltip?: string;
+    nextTrack?: TrackInfo | null;
     onSeek?: (time: number) => void;
     onCoverArtClick?: () => void;
     onPlayPause?: () => void;
     onPrevious?: () => void;
     onNext?: () => void;
+    onReroll?: () => void;
     onMiniPlayerToggle?: () => void;
   }
 
@@ -48,15 +54,20 @@
     canPlayPause = true,
     canPrevious = true,
     canNext = true,
+    canReroll = false,
+    showNextSongInMiniPlayer = true,
     showSpectrum = true,
     miniControlsVisible = false,
     previousTrackTooltip = "Previous",
     nextTrackTooltip = "Next",
+    rerollTrackTooltip = "Reroll next track",
+    nextTrack = null,
     onSeek,
     onCoverArtClick,
     onPlayPause,
     onPrevious,
     onNext,
+    onReroll,
     onMiniPlayerToggle,
   }: Props = $props();
 
@@ -77,6 +88,12 @@
     const mins = Math.floor(remaining / 60);
     const secs = Math.floor(remaining % 60);
     return `-${mins}:${secs.toString().padStart(2, "0")}`;
+  }
+
+  function formatArtistTitle(track: TrackInfo | null): string {
+    const artist = track?.artist || "Unknown Artist";
+    const title = track?.title || "Unknown Title";
+    return `${artist} — ${title}`;
   }
 </script>
 
@@ -223,7 +240,35 @@
 
     <div class="min-w-0 flex-1">
       <div class="mb-1 text-center">
-        {#if currentTrack}
+        {#if isMini}
+          {#if showNextSongInMiniPlayer}
+            <SyncedMarquee
+              text={formatArtistTitle(currentTrack)}
+              group={marqueeGroup}
+              class="text-sm font-medium text-base-content"
+            />
+            <SyncedMarquee
+              text="Next: {formatArtistTitle(nextTrack)}"
+              group={marqueeGroup}
+              class="text-xs text-base-content/60"
+            />
+          {:else if currentTrack}
+            <SyncedMarquee
+              text={currentTrack.title}
+              group={marqueeGroup}
+              class="text-sm font-medium text-base-content"
+            />
+            <SyncedMarquee
+              text={currentTrack.artist +
+                (currentTrack.album ? ` — ${currentTrack.album}` : "")}
+              group={marqueeGroup}
+              class="text-xs text-base-content/60"
+            />
+          {:else}
+            <div class="text-sm font-medium text-base-content">&nbsp;</div>
+            <div class="text-xs text-base-content/40">Not Playing</div>
+          {/if}
+        {:else if currentTrack}
           <SyncedMarquee
             text={currentTrack.title}
             group={marqueeGroup}
@@ -241,8 +286,8 @@
         {/if}
       </div>
 
-      <div class="flex items-center gap-1">
-        <div class="relative w-9">
+      <div class="flex items-center gap-2">
+        <div class="relative w-7">
           <span
             class="block text-right font-mono text-[11px] tabular-nums text-base-content transition-opacity"
             class:opacity-0={showMiniControls}
@@ -289,7 +334,7 @@
           ></div>
         </div>
 
-        <div class="relative w-9">
+        <div class="relative w-7">
           <span
             class="block font-mono text-[11px] tabular-nums text-base-content transition-opacity"
             class:opacity-0={showMiniControls}
@@ -310,6 +355,21 @@
               class="h-3.5 w-3.5 text-base-content/80"
               fill="currentColor"
             />
+          </button>
+        </div>
+
+        <div class="relative w-5">
+          <button
+            type="button"
+            class="absolute inset-0 flex items-center justify-center rounded opacity-0 transition-all hover:bg-base-200/70 hover:text-primary active:bg-base-200/85 disabled:opacity-30"
+            class:opacity-100={showMiniControls}
+            class:pointer-events-none={!showMiniControls}
+            onclick={() => onReroll?.()}
+            disabled={!canReroll}
+            aria-label="Reroll next track"
+            title={rerollTrackTooltip}
+          >
+            <Dices class="h-3 w-3 text-base-content/80" />
           </button>
         </div>
       </div>

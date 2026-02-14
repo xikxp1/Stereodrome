@@ -151,6 +151,23 @@ pub fn move_queue_item(
 }
 
 #[tauri::command]
+pub fn reroll_next_queue_item(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+) -> AppResult<bool> {
+    let swapped = {
+        let mut queue = state.queue.lock_recover();
+        queue.reroll_next()
+    };
+
+    if swapped {
+        persist_and_emit(&state, &app_handle);
+    }
+
+    Ok(swapped)
+}
+
+#[tauri::command]
 pub async fn play_queue_item(
     state: State<'_, AppState>,
     app_handle: AppHandle,
