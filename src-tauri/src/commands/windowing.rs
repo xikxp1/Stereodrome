@@ -1,10 +1,10 @@
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use tauri::Emitter;
 #[cfg(not(target_os = "macos"))]
 use tauri::WebviewWindowBuilder;
-use tauri::{AppHandle, Manager, WebviewUrl};
-#[cfg(target_os = "macos")]
-use tauri::{Emitter, LogicalPosition, LogicalSize, Position, Size};
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Position, Size, WebviewUrl};
 
 use crate::error::{AppError, AppResult};
 
@@ -14,6 +14,7 @@ const MINI_PLAYER_TITLE: &str = "Stereodrome Mini Player";
 const MINI_PLAYER_URL: &str = "/mini-player";
 const MINI_PLAYER_WIDTH: f64 = 320.0;
 const MINI_PLAYER_HEIGHT: f64 = 72.0;
+const NANO_PLAYER_SIZE: f64 = 30.0;
 #[cfg(target_os = "macos")]
 const MINI_PLAYER_HOVER_EVENT: &str = "mini-player-hover-state";
 
@@ -23,10 +24,48 @@ pub struct MiniPlayerPosition {
     pub y: f64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MiniPlayerMode {
+    Mini,
+    Nano,
+}
+
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, Serialize)]
 struct MiniPlayerHoverState {
     hovered: bool,
+}
+
+fn mini_player_dimensions(mode: MiniPlayerMode) -> (f64, f64) {
+    match mode {
+        MiniPlayerMode::Mini => (MINI_PLAYER_WIDTH, MINI_PLAYER_HEIGHT),
+        MiniPlayerMode::Nano => (NANO_PLAYER_SIZE, NANO_PLAYER_SIZE),
+    }
+}
+
+fn apply_mini_player_mode(
+    window: &tauri::WebviewWindow,
+    mode: MiniPlayerMode,
+    position: MiniPlayerPosition,
+) -> AppResult<()> {
+    let (width, height) = mini_player_dimensions(mode);
+    let logical_position = Position::Logical(LogicalPosition::new(position.x, position.y));
+
+    window
+        .set_size(Size::Logical(LogicalSize::new(width, height)))
+        .map_err(|e| AppError::Window(format!("failed to set mini player size: {e}")))?;
+    window
+        .set_min_size(Some(Size::Logical(LogicalSize::new(width, height))))
+        .map_err(|e| AppError::Window(format!("failed to set mini player min size: {e}")))?;
+    window
+        .set_max_size(Some(Size::Logical(LogicalSize::new(width, height))))
+        .map_err(|e| AppError::Window(format!("failed to set mini player max size: {e}")))?;
+    window
+        .set_position(logical_position)
+        .map_err(|e| AppError::Window(format!("failed to set mini player position: {e}")))?;
+
+    Ok(())
 }
 
 fn minimize_main_window(app_handle: &AppHandle) -> AppResult<()> {
@@ -135,6 +174,7 @@ fn create_mini_player_window(
                 .max_inner_size(MINI_PLAYER_WIDTH, MINI_PLAYER_HEIGHT)
                 .resizable(false)
                 .decorations(false)
+                .transparent(true)
                 .always_on_top(true)
                 .skip_taskbar(true)
                 .focused(false)
@@ -184,6 +224,7 @@ fn create_mini_player_window(
     .position(position.x, position.y)
     .resizable(false)
     .decorations(false)
+    .transparent(true)
     .always_on_top(true)
     .skip_taskbar(true)
     .focused(false)
@@ -197,6 +238,7 @@ fn create_mini_player_window(
 #[tauri::command]
 pub fn open_mini_player(app_handle: AppHandle, position: MiniPlayerPosition) -> AppResult<()> {
     if let Some(window) = app_handle.get_webview_window(MINI_PLAYER_LABEL) {
+        apply_mini_player_mode(&window, MiniPlayerMode::Mini, position)?;
         let _ = window.unminimize();
         let _ = window.show();
         #[cfg(target_os = "macos")]
@@ -223,6 +265,21 @@ pub fn open_mini_player(app_handle: AppHandle, position: MiniPlayerPosition) -> 
     debug!("Mini player opened");
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn set_mini_player_mode(
+    app_handle: AppHandle,
+    mode: MiniPlayerMode,
+    position: MiniPlayerPosition,
+) -> AppResult<()> {
+    let Some(window) = app_handle.get_webview_window(MINI_PLAYER_LABEL) else {
+        return Err(AppError::Window(
+            "mini player mode update requested but window not found".to_string(),
+        ));
+    };
+
+    apply_mini_player_mode(&window, mode, position)
 }
 
 #[tauri::command]
