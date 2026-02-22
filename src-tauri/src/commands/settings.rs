@@ -375,12 +375,12 @@ fn detect_system_locale() -> Option<String> {
 
     #[cfg(target_os = "windows")]
     {
-        return detect_system_locale_windows();
+        detect_system_locale_windows()
     }
 
     #[cfg(target_os = "linux")]
     {
-        return detect_system_locale_linux();
+        detect_system_locale_linux()
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
