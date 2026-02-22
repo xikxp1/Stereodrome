@@ -80,8 +80,8 @@ impl SubsonicClientHandle {
 
     // === Library ===
 
-    /// Get all artist indexes
-    pub async fn get_artists(&self) -> ClientResult<Vec<ArtistIndex>> {
+    /// Get all artists
+    pub async fn get_artists(&self) -> ClientResult<Vec<ArtistSummaryInfo>> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.request_tx
@@ -114,6 +114,26 @@ impl SubsonicClientHandle {
         self.request_tx
             .send(ClientRequest::GetAlbum {
                 album_id: album_id.to_string(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| ClientError::ChannelClosed)?;
+
+        response_rx.await.map_err(|_| ClientError::ChannelClosed)?
+    }
+
+    /// Get newest albums page
+    pub async fn get_newest_albums(
+        &self,
+        size: usize,
+        offset: usize,
+    ) -> ClientResult<Vec<AlbumSummaryInfo>> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.request_tx
+            .send(ClientRequest::GetNewestAlbums {
+                size,
+                offset,
                 response_tx,
             })
             .await

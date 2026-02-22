@@ -16,25 +16,19 @@ pub struct ConnectionInfo {
     pub server_version: String,
 }
 
-/// Artist index from getArtists API
-#[derive(Debug, Clone)]
-pub struct ArtistIndex {
-    pub artist: Vec<ArtistInfo>,
-}
-
-/// Basic artist info from index
-#[derive(Debug, Clone)]
-pub struct ArtistInfo {
-    pub id: String,
-    pub name: String,
-    pub album_count: i32,
-    pub cover_art: Option<String>,
-}
-
 /// Detailed artist info with albums
 #[derive(Debug, Clone)]
 pub struct ArtistDetail {
     pub album: Vec<AlbumInfo>,
+}
+
+/// Minimal artist entry used for full library reconciliation.
+#[derive(Debug, Clone)]
+pub struct ArtistSummaryInfo {
+    pub id: String,
+    pub name: String,
+    pub album_count: i32,
+    pub cover_art: Option<String>,
 }
 
 /// Album info
@@ -69,6 +63,14 @@ pub struct SongInfo {
     pub path: Option<String>,
     pub year: Option<i32>,
     pub genre: Option<String>,
+}
+
+/// Minimal album entry used for newest-album incremental checks.
+#[derive(Debug, Clone)]
+pub struct AlbumSummaryInfo {
+    pub id: String,
+    pub artist_id: Option<String>,
+    pub artist_name: Option<String>,
 }
 
 /// Scan status from server
@@ -176,9 +178,9 @@ pub enum ClientRequest {
     },
 
     // === Library ===
-    /// Get all artist indexes
+    /// Get all artists
     GetArtists {
-        response_tx: oneshot::Sender<ClientResult<Vec<ArtistIndex>>>,
+        response_tx: oneshot::Sender<ClientResult<Vec<ArtistSummaryInfo>>>,
     },
     /// Get artist details with albums
     GetArtist {
@@ -189,6 +191,12 @@ pub enum ClientRequest {
     GetAlbum {
         album_id: String,
         response_tx: oneshot::Sender<ClientResult<AlbumDetail>>,
+    },
+    /// Get newest albums page
+    GetNewestAlbums {
+        size: usize,
+        offset: usize,
+        response_tx: oneshot::Sender<ClientResult<Vec<AlbumSummaryInfo>>>,
     },
     /// Get library scan status
     GetScanStatus {

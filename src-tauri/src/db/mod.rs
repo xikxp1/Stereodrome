@@ -86,6 +86,16 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
         conn.execute_batch(SCHEMA)?;
     }
 
+    // Ensure sync_state exists for incremental sync metadata.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_state_updated_at ON sync_state(updated_at);",
+    )?;
+
     Ok(())
 }
 

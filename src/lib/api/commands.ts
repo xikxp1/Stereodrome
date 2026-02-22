@@ -14,6 +14,9 @@ import type {
   AnalysisProgress,
   PlaybackSettings,
   NotificationSettings,
+  SyncSettings,
+  LibrarySyncStatus,
+  SystemTimePreferences,
   MiniPlayerMode,
   MiniPlayerPosition,
 } from "$lib/types";
@@ -40,6 +43,14 @@ export async function restoreSession(): Promise<ConnectionStatus> {
 // Library commands
 export async function syncLibrary(): Promise<SyncResult> {
   return invoke<SyncResult>("sync_library");
+}
+
+export async function reconcileLibraryState(): Promise<SyncResult> {
+  return invoke<SyncResult>("reconcile_library_state");
+}
+
+export async function getLibrarySyncStatus(): Promise<LibrarySyncStatus> {
+  return invoke<LibrarySyncStatus>("get_library_sync_status");
 }
 
 export async function getArtists(): Promise<Artist[]> {
@@ -234,6 +245,19 @@ export async function setNotificationSettings(
   settings: NotificationSettings
 ): Promise<void> {
   return invoke("set_notification_settings", { settings });
+}
+
+// Library sync settings commands
+export async function getSyncSettings(): Promise<SyncSettings> {
+  return invoke<SyncSettings>("get_sync_settings");
+}
+
+export async function setSyncSettings(settings: SyncSettings): Promise<void> {
+  return invoke("set_sync_settings", { settings });
+}
+
+export async function getSystemTimePreferences(): Promise<SystemTimePreferences> {
+  return invoke<SystemTimePreferences>("get_system_time_preferences");
 }
 
 // Tray commands
