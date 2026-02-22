@@ -179,6 +179,36 @@ export interface NotificationSettings {
   notify_when_miniplayer_open: boolean;
 }
 
+export interface SyncSettings {
+  incremental_enabled: boolean;
+  incremental_interval_minutes: number;
+  full_reconcile_enabled: boolean;
+  full_reconcile_interval_hours: number;
+}
+
+export type SyncJobKind = "incremental" | "full_reconcile";
+
+export interface SyncJobStatus {
+  enabled: boolean;
+  interval_minutes: number;
+  running: boolean;
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  next_run_at: string | null;
+}
+
+export interface LibrarySyncStatus {
+  active_job: SyncJobKind | null;
+  incremental: SyncJobStatus;
+  full_reconcile: SyncJobStatus;
+}
+
+export interface SystemTimePreferences {
+  use_24_hour_clock: boolean;
+  locale: string | null;
+}
+
 export interface MiniPlayerPosition {
   x: number;
   y: number;

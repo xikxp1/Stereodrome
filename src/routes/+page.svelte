@@ -20,13 +20,15 @@
     getArtists,
     getAlbums,
     getSongs,
+    getLibrarySyncStatus,
+    getSystemTimePreferences,
     seekPlayback,
     getCoverArt,
     getMiniPlayerPosition,
     openMiniPlayer,
   } from "$lib/api/commands";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { emit } from "@tauri-apps/api/event";
+  import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
   import {
     availableMonitors,
     currentMonitor,
@@ -40,6 +42,7 @@
     Song,
     Playlist,
     MiniPlayerPosition,
+    LibrarySyncStatus,
   } from "$lib/types";
 
   // View state
@@ -112,6 +115,20 @@
   // Loading states
   let isLoading = $state(false);
   let loadError = $state<Error | null>(null);
+  let librarySyncStatus = $state<LibrarySyncStatus | null>(null);
+  let systemLocale = $state<string | null>(null);
+  let use24HourClock = $state<boolean | null>(null);
+  const syncDateTimeFormatter = $derived.by(() => {
+    const locale = systemLocale ?? undefined;
+    const options: Intl.DateTimeFormatOptions = {
+      dateStyle: "short",
+      timeStyle: "short",
+    };
+    if (use24HourClock !== null) {
+      options.hour12 = !use24HourClock;
+    }
+    return new Intl.DateTimeFormat(locale, options);
+  });
 
   // Restore session on mount (runs once)
   let sessionRestored = false;
@@ -148,6 +165,61 @@
     }
   });
 
+  let timePreferencesLoaded = false;
+  $effect(() => {
+    if (timePreferencesLoaded) return;
+    timePreferencesLoaded = true;
+    void loadSystemTimePreferences();
+  });
+
+  // Keep library sync status current in main window.
+  $effect(() => {
+    let unlistenStatus: UnlistenFn | null = null;
+    let unlistenSettings: UnlistenFn | null = null;
+
+    (async () => {
+      try {
+        unlistenStatus = await listen<LibrarySyncStatus>(
+          "library-sync-status-changed",
+          (event) => {
+            librarySyncStatus = event.payload;
+          }
+        );
+      } catch (e) {
+        error(`Failed to listen for library sync status events: ${e}`);
+      }
+
+      try {
+        unlistenSettings = await listen("sync-settings-changed", () => {
+          void loadLibrarySyncStatus();
+        });
+      } catch (e) {
+        error(`Failed to listen for sync settings events: ${e}`);
+      }
+    })();
+
+    return () => {
+      if (unlistenStatus) unlistenStatus();
+      if (unlistenSettings) unlistenSettings();
+    };
+  });
+
+  $effect(() => {
+    if (!connection.status.connected) {
+      librarySyncStatus = null;
+      return;
+    }
+
+    void loadLibrarySyncStatus();
+    const interval = setInterval(() => {
+      void loadLibrarySyncStatus();
+    }, 60_000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  });
+
   async function loadLibraryData() {
     isLoading = true;
     loadError = null;
@@ -166,6 +238,75 @@
       isLoading = false;
     }
   }
+
+  async function loadLibrarySyncStatus() {
+    if (!connection.status.connected) return;
+    try {
+      librarySyncStatus = await getLibrarySyncStatus();
+    } catch (e) {
+      error(`Failed to load library sync status: ${e}`);
+    }
+  }
+
+  async function loadSystemTimePreferences() {
+    try {
+      const preferences = await getSystemTimePreferences();
+      use24HourClock = preferences.use_24_hour_clock;
+      systemLocale = preferences.locale;
+    } catch (e) {
+      error(`Failed to load system time preferences: ${e}`);
+      use24HourClock = null;
+      systemLocale = null;
+    }
+  }
+
+  function formatSyncTimestamp(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "?";
+    }
+    return syncDateTimeFormatter.format(date);
+  }
+
+  const syncStatusTone = $derived.by((): "normal" | "running" | "error" => {
+    if (!connection.status.connected) return "normal";
+    if (!librarySyncStatus) return "normal";
+    if (librarySyncStatus.active_job) return "running";
+    if (
+      librarySyncStatus.incremental.last_error ||
+      librarySyncStatus.full_reconcile.last_error
+    ) {
+      return "error";
+    }
+    return "normal";
+  });
+
+  const syncStatusSummary = $derived.by((): string | null => {
+    if (!connection.status.connected) return null;
+    if (!librarySyncStatus) return "Sync: unavailable";
+
+    if (librarySyncStatus.active_job === "incremental") {
+      return "Sync: incremental running";
+    }
+    if (librarySyncStatus.active_job === "full_reconcile") {
+      return "Sync: full reconcile running";
+    }
+
+    if (librarySyncStatus.incremental.last_error) {
+      return "Sync: incremental error (see Settings)";
+    }
+    if (librarySyncStatus.full_reconcile.last_error) {
+      return "Sync: full reconcile error (see Settings)";
+    }
+
+    const incrementalNext = librarySyncStatus.incremental.next_run_at
+      ? formatSyncTimestamp(librarySyncStatus.incremental.next_run_at)
+      : "off";
+    const fullNext = librarySyncStatus.full_reconcile.next_run_at
+      ? formatSyncTimestamp(librarySyncStatus.full_reconcile.next_run_at)
+      : "off";
+    return `Sync: inc ${incrementalNext} | full ${fullNext}`;
+  });
 
   function getLogicalMonitorBounds(monitor: Monitor): LogicalMonitorBounds {
     const scale = monitor.scaleFactor || 1;
@@ -804,6 +945,8 @@
             itemCount={filteredPlaylistSongs.length}
             totalDuration={playlistTotalDuration}
             totalSize={playlistTotalSize}
+            syncText={syncStatusSummary}
+            syncTone={syncStatusTone}
           />
         {:else if activeView === "music"}
           <!-- Music View: Column Browser + Song List -->
@@ -837,6 +980,8 @@
             itemCount={filteredSongs.length}
             {totalDuration}
             {totalSize}
+            syncText={syncStatusSummary}
+            syncTone={syncStatusTone}
           />
         {:else if activeView === "artists"}
           {#if detailView?.type === "artist" && detailView.artist}
@@ -868,6 +1013,8 @@
               itemCount={detailSongs.length}
               totalDuration={detailTotalDuration}
               totalSize={detailTotalSize}
+              syncText={syncStatusSummary}
+              syncTone={syncStatusTone}
             />
           {:else}
             <!-- Artist Grid -->
@@ -879,6 +1026,8 @@
             <StatusBar
               itemCount={gridFilteredArtists.length}
               itemType="artists"
+              syncText={syncStatusSummary}
+              syncTone={syncStatusTone}
             />
           {/if}
         {:else if activeView === "albums"}
@@ -908,6 +1057,8 @@
               itemCount={detailSongs.length}
               totalDuration={detailTotalDuration}
               totalSize={detailTotalSize}
+              syncText={syncStatusSummary}
+              syncTone={syncStatusTone}
             />
           {:else}
             <!-- Album Grid -->
@@ -919,6 +1070,8 @@
             <StatusBar
               itemCount={gridFilteredAlbums.length}
               itemType="albums"
+              syncText={syncStatusSummary}
+              syncTone={syncStatusTone}
             />
           {/if}
         {/if}

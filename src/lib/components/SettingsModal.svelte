@@ -13,6 +13,7 @@
     Volume2,
     Disc3,
     SlidersHorizontal,
+    Clock3,
   } from "lucide-svelte";
   import {
     getAudioCacheStats,
@@ -31,6 +32,11 @@
     setPlaybackSettings,
     getNotificationSettings,
     setNotificationSettings,
+    getSyncSettings,
+    setSyncSettings,
+    getLibrarySyncStatus,
+    reconcileLibraryState,
+    getSystemTimePreferences,
     type CacheStats,
   } from "$lib/api/commands";
   import { marked } from "marked";
@@ -50,6 +56,9 @@
     DynamicsPreset,
     PlaybackSettings,
     NotificationSettings,
+    SyncSettings,
+    LibrarySyncStatus,
+    SyncJobKind,
   } from "$lib/types";
 
   const dynamicsPresets: DynamicsPreset[] = ["light", "medium", "heavy"];
@@ -198,6 +207,7 @@
   let loadingScanStatus = $state(false);
   let startingScan = $state(false);
   let syncing = $state(false);
+  let reconciling = $state(false);
   let scanPollInterval = $state<ReturnType<typeof setInterval> | null>(null);
 
   // Playback state
@@ -216,7 +226,30 @@
   let analysisProgress = $state<AnalysisProgress | null>(null);
   let normUnlisten = $state<UnlistenFn | null>(null);
 
+  // Library sync scheduling state
+  let syncSettings = $state<SyncSettings | null>(null);
+  let syncStatus = $state<LibrarySyncStatus | null>(null);
+  let systemLocale = $state<string | null>(null);
+  let use24HourClock = $state<boolean | null>(null);
+  let loadingSyncSettings = $state(false);
+  let loadingSyncStatus = $state(false);
+  let savingSyncSettings = $state(false);
+  let syncStatusUnlisten = $state<UnlistenFn | null>(null);
+
   const lufsPresets = [-18, -16, -14, -12, -10];
+  const incrementalIntervals = [5, 15, 30, 60, 180, 360];
+  const fullReconcileIntervals = [6, 12, 24, 48, 72, 168];
+  const syncDateTimeFormatter = $derived.by(() => {
+    const locale = systemLocale ?? undefined;
+    const options: Intl.DateTimeFormatOptions = {
+      dateStyle: "short",
+      timeStyle: "short",
+    };
+    if (use24HourClock !== null) {
+      options.hour12 = !use24HourClock;
+    }
+    return new Intl.DateTimeFormat(locale, options);
+  });
 
   // Cache size in GB for the slider (0.5 to 50 GB)
   let cacheSizeGB = $state(5);
@@ -232,6 +265,10 @@
       loadNormalization();
       loadPlaybackSettings();
       loadNotificationSettings();
+      loadSyncSettings();
+      loadSyncStatus();
+      setupSyncStatusListener();
+      loadSystemTimePreferences();
       updater.loadCurrentVersion();
     } else {
       // Clean up polling when modal closes
@@ -243,6 +280,10 @@
         normUnlisten();
         normUnlisten = null;
       }
+      if (syncStatusUnlisten) {
+        syncStatusUnlisten();
+        syncStatusUnlisten = null;
+      }
       // Reset stale state so reopening shows fresh data
       playbackSettings = null;
       notificationSettings = null;
@@ -250,6 +291,8 @@
       normStats = null;
       analyzing = false;
       analysisProgress = null;
+      syncSettings = null;
+      syncStatus = null;
     }
   });
 
@@ -341,6 +384,22 @@
       error(`Failed to sync library: ${e}`);
     } finally {
       syncing = false;
+      await loadSyncStatus();
+    }
+  }
+
+  async function handleReconcileLibrary() {
+    reconciling = true;
+    try {
+      await reconcileLibraryState();
+      await queryClient.invalidateQueries({ queryKey: ["artists"] });
+      await queryClient.invalidateQueries({ queryKey: ["albums"] });
+      await queryClient.invalidateQueries({ queryKey: ["songs"] });
+    } catch (e) {
+      error(`Failed to reconcile library: ${e}`);
+    } finally {
+      reconciling = false;
+      await loadSyncStatus();
     }
   }
 
@@ -405,6 +464,90 @@
     } finally {
       savingNotifications = false;
     }
+  }
+
+  async function setupSyncStatusListener() {
+    if (syncStatusUnlisten) return;
+    try {
+      syncStatusUnlisten = await listen<LibrarySyncStatus>(
+        "library-sync-status-changed",
+        (event) => {
+          syncStatus = event.payload;
+        }
+      );
+    } catch (e) {
+      error(`Failed to attach library sync status listener: ${e}`);
+    }
+  }
+
+  async function loadSyncSettings() {
+    loadingSyncSettings = true;
+    try {
+      syncSettings = await getSyncSettings();
+    } catch (e) {
+      error(`Failed to load sync settings: ${e}`);
+    } finally {
+      loadingSyncSettings = false;
+    }
+  }
+
+  async function loadSyncStatus() {
+    loadingSyncStatus = true;
+    try {
+      syncStatus = await getLibrarySyncStatus();
+    } catch (e) {
+      error(`Failed to load sync status: ${e}`);
+    } finally {
+      loadingSyncStatus = false;
+    }
+  }
+
+  async function loadSystemTimePreferences() {
+    try {
+      const preferences = await getSystemTimePreferences();
+      use24HourClock = preferences.use_24_hour_clock;
+      systemLocale = preferences.locale;
+    } catch (e) {
+      error(`Failed to load system time preferences: ${e}`);
+      use24HourClock = null;
+      systemLocale = null;
+    }
+  }
+
+  async function handleSyncSettingChange(update: Partial<SyncSettings>) {
+    if (!syncSettings) return;
+    savingSyncSettings = true;
+    try {
+      const updated = { ...syncSettings, ...update };
+      await setSyncSettings(updated);
+      syncSettings = updated;
+      await loadSyncStatus();
+    } catch (e) {
+      error(`Failed to save sync settings: ${e}`);
+    } finally {
+      savingSyncSettings = false;
+    }
+  }
+
+  function formatSyncTimestamp(value: string | null | undefined): string {
+    if (!value) return "Never";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return "Invalid date";
+    return syncDateTimeFormatter.format(parsed);
+  }
+
+  function formatNextSync(value: string | null | undefined): string {
+    if (!value) return "Disabled";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return "Invalid date";
+    return syncDateTimeFormatter.format(parsed);
+  }
+
+  function syncJobLabel(job: SyncJobKind | null | undefined): string {
+    if (!job) return "Idle";
+    return job === "incremental"
+      ? "Running incremental sync"
+      : "Running full reconcile";
   }
 
   const activeEqPreset = $derived.by(() => {
@@ -736,19 +879,6 @@
               {/if}
             </button>
             <button
-              class="btn btn-sm btn-ghost gap-1"
-              onclick={handleSyncLibrary}
-              disabled={syncing}
-            >
-              {#if syncing}
-                <Database class="h-3.5 w-3.5 animate-pulse" />
-                Syncing...
-              {:else}
-                <Database class="h-3.5 w-3.5" />
-                Sync Library
-              {/if}
-            </button>
-            <button
               class="btn btn-sm btn-error btn-outline gap-1"
               onclick={handleDisconnect}
             >
@@ -756,6 +886,179 @@
               Disconnect
             </button>
           </div>
+        </div>
+
+        <!-- Library Sync Section -->
+        <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
+          <div class="mb-3 flex items-center gap-2">
+            <Clock3 class="h-4 w-4 text-base-content/60" />
+            <h3 class="font-medium">Library Sync</h3>
+          </div>
+
+          {#if (loadingSyncSettings && !syncSettings) || (loadingSyncStatus && !syncStatus)}
+            <div class="flex items-center gap-2 text-sm text-base-content/60">
+              <RefreshCw class="h-4 w-4 animate-spin" />
+              Loading...
+            </div>
+          {:else if syncSettings && syncStatus}
+            <div class="space-y-3">
+              <div
+                class="rounded border border-base-300 bg-base-100/60 px-3 py-2"
+              >
+                <div class="flex items-center justify-between text-sm">
+                  <span class="text-base-content/60">Scheduler</span>
+                  <span
+                    class={syncStatus.active_job
+                      ? "font-medium text-warning"
+                      : "font-medium text-success"}
+                  >
+                    {syncJobLabel(syncStatus.active_job)}
+                  </span>
+                </div>
+              </div>
+
+              <div class="border-t border-base-300 pt-3">
+                <label class="flex cursor-pointer items-center justify-between">
+                  <span class="text-sm">Periodic incremental sync</span>
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm checkbox-primary"
+                    checked={syncSettings.incremental_enabled}
+                    onchange={(e) =>
+                      handleSyncSettingChange({
+                        incremental_enabled: e.currentTarget.checked,
+                      })}
+                    disabled={savingSyncSettings}
+                  />
+                </label>
+
+                {#if syncSettings.incremental_enabled}
+                  <div class="mt-2 flex flex-wrap gap-1">
+                    {#each incrementalIntervals as interval (interval)}
+                      <button
+                        class="btn btn-xs h-6 min-h-0 px-2 {syncSettings.incremental_interval_minutes ===
+                        interval
+                          ? 'btn-primary'
+                          : 'btn-ghost'}"
+                        onclick={() =>
+                          handleSyncSettingChange({
+                            incremental_interval_minutes: interval,
+                          })}
+                        disabled={savingSyncSettings}
+                      >
+                        {interval >= 60 ? `${interval / 60}h` : `${interval}m`}
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+
+                <div class="mt-2 space-y-1 text-xs text-base-content/55">
+                  <div>
+                    Next: {formatNextSync(syncStatus.incremental.next_run_at)}
+                  </div>
+                  <div>
+                    Last success: {formatSyncTimestamp(
+                      syncStatus.incremental.last_success_at
+                    )}
+                  </div>
+                  {#if syncStatus.incremental.last_error}
+                    <div class="text-error">
+                      Last error: {syncStatus.incremental.last_error}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+
+              <div class="border-t border-base-300 pt-3">
+                <label class="flex cursor-pointer items-center justify-between">
+                  <span class="text-sm">Periodic full reconcile</span>
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm checkbox-primary"
+                    checked={syncSettings.full_reconcile_enabled}
+                    onchange={(e) =>
+                      handleSyncSettingChange({
+                        full_reconcile_enabled: e.currentTarget.checked,
+                      })}
+                    disabled={savingSyncSettings}
+                  />
+                </label>
+
+                {#if syncSettings.full_reconcile_enabled}
+                  <div class="mt-2 flex flex-wrap gap-1">
+                    {#each fullReconcileIntervals as interval (interval)}
+                      <button
+                        class="btn btn-xs h-6 min-h-0 px-2 {syncSettings.full_reconcile_interval_hours ===
+                        interval
+                          ? 'btn-primary'
+                          : 'btn-ghost'}"
+                        onclick={() =>
+                          handleSyncSettingChange({
+                            full_reconcile_interval_hours: interval,
+                          })}
+                        disabled={savingSyncSettings}
+                      >
+                        {interval}h
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+
+                <div class="mt-2 space-y-1 text-xs text-base-content/55">
+                  <div>
+                    Next: {formatNextSync(
+                      syncStatus.full_reconcile.next_run_at
+                    )}
+                  </div>
+                  <div>
+                    Last success: {formatSyncTimestamp(
+                      syncStatus.full_reconcile.last_success_at
+                    )}
+                  </div>
+                  {#if syncStatus.full_reconcile.last_error}
+                    <div class="text-error">
+                      Last error: {syncStatus.full_reconcile.last_error}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            </div>
+
+            <div
+              class="mt-4 flex flex-wrap gap-2 border-t border-base-300 pt-4"
+            >
+              <button
+                class="btn btn-sm btn-ghost gap-1"
+                onclick={handleSyncLibrary}
+                disabled={syncing || !!syncStatus.active_job}
+              >
+                {#if syncing}
+                  <Database class="h-3.5 w-3.5 animate-pulse" />
+                  Syncing...
+                {:else}
+                  <Database class="h-3.5 w-3.5" />
+                  Run Incremental Now
+                {/if}
+              </button>
+              <button
+                class="btn btn-sm btn-ghost gap-1"
+                onclick={handleReconcileLibrary}
+                disabled={reconciling || !!syncStatus.active_job}
+              >
+                {#if reconciling}
+                  <RefreshCw class="h-3.5 w-3.5 animate-spin" />
+                  Reconciling...
+                {:else}
+                  <RefreshCw class="h-3.5 w-3.5" />
+                  Run Full Reconcile
+                {/if}
+              </button>
+            </div>
+          {:else}
+            <div class="text-sm text-base-content/60">
+              Unable to load library sync settings
+            </div>
+          {/if}
         </div>
 
         <!-- Display Section -->

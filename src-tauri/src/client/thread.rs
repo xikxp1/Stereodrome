@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use log::{debug, error, warn};
-use submarine::{Client, auth::AuthBuilder};
+use submarine::{Client, api::get_album_list::Order, auth::AuthBuilder};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -146,6 +146,14 @@ impl ClientThread {
                 response_tx,
             } => {
                 let result = self.handle_get_album(&album_id).await;
+                let _ = response_tx.send(result);
+            }
+            ClientRequest::GetNewestAlbums {
+                size,
+                offset,
+                response_tx,
+            } => {
+                let result = self.handle_get_newest_albums(size, offset).await;
                 let _ = response_tx.send(result);
             }
             ClientRequest::GetScanStatus { response_tx } => {
@@ -303,11 +311,11 @@ impl ClientThread {
         }
     }
 
-    async fn handle_get_artists(&self) -> ClientResult<Vec<ArtistIndex>> {
+    async fn handle_get_artists(&self) -> ClientResult<Vec<ArtistSummaryInfo>> {
         debug!("Getting artists");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
-        let indexes = match timeout(API_TIMEOUT, client.get_artists(None)).await {
+        let indexes = match timeout(API_TIMEOUT, client.get_artists(None::<String>)).await {
             Ok(Ok(indexes)) => indexes,
             Ok(Err(e)) => {
                 error!("Get artists API error: {}", e);
@@ -319,22 +327,19 @@ impl ClientThread {
             }
         };
 
-        debug!("Got {} artist indexes", indexes.len());
-        Ok(indexes
+        let artists = indexes
             .into_iter()
-            .map(|index| ArtistIndex {
-                artist: index
-                    .artist
-                    .into_iter()
-                    .map(|a| ArtistInfo {
-                        id: a.id,
-                        name: a.name,
-                        album_count: a.album_count,
-                        cover_art: a.cover_art,
-                    })
-                    .collect(),
+            .flat_map(|index| index.artist)
+            .map(|artist| ArtistSummaryInfo {
+                id: artist.id,
+                name: artist.name,
+                album_count: artist.album_count,
+                cover_art: artist.cover_art,
             })
-            .collect())
+            .collect::<Vec<_>>();
+
+        debug!("Got {} artists", artists.len());
+        Ok(artists)
     }
 
     async fn handle_get_artist(&self, artist_id: &str) -> ClientResult<ArtistDetail> {
@@ -407,6 +412,41 @@ impl ClientThread {
                 })
                 .collect(),
         })
+    }
+
+    async fn handle_get_newest_albums(
+        &self,
+        size: usize,
+        offset: usize,
+    ) -> ClientResult<Vec<AlbumSummaryInfo>> {
+        debug!("Getting newest albums: size={}, offset={}", size, offset);
+        let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
+
+        let albums = match timeout(
+            API_TIMEOUT,
+            client.get_album_list2(Order::Newest, Some(size), Some(offset), None::<String>),
+        )
+        .await
+        {
+            Ok(Ok(albums)) => albums,
+            Ok(Err(e)) => {
+                error!("Get newest albums API error: {}", e);
+                return Err(ClientError::ApiError(e.to_string()));
+            }
+            Err(_) => {
+                error!("Get newest albums timeout after {:?}", API_TIMEOUT);
+                return Err(ClientError::Timeout);
+            }
+        };
+
+        Ok(albums
+            .into_iter()
+            .map(|album| AlbumSummaryInfo {
+                id: album.id,
+                artist_id: album.artist_id,
+                artist_name: album.artist,
+            })
+            .collect())
     }
 
     async fn handle_get_scan_status(&self) -> ClientResult<ScanStatusInfo> {

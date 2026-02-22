@@ -103,6 +103,8 @@ pub fn run() {
 
             app.manage(app_state);
 
+            commands::library::start_library_sync_scheduler(app.handle().clone());
+
             // Initialize media controls for OS integration (Control Center, media keys)
             if let Some(media_controls) = MediaControlsManager::new(app.handle().clone()) {
                 info!("Media controls initialized");
@@ -127,6 +129,8 @@ pub fn run() {
             commands::get_connection_status,
             commands::restore_session,
             commands::sync_library,
+            commands::reconcile_library_state,
+            commands::get_library_sync_status,
             commands::get_artists,
             commands::get_albums,
             commands::get_songs,
@@ -185,6 +189,9 @@ pub fn run() {
             commands::set_mini_player_position,
             commands::get_notification_settings,
             commands::set_notification_settings,
+            commands::get_sync_settings,
+            commands::set_sync_settings,
+            commands::get_system_time_preferences,
             commands::open_mini_player,
             commands::set_mini_player_mode,
             commands::close_mini_player,
