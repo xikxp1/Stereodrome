@@ -21,7 +21,7 @@ tauri-build = { version = "2.5.5", features = [] }
 [dependencies]
 base64 = "0.22.1"
 bs2b = { version = "0.2.0", features = ["streaming"] }
-chrono = { version = "0.4.43", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 ebur128 = "0.1.10"
 filetime = "0.2.27"
 fundsp = "0.23.0"
