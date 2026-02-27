@@ -29,7 +29,7 @@ keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "li
 log = "0.4.29"
 rand = "0.10.0"
 ringbuf = "0.4.8"
-rodio = { version = "0.21.1", features = ["symphonia-all"] }
+rodio = { version = "0.22.1", features = ["symphonia-all"] }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 rustfft = "6.4.1"
 serde = { version = "1.0.228", features = ["derive"] }
