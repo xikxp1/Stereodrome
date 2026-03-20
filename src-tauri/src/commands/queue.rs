@@ -15,6 +15,7 @@ pub struct QueueState {
     pub shuffle: bool,
     pub repeat_mode: RepeatMode,
     pub pending_navigation_index: Option<usize>,
+    pub prepared_next_item: Option<QueueItem>,
 }
 
 impl QueueState {
@@ -25,13 +26,15 @@ impl QueueState {
             shuffle: queue.is_shuffle(),
             repeat_mode: queue.repeat_mode(),
             pending_navigation_index: queue.pending_navigation_index(),
+            prepared_next_item: queue.prepared_next_item().cloned(),
         }
     }
 }
 
 /// Save queue to database and emit queue-changed event
 pub(crate) fn persist_and_emit(state: &AppState, app_handle: &AppHandle) {
-    let queue = state.queue.lock_recover();
+    let mut queue = state.queue.lock_recover();
+    queue.prepare_next_cycle_if_needed();
     let queue_state = QueueState::from_queue(&queue);
 
     // Save to database in a single transaction
@@ -51,7 +54,8 @@ pub(crate) fn persist_and_emit(state: &AppState, app_handle: &AppHandle) {
 
 #[tauri::command]
 pub fn get_queue(state: State<'_, AppState>) -> QueueState {
-    let queue = state.queue.lock_recover();
+    let mut queue = state.queue.lock_recover();
+    queue.prepare_next_cycle_if_needed();
     QueueState::from_queue(&queue)
 }
 

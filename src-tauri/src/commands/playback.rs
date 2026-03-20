@@ -129,7 +129,7 @@ fn prefetch_next_song(app_handle: &AppHandle, state: &AppState) {
 
     // Get next song info from queue
     let next_song_id: Option<String> = {
-        let queue = state.queue.lock_recover();
+        let mut queue = state.queue.lock_recover();
         queue.peek_next().map(|item| item.song_id.clone())
     };
 
@@ -331,7 +331,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
 
     // Get current and next song IDs
     let (current_song_id, next_song_id) = {
-        let queue = state.queue.lock_recover();
+        let mut queue = state.queue.lock_recover();
         let current_id = queue.current_item().map(|i| i.song_id.clone());
         let next_id = queue.peek_next().map(|i| i.song_id.clone());
         match (current_id, next_id) {
@@ -559,7 +559,7 @@ fn check_and_queue_gapless(app_handle: &AppHandle, state: &AppState) {
 
     // Get current and next song IDs
     let (current_song_id, next_song_id) = {
-        let queue = state.queue.lock_recover();
+        let mut queue = state.queue.lock_recover();
         let current_id = queue.current_item().map(|i| i.song_id.clone());
         let next_id = queue.peek_next().map(|i| i.song_id.clone());
         match (current_id, next_id) {

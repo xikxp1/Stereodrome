@@ -3,25 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { error } from "@tauri-apps/plugin-log";
 import { rerollNextQueueItem } from "$lib/api/commands";
-import type { Song } from "$lib/types";
-
-export type RepeatMode = "Off" | "All" | "One";
-
-export interface QueueItem {
-  song_id: string;
-  title: string;
-  artist: string;
-  album: string;
-  duration: number;
-}
-
-interface QueueState {
-  items: QueueItem[];
-  current_index: number | null;
-  shuffle: boolean;
-  repeat_mode: RepeatMode;
-  pending_navigation_index: number | null;
-}
+import type { QueueItem, QueueState, RepeatMode, Song } from "$lib/types";
 
 class QueueStore {
   // State - reflects backend state
@@ -30,6 +12,7 @@ class QueueStore {
   shuffle = $state(false);
   repeatMode = $state<RepeatMode>("Off");
   pendingNavigationIndex = $state<number | null>(null);
+  preparedNextItem = $state<QueueItem | null>(null);
 
   // Event listeners
   private unlistenChanged: UnlistenFn | null = null;
@@ -64,6 +47,7 @@ class QueueStore {
     // Listen for queue ended
     this.unlistenQueueEnded = await listen("queue-ended", () => {
       this.currentIndex = null;
+      this.preparedNextItem = null;
     });
   }
 
@@ -73,6 +57,7 @@ class QueueStore {
     this.shuffle = state.shuffle;
     this.repeatMode = state.repeat_mode;
     this.pendingNavigationIndex = state.pending_navigation_index;
+    this.preparedNextItem = state.prepared_next_item;
   }
 
   private async loadFromBackend() {
@@ -269,6 +254,10 @@ class QueueStore {
         this.items.length - 1
       );
       return this.items[nextIdx];
+    }
+
+    if (this.preparedNextItem !== null) {
+      return this.preparedNextItem;
     }
 
     // If repeat one, next will play the same song
