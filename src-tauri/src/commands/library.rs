@@ -179,16 +179,36 @@ struct LocalArtistRow {
     cover_art_id: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NewestAlbumCandidate {
     album_id: String,
     artist_id: String,
     artist_name: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct NewestAlbumPageEntry {
+    id: String,
+    artist_id: Option<String>,
+    artist_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewestScanStopReason {
+    ReachedPreviousHead,
+    ExhaustedNewestFeed,
+}
+
 struct NewestScanResult {
     head_album_id: Option<String>,
     candidates: Vec<NewestAlbumCandidate>,
+    stop_reason: NewestScanStopReason,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NewestPageScanResult {
+    candidates: Vec<NewestAlbumCandidate>,
+    reached_previous_head: bool,
 }
 
 fn sync_job_lock() -> &'static AtomicBool {
@@ -346,7 +366,9 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<SyncResult> {
         )
     };
 
-    let newest_scan = fetch_newest_album_candidates(state, &local_album_ids).await?;
+    let newest_scan =
+        fetch_newest_album_candidates(state, previous_head_album_id.as_deref(), &local_album_ids)
+            .await?;
 
     if newest_scan.candidates.is_empty() {
         if let Some(head_album_id) = newest_scan.head_album_id.as_deref()
@@ -357,7 +379,28 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<SyncResult> {
             set_sync_state(&db, NEWEST_HEAD_ALBUM_KEY, head_album_id, &now)?;
         }
 
-        info!("Library sync skipped: no new albums in newest-album window");
+        match previous_head_album_id.as_deref() {
+            Some(previous_head_album_id)
+                if newest_scan.stop_reason == NewestScanStopReason::ReachedPreviousHead =>
+            {
+                info!(
+                    "Library sync skipped: no albums found before previous newest head ({})",
+                    previous_head_album_id
+                );
+            }
+            Some(previous_head_album_id) => {
+                info!(
+                    "Library sync skipped: newest-album feed exhausted before previous newest head ({})",
+                    previous_head_album_id
+                );
+            }
+            None => {
+                info!(
+                    "Library sync skipped: no previous newest head recorded; newest-album feed contained no unknown albums"
+                );
+            }
+        }
+
         return Ok(SyncResult {
             artists: 0,
             albums: 0,
@@ -685,18 +728,27 @@ async fn run_full_reconcile_sync(state: &AppState) -> AppResult<SyncResult> {
 
 async fn fetch_newest_album_candidates(
     state: &AppState,
+    previous_head_album_id: Option<&str>,
     known_album_ids: &HashSet<String>,
 ) -> AppResult<NewestScanResult> {
     let mut head_album_id = None;
     let mut candidates: Vec<NewestAlbumCandidate> = Vec::new();
     let mut offset = 0usize;
+    let mut stop_reason = NewestScanStopReason::ExhaustedNewestFeed;
 
     loop {
         let page = state
             .client
             .get_newest_albums(NEWEST_ALBUMS_PAGE_SIZE, offset)
             .await
-            .map_err(|e| AppError::Subsonic(e.to_string()))?;
+            .map_err(|e| AppError::Subsonic(e.to_string()))?
+            .into_iter()
+            .map(|album| NewestAlbumPageEntry {
+                id: album.id,
+                artist_id: album.artist_id,
+                artist_name: album.artist_name,
+            })
+            .collect::<Vec<_>>();
 
         if page.is_empty() {
             break;
@@ -707,30 +759,15 @@ async fn fetch_newest_album_candidates(
         }
 
         let page_len = page.len();
-        let mut reached_imported_boundary = false;
+        let page_scan = scan_newest_album_page(&page, previous_head_album_id, known_album_ids);
+        candidates.extend(page_scan.candidates);
 
-        for album in page {
-            if known_album_ids.contains(&album.id) {
-                reached_imported_boundary = true;
-                break;
-            }
-
-            let Some(artist_id) = album.artist_id else {
-                warn!(
-                    "Skipping newest album {} because server did not provide artist_id",
-                    album.id
-                );
-                continue;
-            };
-
-            candidates.push(NewestAlbumCandidate {
-                album_id: album.id,
-                artist_id,
-                artist_name: album.artist_name,
-            });
+        if page_scan.reached_previous_head {
+            stop_reason = NewestScanStopReason::ReachedPreviousHead;
+            break;
         }
 
-        if reached_imported_boundary || page_len < NEWEST_ALBUMS_PAGE_SIZE {
+        if page_len < NEWEST_ALBUMS_PAGE_SIZE {
             break;
         }
 
@@ -740,7 +777,48 @@ async fn fetch_newest_album_candidates(
     Ok(NewestScanResult {
         head_album_id,
         candidates,
+        stop_reason,
     })
+}
+
+fn scan_newest_album_page(
+    page: &[NewestAlbumPageEntry],
+    previous_head_album_id: Option<&str>,
+    known_album_ids: &HashSet<String>,
+) -> NewestPageScanResult {
+    let mut candidates = Vec::new();
+
+    for album in page {
+        if previous_head_album_id == Some(album.id.as_str()) {
+            return NewestPageScanResult {
+                candidates,
+                reached_previous_head: true,
+            };
+        }
+
+        if known_album_ids.contains(&album.id) {
+            continue;
+        }
+
+        let Some(artist_id) = album.artist_id.clone() else {
+            warn!(
+                "Skipping newest album {} because server did not provide artist_id",
+                album.id
+            );
+            continue;
+        };
+
+        candidates.push(NewestAlbumCandidate {
+            album_id: album.id.clone(),
+            artist_id,
+            artist_name: album.artist_name.clone(),
+        });
+    }
+
+    NewestPageScanResult {
+        candidates,
+        reached_previous_head: false,
+    }
 }
 
 fn load_local_artists(conn: &Connection) -> AppResult<HashMap<String, LocalArtistRow>> {
@@ -762,6 +840,135 @@ fn load_local_artists(conn: &Connection) -> AppResult<HashMap<String, LocalArtis
     }
 
     Ok(artists)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, scan_newest_album_page,
+    };
+    use std::collections::HashSet;
+
+    fn album(id: &str, artist_id: Option<&str>, artist_name: Option<&str>) -> NewestAlbumPageEntry {
+        NewestAlbumPageEntry {
+            id: id.to_string(),
+            artist_id: artist_id.map(str::to_string),
+            artist_name: artist_name.map(str::to_string),
+        }
+    }
+
+    fn known_album_ids(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    #[test]
+    fn imports_unknown_albums_before_previous_head_even_after_known_album() {
+        let page = vec![
+            album("known-1", Some("artist-known"), Some("Known Artist")),
+            album("new-1", Some("artist-new"), Some("New Artist")),
+            album("prev-head", Some("artist-prev"), Some("Prev Artist")),
+            album("new-2", Some("artist-late"), Some("Late Artist")),
+        ];
+
+        let result =
+            scan_newest_album_page(&page, Some("prev-head"), &known_album_ids(&["known-1"]));
+
+        assert_eq!(
+            result.candidates,
+            vec![NewestAlbumCandidate {
+                album_id: "new-1".to_string(),
+                artist_id: "artist-new".to_string(),
+                artist_name: Some("New Artist".to_string()),
+            }]
+        );
+        assert!(result.reached_previous_head);
+    }
+
+    #[test]
+    fn known_albums_do_not_stop_scan_before_previous_head() {
+        let page = vec![
+            album("known-1", Some("artist-known"), Some("Known Artist")),
+            album("known-2", Some("artist-known"), Some("Known Artist")),
+            album("new-1", Some("artist-new"), Some("New Artist")),
+            album("prev-head", Some("artist-prev"), Some("Prev Artist")),
+        ];
+
+        let result = scan_newest_album_page(
+            &page,
+            Some("prev-head"),
+            &known_album_ids(&["known-1", "known-2"]),
+        );
+
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].album_id, "new-1");
+        assert!(result.reached_previous_head);
+    }
+
+    #[test]
+    fn stops_collecting_once_previous_head_is_encountered() {
+        let page = vec![
+            album("new-1", Some("artist-new"), Some("New Artist")),
+            album("prev-head", Some("artist-prev"), Some("Prev Artist")),
+            album("new-2", Some("artist-late"), Some("Late Artist")),
+        ];
+
+        let result = scan_newest_album_page(&page, Some("prev-head"), &known_album_ids(&[]));
+
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].album_id, "new-1");
+        assert!(result.reached_previous_head);
+    }
+
+    #[test]
+    fn without_previous_head_it_collects_unknown_albums_and_never_stops_early() {
+        let page = vec![
+            album("known-1", Some("artist-known"), Some("Known Artist")),
+            album("new-1", Some("artist-new"), Some("New Artist")),
+            album("new-2", Some("artist-new-2"), Some("New Artist 2")),
+        ];
+
+        let result = scan_newest_album_page(&page, None, &known_album_ids(&["known-1"]));
+
+        assert_eq!(
+            result.candidates,
+            vec![
+                NewestAlbumCandidate {
+                    album_id: "new-1".to_string(),
+                    artist_id: "artist-new".to_string(),
+                    artist_name: Some("New Artist".to_string()),
+                },
+                NewestAlbumCandidate {
+                    album_id: "new-2".to_string(),
+                    artist_id: "artist-new-2".to_string(),
+                    artist_name: Some("New Artist 2".to_string()),
+                },
+            ]
+        );
+        assert!(!result.reached_previous_head);
+    }
+
+    #[test]
+    fn skips_albums_without_artist_id_without_aborting_scan() {
+        let page = vec![
+            album("missing-artist", None, Some("Unknown")),
+            album("new-1", Some("artist-new"), Some("New Artist")),
+            album("prev-head", Some("artist-prev"), Some("Prev Artist")),
+        ];
+
+        let result = scan_newest_album_page(&page, Some("prev-head"), &known_album_ids(&[]));
+
+        assert_eq!(
+            result,
+            NewestPageScanResult {
+                candidates: vec![NewestAlbumCandidate {
+                    album_id: "new-1".to_string(),
+                    artist_id: "artist-new".to_string(),
+                    artist_name: Some("New Artist".to_string()),
+                }],
+                reached_previous_head: true,
+            }
+        );
+    }
 }
 
 fn load_local_album_ids(conn: &Connection) -> AppResult<HashSet<String>> {
