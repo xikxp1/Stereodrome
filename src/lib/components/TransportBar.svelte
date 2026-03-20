@@ -112,6 +112,8 @@
 
   // Ensure volume is always a whole number for display
   const volume = $derived(Math.round(volumeProp));
+  const volumeRatio = $derived(volume / 100);
+  const isMutedWhilePlaying = $derived(isPlaying && volume === 0);
 
   function handleInput(e: Event) {
     const input = e.target as HTMLInputElement;
@@ -176,13 +178,18 @@
     <!-- Volume - Compact dropdown on small screens -->
     <div class="relative flex items-center gap-1.5 lg:hidden">
       <button
-        class="flex h-7 w-7 items-center justify-center rounded bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content"
+        class={[
+          "flex h-7 w-7 items-center justify-center rounded bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content",
+          isMutedWhilePlaying && "volume-alert-button",
+        ]}
         onclick={() => (volumeDropdownOpen = !volumeDropdownOpen)}
         aria-label="Volume"
         title="Volume: {volume}% (M to mute, {modKey}↑/↓)"
       >
         {#if volume === 0}
-          <VolumeX class="h-4 w-4" />
+          <span class={isMutedWhilePlaying ? "volume-alert-icon" : ""}>
+            <VolumeX class="h-4 w-4" />
+          </span>
         {:else if volume < 50}
           <Volume1 class="h-4 w-4" />
         {:else}
@@ -197,20 +204,23 @@
           onkeydown={(e) => e.key === "Escape" && (volumeDropdownOpen = false)}
         ></div>
         <div
-          class="absolute left-0 top-full z-50 mt-1 flex h-36 w-8 flex-col items-center rounded border border-base-300 bg-base-100 py-2 shadow-lg"
+          class="absolute left-0 top-full z-50 mt-1 flex h-36 w-8 flex-col items-center rounded border border-base-300 bg-base-100 py-1 shadow-lg"
         >
           <span
-            class="mb-1 text-[10px] font-medium tabular-nums text-base-content/60"
+            class="text-[10px] font-medium tabular-nums text-base-content/60"
             >{volume}%</span
           >
-          <Volume2 class="mb-1 h-3 w-3 shrink-0 text-base-content/40" />
-          <div class="relative h-20 w-3">
+          <Volume2 class="h-3 w-3 shrink-0 text-base-content/40" />
+          <div class="relative h-28 w-3">
             <div
-              class="absolute left-1/2 h-full w-0.5 -translate-x-1/2 rounded-full bg-base-300"
+              class="absolute top-[8px] left-1/2 h-[calc(100%-16px)] w-0.5 -translate-x-1/2 rounded-full bg-base-300"
             ></div>
             <div
-              class="absolute bottom-0 left-1/2 w-0.5 -translate-x-1/2 rounded-full bg-base-content/30"
-              style="height: {volume}%"
+              class={[
+                "absolute bottom-[8px] left-1/2 w-0.5 -translate-x-1/2 rounded-full bg-base-content/30",
+                isMutedWhilePlaying && "volume-alert-bar",
+              ]}
+              style="height: calc((100% - 16px) * {volumeRatio})"
             ></div>
             <input
               type="range"
@@ -222,22 +232,40 @@
               aria-label="Volume"
             />
             <div
-              class="pointer-events-none absolute left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full border border-base-300 bg-base-100 shadow-sm"
-              style="top: {100 - volume}%"
+              class={[
+                "pointer-events-none absolute h-2.5 w-2.5 rounded-full border border-base-300 bg-base-100 shadow-sm",
+                isMutedWhilePlaying && "volume-alert-thumb-mobile",
+              ]}
+              style="left: calc(50% - 5px); top: clamp(8px, calc(8px + (100% - 16px) * {1 -
+                volumeRatio}), calc(100% - 18px))"
             ></div>
           </div>
-          <Volume1 class="mt-1 h-3 w-3 shrink-0 text-base-content/40" />
+          <Volume1 class="h-3 w-3 shrink-0 text-base-content/40" />
         </div>
       {/if}
     </div>
 
     <!-- Volume - Full slider on large screens -->
     <div class="relative hidden items-center gap-1.5 lg:flex">
-      <Volume1 class="h-3 w-3 shrink-0 text-base-content/40" />
+      {#if volume === 0}
+        <span
+          class={[
+            "shrink-0 text-base-content/40",
+            isMutedWhilePlaying && "volume-alert-icon",
+          ]}
+        >
+          <VolumeX class="h-3 w-3" />
+        </span>
+      {:else}
+        <Volume1 class="h-3 w-3 shrink-0 text-base-content/40" />
+      {/if}
       <div class="relative flex h-3 w-16 items-center">
         <div class="absolute h-0.5 w-full rounded-full bg-base-300"></div>
         <div
-          class="absolute h-0.5 rounded-full bg-base-content/30"
+          class={[
+            "absolute h-0.5 rounded-full bg-base-content/30",
+            isMutedWhilePlaying && "volume-alert-bar",
+          ]}
           style="width: {volume}%"
         ></div>
         <input
@@ -250,7 +278,10 @@
           aria-label="Volume"
         />
         <div
-          class="pointer-events-none absolute h-2.5 w-2.5 rounded-full border border-base-300 bg-base-100 shadow-sm"
+          class={[
+            "pointer-events-none absolute h-2.5 w-2.5 rounded-full border border-base-300 bg-base-100 shadow-sm",
+            isMutedWhilePlaying && "volume-alert-thumb-desktop",
+          ]}
           style="left: calc({volume}% - 5px)"
         ></div>
       </div>
@@ -364,3 +395,141 @@
     </div>
   </div>
 </div>
+
+<style>
+  .volume-alert-button {
+    animation: volume-alert-button 1.05s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    background-color: color-mix(
+      in srgb,
+      var(--color-error) 10%,
+      var(--color-base-100)
+    );
+    color: color-mix(
+      in srgb,
+      var(--color-error) 65%,
+      var(--color-base-content)
+    );
+  }
+
+  .volume-alert-icon {
+    animation: volume-alert-icon 0.75s ease-in-out infinite alternate;
+    transform-origin: center;
+    color: color-mix(
+      in srgb,
+      var(--color-error) 75%,
+      var(--color-base-content)
+    );
+  }
+
+  .volume-alert-bar {
+    animation: volume-alert-bar 0.9s ease-in-out infinite;
+  }
+
+  .volume-alert-thumb-mobile {
+    animation: volume-alert-thumb 0.9s ease-in-out infinite;
+  }
+
+  .volume-alert-thumb-desktop {
+    animation: volume-alert-thumb-desktop 0.9s ease-in-out infinite;
+  }
+
+  @keyframes volume-alert-button {
+    0%,
+    100% {
+      box-shadow:
+        0 0 0 0 color-mix(in srgb, var(--color-error) 0%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--color-error) 20%, transparent);
+      transform: translateY(0);
+    }
+    50% {
+      box-shadow:
+        0 0 0 6px color-mix(in srgb, var(--color-error) 20%, transparent),
+        0 0 18px color-mix(in srgb, var(--color-error) 22%, transparent);
+      transform: translateY(-0.5px);
+    }
+  }
+
+  @keyframes volume-alert-icon {
+    0% {
+      opacity: 0.8;
+      transform: scale(1) rotate(-8deg);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1.22) rotate(8deg);
+    }
+  }
+
+  @keyframes volume-alert-bar {
+    0%,
+    100% {
+      background-color: color-mix(
+        in srgb,
+        var(--color-error) 45%,
+        var(--color-base-content)
+      );
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-error) 0%, transparent);
+      opacity: 0.55;
+    }
+    50% {
+      background-color: color-mix(
+        in srgb,
+        var(--color-error) 90%,
+        var(--color-base-content)
+      );
+      box-shadow: 0 0 8px
+        color-mix(in srgb, var(--color-error) 28%, transparent);
+      opacity: 1;
+    }
+  }
+
+  @keyframes volume-alert-thumb {
+    0%,
+    100% {
+      border-color: color-mix(
+        in srgb,
+        var(--color-error) 45%,
+        var(--color-base-300)
+      );
+      box-shadow:
+        0 0 0 0 color-mix(in srgb, var(--color-error) 0%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--color-error) 12%, transparent);
+    }
+    50% {
+      border-color: color-mix(
+        in srgb,
+        var(--color-error) 90%,
+        var(--color-base-300)
+      );
+      box-shadow:
+        0 0 0 3px color-mix(in srgb, var(--color-error) 24%, transparent),
+        0 0 10px color-mix(in srgb, var(--color-error) 22%, transparent);
+    }
+  }
+
+  @keyframes volume-alert-thumb-desktop {
+    0%,
+    100% {
+      border-color: color-mix(
+        in srgb,
+        var(--color-error) 45%,
+        var(--color-base-300)
+      );
+      box-shadow:
+        0 0 0 0 color-mix(in srgb, var(--color-error) 0%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--color-error) 12%, transparent);
+      transform: scale(1);
+    }
+    50% {
+      border-color: color-mix(
+        in srgb,
+        var(--color-error) 90%,
+        var(--color-base-300)
+      );
+      box-shadow:
+        0 0 0 3px color-mix(in srgb, var(--color-error) 24%, transparent),
+        0 0 10px color-mix(in srgb, var(--color-error) 22%, transparent);
+      transform: scale(1.12);
+    }
+  }
+</style>
