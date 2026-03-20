@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AuthLoadingScreen from "$lib/components/AuthLoadingScreen.svelte";
   import ServerConnect from "$lib/components/ServerConnect.svelte";
   import TransportBar from "$lib/components/TransportBar.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
@@ -74,6 +75,9 @@
   // Get current track from local playback state (no server latency)
   const currentTrack = $derived(playback.currentTrack);
   const volume = $derived(Math.round(playback.volume * 100)); // Convert to 0-100 for UI
+  const authBootstrapPending = $derived(
+    connection.isInitializing || !connection.hasInitialized
+  );
   const hasConfiguredServer = $derived(Boolean(connection.status.server_url));
 
   // Cover art state
@@ -114,15 +118,6 @@
   // Loading states
   let isLoading = $state(false);
   let loadError = $state<Error | null>(null);
-
-  // Restore session on mount (runs once)
-  let sessionRestored = false;
-  $effect(() => {
-    if (!sessionRestored) {
-      sessionRestored = true;
-      connection.restore();
-    }
-  });
 
   // Check for updates on startup (runs once after connection)
   let updateChecked = false;
@@ -779,7 +774,9 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="h-screen flex flex-col bg-base-200 overflow-hidden">
-  {#if hasConfiguredServer}
+  {#if authBootstrapPending}
+    <AuthLoadingScreen />
+  {:else if hasConfiguredServer}
     <!-- Transport Bar -->
     <TransportBar
       bind:searchInputRef

@@ -82,7 +82,7 @@
   }
 
   async function refreshConnectionStatus() {
-    if (connection.isConnecting || connection.isRestoring) return;
+    if (connection.isConnecting || connection.isInitializing) return;
 
     try {
       await connection.checkStatus();
@@ -277,7 +277,7 @@
   });
 
   const connectionBadge = $derived.by(() => {
-    if (connection.isConnecting || connection.isRestoring) {
+    if (connection.isConnecting || connection.isInitializing) {
       return {
         label: "Connecting",
         toneClass: "text-warning",

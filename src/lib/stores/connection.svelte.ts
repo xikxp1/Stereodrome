@@ -16,9 +16,12 @@ const EMPTY_STATUS: ConnectionStatus = {
 class ConnectionStore {
   status = $state<ConnectionStatus>({ ...EMPTY_STATUS });
 
+  hasInitialized = $state(false);
+  isInitializing = $state(false);
   isConnecting = $state(false);
-  isRestoring = $state(false);
   error = $state<string | null>(null);
+
+  private initializePromise: Promise<boolean> | null = null;
 
   private applyStatus(nextStatus: ConnectionStatus): void {
     const nextServerVersion =
@@ -51,6 +54,7 @@ class ConnectionStore {
 
     try {
       this.applyStatus(await connectServer(params));
+      this.hasInitialized = true;
       return true;
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
@@ -77,19 +81,33 @@ class ConnectionStore {
     }
   }
 
-  async restore(): Promise<boolean> {
-    this.isRestoring = true;
+  async initialize(): Promise<boolean> {
+    if (this.hasInitialized) {
+      return this.status.connected;
+    }
+
+    if (this.initializePromise) {
+      return this.initializePromise;
+    }
+
+    this.isInitializing = true;
     this.error = null;
 
-    try {
-      this.applyStatus(await restoreSession());
-      return this.status.connected;
-    } catch (e) {
-      this.error = e instanceof Error ? e.message : String(e);
-      return false;
-    } finally {
-      this.isRestoring = false;
-    }
+    this.initializePromise = (async () => {
+      try {
+        this.applyStatus(await restoreSession());
+        return this.status.connected;
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+        return false;
+      } finally {
+        this.hasInitialized = true;
+        this.isInitializing = false;
+        this.initializePromise = null;
+      }
+    })();
+
+    return this.initializePromise;
   }
 }
 

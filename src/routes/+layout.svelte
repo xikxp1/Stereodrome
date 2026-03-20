@@ -12,7 +12,7 @@
   let { children } = $props();
 
   onMount(() => {
-    connection.checkStatus();
+    void connection.initialize();
     libraryRefresh.init();
     notifications.init();
     mediaControls.init();
