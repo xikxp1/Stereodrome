@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { connection } from "$lib/stores/connection.svelte";
   import { playlistStore } from "$lib/stores/playlist.svelte";
   import type { Playlist } from "$lib/types";
@@ -21,6 +22,7 @@
 
   let showCreatePlaylist = $state(false);
   let newPlaylistName = $state("");
+  let createPlaylistInput = $state<HTMLInputElement | null>(null);
 
   // Rename state
   let renamingPlaylistId = $state<string | null>(null);
@@ -40,6 +42,12 @@
 
   function selectPlaylist(playlist: Playlist) {
     onPlaylistSelect?.(playlist);
+  }
+
+  async function openCreatePlaylist() {
+    showCreatePlaylist = true;
+    await tick();
+    createPlaylistInput?.focus();
   }
 
   async function handleCreatePlaylist() {
@@ -117,6 +125,7 @@
       {#if showCreatePlaylist}
         <div class="px-2 py-1">
           <input
+            bind:this={createPlaylistInput}
             type="text"
             class="w-full px-2 py-1 text-xs bg-base-100 border border-base-300 rounded focus:outline-none focus:border-primary"
             placeholder="Playlist name..."
@@ -152,10 +161,7 @@
           </div>
         </div>
       {:else}
-        <button
-          class="sidebar-item"
-          onclick={() => (showCreatePlaylist = true)}
-        >
+        <button class="sidebar-item" onclick={openCreatePlaylist}>
           <Plus class="size-4" />
           New Playlist
         </button>
