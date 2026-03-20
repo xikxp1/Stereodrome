@@ -10,6 +10,8 @@ export async function showSongContextMenu(opts: {
   playlists: { id: string; name: string }[];
   onPlayNext: () => void;
   onAddToQueue: () => void;
+  onGoToArtist?: () => void;
+  onGoToAlbum?: () => void;
   onRemoveFromPlaylist?: () => void;
   onAddToPlaylist: (playlistId: string) => void;
   onNewPlaylist: () => void;
@@ -21,6 +23,26 @@ export async function showSongContextMenu(opts: {
       action: () => opts.onAddToQueue(),
     }),
   ];
+
+  if (opts.onGoToArtist || opts.onGoToAlbum) {
+    items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+    if (opts.onGoToArtist) {
+      items.push(
+        await MenuItem.new({
+          text: "Go to Artist",
+          action: () => opts.onGoToArtist?.(),
+        })
+      );
+    }
+    if (opts.onGoToAlbum) {
+      items.push(
+        await MenuItem.new({
+          text: "Go to Album",
+          action: () => opts.onGoToAlbum?.(),
+        })
+      );
+    }
+  }
 
   if (opts.onRemoveFromPlaylist) {
     items.push(await PredefinedMenuItem.new({ item: "Separator" }));
@@ -78,19 +100,41 @@ export async function showPlaylistContextMenu(opts: {
 export async function showQueueableContextMenu(opts: {
   onPlayNext: () => void;
   onAddToQueue: () => void;
+  onGoToArtist?: () => void;
+  onGoToAlbum?: () => void;
 }) {
-  const menu = await Menu.new({
-    items: [
-      await MenuItem.new({
-        text: "Play Next",
-        action: () => opts.onPlayNext(),
-      }),
-      await MenuItem.new({
-        text: "Add to Queue",
-        action: () => opts.onAddToQueue(),
-      }),
-    ],
-  });
+  const items: (MenuItem | PredefinedMenuItem)[] = [
+    await MenuItem.new({
+      text: "Play Next",
+      action: () => opts.onPlayNext(),
+    }),
+    await MenuItem.new({
+      text: "Add to Queue",
+      action: () => opts.onAddToQueue(),
+    }),
+  ];
+
+  if (opts.onGoToArtist || opts.onGoToAlbum) {
+    items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+    if (opts.onGoToArtist) {
+      items.push(
+        await MenuItem.new({
+          text: "Go to Artist",
+          action: () => opts.onGoToArtist?.(),
+        })
+      );
+    }
+    if (opts.onGoToAlbum) {
+      items.push(
+        await MenuItem.new({
+          text: "Go to Album",
+          action: () => opts.onGoToAlbum?.(),
+        })
+      );
+    }
+  }
+
+  const menu = await Menu.new({ items });
   await menu.popup();
   await menu.close();
 }

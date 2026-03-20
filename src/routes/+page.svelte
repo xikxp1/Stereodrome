@@ -477,6 +477,29 @@
     detailView = { type: "album", album };
   }
 
+  function navigateToArtist(artistId: string) {
+    const artist = artists.find((entry) => entry.id === artistId);
+    if (!artist) return;
+
+    activeView = "artists";
+    selectedPlaylist = null;
+    selectedArtist = artist;
+    selectedAlbum = null;
+    detailView = { type: "artist", artist };
+  }
+
+  function navigateToAlbum(albumId: string) {
+    const album = albums.find((entry) => entry.id === albumId);
+    if (!album) return;
+
+    activeView = "albums";
+    selectedPlaylist = null;
+    selectedAlbum = album;
+    selectedArtist =
+      artists.find((entry) => entry.id === album.artist_id) ?? null;
+    detailView = { type: "album", album };
+  }
+
   function handleDetailBack() {
     detailView = null;
   }
@@ -519,6 +542,18 @@
       selectedSong = song;
       scrollToSongId = songId;
     }
+  }
+
+  function handleSongNavigateToArtist(song: Song) {
+    navigateToArtist(song.artist_id);
+  }
+
+  function handleSongNavigateToAlbum(song: Song) {
+    navigateToAlbum(song.album_id);
+  }
+
+  function handleAlbumNavigateToArtist(album: Album) {
+    navigateToArtist(album.artist_id);
   }
 
   async function handleCoverArtClick() {
@@ -807,6 +842,8 @@
               playlistId={selectedPlaylist?.id}
               onSelect={handleSongSelect}
               onPlay={handlePlaylistSongPlay}
+              onNavigateToArtist={handleSongNavigateToArtist}
+              onNavigateToAlbum={handleSongNavigateToAlbum}
             />
           </div>
 
@@ -840,6 +877,8 @@
               {scrollToSongId}
               onSelect={handleSongSelect}
               onPlay={handleSongPlay}
+              onNavigateToArtist={handleSongNavigateToArtist}
+              onNavigateToAlbum={handleSongNavigateToAlbum}
             />
           </div>
 
@@ -871,6 +910,8 @@
                 {scrollToSongId}
                 onSelect={handleSongSelect}
                 onPlay={handleDetailSongPlay}
+                onNavigateToArtist={handleSongNavigateToArtist}
+                onNavigateToAlbum={handleSongNavigateToAlbum}
               />
             </div>
 
@@ -911,6 +952,8 @@
                 {scrollToSongId}
                 onSelect={handleSongSelect}
                 onPlay={handleDetailSongPlay}
+                onNavigateToArtist={handleSongNavigateToArtist}
+                onNavigateToAlbum={handleSongNavigateToAlbum}
               />
             </div>
 
@@ -924,6 +967,7 @@
             <AlbumGridView
               albums={gridFilteredAlbums}
               onSelect={handleAlbumGridSelect}
+              onNavigateToArtist={handleAlbumNavigateToArtist}
             />
 
             <StatusBar

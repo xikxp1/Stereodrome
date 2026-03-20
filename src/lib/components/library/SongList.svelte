@@ -16,6 +16,8 @@
     playlistId?: string | null;
     onSelect?: (song: Song) => void;
     onPlay?: (song: Song) => void;
+    onNavigateToArtist?: (song: Song) => void;
+    onNavigateToAlbum?: (song: Song) => void;
   }
 
   let {
@@ -28,6 +30,8 @@
     playlistId = null,
     onSelect,
     onPlay,
+    onNavigateToArtist,
+    onNavigateToAlbum,
   }: Props = $props();
 
   let scrollContainer: HTMLDivElement | null = $state(null);
@@ -125,6 +129,16 @@
           await queue.addSong(song);
         }
       },
+      onGoToArtist: song.artist_id
+        ? () => {
+            onNavigateToArtist?.(song);
+          }
+        : undefined,
+      onGoToAlbum: song.album_id
+        ? () => {
+            onNavigateToAlbum?.(song);
+          }
+        : undefined,
       onRemoveFromPlaylist: playlistId
         ? async () => {
             const index = songs.indexOf(song);

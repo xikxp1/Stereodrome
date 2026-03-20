@@ -8,9 +8,10 @@
   interface Props {
     albums: Album[];
     onSelect?: (album: Album) => void;
+    onNavigateToArtist?: (album: Album) => void;
   }
 
-  let { albums, onSelect }: Props = $props();
+  let { albums, onSelect, onNavigateToArtist }: Props = $props();
 
   async function handleContextMenu(e: MouseEvent, album: Album) {
     e.preventDefault();
@@ -23,6 +24,11 @@
         const songs = await getSongs(album.id);
         await queue.addSongs(songs);
       },
+      onGoToArtist: album.artist_id
+        ? () => {
+            onNavigateToArtist?.(album);
+          }
+        : undefined,
     });
   }
 </script>
