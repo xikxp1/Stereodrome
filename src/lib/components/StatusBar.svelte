@@ -81,6 +81,16 @@
     }
   }
 
+  async function refreshConnectionStatus() {
+    if (connection.isConnecting || connection.isRestoring) return;
+
+    try {
+      await connection.checkStatus();
+    } catch {
+      // ConnectionStore already captures the error state.
+    }
+  }
+
   async function loadSystemTimePreferences() {
     try {
       const preferences = await getSystemTimePreferences();
@@ -218,6 +228,18 @@
     };
   });
 
+  $effect(() => {
+    void refreshConnectionStatus();
+
+    const interval = window.setInterval(() => {
+      void refreshConnectionStatus();
+    }, 10_000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  });
+
   const syncDateTimeFormatter = $derived.by(() => {
     const locale = systemLocale ?? undefined;
     const options: Intl.DateTimeFormatOptions = {
@@ -252,6 +274,42 @@
     const serverUrl = connection.status.server_url;
     if (!serverUrl) return "Server";
     return serverUrl.replace(/^https?:\/\//i, "");
+  });
+
+  const connectionBadge = $derived.by(() => {
+    if (connection.isConnecting || connection.isRestoring) {
+      return {
+        label: "Connecting",
+        toneClass: "text-warning",
+        dotClass: "bg-warning",
+        pulse: true,
+      };
+    }
+
+    if (!connection.status.server_url) {
+      return {
+        label: "No server",
+        toneClass: "text-base-content/45",
+        dotClass: "bg-base-content/35",
+        pulse: false,
+      };
+    }
+
+    if (connection.status.connected) {
+      return {
+        label: "Online",
+        toneClass: "text-success",
+        dotClass: "bg-success",
+        pulse: false,
+      };
+    }
+
+    return {
+      label: "Issue",
+      toneClass: "text-error",
+      dotClass: "bg-error",
+      pulse: true,
+    };
   });
 
   const runningIndicatorLabel = $derived.by(() => {
@@ -295,7 +353,10 @@
   );
 </script>
 
-<svelte:window onkeydown={handleWindowKeydown} />
+<svelte:window
+  onkeydown={handleWindowKeydown}
+  onfocus={refreshConnectionStatus}
+/>
 
 <div
   class="relative h-6 flex items-center justify-between gap-3 px-4 select-none bg-base-200 border-t border-base-300"
@@ -306,10 +367,18 @@
     <button
       class={`flex max-w-full items-center justify-end gap-2 text-xs transition-colors hover:opacity-100 ${controlToneClass}`}
       onclick={toggleSyncPopover}
-      title={connection.status.server_url ?? serverLabel}
+      title={`${connection.status.server_url ?? serverLabel} • ${connectionBadge.label}`}
       type="button"
     >
       <span class="truncate">{serverLabel}</span>
+      <span
+        class={`inline-flex items-center gap-1 rounded-full border border-current/20 px-1.5 py-0.5 text-[10px] font-medium ${connectionBadge.toneClass}`}
+      >
+        <span
+          class={`size-1.5 rounded-full ${connectionBadge.dotClass} ${connectionBadge.pulse ? "animate-pulse" : ""}`}
+        ></span>
+        {connectionBadge.label}
+      </span>
       {#if runningIndicatorLabel}
         <span
           class="inline-flex items-center gap-1 rounded-full border border-current/20 px-1.5 py-0.5 text-[10px] font-medium"
@@ -329,10 +398,20 @@
             <div
               class="text-[11px] uppercase tracking-[0.08em] text-base-content/45"
             >
-              Connected Server
+              Server
             </div>
-            <div class="truncate text-sm font-medium text-base-content">
-              {serverLabel}
+            <div
+              class="flex items-center gap-2 text-sm font-medium text-base-content"
+            >
+              <span class="truncate">{serverLabel}</span>
+              <span
+                class={`inline-flex shrink-0 items-center gap-1 rounded-full border border-current/20 px-1.5 py-0.5 text-[10px] font-medium ${connectionBadge.toneClass}`}
+              >
+                <span
+                  class={`size-1.5 rounded-full ${connectionBadge.dotClass} ${connectionBadge.pulse ? "animate-pulse" : ""}`}
+                ></span>
+                {connectionBadge.label}
+              </span>
             </div>
           </div>
         </div>

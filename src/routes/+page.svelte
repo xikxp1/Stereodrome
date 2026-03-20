@@ -74,6 +74,7 @@
   // Get current track from local playback state (no server latency)
   const currentTrack = $derived(playback.currentTrack);
   const volume = $derived(Math.round(playback.volume * 100)); // Convert to 0-100 for UI
+  const hasConfiguredServer = $derived(Boolean(connection.status.server_url));
 
   // Cover art state
   let coverArtUrl = $state<string | null>(null);
@@ -778,7 +779,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="h-screen flex flex-col bg-base-200 overflow-hidden">
-  {#if connection.status.connected}
+  {#if hasConfiguredServer}
     <!-- Transport Bar -->
     <TransportBar
       bind:searchInputRef
