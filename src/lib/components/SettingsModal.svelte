@@ -45,7 +45,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { connection } from "$lib/stores/connection.svelte";
   import { updater } from "$lib/stores/updater.svelte";
-  import { queryClient } from "$lib/db/queryClient";
+  import { refreshLibraryViews } from "$lib/services/libraryRefresh.svelte";
   import { spectrum } from "$lib/stores/spectrum.svelte";
   import type {
     ScanStatus,
@@ -377,9 +377,7 @@
     syncing = true;
     try {
       await syncLibrary();
-      await queryClient.invalidateQueries({ queryKey: ["artists"] });
-      await queryClient.invalidateQueries({ queryKey: ["albums"] });
-      await queryClient.invalidateQueries({ queryKey: ["songs"] });
+      await refreshLibraryViews();
     } catch (e) {
       error(`Failed to sync library: ${e}`);
     } finally {
@@ -392,9 +390,7 @@
     reconciling = true;
     try {
       await reconcileLibraryState();
-      await queryClient.invalidateQueries({ queryKey: ["artists"] });
-      await queryClient.invalidateQueries({ queryKey: ["albums"] });
-      await queryClient.invalidateQueries({ queryKey: ["songs"] });
+      await refreshLibraryViews();
     } catch (e) {
       error(`Failed to reconcile library: ${e}`);
     } finally {

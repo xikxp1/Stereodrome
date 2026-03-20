@@ -36,6 +36,7 @@
   } from "@tauri-apps/api/window";
   import { error } from "@tauri-apps/plugin-log";
   import { playlistStore } from "$lib/stores/playlist.svelte";
+  import { LIBRARY_REFRESHED_EVENT } from "$lib/services/libraryRefresh.svelte";
   import type {
     Artist,
     Album,
@@ -156,6 +157,16 @@
     };
     window.addEventListener("open-settings", handler);
     return () => window.removeEventListener("open-settings", handler);
+  });
+
+  $effect(() => {
+    const handler = () => {
+      if (!connection.status.connected) return;
+      void loadLibraryData();
+    };
+
+    window.addEventListener(LIBRARY_REFRESHED_EVENT, handler);
+    return () => window.removeEventListener(LIBRARY_REFRESHED_EVENT, handler);
   });
 
   // Load data when connected
@@ -906,7 +917,6 @@
           onViewChange={handleViewChange}
           onPlaylistSelect={handlePlaylistSelect}
           selectedPlaylistId={selectedPlaylist?.id}
-          onSync={loadLibraryData}
         />
       </aside>
 

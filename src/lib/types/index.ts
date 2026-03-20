@@ -204,6 +204,14 @@ export interface LibrarySyncStatus {
   full_reconcile: SyncJobStatus;
 }
 
+export interface LibraryContentUpdatedEvent {
+  job: SyncJobKind;
+  new_artists: number;
+  new_albums: number;
+  new_songs: number;
+  has_new_items: boolean;
+}
+
 export interface SystemTimePreferences {
   use_24_hour_clock: boolean;
   locale: string | null;

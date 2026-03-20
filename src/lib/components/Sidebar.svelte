@@ -2,7 +2,7 @@
   import { connection } from "$lib/stores/connection.svelte";
   import { playlistStore } from "$lib/stores/playlist.svelte";
   import { syncLibrary } from "$lib/api/commands";
-  import { queryClient } from "$lib/db/queryClient";
+  import { refreshLibraryViews } from "$lib/services/libraryRefresh.svelte";
   import type { Playlist } from "$lib/types";
   import {
     Music,
@@ -20,7 +20,6 @@
     onViewChange?: (view: string) => void;
     onPlaylistSelect?: (playlist: Playlist | null) => void;
     selectedPlaylistId?: string | null;
-    onSync?: () => void;
   }
 
   let {
@@ -28,7 +27,6 @@
     onViewChange,
     onPlaylistSelect,
     selectedPlaylistId = null,
-    onSync,
   }: Props = $props();
 
   let isSyncing = $state(false);
@@ -52,11 +50,8 @@
     syncError = null;
     try {
       await syncLibrary();
-      await queryClient.invalidateQueries({ queryKey: ["artists"] });
-      await queryClient.invalidateQueries({ queryKey: ["albums"] });
-      await queryClient.invalidateQueries({ queryKey: ["songs"] });
+      await refreshLibraryViews();
       await playlistStore.syncPlaylists();
-      onSync?.();
     } catch (e) {
       syncError = e instanceof Error ? e.message : String(e);
     } finally {

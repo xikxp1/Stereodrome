@@ -83,6 +83,15 @@ pub struct SyncResult {
     pub songs: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryContentUpdatedEvent {
+    pub job: SyncJobKind,
+    pub new_artists: usize,
+    pub new_albums: usize,
+    pub new_songs: usize,
+    pub has_new_items: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncJobKind {
@@ -223,6 +232,35 @@ fn active_sync_job_state() -> &'static Mutex<Option<SyncJobKind>> {
 
 struct SyncJobGuard;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncTrigger {
+    Manual,
+    Scheduled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct NewItemCounts {
+    artists: usize,
+    albums: usize,
+    songs: usize,
+}
+
+impl NewItemCounts {
+    fn has_new_items(self) -> bool {
+        self.artists > 0 || self.albums > 0 || self.songs > 0
+    }
+
+    fn into_event(self, job: SyncJobKind) -> LibraryContentUpdatedEvent {
+        LibraryContentUpdatedEvent {
+            job,
+            new_artists: self.artists,
+            new_albums: self.albums,
+            new_songs: self.songs,
+            has_new_items: self.has_new_items(),
+        }
+    }
+}
+
 impl SyncJobGuard {
     fn acquire(kind: SyncJobKind) -> Option<Self> {
         if sync_job_lock()
@@ -276,9 +314,12 @@ pub fn start_library_sync_scheduler(app_handle: AppHandle) {
                 continue;
             };
 
-            if let Err(e) =
-                runtime.block_on(run_sync_job_with_status(state.inner(), &app_handle, job))
-            {
+            if let Err(e) = runtime.block_on(run_sync_job_with_status(
+                state.inner(),
+                &app_handle,
+                job,
+                SyncTrigger::Scheduled,
+            )) {
                 warn!("Scheduled {} sync failed: {}", job.as_key(), e);
             }
         }
@@ -290,7 +331,13 @@ pub async fn sync_library(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<SyncResult> {
-    run_sync_job_with_status(state.inner(), &app_handle, SyncJobKind::Incremental).await
+    run_sync_job_with_status(
+        state.inner(),
+        &app_handle,
+        SyncJobKind::Incremental,
+        SyncTrigger::Manual,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -298,7 +345,13 @@ pub async fn reconcile_library_state(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<SyncResult> {
-    run_sync_job_with_status(state.inner(), &app_handle, SyncJobKind::FullReconcile).await
+    run_sync_job_with_status(
+        state.inner(),
+        &app_handle,
+        SyncJobKind::FullReconcile,
+        SyncTrigger::Manual,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -314,6 +367,7 @@ async fn run_sync_job_with_status(
     state: &AppState,
     app_handle: &AppHandle,
     job: SyncJobKind,
+    trigger: SyncTrigger,
 ) -> AppResult<SyncResult> {
     let guard = SyncJobGuard::acquire(job)
         .ok_or_else(|| AppError::Subsonic(SYNC_ALREADY_RUNNING_MESSAGE.to_string()))?;
@@ -349,10 +403,16 @@ async fn run_sync_job_with_status(
     drop(guard);
     emit_library_sync_status_changed(state, app_handle);
 
-    result
+    let (result, new_item_counts) = result?;
+
+    if trigger == SyncTrigger::Scheduled {
+        emit_library_content_updated(app_handle, new_item_counts.into_event(job));
+    }
+
+    Ok(result)
 }
 
-async fn run_incremental_sync(state: &AppState) -> AppResult<SyncResult> {
+async fn run_incremental_sync(state: &AppState) -> AppResult<(SyncResult, NewItemCounts)> {
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);
     }
@@ -365,6 +425,7 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<SyncResult> {
             load_local_album_ids(&db)?,
         )
     };
+    let local_artist_ids: HashSet<String> = local_artists.keys().cloned().collect();
 
     let newest_scan =
         fetch_newest_album_candidates(state, previous_head_album_id.as_deref(), &local_album_ids)
@@ -401,11 +462,14 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<SyncResult> {
             }
         }
 
-        return Ok(SyncResult {
-            artists: 0,
-            albums: 0,
-            songs: 0,
-        });
+        return Ok((
+            SyncResult {
+                artists: 0,
+                albums: 0,
+                songs: 0,
+            },
+            NewItemCounts::default(),
+        ));
     }
 
     let mut artists_data: Vec<ArtistData> = Vec::new();
@@ -554,17 +618,40 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<SyncResult> {
 
     rebuild_search_index_from_db(state)?;
 
-    Ok(SyncResult {
-        artists: artists_data.len(),
-        albums: albums_data.len(),
-        songs: songs_data.len(),
-    })
+    let refreshed_artist_ids: HashSet<String> = artists_data
+        .iter()
+        .map(|artist| artist.id.clone())
+        .collect();
+    let new_item_counts = count_incremental_new_items(
+        &local_artist_ids,
+        &refreshed_artist_ids,
+        albums_data.len(),
+        songs_data.len(),
+    );
+
+    Ok((
+        SyncResult {
+            artists: artists_data.len(),
+            albums: albums_data.len(),
+            songs: songs_data.len(),
+        },
+        new_item_counts,
+    ))
 }
 
-async fn run_full_reconcile_sync(state: &AppState) -> AppResult<SyncResult> {
+async fn run_full_reconcile_sync(state: &AppState) -> AppResult<(SyncResult, NewItemCounts)> {
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);
     }
+
+    let (local_artist_ids, local_album_ids, local_song_ids) = {
+        let db = state.db.lock_recover();
+        (
+            load_local_artist_ids(&db)?,
+            load_local_album_ids(&db)?,
+            load_local_song_ids(&db)?,
+        )
+    };
 
     let artist_summaries = state
         .client
@@ -692,9 +779,7 @@ async fn run_full_reconcile_sync(state: &AppState) -> AppResult<SyncResult> {
         }
 
         if !had_fetch_errors {
-            db.execute("DELETE FROM songs WHERE synced_at <> ?1", [&now])?;
-            db.execute("DELETE FROM albums WHERE synced_at <> ?1", [&now])?;
-            db.execute("DELETE FROM artists WHERE synced_at <> ?1", [&now])?;
+            prune_stale_library_rows(&db, &now)?;
         } else {
             warn!(
                 "Full reconcile completed with fetch errors, skipping stale-row deletion for safety"
@@ -719,11 +804,31 @@ async fn run_full_reconcile_sync(state: &AppState) -> AppResult<SyncResult> {
     drop(db);
     rebuild_search_index_from_db(state)?;
 
-    Ok(SyncResult {
-        artists: artists_data.len(),
-        albums: albums_data.len(),
-        songs: songs_data.len(),
-    })
+    let incoming_artist_ids: HashSet<String> = artists_data
+        .iter()
+        .map(|artist| artist.id.clone())
+        .collect();
+    let incoming_album_ids: HashSet<String> =
+        albums_data.iter().map(|album| album.id.clone()).collect();
+    let incoming_song_ids: HashSet<String> =
+        songs_data.iter().map(|song| song.id.clone()).collect();
+    let new_item_counts = count_full_reconcile_new_items(
+        &local_artist_ids,
+        &local_album_ids,
+        &local_song_ids,
+        &incoming_artist_ids,
+        &incoming_album_ids,
+        &incoming_song_ids,
+    );
+
+    Ok((
+        SyncResult {
+            artists: artists_data.len(),
+            albums: albums_data.len(),
+            songs: songs_data.len(),
+        },
+        new_item_counts,
+    ))
 }
 
 async fn fetch_newest_album_candidates(
@@ -842,11 +947,26 @@ fn load_local_artists(conn: &Connection) -> AppResult<HashMap<String, LocalArtis
     Ok(artists)
 }
 
+fn load_local_artist_ids(conn: &Connection) -> AppResult<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM artists")?;
+
+    let mut artist_ids: HashSet<String> = HashSet::new();
+
+    for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
+        artist_ids.insert(row?);
+    }
+
+    Ok(artist_ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, scan_newest_album_page,
+        NewItemCounts, NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult,
+        count_full_reconcile_new_items, count_incremental_new_items, prune_stale_library_rows,
+        scan_newest_album_page,
     };
+    use rusqlite::Connection;
     use std::collections::HashSet;
 
     fn album(id: &str, artist_id: Option<&str>, artist_name: Option<&str>) -> NewestAlbumPageEntry {
@@ -859,6 +979,19 @@ mod tests {
 
     fn known_album_ids(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    fn ids(values: &[&str]) -> HashSet<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+        conn.execute_batch(include_str!("../db/schema.sql"))
+            .expect("apply schema");
+        conn
     }
 
     #[test]
@@ -969,6 +1102,163 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn incremental_new_item_counts_are_zero_when_no_unknown_albums_are_imported() {
+        let counts = count_incremental_new_items(&ids(&["artist-1"]), &HashSet::new(), 0, 0);
+
+        assert_eq!(counts, NewItemCounts::default());
+    }
+
+    #[test]
+    fn incremental_new_item_counts_detect_new_album_for_existing_artist() {
+        let counts = count_incremental_new_items(&ids(&["artist-1"]), &ids(&["artist-1"]), 1, 8);
+
+        assert_eq!(
+            counts,
+            NewItemCounts {
+                artists: 0,
+                albums: 1,
+                songs: 8,
+            }
+        );
+    }
+
+    #[test]
+    fn incremental_new_item_counts_detect_new_artist() {
+        let counts = count_incremental_new_items(
+            &ids(&["artist-existing"]),
+            &ids(&["artist-existing", "artist-new"]),
+            2,
+            15,
+        );
+
+        assert_eq!(
+            counts,
+            NewItemCounts {
+                artists: 1,
+                albums: 2,
+                songs: 15,
+            }
+        );
+    }
+
+    #[test]
+    fn full_reconcile_new_item_counts_are_zero_when_ids_are_unchanged() {
+        let counts = count_full_reconcile_new_items(
+            &ids(&["artist-1"]),
+            &ids(&["album-1"]),
+            &ids(&["song-1", "song-2"]),
+            &ids(&["artist-1"]),
+            &ids(&["album-1"]),
+            &ids(&["song-1", "song-2"]),
+        );
+
+        assert_eq!(counts, NewItemCounts::default());
+    }
+
+    #[test]
+    fn full_reconcile_new_item_counts_detect_new_ids() {
+        let counts = count_full_reconcile_new_items(
+            &ids(&["artist-1"]),
+            &ids(&["album-1"]),
+            &ids(&["song-1"]),
+            &ids(&["artist-1", "artist-2"]),
+            &ids(&["album-1", "album-2", "album-3"]),
+            &ids(&["song-1", "song-2", "song-3"]),
+        );
+
+        assert_eq!(
+            counts,
+            NewItemCounts {
+                artists: 1,
+                albums: 2,
+                songs: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn prune_stale_library_rows_removes_song_dependents_before_deleting_songs() {
+        let conn = test_conn();
+
+        conn.execute(
+            "INSERT INTO artists (id, name, synced_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["artist-stale", "Stale Artist", "old"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, synced_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["album-stale", "artist-stale", "Stale Album", "old"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, synced_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["song-stale", "album-stale", "artist-stale", "Stale Song", "old"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO playlists (id, name, created_at, changed_at, synced_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["playlist-1", "Playlist", "now", "now", "now"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["playlist-1", "song-stale", 0],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO normalization_data (song_id, track_loudness_lufs, track_peak, album_id, analyzed_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["song-stale", -14.0_f64, 0.9_f64, "album-stale", "now"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO artists (id, name, synced_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["artist-keep", "Keep Artist", "now"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, synced_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["album-keep", "artist-keep", "Keep Album", "now"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, synced_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["song-keep", "album-keep", "artist-keep", "Keep Song", "now"],
+        )
+        .unwrap();
+
+        prune_stale_library_rows(&conn, "now").unwrap();
+
+        let playlist_song_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM playlist_songs", [], |row| row.get(0))
+            .unwrap();
+        let normalization_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM normalization_data", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let stale_song_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM songs WHERE id = 'song-stale'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let kept_song_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM songs WHERE id = 'song-keep'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(playlist_song_count, 0);
+        assert_eq!(normalization_count, 0);
+        assert_eq!(stale_song_count, 0);
+        assert_eq!(kept_song_count, 1);
+    }
 }
 
 fn load_local_album_ids(conn: &Connection) -> AppResult<HashSet<String>> {
@@ -981,6 +1271,75 @@ fn load_local_album_ids(conn: &Connection) -> AppResult<HashSet<String>> {
     }
 
     Ok(album_ids)
+}
+
+fn load_local_song_ids(conn: &Connection) -> AppResult<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM songs")?;
+
+    let mut song_ids: HashSet<String> = HashSet::new();
+
+    for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
+        song_ids.insert(row?);
+    }
+
+    Ok(song_ids)
+}
+
+fn count_incremental_new_items(
+    local_artist_ids: &HashSet<String>,
+    refreshed_artist_ids: &HashSet<String>,
+    new_album_count: usize,
+    new_song_count: usize,
+) -> NewItemCounts {
+    NewItemCounts {
+        artists: refreshed_artist_ids
+            .iter()
+            .filter(|artist_id| !local_artist_ids.contains(*artist_id))
+            .count(),
+        albums: new_album_count,
+        songs: new_song_count,
+    }
+}
+
+fn count_full_reconcile_new_items(
+    local_artist_ids: &HashSet<String>,
+    local_album_ids: &HashSet<String>,
+    local_song_ids: &HashSet<String>,
+    incoming_artist_ids: &HashSet<String>,
+    incoming_album_ids: &HashSet<String>,
+    incoming_song_ids: &HashSet<String>,
+) -> NewItemCounts {
+    NewItemCounts {
+        artists: incoming_artist_ids
+            .iter()
+            .filter(|artist_id| !local_artist_ids.contains(*artist_id))
+            .count(),
+        albums: incoming_album_ids
+            .iter()
+            .filter(|album_id| !local_album_ids.contains(*album_id))
+            .count(),
+        songs: incoming_song_ids
+            .iter()
+            .filter(|song_id| !local_song_ids.contains(*song_id))
+            .count(),
+    }
+}
+
+fn prune_stale_library_rows(conn: &Connection, synced_at: &str) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM playlist_songs
+         WHERE song_id IN (SELECT id FROM songs WHERE synced_at <> ?1)",
+        [synced_at],
+    )?;
+    conn.execute(
+        "DELETE FROM normalization_data
+         WHERE song_id IN (SELECT id FROM songs WHERE synced_at <> ?1)",
+        [synced_at],
+    )?;
+    conn.execute("DELETE FROM songs WHERE synced_at <> ?1", [synced_at])?;
+    conn.execute("DELETE FROM albums WHERE synced_at <> ?1", [synced_at])?;
+    conn.execute("DELETE FROM artists WHERE synced_at <> ?1", [synced_at])?;
+    Ok(())
 }
 
 fn get_sync_state(conn: &Connection, key: &str) -> AppResult<Option<String>> {
@@ -1151,6 +1510,14 @@ fn emit_library_sync_status_changed(state: &AppState, app_handle: &AppHandle) {
             warn!("Failed to emit library sync status event: {e}");
         }
     }
+}
+
+fn emit_library_content_updated(app_handle: &AppHandle, event: LibraryContentUpdatedEvent) {
+    if !event.has_new_items {
+        return;
+    }
+
+    let _ = app_handle.emit("library-content-updated", &event);
 }
 
 /// Rebuild the search index from current database state.
