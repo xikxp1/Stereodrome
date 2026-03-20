@@ -3,8 +3,8 @@
 
 use fundsp::audionode::AudioNode;
 use fundsp::biquad::{Biquad, BiquadCoefs};
-use rodio::Source;
 use rodio::source::SeekError;
+use rodio::{ChannelCount, SampleRate, Source};
 use std::time::Duration;
 
 pub const EQ_BAND_COUNT: usize = 12;
@@ -53,7 +53,7 @@ where
     S: Source<Item = f32>,
 {
     inner: S,
-    channels: u16,
+    channels: ChannelCount,
     filters: Vec<Vec<Biquad<f32>>>,
     output_buffer: Vec<f32>,
     output_pos: usize,
@@ -65,7 +65,7 @@ where
 {
     pub fn new(source: S, settings: &EqualizerSettings) -> Self {
         let channels = source.channels();
-        let sample_rate = source.sample_rate() as f32;
+        let sample_rate = source.sample_rate().get() as f32;
         let max_center = sample_rate * 0.475;
 
         let gains: Vec<f32> = settings
@@ -74,8 +74,9 @@ where
             .map(|db| 10.0_f32.powf(db / 20.0))
             .collect();
 
-        let mut filters = Vec::with_capacity(channels as usize);
-        for _ in 0..channels {
+        let channel_count = channels.get() as usize;
+        let mut filters = Vec::with_capacity(channel_count);
+        for _ in 0..channel_count {
             let mut channel_filters = Vec::with_capacity(EQ_BAND_COUNT);
             for (index, gain) in gains.iter().copied().enumerate() {
                 let mut biquad = Biquad::<f32>::new();
@@ -92,7 +93,7 @@ where
             filters.push(channel_filters);
         }
 
-        let ch = channels as usize;
+        let ch = channel_count;
         Self {
             inner: source,
             channels,
@@ -111,13 +112,13 @@ where
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.output_pos < self.channels as usize {
+        if self.output_pos < self.channels.get() as usize {
             let sample = self.output_buffer[self.output_pos];
             self.output_pos += 1;
             return Some(sample);
         }
 
-        let ch = self.channels as usize;
+        let ch = self.channels.get() as usize;
         for channel_idx in 0..ch {
             let mut sample = self.inner.next()?;
             for filter in &mut self.filters[channel_idx] {
@@ -140,11 +141,11 @@ where
         self.inner.current_span_len()
     }
 
-    fn channels(&self) -> u16 {
+    fn channels(&self) -> ChannelCount {
         self.inner.channels()
     }
 
-    fn sample_rate(&self) -> u32 {
+    fn sample_rate(&self) -> SampleRate {
         self.inner.sample_rate()
     }
 
@@ -160,7 +161,7 @@ where
                     filter.reset();
                 }
             }
-            self.output_pos = self.channels as usize;
+            self.output_pos = self.channels.get() as usize;
         }
         result
     }

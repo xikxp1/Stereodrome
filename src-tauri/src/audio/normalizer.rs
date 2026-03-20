@@ -1,8 +1,8 @@
 //! Audio normalizer that wraps a Rodio Source to apply a constant gain factor
 //! for loudness normalization (EBU R128 / ReplayGain).
 
-use rodio::Source;
 use rodio::source::SeekError;
+use rodio::{ChannelCount, SampleRate, Source};
 use std::time::Duration;
 
 /// A Source wrapper that applies a constant linear gain factor to every sample.
@@ -64,11 +64,11 @@ where
         self.inner.current_span_len()
     }
 
-    fn channels(&self) -> u16 {
+    fn channels(&self) -> ChannelCount {
         self.inner.channels()
     }
 
-    fn sample_rate(&self) -> u32 {
+    fn sample_rate(&self) -> SampleRate {
         self.inner.sample_rate()
     }
 

@@ -1,6 +1,6 @@
 use log::{error, warn};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
-use rodio::{Decoder, OutputStreamBuilder, Sink, Source};
+use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -66,8 +66,8 @@ enum AudioCommand {
     Stop,
     SetVolume(f32),
     Seek(f64),
-    /// Append a song to the existing Sink for gapless playback.
-    /// Unlike Play, this does NOT create a new Sink.
+    /// Append a song to the existing player for gapless playback.
+    /// Unlike Play, this does NOT create a new player.
     AppendGapless {
         audio_data: Vec<u8>,
         metadata: SongMetadata,
@@ -105,7 +105,7 @@ pub struct CrossfadePlayRequest {
 }
 
 /// A segment within a gapless playback chain.
-/// Each segment represents one song appended to the same Rodio Sink.
+/// Each segment represents one song appended to the same Rodio player.
 #[derive(Debug, Clone)]
 struct GaplessSegment {
     metadata: SongMetadata,
@@ -122,7 +122,7 @@ struct PlaybackInner {
     paused_position: f64,
     duration: f64,
     /// Gapless playback segments. When multiple consecutive album tracks are
-    /// appended to the same Sink, each gets a segment for position tracking.
+    /// appended to the same player, each gets a segment for position tracking.
     gapless_segments: Vec<GaplessSegment>,
 }
 
@@ -306,8 +306,8 @@ impl AudioPlayer {
             .map_err(|e| AppError::Audio(format!("Failed to send play command: {}", e)))
     }
 
-    /// Append a song to the existing Sink for gapless playback.
-    /// The song's audio pipeline is decoded and appended without stopping the current Sink.
+    /// Append a song to the existing player for gapless playback.
+    /// The song's audio pipeline is decoded and appended without stopping the current player.
     #[allow(clippy::too_many_arguments)]
     pub fn append_gapless(
         &self,
@@ -536,7 +536,7 @@ impl AudioPlayer {
                     last_segment_idx = 0;
                 }
 
-                // Detect gapless segment transition (song changed within the same Sink)
+                // Detect gapless segment transition (song changed within the same player)
                 if segment_idx > last_segment_idx && state.song.is_some() {
                     last_segment_idx = segment_idx;
 
@@ -758,7 +758,7 @@ impl CrossfadeState {
 }
 
 fn append_processed_source<S>(
-    sink: &Sink,
+    sink: &Player,
     source: S,
     normalization_gain: Option<f32>,
     dynamics_preset: Option<&DynamicsPreset>,
@@ -829,7 +829,7 @@ fn run_audio_thread(
     spectrum_producer: Arc<Mutex<HeapProd<f32>>>,
 ) {
     // Open the default audio output stream
-    let stream = match OutputStreamBuilder::open_default_stream() {
+    let stream = match DeviceSinkBuilder::open_default_sink() {
         Ok(mut s) => {
             s.log_on_drop(false);
             s
@@ -840,8 +840,8 @@ fn run_audio_thread(
         }
     };
 
-    let mut current_sink: Option<Sink> = None;
-    let mut crossfade_sink: Option<Sink> = None;
+    let mut current_sink: Option<Player> = None;
+    let mut crossfade_sink: Option<Player> = None;
     let mut crossfade_state: Option<CrossfadeState> = None;
 
     loop {
@@ -884,7 +884,7 @@ fn run_audio_thread(
                             let analyzing_source =
                                 AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
 
-                            let sink = Sink::connect_new(stream.mixer());
+                            let sink = Player::connect_new(stream.mixer());
                             let volume = shared_state.read_inner().volume;
                             sink.set_volume(volume);
 
@@ -1128,7 +1128,7 @@ fn run_audio_thread(
                             let analyzing_source =
                                 AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
 
-                            let new_sink = Sink::connect_new(stream.mixer());
+                            let new_sink = Player::connect_new(stream.mixer());
                             new_sink.set_volume(0.0); // Start silent, will ramp up
 
                             append_processed_source(

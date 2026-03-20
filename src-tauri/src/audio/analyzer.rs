@@ -3,8 +3,8 @@
 
 use ringbuf::HeapProd;
 use ringbuf::traits::Producer;
-use rodio::Source;
 use rodio::source::SeekError;
+use rodio::{ChannelCount, SampleRate, Source};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -57,11 +57,11 @@ where
         self.inner.current_span_len()
     }
 
-    fn channels(&self) -> u16 {
+    fn channels(&self) -> ChannelCount {
         self.inner.channels()
     }
 
-    fn sample_rate(&self) -> u32 {
+    fn sample_rate(&self) -> SampleRate {
         self.inner.sample_rate()
     }
 

@@ -26,8 +26,8 @@ pub fn analyze_loudness(audio_data: Vec<u8>) -> AppResult<LoudnessResult> {
         .build()
         .map_err(|e| AppError::Audio(format!("Failed to decode audio for analysis: {e}")))?;
 
-    let channels = source.channels() as u32;
-    let sample_rate = source.sample_rate();
+    let channels = source.channels().get() as u32;
+    let sample_rate = source.sample_rate().get();
 
     let mut analyzer = EbuR128::new(channels, sample_rate, Mode::I | Mode::TRUE_PEAK)
         .map_err(|e| AppError::Audio(format!("Failed to create EBU R128 analyzer: {e}")))?;

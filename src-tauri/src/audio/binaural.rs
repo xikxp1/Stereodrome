@@ -2,8 +2,8 @@
 //! Pipeline: inner source -> bs2b crossfeed -> output.
 
 use bs2b::{Bs2b, Level, streaming::CallbackAdapter};
-use rodio::Source;
 use rodio::source::SeekError;
+use rodio::{ChannelCount, SampleRate, Source};
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -34,7 +34,7 @@ where
 {
     inner: S,
     adapter: Option<CallbackAdapter>,
-    channels: u16,
+    channels: ChannelCount,
     input_buffer: Vec<f32>,
     output_buffer: Vec<f32>,
     output_pos: usize,
@@ -50,18 +50,18 @@ where
         let level = preset.level();
 
         // Fallback to default sample rate if input sample rate is outside bs2b bounds.
-        let adapter = if channels >= 2 {
-            let processor = Bs2b::new(sample_rate, level).unwrap_or_else(|_| {
+        let adapter = if channels.get() >= 2 {
+            let processor = Bs2b::new(sample_rate.get(), level).unwrap_or_else(|_| {
                 let mut bs2b = Bs2b::default();
                 bs2b.set_level(level);
                 bs2b
             });
-            CallbackAdapter::new(processor, channels as usize).ok()
+            CallbackAdapter::new(processor, channels.get() as usize).ok()
         } else {
             None
         };
 
-        let ch = channels as usize;
+        let ch = channels.get() as usize;
         Self {
             inner: source,
             adapter,
@@ -82,14 +82,14 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         // Return buffered output if available
-        if self.output_pos < self.channels as usize {
+        if self.output_pos < self.channels.get() as usize {
             let sample = self.output_buffer[self.output_pos];
             self.output_pos += 1;
             return Some(sample);
         }
 
         // Collect a full frame from inner source into pre-allocated buffer
-        let ch = self.channels as usize;
+        let ch = self.channels.get() as usize;
         for i in 0..ch {
             self.input_buffer[i] = self.inner.next()?;
         }
@@ -116,11 +116,11 @@ where
         self.inner.current_span_len()
     }
 
-    fn channels(&self) -> u16 {
+    fn channels(&self) -> ChannelCount {
         self.inner.channels()
     }
 
-    fn sample_rate(&self) -> u32 {
+    fn sample_rate(&self) -> SampleRate {
         self.inner.sample_rate()
     }
 
@@ -134,7 +134,7 @@ where
             if let Some(adapter) = self.adapter.as_mut() {
                 adapter.processor_mut().clear();
             }
-            self.output_pos = self.channels as usize;
+            self.output_pos = self.channels.get() as usize;
         }
         result
     }

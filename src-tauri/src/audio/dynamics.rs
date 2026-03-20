@@ -3,8 +3,8 @@
 
 use fundsp::audiounit::AudioUnit;
 use fundsp::prelude32::{limiter, limiter_stereo};
-use rodio::Source;
 use rodio::source::SeekError;
+use rodio::{ChannelCount, SampleRate, Source};
 use std::time::Duration;
 
 use crate::audio::compressor::{Compressor, DynamicsPreset};
@@ -17,7 +17,7 @@ where
     inner: S,
     compressor: Compressor,
     limiter: Box<dyn AudioUnit>,
-    channels: u16,
+    channels: ChannelCount,
     input_buffer: Vec<f32>,
     output_buffer: Vec<f32>,
     output_pos: usize,
@@ -31,17 +31,17 @@ where
         let channels = source.channels();
         let sample_rate = source.sample_rate();
 
-        let compressor = Compressor::new(preset, sample_rate);
+        let compressor = Compressor::new(preset, sample_rate.get());
 
-        let mut lim: Box<dyn AudioUnit> = if channels >= 2 {
+        let mut lim: Box<dyn AudioUnit> = if channels.get() >= 2 {
             Box::new(limiter_stereo(0.01, 0.1))
         } else {
             Box::new(limiter(0.01, 0.1))
         };
-        lim.set_sample_rate(sample_rate as f64);
+        lim.set_sample_rate(sample_rate.get() as f64);
         lim.reset();
 
-        let ch = channels as usize;
+        let ch = channels.get() as usize;
         Self {
             inner: source,
             compressor,
@@ -50,7 +50,7 @@ where
             input_buffer: vec![0.0; ch],
             output_buffer: vec![0.0; ch],
             // Start exhausted to trigger first fill
-            output_pos: channels as usize,
+            output_pos: channels.get() as usize,
         }
     }
 }
@@ -63,14 +63,14 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         // Return buffered output if available
-        if self.output_pos < self.channels as usize {
+        if self.output_pos < self.channels.get() as usize {
             let sample = self.output_buffer[self.output_pos];
             self.output_pos += 1;
             return Some(sample);
         }
 
         // Collect a full frame from inner source into pre-allocated buffer
-        let ch = self.channels as usize;
+        let ch = self.channels.get() as usize;
         for i in 0..ch {
             self.input_buffer[i] = self.inner.next()?;
         }
@@ -105,11 +105,11 @@ where
         self.inner.current_span_len()
     }
 
-    fn channels(&self) -> u16 {
+    fn channels(&self) -> ChannelCount {
         self.inner.channels()
     }
 
-    fn sample_rate(&self) -> u32 {
+    fn sample_rate(&self) -> SampleRate {
         self.inner.sample_rate()
     }
 
@@ -122,7 +122,7 @@ where
         if result.is_ok() {
             self.compressor.reset();
             self.limiter.reset();
-            self.output_pos = self.channels as usize;
+            self.output_pos = self.channels.get() as usize;
         }
         result
     }
