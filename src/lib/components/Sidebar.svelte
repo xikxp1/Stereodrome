@@ -1,18 +1,8 @@
 <script lang="ts">
   import { connection } from "$lib/stores/connection.svelte";
   import { playlistStore } from "$lib/stores/playlist.svelte";
-  import { syncLibrary } from "$lib/api/commands";
-  import { refreshLibraryViews } from "$lib/services/libraryRefresh.svelte";
   import type { Playlist } from "$lib/types";
-  import {
-    Music,
-    User,
-    Disc,
-    Plus,
-    ListMusic,
-    RefreshCw,
-    LogOut,
-  } from "lucide-svelte";
+  import { Music, User, Disc, Plus, ListMusic } from "lucide-svelte";
   import { showPlaylistContextMenu } from "$lib/services/contextMenu";
 
   interface Props {
@@ -29,8 +19,6 @@
     selectedPlaylistId = null,
   }: Props = $props();
 
-  let isSyncing = $state(false);
-  let syncError = $state<string | null>(null);
   let showCreatePlaylist = $state(false);
   let newPlaylistName = $state("");
 
@@ -44,20 +32,6 @@
       playlistStore.loadPlaylists();
     }
   });
-
-  async function handleSync() {
-    isSyncing = true;
-    syncError = null;
-    try {
-      await syncLibrary();
-      await refreshLibraryViews();
-      await playlistStore.syncPlaylists();
-    } catch (e) {
-      syncError = e instanceof Error ? e.message : String(e);
-    } finally {
-      isSyncing = false;
-    }
-  }
 
   function selectView(view: string) {
     onViewChange?.(view);
@@ -232,40 +206,6 @@
         {/if}
       {/each}
     </div>
-  </div>
-
-  <div class="p-2 border-t border-base-300 space-y-1">
-    {#if connection.status.connected}
-      <p class="text-[10px] opacity-50 truncate text-center mb-1">
-        {connection.status.server_url}
-      </p>
-    {/if}
-
-    <button
-      class="flex items-center justify-center gap-1.5 w-full px-2 py-1 text-xs rounded hover:bg-base-300 disabled:opacity-50"
-      onclick={handleSync}
-      disabled={isSyncing || !connection.status.connected}
-    >
-      {#if isSyncing}
-        <span class="loading loading-spinner loading-xs"></span>
-        Syncing...
-      {:else}
-        <RefreshCw class="size-3" />
-        Sync Library
-      {/if}
-    </button>
-
-    {#if syncError}
-      <p class="text-[10px] text-error px-2">{syncError}</p>
-    {/if}
-
-    <button
-      class="flex items-center justify-center gap-1.5 w-full px-2 py-1 text-xs text-error/70 rounded hover:bg-error/10"
-      onclick={() => connection.disconnect()}
-    >
-      <LogOut class="size-3" />
-      Disconnect
-    </button>
   </div>
 </div>
 
