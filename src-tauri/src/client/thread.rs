@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use submarine::{Client, api::get_album_list::Order, auth::AuthBuilder};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -21,6 +21,8 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(60);
 const PING_TIMEOUT: Duration = Duration::from_secs(5);
 /// Interval between connection validation pings
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// Interval between background reconnect attempts after a transient disconnect
+const RECONNECT_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Internal state of the client thread
 struct ClientThread {
@@ -66,6 +68,8 @@ impl ClientThread {
         debug!("Client thread started");
         let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut reconnect = tokio::time::interval(RECONNECT_INTERVAL);
+        reconnect.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -73,9 +77,14 @@ impl ClientThread {
                 _ = heartbeat.tick() => {
                     if self.client.is_some()
                         && let Err(e) = self.validate_connection().await {
-                            warn!("Connection validation failed: {}, disconnecting", e);
-                            self.handle_disconnect();
+                            warn!("Connection validation failed: {}, retrying in background", e);
+                            self.handle_connection_lost();
+                            let _ = self.try_reconnect().await;
                         }
+                }
+                // Background reconnect: retry while we still have saved server config
+                _ = reconnect.tick() => {
+                    let _ = self.try_reconnect().await;
                 }
                 // Handle incoming requests
                 request = self.request_rx.recv() => {
@@ -105,6 +114,34 @@ impl ClientThread {
             .map_err(|e| ClientError::ApiError(e.to_string()))?;
         debug!("Connection validated");
         Ok(())
+    }
+
+    async fn try_reconnect(&mut self) -> ClientResult<()> {
+        if self.client.is_some() {
+            return Ok(());
+        }
+
+        let Some(config) = self.server_config.clone() else {
+            return Ok(());
+        };
+
+        info!("Attempting background reconnect to {}", config.url);
+        match self
+            .handle_connect(&config.url, &config.username, &config.password)
+            .await
+        {
+            Ok(result) => {
+                info!(
+                    "Background reconnect succeeded, server version {}",
+                    result.server_version
+                );
+                Ok(())
+            }
+            Err(e) => {
+                warn!("Background reconnect failed: {}", e);
+                Err(e)
+            }
+        }
     }
 
     /// Handle a single request
@@ -282,6 +319,12 @@ impl ClientThread {
         Ok(ConnectionInfo {
             server_version: ping.version,
         })
+    }
+
+    fn handle_connection_lost(&mut self) {
+        self.client = None;
+        self.connected.store(false, Ordering::SeqCst);
+        debug!("Connection dropped; keeping server config for background reconnect");
     }
 
     fn handle_disconnect(&mut self) {
@@ -832,6 +875,52 @@ impl ClientThread {
                 Err(ClientError::Timeout)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_thread() -> ClientThread {
+        let (_request_tx, request_rx) = mpsc::channel(1);
+
+        ClientThread {
+            client: None,
+            server_config: None,
+            request_rx,
+            connected: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    #[test]
+    fn transient_disconnect_preserves_server_config() {
+        let mut thread = make_thread();
+        thread.server_config = Some(ServerConfig {
+            url: "https://example.com".to_string(),
+            username: "user".to_string(),
+            password: "pass".to_string(),
+        });
+
+        thread.handle_connection_lost();
+
+        assert!(thread.server_config.is_some());
+        assert!(!thread.connected.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn explicit_disconnect_clears_server_config() {
+        let mut thread = make_thread();
+        thread.server_config = Some(ServerConfig {
+            url: "https://example.com".to_string(),
+            username: "user".to_string(),
+            password: "pass".to_string(),
+        });
+
+        thread.handle_disconnect();
+
+        assert!(thread.server_config.is_none());
+        assert!(!thread.connected.load(Ordering::SeqCst));
     }
 }
 
