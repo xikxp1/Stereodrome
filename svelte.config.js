@@ -5,9 +5,28 @@
 import adapter from "@sveltejs/adapter-static";
 import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 
+const basePreprocess = vitePreprocess({ script: true });
+
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
-  preprocess: vitePreprocess(),
+  preprocess: {
+    ...basePreprocess,
+    async script(options) {
+      const result = await basePreprocess.script?.(options);
+
+      if (!result) {
+        return result;
+      }
+
+      const nextAttributes = { ...(result.attributes ?? options.attributes) };
+      delete nextAttributes.lang;
+
+      return {
+        ...result,
+        attributes: nextAttributes,
+      };
+    },
+  },
   kit: {
     adapter: adapter({
       fallback: "index.html",

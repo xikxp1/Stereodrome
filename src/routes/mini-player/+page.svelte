@@ -406,7 +406,7 @@
     });
 
     const movedPromise = currentWindow.onMoved((event) => {
-      void (async () => {
+      async function persistMovedPosition() {
         if (isNanoMode) {
           return;
         }
@@ -420,7 +420,9 @@
         } catch (e) {
           error(`Failed to persist mini player position: ${e}`);
         }
-      })();
+      }
+
+      void persistMovedPosition();
     });
 
     const focusChangedPromise = currentWindow.onFocusChanged((event) => {

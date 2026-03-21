@@ -169,7 +169,7 @@
     let unlistenStatus: UnlistenFn | null = null;
     let unlistenSettings: UnlistenFn | null = null;
 
-    (async () => {
+    async function subscribeToSyncEvents() {
       try {
         unlistenStatus = await listen<LibrarySyncStatus>(
           "library-sync-status-changed",
@@ -188,7 +188,9 @@
       } catch (e) {
         error(`Failed to listen for sync settings events: ${e}`);
       }
-    })();
+    }
+
+    void subscribeToSyncEvents();
 
     return () => {
       if (unlistenStatus) unlistenStatus();

@@ -26,7 +26,7 @@
   onMount(() => {
     let unlisten: UnlistenFn | null = null;
 
-    void (async () => {
+    async function subscribeToCoverArtUpdates() {
       unlisten = await listen<CoverArtUpdateEvent>(
         "cover-art-update",
         (event) => {
@@ -35,7 +35,9 @@
           artist = event.payload.artist || "Unknown Artist";
         }
       );
-    })();
+    }
+
+    void subscribeToCoverArtUpdates();
 
     return () => {
       if (unlisten) {
