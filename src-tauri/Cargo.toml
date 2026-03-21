@@ -1,6 +1,6 @@
 [package]
 name = "stereodrome"
-version = "0.1.11"
+version = "0.2.1"
 description = "Desktop music player for Subsonic-compatible music servers"
 authors = ["Ivan Kachalkin<xikxp1@gmail.com>"]
 edition = "2024"
@@ -63,3 +63,7 @@ opt-level = 3
 
 [profile.dev.package.fundsp]
 opt-level = 3
+
+[patch.crates-io.tauri]
+git = "https://github.com/tauri-apps/tauri"
+branch = "feat/cef"
