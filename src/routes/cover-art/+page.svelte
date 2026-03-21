@@ -1,15 +1,21 @@
 <script lang="ts">
-  import { page } from "$app/stores";
-  import { Music, Loader2 } from "lucide-svelte";
+  import { page } from "$app/state";
+  import { Music, LoaderCircle } from "lucide-svelte";
   import { getCoverArt } from "$lib/api/commands";
-  import { listen } from "@tauri-apps/api/event";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { error as logError } from "@tauri-apps/plugin-log";
   import { onMount } from "svelte";
 
+  interface CoverArtUpdateEvent {
+    id: string;
+    album: string;
+    artist: string;
+  }
+
   // State from URL params or event updates
-  let coverArtId = $state($page.url.searchParams.get("id"));
-  let album = $state($page.url.searchParams.get("album") || "Unknown Album");
-  let artist = $state($page.url.searchParams.get("artist") || "Unknown Artist");
+  let coverArtId = $state(page.url.searchParams.get("id"));
+  let album = $state(page.url.searchParams.get("album") || "Unknown Album");
+  let artist = $state(page.url.searchParams.get("artist") || "Unknown Artist");
 
   // Fetch cover art
   let imageUrl = $state<string | null>(null);
@@ -18,17 +24,23 @@
 
   // Listen for cover art updates from main window
   onMount(() => {
-    const unlisten = listen<{ id: string; album: string; artist: string }>(
-      "cover-art-update",
-      (event) => {
-        coverArtId = event.payload.id;
-        album = event.payload.album || "Unknown Album";
-        artist = event.payload.artist || "Unknown Artist";
-      }
-    );
+    let unlisten: UnlistenFn | null = null;
+
+    void (async () => {
+      unlisten = await listen<CoverArtUpdateEvent>(
+        "cover-art-update",
+        (event) => {
+          coverArtId = event.payload.id;
+          album = event.payload.album || "Unknown Album";
+          artist = event.payload.artist || "Unknown Artist";
+        }
+      );
+    })();
 
     return () => {
-      unlisten.then((fn) => fn());
+      if (unlisten) {
+        unlisten();
+      }
     };
   });
 
@@ -62,7 +74,7 @@
 >
   {#if isLoading}
     <div class="flex flex-col items-center justify-center text-base-content/60">
-      <Loader2 class="h-12 w-12 animate-spin" />
+      <LoaderCircle class="h-12 w-12 animate-spin" />
       <p class="mt-4">Loading cover art...</p>
     </div>
   {:else if imageUrl}

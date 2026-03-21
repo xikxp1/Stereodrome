@@ -213,11 +213,11 @@
           <Volume2 class="h-3 w-3 shrink-0 text-base-content/40" />
           <div class="relative h-28 w-3">
             <div
-              class="absolute top-[8px] left-1/2 h-[calc(100%-16px)] w-0.5 -translate-x-1/2 rounded-full bg-base-300"
+              class="absolute top-2 left-1/2 h-[calc(100%-16px)] w-0.5 -translate-x-1/2 rounded-full bg-base-300"
             ></div>
             <div
               class={[
-                "absolute bottom-[8px] left-1/2 w-0.5 -translate-x-1/2 rounded-full bg-base-content/30",
+                "absolute bottom-2 left-1/2 w-0.5 -translate-x-1/2 rounded-full bg-base-content/30",
                 isMutedWhilePlaying && "volume-alert-bar",
               ]}
               style="height: calc((100% - 16px) * {volumeRatio})"

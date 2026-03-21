@@ -1,6 +1,6 @@
 <script lang="ts">
   import { connection } from "$lib/stores/connection.svelte";
-  import { AlertCircle } from "lucide-svelte";
+  import { CircleAlert } from "lucide-svelte";
 
   let url = $state("");
   let username = $state("");
@@ -70,7 +70,7 @@
 
         {#if connection.error}
           <div role="alert" class="alert alert-error alert-sm">
-            <AlertCircle class="h-4 w-4" />
+            <CircleAlert class="h-4 w-4" />
             <span>{connection.error}</span>
           </div>
         {/if}
