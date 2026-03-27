@@ -5,7 +5,7 @@
     "": {
       "name": "stereodrome",
       "dependencies": {
-        "@jis3r/icons": "^2.4.0",
+        "@jis3r/icons": "^2.7.0",
         "@tanstack/db": "^0.5.30",
         "@tanstack/svelte-query": "^6.0.18",
         "@tanstack/svelte-virtual": "^3.13.18",
@@ -122,7 +122,7 @@
 
     "@humanwhocodes/retry": ["@humanwhocodes/retry@0.4.3", "", {}, "sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ=="],
 
-    "@jis3r/icons": ["@jis3r/icons@2.4.0", "", { "peerDependencies": { "svelte": "^5.0.0" } }, "sha512-43JFhdZybDb6U0qcHeKAaNQ64QPJ33p8klVe/4zer0hov6PTcf+4bRmXJLaDU1704I5IliN7mgFrMBqpXYOsVw=="],
+    "@jis3r/icons": ["@jis3r/icons@2.7.0", "", { "peerDependencies": { "svelte": "^5.0.0" } }, "sha512-RXee+W1AoWFHtFliLZ7SQxVopAezmCH0xU45HKTvvpDQ+6Y3g6tUHvKOK16J52TM8YsN4WDnsiOmcwau+bHmwg=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 
