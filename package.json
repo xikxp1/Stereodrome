@@ -18,7 +18,7 @@
   "dependencies": {
     "@jis3r/icons": "^2.4.0",
     "@tanstack/db": "^0.5.30",
-    "@tanstack/svelte-query": "^6.0.18",
+    "@tanstack/svelte-query": "^6.1.10",
     "@tanstack/svelte-virtual": "^3.13.18",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
