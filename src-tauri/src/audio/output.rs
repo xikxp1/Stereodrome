@@ -16,6 +16,7 @@ pub struct AudioOutputRouteState {
     pub active_device_id: Option<String>,
     pub active_device_name: Option<String>,
     pub using_default_fallback: bool,
+    #[cfg(target_os = "macos")]
     pub system_default_bound: bool,
 }
 
@@ -73,6 +74,7 @@ fn default_output_device_with_info() -> Option<(Device, AudioOutputDevice)> {
     Some((device, info))
 }
 
+#[cfg(target_os = "macos")]
 pub fn current_default_output_device_id() -> Option<String> {
     default_output_device_with_info().map(|(_, info)| info.id)
 }
@@ -130,6 +132,7 @@ where
                         active_device_id: Some(entry.info.id),
                         active_device_name: Some(entry.info.name),
                         using_default_fallback: false,
+                        #[cfg(target_os = "macos")]
                         system_default_bound: default_device
                             .as_ref()
                             .is_some_and(|(_, info)| info.id == preferred_id),
@@ -151,6 +154,7 @@ where
                                 active_device_id: Some(default_info.id),
                                 active_device_name: Some(default_info.name),
                                 using_default_fallback: true,
+                                #[cfg(target_os = "macos")]
                                 system_default_bound: false,
                             },
                         )
@@ -167,6 +171,7 @@ where
                     active_device_id: Some(info.id),
                     active_device_name: Some(info.name),
                     using_default_fallback: false,
+                    #[cfg(target_os = "macos")]
                     system_default_bound: true,
                 },
             ))
@@ -180,6 +185,7 @@ where
                     active_device_id: Some(info.id),
                     active_device_name: Some(info.name),
                     using_default_fallback: true,
+                    #[cfg(target_os = "macos")]
                     system_default_bound: false,
                 },
             ))
