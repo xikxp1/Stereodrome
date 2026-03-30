@@ -5,7 +5,7 @@ use tauri_plugin_store::StoreExt;
 use crate::audio::binaural::BinauralPreset;
 use crate::audio::compressor::DynamicsPreset;
 use crate::audio::equalizer::{default_bands_db, sanitize_bands_db};
-use crate::error::AppResult;
+use crate::error::{AppResult, MutexExt};
 use crate::state::AppState;
 
 const STORE_FILE: &str = "settings.json";
@@ -162,7 +162,7 @@ pub fn set_notification_settings(
 
 // --- Playback Settings ---
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlaybackSettings {
     #[serde(default = "default_true")]
     pub gapless_enabled: bool,
@@ -182,6 +182,10 @@ pub struct PlaybackSettings {
     pub equalizer_bands_db: Vec<f32>,
     #[serde(default = "default_show_next_song_in_miniplayer")]
     pub show_next_song_in_miniplayer: bool,
+    #[serde(default)]
+    pub output_device_id: Option<String>,
+    #[serde(default)]
+    pub output_device_name: Option<String>,
 }
 
 fn default_crossfade_duration() -> u32 {
@@ -216,6 +220,8 @@ impl Default for PlaybackSettings {
             equalizer_enabled: false,
             equalizer_bands_db: default_bands_db(),
             show_next_song_in_miniplayer: true,
+            output_device_id: None,
+            output_device_name: None,
         }
     }
 }
@@ -250,18 +256,65 @@ pub async fn set_playback_settings(
     state: State<'_, AppState>,
     mut settings: PlaybackSettings,
 ) -> AppResult<()> {
+    let previous_settings = read_playback_settings(&app_handle);
     settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(1000, 12000);
     settings.equalizer_bands_db = sanitize_bands_db(&settings.equalizer_bands_db);
+    if settings.output_device_id.is_none() {
+        settings.output_device_name = None;
+    }
+
+    let output_device_changed = previous_settings.output_device_id != settings.output_device_id;
+    let non_device_playback_settings_changed = {
+        let mut lhs = previous_settings.clone();
+        let mut rhs = settings.clone();
+        lhs.output_device_id = None;
+        lhs.output_device_name = None;
+        rhs.output_device_id = None;
+        rhs.output_device_name = None;
+        lhs != rhs
+    };
+
     write_playback_settings(&app_handle, &settings);
+
+    if output_device_changed {
+        let audio_player = state.audio_player.lock_recover();
+        audio_player.set_output_device(settings.output_device_id.clone())?;
+    }
+
     let _ = app_handle.emit("playback-settings-changed", &settings);
 
-    if let Err(e) =
-        crate::commands::playback::reapply_settings_to_current_song(&app_handle, &state).await
+    if non_device_playback_settings_changed
+        && let Err(e) =
+            crate::commands::playback::reapply_settings_to_current_song(&app_handle, &state).await
     {
         warn!("Failed to reapply playback settings to current playback: {e}");
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlaybackSettings;
+
+    #[test]
+    fn playback_settings_deserialize_without_output_device_fields() {
+        let settings: PlaybackSettings = serde_json::from_value(serde_json::json!({
+            "gapless_enabled": true,
+            "crossfade_enabled": false,
+            "crossfade_on_manual_queue_advance": true,
+            "crossfade_duration_ms": 5000,
+            "binaural_enabled": false,
+            "binaural_preset": "default",
+            "equalizer_enabled": false,
+            "equalizer_bands_db": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            "show_next_song_in_miniplayer": true
+        }))
+        .expect("legacy playback settings should deserialize");
+
+        assert_eq!(settings.output_device_id, None);
+        assert_eq!(settings.output_device_name, None);
+    }
 }
 
 // --- Library Sync Settings ---

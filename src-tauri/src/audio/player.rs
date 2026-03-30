@@ -1,6 +1,6 @@
 use log::{error, warn};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
-use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
+use rodio::{Decoder, Player, Source};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -15,6 +15,7 @@ use crate::audio::compressor::DynamicsPreset;
 use crate::audio::dynamics::DynamicsSource;
 use crate::audio::equalizer::{EqualizerSettings, EqualizerSource};
 use crate::audio::normalizer::NormalizingSource;
+use crate::audio::output::{self, AudioOutputRouteState};
 use crate::error::{AppError, AppResult, MutexExt};
 use crate::media::MediaControlsManager;
 use crate::tray::TrayManager;
@@ -89,6 +90,11 @@ enum AudioCommand {
         equalizer_settings: Option<EqualizerSettings>,
         crossfade_duration_ms: u32,
     },
+    SetOutputDevice {
+        preferred_device_id: Option<String>,
+        result_tx: Sender<Result<(), String>>,
+    },
+    RecoverOutputStream,
     Shutdown,
 }
 
@@ -107,16 +113,33 @@ pub struct CrossfadePlayRequest {
 /// A segment within a gapless playback chain.
 /// Each segment represents one song appended to the same Rodio player.
 #[derive(Debug, Clone)]
-struct GaplessSegment {
+struct BufferedTrack {
+    audio_data: Vec<u8>,
     metadata: SongMetadata,
-    duration: f64,         // this segment's duration in seconds
+    duration_secs: f64,
+    normalization_gain: Option<f32>,
+    dynamics_preset: Option<DynamicsPreset>,
+    binaural_preset: Option<BinauralPreset>,
+    equalizer_settings: Option<EqualizerSettings>,
+}
+
+#[derive(Debug, Clone)]
+struct GaplessSegment {
+    track: BufferedTrack,
     cumulative_start: f64, // sum of all previous segments' durations
+}
+
+#[derive(Debug, Clone)]
+struct PlaybackSnapshot {
+    track: BufferedTrack,
+    position_secs: f64,
+    was_playing: bool,
 }
 
 /// Inner playback state consolidated into a single struct for efficient locking
 struct PlaybackInner {
     current_song: Option<SongMetadata>,
-    current_audio_data: Option<(Vec<u8>, u64)>, // (data, byte_len)
+    current_track: Option<BufferedTrack>,
     volume: f32,
     playback_start: Option<Instant>,
     paused_position: f64,
@@ -124,18 +147,22 @@ struct PlaybackInner {
     /// Gapless playback segments. When multiple consecutive album tracks are
     /// appended to the same player, each gets a segment for position tracking.
     gapless_segments: Vec<GaplessSegment>,
+    preferred_output_device_id: Option<String>,
+    output_route: AudioOutputRouteState,
 }
 
 impl Default for PlaybackInner {
     fn default() -> Self {
         Self {
             current_song: None,
-            current_audio_data: None,
+            current_track: None,
             volume: 0.8,
             playback_start: None,
             paused_position: 0.0,
             duration: 0.0,
             gapless_segments: Vec::new(),
+            preferred_output_device_id: None,
+            output_route: AudioOutputRouteState::default(),
         }
     }
 }
@@ -199,7 +226,7 @@ impl SharedState {
             // Find which segment we're in
             let mut seg_idx = 0;
             for (i, seg) in inner.gapless_segments.iter().enumerate() {
-                if cumulative_pos < seg.cumulative_start + seg.duration {
+                if cumulative_pos < seg.cumulative_start + seg.track.duration_secs {
                     seg_idx = i;
                     break;
                 }
@@ -208,15 +235,15 @@ impl SharedState {
             let seg = &inner.gapless_segments[seg_idx];
             let song_pos = (cumulative_pos - seg.cumulative_start)
                 .max(0.0)
-                .min(seg.duration);
+                .min(seg.track.duration_secs);
 
             (
                 PlaybackState {
                     is_playing,
                     position: song_pos,
-                    duration: seg.duration,
+                    duration: seg.track.duration_secs,
                     volume: inner.volume,
-                    song: Some(seg.metadata.clone()),
+                    song: Some(seg.track.metadata.clone()),
                 },
                 seg_idx,
             )
@@ -244,6 +271,10 @@ impl SharedState {
             volume: state.volume,
         }
     }
+
+    fn get_output_route(&self) -> AudioOutputRouteState {
+        self.read_inner().output_route.clone()
+    }
 }
 
 pub struct AudioPlayer {
@@ -270,8 +301,9 @@ impl AudioPlayer {
         let spectrum_consumer = Arc::new(Mutex::new(consumer));
 
         let producer_clone = Arc::clone(&spectrum_producer);
+        let command_tx_clone = command_tx.clone();
         let audio_thread = thread::spawn(move || {
-            run_audio_thread(command_rx, state_clone, producer_clone);
+            run_audio_thread(command_rx, command_tx_clone, state_clone, producer_clone);
         });
 
         Ok(Self {
@@ -389,6 +421,27 @@ impl AudioPlayer {
             .map_err(|e| AppError::Audio(format!("Failed to send stop command: {}", e)))
     }
 
+    pub fn set_output_device(&self, preferred_device_id: Option<String>) -> AppResult<()> {
+        {
+            let mut inner = self.shared_state.write_inner();
+            inner.preferred_output_device_id = preferred_device_id.clone();
+        }
+
+        let (result_tx, result_rx) = mpsc::channel();
+
+        self.command_tx
+            .send(AudioCommand::SetOutputDevice {
+                preferred_device_id,
+                result_tx,
+            })
+            .map_err(|e| AppError::Audio(format!("Failed to send output device command: {e}")))?;
+
+        result_rx
+            .recv()
+            .map_err(|e| AppError::Audio(format!("Failed to receive output device result: {e}")))?
+            .map_err(AppError::Audio)
+    }
+
     pub fn set_volume(&self, volume: f32) -> AppResult<()> {
         let clamped = volume.clamp(0.0, 1.0);
         self.shared_state.write_inner().volume = clamped;
@@ -424,13 +477,13 @@ impl AudioPlayer {
         self.shared_state.get_status()
     }
 
+    pub fn get_output_route(&self) -> AudioOutputRouteState {
+        self.shared_state.get_output_route()
+    }
+
     #[allow(dead_code)]
     pub fn current_song_id(&self) -> Option<String> {
-        self.shared_state
-            .read_inner()
-            .current_song
-            .as_ref()
-            .map(|s| s.id.clone())
+        self.shared_state.get_status().current_song_id
     }
 
     #[allow(dead_code)]
@@ -822,27 +875,227 @@ fn append_processed_source<S>(
     }
 }
 
+fn build_track(
+    audio_data: Vec<u8>,
+    metadata: SongMetadata,
+    duration_secs: f64,
+    normalization_gain: Option<f32>,
+    dynamics_preset: Option<DynamicsPreset>,
+    binaural_preset: Option<BinauralPreset>,
+    equalizer_settings: Option<EqualizerSettings>,
+) -> BufferedTrack {
+    BufferedTrack {
+        audio_data,
+        metadata,
+        duration_secs,
+        normalization_gain,
+        dynamics_preset,
+        binaural_preset,
+        equalizer_settings,
+    }
+}
+
+fn create_player_for_track(
+    stream: &rodio::stream::MixerDeviceSink,
+    track: &BufferedTrack,
+    volume: f32,
+    spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
+) -> AppResult<Player> {
+    let byte_len = track.audio_data.len() as u64;
+    let cursor = Cursor::new(track.audio_data.clone());
+    let source = Decoder::builder()
+        .with_data(cursor)
+        .with_byte_len(byte_len)
+        .with_coarse_seek(true)
+        .build()
+        .map_err(|e| AppError::Audio(format!("Failed to decode audio: {e}")))?;
+
+    let analyzing_source = AnalyzingSource::new(source, Arc::clone(spectrum_producer));
+    let sink = Player::connect_new(stream.mixer());
+    sink.set_volume(volume);
+
+    append_processed_source(
+        &sink,
+        analyzing_source,
+        track.normalization_gain,
+        track.dynamics_preset.as_ref(),
+        track.binaural_preset.as_ref(),
+        track.equalizer_settings.as_ref(),
+    );
+
+    Ok(sink)
+}
+
+fn update_track_state_after_start(
+    shared_state: &Arc<SharedState>,
+    track: &BufferedTrack,
+    position_secs: f64,
+    was_playing: bool,
+) {
+    {
+        let mut inner = shared_state.write_inner();
+        inner.current_song = Some(track.metadata.clone());
+        inner.current_track = Some(track.clone());
+        inner.playback_start = was_playing.then(Instant::now);
+        inner.paused_position = position_secs;
+        inner.duration = track.duration_secs;
+        inner.gapless_segments = vec![GaplessSegment {
+            track: track.clone(),
+            cumulative_start: 0.0,
+        }];
+    }
+    shared_state.is_playing.store(was_playing, Ordering::SeqCst);
+}
+
+fn restore_snapshot_on_stream(
+    stream: &rodio::stream::MixerDeviceSink,
+    snapshot: &PlaybackSnapshot,
+    shared_state: &Arc<SharedState>,
+    spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
+) -> AppResult<Player> {
+    let sink = create_player_for_track(
+        stream,
+        &snapshot.track,
+        shared_state.read_inner().volume,
+        spectrum_producer,
+    )?;
+
+    if !snapshot.was_playing {
+        sink.pause();
+    }
+
+    if snapshot.position_secs > 0.0
+        && let Err(e) = sink.try_seek(Duration::from_secs_f64(snapshot.position_secs))
+    {
+        warn!("Seek failed while restoring playback on a new output device: {e:?}");
+    }
+
+    update_track_state_after_start(
+        shared_state,
+        &snapshot.track,
+        snapshot.position_secs,
+        snapshot.was_playing,
+    );
+
+    Ok(sink)
+}
+
+fn current_playback_snapshot(shared_state: &Arc<SharedState>) -> Option<PlaybackSnapshot> {
+    let (state, segment_idx) = shared_state.get_gapless_state();
+    let track = {
+        let inner = shared_state.read_inner();
+        if inner.gapless_segments.len() > 1 {
+            inner
+                .gapless_segments
+                .get(segment_idx)
+                .map(|segment| segment.track.clone())
+        } else {
+            inner.current_track.clone()
+        }
+    }?;
+
+    Some(PlaybackSnapshot {
+        track,
+        position_secs: state.position,
+        was_playing: state.is_playing,
+    })
+}
+
+fn stream_error_callback(
+    command_tx: Sender<AudioCommand>,
+) -> impl FnMut(rodio::cpal::StreamError) + Send + Clone + 'static {
+    move |err| {
+        warn!("Audio output stream error: {err}");
+        let _ = command_tx.send(AudioCommand::RecoverOutputStream);
+    }
+}
+
+fn open_preferred_stream(
+    preferred_device_id: Option<&str>,
+    command_tx: &Sender<AudioCommand>,
+) -> AppResult<(rodio::stream::MixerDeviceSink, AudioOutputRouteState)> {
+    let mut stream = output::open_output_stream(
+        preferred_device_id,
+        stream_error_callback(command_tx.clone()),
+    )?;
+    stream.0.log_on_drop(false);
+    Ok(stream)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn switch_output_stream(
+    preferred_device_id: Option<String>,
+    command_tx: &Sender<AudioCommand>,
+    shared_state: &Arc<SharedState>,
+    spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
+    stream: &mut Option<rodio::stream::MixerDeviceSink>,
+    current_sink: &mut Option<Player>,
+    crossfade_sink: &mut Option<Player>,
+    crossfade_state: &mut Option<CrossfadeState>,
+) -> AppResult<()> {
+    {
+        let mut inner = shared_state.write_inner();
+        inner.preferred_output_device_id = preferred_device_id.clone();
+    }
+
+    let snapshot = current_playback_snapshot(shared_state);
+    let (new_stream, output_route) =
+        open_preferred_stream(preferred_device_id.as_deref(), command_tx)?;
+
+    let new_sink = if let Some(snapshot) = snapshot.as_ref() {
+        Some(restore_snapshot_on_stream(
+            &new_stream,
+            snapshot,
+            shared_state,
+            spectrum_producer,
+        )?)
+    } else {
+        None
+    };
+
+    if let Some(sink) = current_sink.take() {
+        sink.stop();
+    }
+    if let Some(sink) = crossfade_sink.take() {
+        sink.stop();
+    }
+
+    *crossfade_state = None;
+    *stream = Some(new_stream);
+    *current_sink = new_sink;
+    shared_state
+        .crossfade_initiated
+        .store(false, Ordering::SeqCst);
+    shared_state.write_inner().output_route = output_route;
+
+    Ok(())
+}
+
 /// Main audio thread function
 fn run_audio_thread(
     command_rx: Receiver<AudioCommand>,
+    command_tx: Sender<AudioCommand>,
     shared_state: Arc<SharedState>,
     spectrum_producer: Arc<Mutex<HeapProd<f32>>>,
 ) {
-    // Open the default audio output stream
-    let stream = match DeviceSinkBuilder::open_default_sink() {
-        Ok(mut s) => {
-            s.log_on_drop(false);
-            s
+    let mut stream = match open_preferred_stream(None, &command_tx) {
+        Ok((stream, output_route)) => {
+            shared_state.write_inner().output_route = output_route;
+            Some(stream)
         }
         Err(e) => {
-            error!("Failed to open audio stream: {:?}", e);
-            return;
+            warn!("Failed to initialize audio output stream: {e}");
+            None
         }
     };
 
     let mut current_sink: Option<Player> = None;
     let mut crossfade_sink: Option<Player> = None;
     let mut crossfade_state: Option<CrossfadeState> = None;
+    #[cfg(target_os = "macos")]
+    let mut default_output_poll_ticks: u8 = 0;
+    #[cfg(target_os = "macos")]
+    let mut last_default_output_device_id = output::current_default_output_device_id();
 
     loop {
         // Use recv_timeout to allow periodic checks
@@ -857,6 +1110,24 @@ fn run_audio_thread(
                     binaural_preset,
                     equalizer_settings,
                 } => {
+                    if stream.is_none() {
+                        let preferred_id =
+                            shared_state.read_inner().preferred_output_device_id.clone();
+                        if let Err(e) = switch_output_stream(
+                            preferred_id,
+                            &command_tx,
+                            &shared_state,
+                            &spectrum_producer,
+                            &mut stream,
+                            &mut current_sink,
+                            &mut crossfade_sink,
+                            &mut crossfade_state,
+                        ) {
+                            error!("Failed to open audio output stream: {e}");
+                            continue;
+                        }
+                    }
+
                     // Stop any existing playback including crossfade
                     if let Some(sink) = current_sink.take() {
                         sink.stop();
@@ -869,55 +1140,31 @@ fn run_audio_thread(
                         .crossfade_initiated
                         .store(false, Ordering::SeqCst);
 
-                    // Decode and play with coarse seek enabled for better seeking
-                    let byte_len = audio_data.len() as u64;
-                    let cursor = Cursor::new(audio_data.clone());
-                    match Decoder::builder()
-                        .with_data(cursor)
-                        .with_byte_len(byte_len)
-                        .with_coarse_seek(true)
-                        .build()
-                    {
-                        Ok(source) => {
-                            // Wrap source with analyzer for spectrum analysis
-                            // Rodio 0.21+ uses f32 samples natively
-                            let analyzing_source =
-                                AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
+                    let track = build_track(
+                        audio_data,
+                        metadata,
+                        duration_secs,
+                        normalization_gain,
+                        dynamics_preset,
+                        binaural_preset,
+                        equalizer_settings,
+                    );
 
-                            let sink = Player::connect_new(stream.mixer());
-                            let volume = shared_state.read_inner().volume;
-                            sink.set_volume(volume);
-
-                            append_processed_source(
-                                &sink,
-                                analyzing_source,
-                                normalization_gain,
-                                dynamics_preset.as_ref(),
-                                binaural_preset.as_ref(),
-                                equalizer_settings.as_ref(),
-                            );
-
-                            // Update shared state (single lock acquisition)
-                            {
-                                let mut inner = shared_state.write_inner();
-                                inner.current_audio_data = Some((audio_data, byte_len));
-                                inner.current_song = Some(metadata.clone());
-                                inner.playback_start = Some(Instant::now());
-                                inner.paused_position = 0.0;
-                                inner.duration = duration_secs;
-                                // Initialize gapless segments with this first song
-                                inner.gapless_segments = vec![GaplessSegment {
-                                    metadata,
-                                    duration: duration_secs,
-                                    cumulative_start: 0.0,
-                                }];
-                            }
-                            shared_state.is_playing.store(true, Ordering::SeqCst);
-
+                    match stream.as_ref().and_then(|stream| {
+                        create_player_for_track(
+                            stream,
+                            &track,
+                            shared_state.read_inner().volume,
+                            &spectrum_producer,
+                        )
+                        .ok()
+                    }) {
+                        Some(sink) => {
+                            update_track_state_after_start(&shared_state, &track, 0.0, true);
                             current_sink = Some(sink);
                         }
-                        Err(e) => {
-                            error!("Failed to decode audio: {:?}", e);
+                        None => {
+                            error!("Failed to decode audio for playback");
                         }
                     }
                 }
@@ -982,7 +1229,7 @@ fn run_audio_thread(
                     {
                         let mut inner = shared_state.write_inner();
                         inner.current_song = None;
-                        inner.current_audio_data = None;
+                        inner.current_track = None;
                         inner.playback_start = None;
                         inner.paused_position = 0.0;
                         inner.duration = 0.0;
@@ -1022,14 +1269,14 @@ fn run_audio_thread(
                                 let cumulative = shared_state.calculate_position(&inner);
                                 let mut seg_idx = 0;
                                 for (i, seg) in inner.gapless_segments.iter().enumerate() {
-                                    if cumulative < seg.cumulative_start + seg.duration {
+                                    if cumulative < seg.cumulative_start + seg.track.duration_secs {
                                         seg_idx = i;
                                         break;
                                     }
                                     seg_idx = i;
                                 }
                                 let seg = &inner.gapless_segments[seg_idx];
-                                let clamped = position_secs.clamp(0.0, seg.duration);
+                                let clamped = position_secs.clamp(0.0, seg.track.duration_secs);
                                 (clamped, seg.cumulative_start + clamped)
                             } else {
                                 let clamped = position_secs.clamp(0.0, inner.duration);
@@ -1056,46 +1303,69 @@ fn run_audio_thread(
                     equalizer_settings,
                 } => {
                     if let Some(ref sink) = current_sink {
-                        let byte_len = audio_data.len() as u64;
-                        let cursor = Cursor::new(audio_data);
-                        match Decoder::builder()
-                            .with_data(cursor)
-                            .with_byte_len(byte_len)
-                            .with_coarse_seek(true)
-                            .build()
-                        {
-                            Ok(source) => {
-                                let analyzing_source =
-                                    AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
+                        let track = build_track(
+                            audio_data,
+                            metadata,
+                            duration_secs,
+                            normalization_gain,
+                            dynamics_preset,
+                            binaural_preset,
+                            equalizer_settings,
+                        );
 
-                                append_processed_source(
-                                    sink,
-                                    analyzing_source,
-                                    normalization_gain,
-                                    dynamics_preset.as_ref(),
-                                    binaural_preset.as_ref(),
-                                    equalizer_settings.as_ref(),
-                                );
+                        match create_player_for_track(
+                            stream
+                                .as_ref()
+                                .expect("stream checked before gapless append"),
+                            &track,
+                            0.0,
+                            &spectrum_producer,
+                        ) {
+                            Ok(decoded_sink) => {
+                                decoded_sink.stop();
 
-                                // Add gapless segment and update total duration
+                                let byte_len = track.audio_data.len() as u64;
+                                let cursor = Cursor::new(track.audio_data.clone());
+                                match Decoder::builder()
+                                    .with_data(cursor)
+                                    .with_byte_len(byte_len)
+                                    .with_coarse_seek(true)
+                                    .build()
                                 {
-                                    let mut inner = shared_state.write_inner();
-                                    let cumulative_start = inner
-                                        .gapless_segments
-                                        .last()
-                                        .map(|s| s.cumulative_start + s.duration)
-                                        .unwrap_or(inner.duration);
-                                    inner.gapless_segments.push(GaplessSegment {
-                                        metadata,
-                                        duration: duration_secs,
-                                        cumulative_start,
-                                    });
-                                    inner.duration = cumulative_start + duration_secs;
+                                    Ok(source) => {
+                                        let analyzing_source = AnalyzingSource::new(
+                                            source,
+                                            Arc::clone(&spectrum_producer),
+                                        );
+                                        append_processed_source(
+                                            sink,
+                                            analyzing_source,
+                                            track.normalization_gain,
+                                            track.dynamics_preset.as_ref(),
+                                            track.binaural_preset.as_ref(),
+                                            track.equalizer_settings.as_ref(),
+                                        );
+
+                                        {
+                                            let mut inner = shared_state.write_inner();
+                                            let cumulative_start = inner
+                                                .gapless_segments
+                                                .last()
+                                                .map(|s| s.cumulative_start + s.track.duration_secs)
+                                                .unwrap_or(inner.duration);
+                                            inner.gapless_segments.push(GaplessSegment {
+                                                track,
+                                                cumulative_start,
+                                            });
+                                            inner.duration = cumulative_start + duration_secs;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to decode gapless audio: {:?}", e);
+                                    }
                                 }
                             }
-                            Err(e) => {
-                                error!("Failed to decode gapless audio: {:?}", e);
-                            }
+                            Err(e) => error!("Failed to prepare gapless audio: {e}"),
                         }
                     }
                 }
@@ -1116,45 +1386,21 @@ fn run_audio_thread(
                     // Move current sink to crossfade_sink (it keeps playing, fading out)
                     crossfade_sink = current_sink.take();
 
-                    let byte_len = audio_data.len() as u64;
-                    let cursor = Cursor::new(audio_data.clone());
-                    match Decoder::builder()
-                        .with_data(cursor)
-                        .with_byte_len(byte_len)
-                        .with_coarse_seek(true)
-                        .build()
-                    {
-                        Ok(source) => {
-                            let analyzing_source =
-                                AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
+                    let track = build_track(
+                        audio_data,
+                        metadata,
+                        duration_secs,
+                        normalization_gain,
+                        dynamics_preset,
+                        binaural_preset,
+                        equalizer_settings,
+                    );
 
-                            let new_sink = Player::connect_new(stream.mixer());
-                            new_sink.set_volume(0.0); // Start silent, will ramp up
-
-                            append_processed_source(
-                                &new_sink,
-                                analyzing_source,
-                                normalization_gain,
-                                dynamics_preset.as_ref(),
-                                binaural_preset.as_ref(),
-                                equalizer_settings.as_ref(),
-                            );
-
-                            // Update shared state for the new song
-                            {
-                                let mut inner = shared_state.write_inner();
-                                inner.current_audio_data = Some((audio_data, byte_len));
-                                inner.current_song = Some(metadata.clone());
-                                inner.playback_start = Some(Instant::now());
-                                inner.paused_position = 0.0;
-                                inner.duration = duration_secs;
-                                inner.gapless_segments = vec![GaplessSegment {
-                                    metadata,
-                                    duration: duration_secs,
-                                    cumulative_start: 0.0,
-                                }];
-                            }
-                            shared_state.is_playing.store(true, Ordering::SeqCst);
+                    match stream.as_ref().and_then(|stream| {
+                        create_player_for_track(stream, &track, 0.0, &spectrum_producer).ok()
+                    }) {
+                        Some(new_sink) => {
+                            update_track_state_after_start(&shared_state, &track, 0.0, true);
                             shared_state
                                 .crossfade_initiated
                                 .store(false, Ordering::SeqCst);
@@ -1162,11 +1408,45 @@ fn run_audio_thread(
                             current_sink = Some(new_sink);
                             crossfade_state = Some(CrossfadeState::new(crossfade_duration_ms));
                         }
-                        Err(e) => {
-                            error!("Failed to decode crossfade audio: {:?}", e);
-                            // Restore original sink if decode fails
+                        None => {
+                            error!("Failed to decode crossfade audio");
                             current_sink = crossfade_sink.take();
                         }
+                    }
+                }
+                AudioCommand::SetOutputDevice {
+                    preferred_device_id,
+                    result_tx,
+                } => {
+                    let result = switch_output_stream(
+                        preferred_device_id,
+                        &command_tx,
+                        &shared_state,
+                        &spectrum_producer,
+                        &mut stream,
+                        &mut current_sink,
+                        &mut crossfade_sink,
+                        &mut crossfade_state,
+                    )
+                    .map_err(|e| {
+                        warn!("Failed to switch audio output device: {e}");
+                        e.to_string()
+                    });
+                    let _ = result_tx.send(result);
+                }
+                AudioCommand::RecoverOutputStream => {
+                    let preferred_id = shared_state.read_inner().preferred_output_device_id.clone();
+                    if let Err(e) = switch_output_stream(
+                        preferred_id,
+                        &command_tx,
+                        &shared_state,
+                        &spectrum_producer,
+                        &mut stream,
+                        &mut current_sink,
+                        &mut crossfade_sink,
+                        &mut crossfade_state,
+                    ) {
+                        warn!("Failed to recover audio output stream: {e}");
                     }
                 }
                 AudioCommand::Shutdown => {
@@ -1180,6 +1460,47 @@ fn run_audio_thread(
                 }
             },
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                #[cfg(target_os = "macos")]
+                {
+                    default_output_poll_ticks = default_output_poll_ticks.wrapping_add(1);
+
+                    if default_output_poll_ticks >= 20 {
+                        default_output_poll_ticks = 0;
+
+                        let current_default_output_device_id =
+                            output::current_default_output_device_id();
+                        if current_default_output_device_id != last_default_output_device_id {
+                            last_default_output_device_id = current_default_output_device_id;
+
+                            let (preferred_id, should_rebind_selected_output) = {
+                                let inner = shared_state.read_inner();
+                                (
+                                    inner.preferred_output_device_id.clone(),
+                                    inner.output_route.system_default_bound,
+                                )
+                            };
+
+                            if should_rebind_selected_output
+                                && let Some(preferred_id) = preferred_id
+                                && let Err(e) = switch_output_stream(
+                                    Some(preferred_id),
+                                    &command_tx,
+                                    &shared_state,
+                                    &spectrum_producer,
+                                    &mut stream,
+                                    &mut current_sink,
+                                    &mut crossfade_sink,
+                                    &mut crossfade_state,
+                                )
+                            {
+                                warn!(
+                                    "Failed to rebind explicitly selected macOS output device after system default change: {e}"
+                                );
+                            }
+                        }
+                    }
+                }
+
                 // Crossfade volume ramping (~20Hz with 50ms timeout)
                 if let Some(ref cf_state) = crossfade_state {
                     let progress = cf_state.progress();
