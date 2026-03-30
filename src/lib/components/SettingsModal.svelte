@@ -30,6 +30,7 @@
     clearNormalizationData,
     getPlaybackSettings,
     setPlaybackSettings,
+    getAudioOutputState,
     getNotificationSettings,
     setNotificationSettings,
     getSyncSettings,
@@ -55,6 +56,7 @@
     BinauralPreset,
     DynamicsPreset,
     PlaybackSettings,
+    AudioOutputState,
     NotificationSettings,
     SyncSettings,
     LibrarySyncStatus,
@@ -212,6 +214,8 @@
 
   // Playback state
   let playbackSettings = $state<PlaybackSettings | null>(null);
+  let audioOutputState = $state<AudioOutputState | null>(null);
+  let loadingAudioOutputState = $state(false);
   let notificationSettings = $state<NotificationSettings | null>(null);
   let loadingNotifications = $state(false);
   let savingNotifications = $state(false);
@@ -256,6 +260,13 @@
 
   // Preset size options in GB
   const sizePresets = [0.5, 1, 2, 5, 10, 20, 50];
+  const selectedOutputDeviceMissing = $derived.by(() => {
+    const outputDeviceId = playbackSettings?.output_device_id;
+    if (!outputDeviceId || !audioOutputState) return false;
+    return !audioOutputState.devices.some(
+      (device) => device.id === outputDeviceId
+    );
+  });
 
   // Load stats when modal opens
   $effect(() => {
@@ -264,6 +275,7 @@
       loadScanStatus();
       loadNormalization();
       loadPlaybackSettings();
+      loadAudioOutputState();
       loadNotificationSettings();
       loadSyncSettings();
       loadSyncStatus();
@@ -286,6 +298,7 @@
       }
       // Reset stale state so reopening shows fresh data
       playbackSettings = null;
+      audioOutputState = null;
       notificationSettings = null;
       normSettings = null;
       normStats = null;
@@ -416,6 +429,17 @@
     }
   }
 
+  async function loadAudioOutputState() {
+    loadingAudioOutputState = true;
+    try {
+      audioOutputState = await getAudioOutputState();
+    } catch (e) {
+      error(`Failed to load audio output state: ${e}`);
+    } finally {
+      loadingAudioOutputState = false;
+    }
+  }
+
   async function handlePlaybackSettingChange(
     update: Partial<PlaybackSettings>
   ) {
@@ -430,9 +454,34 @@
       };
       await setPlaybackSettings(updated);
       playbackSettings = updated;
+      if (
+        update.output_device_id !== undefined ||
+        update.output_device_name !== undefined
+      ) {
+        await loadAudioOutputState();
+      }
     } catch (e) {
       error(`Failed to save playback settings: ${e}`);
     }
+  }
+
+  async function handleOutputDeviceChange(nextDeviceId: string) {
+    if (!playbackSettings) return;
+
+    const outputDeviceId = nextDeviceId || null;
+    const outputDeviceName =
+      outputDeviceId === null
+        ? null
+        : (audioOutputState?.devices.find(
+            (device) => device.id === outputDeviceId
+          )?.name ??
+          playbackSettings.output_device_name ??
+          null);
+
+    await handlePlaybackSettingChange({
+      output_device_id: outputDeviceId,
+      output_device_name: outputDeviceName,
+    });
   }
 
   async function loadNotificationSettings() {
@@ -1187,6 +1236,66 @@
 
           {#if playbackSettings}
             <div class="space-y-3">
+              <div class="rounded-md border border-base-300 bg-base-100/70 p-3">
+                <div class="mb-2 flex items-center justify-between gap-3">
+                  <div>
+                    <div class="text-sm font-medium">Audio output</div>
+                    <p class="text-xs text-base-content/50">
+                      Route playback to a specific output or follow the system
+                      default device.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-xs"
+                    onclick={loadAudioOutputState}
+                    disabled={loadingAudioOutputState}
+                    aria-label="Refresh audio outputs"
+                  >
+                    <RefreshCw
+                      class={`h-3.5 w-3.5 ${loadingAudioOutputState ? "animate-spin" : ""}`}
+                    />
+                  </button>
+                </div>
+
+                <label class="form-control">
+                  <select
+                    class="select select-sm select-bordered w-full"
+                    value={playbackSettings.output_device_id ?? ""}
+                    onchange={(e) =>
+                      handleOutputDeviceChange(e.currentTarget.value)}
+                    disabled={loadingAudioOutputState}
+                  >
+                    <option value="">System default</option>
+                    {#if selectedOutputDeviceMissing && playbackSettings.output_device_id}
+                      <option value={playbackSettings.output_device_id}>
+                        Unavailable: {playbackSettings.output_device_name ??
+                          playbackSettings.output_device_id}
+                      </option>
+                    {/if}
+                    {#each audioOutputState?.devices ?? [] as device (device.id)}
+                      <option value={device.id}>{device.name}</option>
+                    {/each}
+                  </select>
+                </label>
+
+                {#if audioOutputState?.active_device_name}
+                  <p class="mt-2 text-xs text-base-content/55">
+                    Active output: {audioOutputState.active_device_name}
+                  </p>
+                {/if}
+
+                {#if audioOutputState?.using_default_fallback && playbackSettings.output_device_id}
+                  <p class="mt-2 text-xs text-warning">
+                    {playbackSettings.output_device_name ??
+                      "The selected output"} is unavailable. Playback is using the
+                    system default output instead.
+                  </p>
+                {/if}
+              </div>
+
+              <div class="border-t border-base-300 pt-3"></div>
+
               <label class="flex cursor-pointer items-center justify-between">
                 <span class="text-sm">Gapless playback</span>
                 <input
