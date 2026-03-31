@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { queue } from "$lib/stores/queue.svelte";
   import { createVirtualizer } from "@tanstack/svelte-virtual";
+  import type { QueueItem } from "$lib/types";
   import {
     Dices,
     X,
@@ -11,6 +13,7 @@
     Volume2,
     LocateFixed,
     Trash2,
+    GripVertical,
   } from "lucide-svelte";
 
   interface Props {
@@ -20,6 +23,11 @@
   let { onItemClick }: Props = $props();
 
   let scrollContainer: HTMLDivElement | null = $state(null);
+  let draggedIndex: number | null = $state(null);
+  let dragOverIndex: number | null = $state(null);
+  let dragOverPlacement: "before" | "after" = $state("before");
+  let pointerDragging = $state(false);
+  let suppressNextAutoScroll = $state(false);
 
   const ROW_HEIGHT = 40;
 
@@ -36,11 +44,11 @@
   const totalSize = $derived($virtualizer.getTotalSize());
 
   // Track previous values to detect actual changes
-  let prevCurrentIndex: number | null = $state(null);
-  let prevItemsRef: typeof queue.items | null = $state(null);
-  let prevShuffle = $state(false);
-  let prevRepeatMode = $state(queue.repeatMode);
-  let prevScrollContainer: HTMLDivElement | null = $state(null);
+  let prevCurrentIndex: number | null = null;
+  let prevItemsRef: QueueItem[] | null = null;
+  let prevShuffle = false;
+  let prevRepeatMode = queue.repeatMode;
+  let prevScrollContainer: HTMLDivElement | null = null;
 
   // Scroll to current item when queue changes or virtualizer is recreated
   $effect(() => {
@@ -57,13 +65,13 @@
     const repeatModeChanged = repeatMode !== prevRepeatMode;
     const containerJustMounted =
       container !== null && prevScrollContainer === null;
+    const queueChanged =
+      indexChanged || itemsRefChanged || shuffleChanged || repeatModeChanged;
 
-    if (
-      (indexChanged ||
-        itemsRefChanged ||
-        shuffleChanged ||
-        repeatModeChanged ||
-        containerJustMounted) &&
+    if (suppressNextAutoScroll && queueChanged) {
+      suppressNextAutoScroll = false;
+    } else if (
+      (queueChanged || containerJustMounted) &&
       index !== null &&
       container
     ) {
@@ -120,10 +128,134 @@
       });
     }
   }
+
+  function stopRowEvent(event: Event) {
+    event.stopPropagation();
+  }
+
+  function clearDragState() {
+    pointerDragging = false;
+    draggedIndex = null;
+    dragOverIndex = null;
+    dragOverPlacement = "before";
+  }
+
+  function getDropDestination(
+    from: number,
+    targetIndex: number,
+    placement: "before" | "after"
+  ): number | null {
+    const insertionIndex =
+      placement === "before" ? targetIndex : targetIndex + 1;
+    const adjustedIndex =
+      from < insertionIndex ? insertionIndex - 1 : insertionIndex;
+    const clampedIndex = Math.max(
+      0,
+      Math.min(adjustedIndex, queue.items.length - 1)
+    );
+
+    return clampedIndex === from ? null : clampedIndex;
+  }
+
+  function updateDropTargetFromClientY(clientY: number) {
+    if (
+      draggedIndex === null ||
+      scrollContainer === null ||
+      queue.items.length === 0
+    ) {
+      dragOverIndex = null;
+      return;
+    }
+
+    const bounds = scrollContainer.getBoundingClientRect();
+    const relativeY = clientY - bounds.top + scrollContainer.scrollTop;
+    const maxY = queue.items.length * ROW_HEIGHT;
+    const boundedY = Math.max(0, Math.min(relativeY, maxY));
+
+    if (boundedY >= maxY) {
+      dragOverIndex = queue.items.length - 1;
+      dragOverPlacement = "after";
+      return;
+    }
+
+    const index = Math.min(
+      Math.floor(boundedY / ROW_HEIGHT),
+      queue.items.length - 1
+    );
+    const rowOffset = boundedY - index * ROW_HEIGHT;
+
+    dragOverIndex = index;
+    dragOverPlacement = rowOffset < ROW_HEIGHT / 2 ? "before" : "after";
+  }
+
+  function isDropTarget(index: number, placement: "before" | "after"): boolean {
+    if (
+      draggedIndex === null ||
+      dragOverIndex !== index ||
+      dragOverPlacement !== placement
+    ) {
+      return false;
+    }
+
+    return getDropDestination(draggedIndex, index, placement) !== null;
+  }
+
+  function beginPointerDrag(index: number, event: MouseEvent) {
+    event.preventDefault();
+    stopRowEvent(event);
+    pointerDragging = true;
+    draggedIndex = index;
+    dragOverIndex = index;
+    dragOverPlacement = "before";
+    updateDropTargetFromClientY(event.clientY);
+  }
+
+  function handlePointerMove(event: MouseEvent) {
+    if (!pointerDragging || draggedIndex === null) {
+      return;
+    }
+
+    updateDropTargetFromClientY(event.clientY);
+  }
+
+  async function handlePointerUp() {
+    if (!pointerDragging || draggedIndex === null || dragOverIndex === null) {
+      clearDragState();
+      return;
+    }
+
+    const fromIndex = draggedIndex;
+    const targetIndex = dragOverIndex;
+    const placement = dragOverPlacement;
+    const destination = getDropDestination(fromIndex, targetIndex, placement);
+
+    clearDragState();
+
+    if (destination === null) {
+      return;
+    }
+
+    const preservedScrollTop = scrollContainer?.scrollTop ?? null;
+    suppressNextAutoScroll = true;
+    await queue.moveItem(fromIndex, destination);
+
+    if (scrollContainer !== null && preservedScrollTop !== null) {
+      await tick();
+      scrollContainer.scrollTop = preservedScrollTop;
+      requestAnimationFrame(() => {
+        if (scrollContainer !== null) {
+          scrollContainer.scrollTop = preservedScrollTop;
+        }
+      });
+    }
+  }
 </script>
+
+<svelte:window onmousemove={handlePointerMove} onmouseup={handlePointerUp} />
 
 <div
   class="queue-panel flex flex-col h-full bg-base-100 border-l border-base-300"
+  class:drag-active={pointerDragging}
 >
   <!-- Header -->
   <div
@@ -208,6 +340,9 @@
           <div
             class="queue-item"
             class:playing={isPlaying}
+            class:dragging={draggedIndex === index}
+            class:drop-above={isDropTarget(index, "before")}
+            class:drop-below={isDropTarget(index, "after")}
             role="row"
             tabindex="0"
             onclick={() => onItemClick?.(item.song_id)}
@@ -222,6 +357,16 @@
                 <span class="text-xs text-base-content/40">{index + 1}</span>
               {/if}
             </div>
+            <button
+              class="queue-item-drag-handle"
+              onclick={stopRowEvent}
+              onkeydown={stopRowEvent}
+              onmousedown={(e) => beginPointerDrag(index, e)}
+              title="Drag to reorder"
+              aria-label="Drag to reorder {item.title}"
+            >
+              <GripVertical class="w-3 h-3" />
+            </button>
             <div class="queue-item-info">
               <div class="queue-item-title" class:text-primary={isPlaying}>
                 {item.title}
@@ -251,6 +396,10 @@
   .queue-panel {
     width: clamp(220px, 18vw, 320px);
     min-width: 220px;
+  }
+
+  .queue-panel.drag-active {
+    user-select: none;
   }
 
   .queue-header-btn {
@@ -283,9 +432,10 @@
 
   .queue-item {
     display: flex;
+    position: relative;
     align-items: center;
-    gap: 0.375rem;
-    padding: 0.375rem 0.5rem;
+    gap: 0.25rem;
+    padding: 0.375rem 0.375rem;
     cursor: pointer;
     border-bottom: 1px solid oklch(94% 0.003 250);
   }
@@ -298,12 +448,55 @@
     background: oklch(94% 0.02 250);
   }
 
+  .queue-item.dragging {
+    opacity: 0.45;
+  }
+
+  .queue-item.drop-above::before,
+  .queue-item.drop-below::after {
+    content: "";
+    position: absolute;
+    left: 0.5rem;
+    right: 0.5rem;
+    height: 2px;
+    border-radius: 999px;
+    background: oklch(58% 0.19 255);
+    pointer-events: none;
+  }
+
+  .queue-item.drop-above::before {
+    top: 0;
+  }
+
+  .queue-item.drop-below::after {
+    bottom: -1px;
+  }
+
   .queue-item-index {
-    width: 1.5rem;
+    width: 1.125rem;
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+  }
+
+  .queue-item-drag-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 0.875rem;
+    color: oklch(50% 0.01 250);
+    cursor: grab;
+    flex-shrink: 0;
+    transition: color 0.15s;
+  }
+
+  .queue-item-drag-handle:hover {
+    color: oklch(35% 0.02 250);
+  }
+
+  .queue-item-drag-handle:active {
+    cursor: grabbing;
   }
 
   .queue-item-info {
@@ -332,11 +525,13 @@
     color: oklch(50% 0.01 250);
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
+    min-width: 2rem;
+    text-align: right;
   }
 
   .queue-item-remove {
     opacity: 0;
-    padding: 0.125rem;
+    padding: 0.0625rem;
     border-radius: 0.125rem;
     color: oklch(50% 0.01 250);
     transition:
