@@ -6,17 +6,28 @@ import {
 } from "@tauri-apps/api/menu";
 
 export async function showSongContextMenu(opts: {
-  playlistId?: string | null;
+  selectionCount: number;
   playlists: { id: string; name: string }[];
   onPlayNext: () => void;
   onAddToQueue: () => void;
+  showGoToArtist?: boolean;
+  showGoToAlbum?: boolean;
+  disableGoToArtist?: boolean;
+  disableGoToAlbum?: boolean;
   onGoToArtist?: () => void;
   onGoToAlbum?: () => void;
   onRemoveFromPlaylist?: () => void;
   onAddToPlaylist: (playlistId: string) => void;
   onNewPlaylist: () => void;
 }) {
+  const selectionLabel =
+    opts.selectionCount === 1
+      ? "1 song selected"
+      : `${opts.selectionCount} songs selected`;
+
   const items: (MenuItem | PredefinedMenuItem | Submenu)[] = [
+    await MenuItem.new({ text: selectionLabel, enabled: false }),
+    await PredefinedMenuItem.new({ item: "Separator" }),
     await MenuItem.new({ text: "Play Next", action: () => opts.onPlayNext() }),
     await MenuItem.new({
       text: "Add to Queue",
@@ -24,20 +35,27 @@ export async function showSongContextMenu(opts: {
     }),
   ];
 
-  if (opts.onGoToArtist || opts.onGoToAlbum) {
+  if (
+    opts.showGoToArtist ||
+    opts.showGoToAlbum ||
+    opts.onGoToArtist ||
+    opts.onGoToAlbum
+  ) {
     items.push(await PredefinedMenuItem.new({ item: "Separator" }));
-    if (opts.onGoToArtist) {
+    if (opts.showGoToArtist || opts.onGoToArtist) {
       items.push(
         await MenuItem.new({
           text: "Go to Artist",
+          enabled: !opts.disableGoToArtist && !!opts.onGoToArtist,
           action: () => opts.onGoToArtist?.(),
         })
       );
     }
-    if (opts.onGoToAlbum) {
+    if (opts.showGoToAlbum || opts.onGoToAlbum) {
       items.push(
         await MenuItem.new({
           text: "Go to Album",
+          enabled: !opts.disableGoToAlbum && !!opts.onGoToAlbum,
           action: () => opts.onGoToAlbum?.(),
         })
       );

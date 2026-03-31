@@ -337,14 +337,44 @@ pub async fn remove_song_from_playlist(
     playlist_id: String,
     position: i32,
 ) -> AppResult<()> {
+    remove_playlist_positions(&state, &playlist_id, vec![position as i64]).await
+}
+
+/// Remove multiple songs from a playlist by position on server and refresh local cache
+#[tauri::command]
+pub async fn remove_songs_from_playlist(
+    state: State<'_, AppState>,
+    playlist_id: String,
+    positions: Vec<i32>,
+) -> AppResult<()> {
+    let mut positions_to_remove: Vec<i64> = positions
+        .into_iter()
+        .filter(|position| *position >= 0)
+        .map(i64::from)
+        .collect();
+    positions_to_remove.sort_unstable();
+    positions_to_remove.dedup();
+
+    remove_playlist_positions(&state, &playlist_id, positions_to_remove).await
+}
+
+async fn remove_playlist_positions(
+    state: &State<'_, AppState>,
+    playlist_id: &str,
+    positions: Vec<i64>,
+) -> AppResult<()> {
+    if positions.is_empty() {
+        return Ok(());
+    }
+
     // Remove by index on server
     state
         .client
-        .update_playlist(&playlist_id, None, vec![], vec![position as i64])
+        .update_playlist(playlist_id, None, vec![], positions)
         .await?;
 
     // Re-fetch playlist from server and update local cache
-    refresh_playlist_cache(&state, &playlist_id).await?;
+    refresh_playlist_cache(state, playlist_id).await?;
 
     Ok(())
 }

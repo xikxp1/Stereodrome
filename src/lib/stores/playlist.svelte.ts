@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { error } from "@tauri-apps/plugin-log";
+import { removeSongsFromPlaylist as removeSongsFromPlaylistCommand } from "$lib/api/commands";
 import type { Playlist, Song } from "$lib/types";
 
 export interface PlaylistSong extends Song {
@@ -119,8 +120,17 @@ class PlaylistStore {
   }
 
   async removeSongFromPlaylist(playlistId: string, position: number) {
+    await this.removeSongsFromPlaylist(playlistId, [position]);
+  }
+
+  async removeSongsFromPlaylist(playlistId: string, positions: number[]) {
+    const uniquePositions = [...new Set(positions)].sort((a, b) => a - b);
+    if (uniquePositions.length === 0) {
+      return;
+    }
+
     try {
-      await invoke("remove_song_from_playlist", { playlistId, position });
+      await removeSongsFromPlaylistCommand(playlistId, uniquePositions);
       await this.loadPlaylists();
 
       // Refresh current playlist songs if affected

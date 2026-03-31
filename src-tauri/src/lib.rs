@@ -172,6 +172,7 @@ pub fn run() {
             commands::delete_playlist,
             commands::add_songs_to_playlist,
             commands::remove_song_from_playlist,
+            commands::remove_songs_from_playlist,
             commands::search_library,
             commands::scrobble_now_playing,
             commands::scrobble_submit,
