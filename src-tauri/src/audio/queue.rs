@@ -212,13 +212,14 @@ impl PlayQueue {
 
     /// Move an item from one position to another
     pub fn move_item(&mut self, from: usize, to: usize) {
-        if from >= self.items.len() || to >= self.items.len() {
+        if from >= self.items.len() || to >= self.items.len() || from == to {
             return;
         }
 
         self.invalidate_prepared_shuffle_cycle();
         let item = self.items.remove(from);
         self.items.insert(to, item);
+        self.original_order = self.items.clone();
 
         // Adjust current index
         if let Some(current) = self.current_index {
@@ -701,6 +702,148 @@ mod tests {
         queue.add(queue_item("e"));
         assert!(queue.prepared_shuffle_cycle.is_none());
         assert!(queue.prepared_next_item().is_none());
+    }
+
+    #[test]
+    fn move_item_updates_canonical_order() {
+        let mut queue = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(2),
+            true,
+            RepeatMode::Off,
+        );
+
+        queue.items = vec![
+            queue_item("c"),
+            queue_item("a"),
+            queue_item("d"),
+            queue_item("b"),
+        ];
+        queue.original_order = vec![
+            queue_item("a"),
+            queue_item("b"),
+            queue_item("c"),
+            queue_item("d"),
+        ];
+
+        queue.move_item(0, 2);
+
+        assert_eq!(
+            song_ids(queue.items()),
+            vec![
+                "a".to_string(),
+                "d".to_string(),
+                "c".to_string(),
+                "b".to_string()
+            ]
+        );
+        assert_eq!(song_ids(&queue.original_order), song_ids(queue.items()));
+    }
+
+    #[test]
+    fn move_item_repositions_current_track() {
+        let mut move_current = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(1),
+            false,
+            RepeatMode::Off,
+        );
+
+        move_current.move_item(1, 3);
+        assert_eq!(move_current.current_index(), Some(3));
+
+        let mut move_before_current = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(2),
+            false,
+            RepeatMode::Off,
+        );
+
+        move_before_current.move_item(0, 3);
+        assert_eq!(move_before_current.current_index(), Some(1));
+
+        let mut move_after_current = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(2),
+            false,
+            RepeatMode::Off,
+        );
+
+        move_after_current.move_item(3, 1);
+        assert_eq!(move_after_current.current_index(), Some(3));
+    }
+
+    #[test]
+    fn move_item_invalidates_prepared_shuffle_cycle() {
+        let mut queue = shuffled_repeat_all_queue();
+        queue.peek_next();
+        assert!(queue.prepared_shuffle_cycle.is_some());
+
+        queue.move_item(0, 2);
+
+        assert!(queue.prepared_shuffle_cycle.is_none());
+        assert!(queue.prepared_next_item().is_none());
+    }
+
+    #[test]
+    fn disabling_shuffle_restores_reordered_visible_order() {
+        let mut queue = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(2),
+            true,
+            RepeatMode::Off,
+        );
+
+        queue.items = vec![
+            queue_item("c"),
+            queue_item("a"),
+            queue_item("d"),
+            queue_item("b"),
+        ];
+        queue.original_order = vec![
+            queue_item("a"),
+            queue_item("b"),
+            queue_item("c"),
+            queue_item("d"),
+        ];
+
+        queue.move_item(0, 2);
+        let reordered = song_ids(queue.items());
+        let current_song_id = queue.current_item().unwrap().song_id.clone();
+
+        queue.toggle_shuffle();
+
+        assert!(!queue.is_shuffle());
+        assert_eq!(song_ids(queue.items()), reordered);
+        assert_eq!(
+            queue.current_item().map(|item| item.song_id.as_str()),
+            Some(current_song_id.as_str())
+        );
     }
 
     #[test]
