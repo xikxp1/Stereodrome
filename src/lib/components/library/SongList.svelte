@@ -51,6 +51,27 @@
   const virtualItems = $derived($virtualizer.getVirtualItems());
   const totalSize = $derived($virtualizer.getTotalSize());
 
+  let selectedSongIds = $state<string[]>([]);
+  let orderedSelectedSongIds = $state<string[]>([]);
+  let selectionAnchorId = $state<string | null>(null);
+  let pendingInternalSelectedSongId = $state<string | null>(null);
+  let lastObservedSelectedSongId = $state<string | null | undefined>(undefined);
+
+  const songById = $derived.by(
+    () => new Map(songs.map((song) => [song.id, song] as const))
+  );
+  const selectedSongLookup = $derived.by(
+    () =>
+      Object.fromEntries(
+        selectedSongIds.map((songId) => [songId, true] as const)
+      ) as Record<string, boolean>
+  );
+  const selectedSongs = $derived.by(() =>
+    orderedSelectedSongIds
+      .map((songId) => songById.get(songId))
+      .filter((song): song is Song => song !== undefined)
+  );
+
   // Track previous scrollToSongId to detect changes
   let prevScrollToSongId: string | null = $state(null);
 
@@ -81,8 +102,106 @@
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   }
 
-  function handleRowClick(song: Song) {
-    onSelect?.(song);
+  function arraysEqual(a: string[], b: string[]) {
+    return (
+      a.length === b.length && a.every((value, index) => value === b[index])
+    );
+  }
+
+  function replaceSelection(
+    nextSelectedSongIds: string[],
+    nextOrderedSongIds: string[],
+    nextAnchorId: string | null
+  ) {
+    selectedSongIds = nextSelectedSongIds;
+    orderedSelectedSongIds = nextOrderedSongIds;
+    selectionAnchorId = nextAnchorId;
+  }
+
+  function focusSong(song: Song) {
+    if (!onSelect) {
+      return;
+    }
+
+    pendingInternalSelectedSongId = song.id;
+    onSelect(song);
+  }
+
+  function getSelectedIdsInListOrder(songIds: string[]) {
+    return songs
+      .filter((song) => songIds.includes(song.id))
+      .map((song) => song.id);
+  }
+
+  function selectOnlySong(song: Song) {
+    replaceSelection([song.id], [song.id], song.id);
+  }
+
+  function toggleSongSelection(song: Song) {
+    if (selectedSongIds.includes(song.id)) {
+      replaceSelection(
+        selectedSongIds.filter((songId) => songId !== song.id),
+        orderedSelectedSongIds.filter((songId) => songId !== song.id),
+        song.id
+      );
+      return;
+    }
+
+    replaceSelection(
+      getSelectedIdsInListOrder([...selectedSongIds, song.id]),
+      [
+        ...orderedSelectedSongIds.filter((songId) => songId !== song.id),
+        song.id,
+      ],
+      song.id
+    );
+  }
+
+  function getRangeSongIds(anchorId: string, targetId: string) {
+    const anchorIndex = songs.findIndex((song) => song.id === anchorId);
+    const targetIndex = songs.findIndex((song) => song.id === targetId);
+
+    if (anchorIndex < 0 || targetIndex < 0) {
+      return [targetId];
+    }
+
+    const start = Math.min(anchorIndex, targetIndex);
+    const end = Math.max(anchorIndex, targetIndex);
+    return songs.slice(start, end + 1).map((song) => song.id);
+  }
+
+  function selectSongRange(song: Song) {
+    const anchorId = selectionAnchorId ?? selectedSongId ?? song.id;
+    const rangeSongIds = getRangeSongIds(anchorId, song.id);
+    const nextOrderedSongIds = [
+      ...orderedSelectedSongIds.filter((songId) =>
+        rangeSongIds.includes(songId)
+      ),
+      ...rangeSongIds.filter((songId) => !selectedSongIds.includes(songId)),
+    ];
+
+    replaceSelection(rangeSongIds, nextOrderedSongIds, anchorId);
+  }
+
+  function collapseSelectionToSongId(songId: string | null) {
+    if (!songId || !songById.has(songId)) {
+      replaceSelection([], [], null);
+      return;
+    }
+
+    replaceSelection([songId], [songId], songId);
+  }
+
+  function handleRowClick(event: MouseEvent, song: Song) {
+    if (event.shiftKey) {
+      selectSongRange(song);
+    } else if (event.metaKey || event.ctrlKey) {
+      toggleSongSelection(song);
+    } else {
+      selectOnlySong(song);
+    }
+
+    focusSong(song);
   }
 
   function handleRowDoubleClick(song: Song) {
@@ -90,7 +209,7 @@
   }
 
   // New playlist dialog state
-  let newPlaylistSongId = $state<string | null>(null);
+  let newPlaylistSongIds = $state<string[]>([]);
   let newPlaylistName = $state("");
   let newPlaylistDialog: HTMLDialogElement | undefined = $state();
 
@@ -98,73 +217,138 @@
     playlistStore.playlists.filter((p) => p.id !== playlistId)
   );
 
-  function handleRowContextMenu(e: MouseEvent, song: Song) {
+  function getPlaylistPositions(songsToRemove: Song[]) {
+    return songsToRemove
+      .map((song) =>
+        typeof (song as Song & { position?: number }).position === "number"
+          ? (song as Song & { position: number }).position
+          : null
+      )
+      .filter((position): position is number => position !== null);
+  }
+
+  async function handleRowContextMenu(e: MouseEvent, song: Song) {
     e.preventDefault();
-    showSongContextMenu({
-      playlistId,
+
+    const isExistingSelection = !!selectedSongLookup[song.id];
+    const contextSelectedSongs = isExistingSelection
+      ? selectedSongs.length > 0
+        ? selectedSongs
+        : [song]
+      : [song];
+
+    if (!isExistingSelection) {
+      selectOnlySong(song);
+    }
+
+    focusSong(song);
+
+    const isMultiSelect = contextSelectedSongs.length > 1;
+    const primarySong = contextSelectedSongs[0];
+
+    await showSongContextMenu({
+      selectionCount: contextSelectedSongs.length,
       playlists: availablePlaylists.map((p) => ({ id: p.id, name: p.name })),
       onPlayNext: async () => {
-        const existingIndex = queue.items.findIndex(
-          (item) => item.song_id === song.id
-        );
-        if (existingIndex >= 0) {
-          const nextPos =
-            queue.currentIndex !== null ? queue.currentIndex + 1 : 0;
-          if (existingIndex !== nextPos) {
-            if (existingIndex < nextPos) {
-              await queue.moveItem(existingIndex, nextPos - 1);
-            } else {
-              await queue.moveItem(existingIndex, nextPos);
-            }
-          }
-        } else {
-          await queue.playNext(song);
-        }
+        await queue.playNextSongs(contextSelectedSongs);
       },
       onAddToQueue: async () => {
-        const alreadyInQueue = queue.items.some(
-          (item) => item.song_id === song.id
-        );
-        if (!alreadyInQueue) {
-          await queue.addSong(song);
-        }
+        await queue.addSongs(contextSelectedSongs);
       },
-      onGoToArtist: song.artist_id
-        ? () => {
-            onNavigateToArtist?.(song);
-          }
-        : undefined,
-      onGoToAlbum: song.album_id
-        ? () => {
-            onNavigateToAlbum?.(song);
-          }
-        : undefined,
+      showGoToArtist: isMultiSelect || !!primarySong?.artist_id,
+      showGoToAlbum: isMultiSelect || !!primarySong?.album_id,
+      disableGoToArtist: isMultiSelect,
+      disableGoToAlbum: isMultiSelect,
+      onGoToArtist:
+        !isMultiSelect && primarySong?.artist_id
+          ? () => {
+              onNavigateToArtist?.(primarySong);
+            }
+          : undefined,
+      onGoToAlbum:
+        !isMultiSelect && primarySong?.album_id
+          ? () => {
+              onNavigateToAlbum?.(primarySong);
+            }
+          : undefined,
       onRemoveFromPlaylist: playlistId
         ? async () => {
-            const index = songs.indexOf(song);
-            if (index >= 0) {
-              await playlistStore.removeSongFromPlaylist(playlistId!, index);
+            const positions = getPlaylistPositions(contextSelectedSongs);
+            if (positions.length > 0) {
+              await playlistStore.removeSongsFromPlaylist(
+                playlistId,
+                positions
+              );
             }
           }
         : undefined,
       onAddToPlaylist: async (targetPlaylistId: string) => {
-        await playlistStore.addSongsToPlaylist(targetPlaylistId, [song.id]);
+        await playlistStore.addSongsToPlaylist(
+          targetPlaylistId,
+          contextSelectedSongs.map((selectedSong) => selectedSong.id)
+        );
       },
       onNewPlaylist: () => {
-        newPlaylistSongId = song.id;
+        newPlaylistSongIds = contextSelectedSongs.map(
+          (selectedSong) => selectedSong.id
+        );
         newPlaylistName = "";
         newPlaylistDialog?.showModal();
       },
     });
   }
 
-  async function handleCreatePlaylistWithSong() {
-    if (!newPlaylistName.trim() || !newPlaylistSongId) return;
-    await playlistStore.createPlaylist(newPlaylistName.trim(), [
-      newPlaylistSongId,
-    ]);
+  $effect(() => {
+    const availableSongIds = new Set(songs.map((song) => song.id));
+    const nextSelectedSongIds = selectedSongIds.filter((songId) =>
+      availableSongIds.has(songId)
+    );
+    const nextOrderedSongIds = orderedSelectedSongIds.filter((songId) =>
+      availableSongIds.has(songId)
+    );
+    const nextAnchorId =
+      selectionAnchorId && availableSongIds.has(selectionAnchorId)
+        ? selectionAnchorId
+        : null;
+
+    if (!arraysEqual(selectedSongIds, nextSelectedSongIds)) {
+      selectedSongIds = nextSelectedSongIds;
+    }
+    if (!arraysEqual(orderedSelectedSongIds, nextOrderedSongIds)) {
+      orderedSelectedSongIds = nextOrderedSongIds;
+    }
+    if (selectionAnchorId !== nextAnchorId) {
+      selectionAnchorId = nextAnchorId;
+    }
+  });
+
+  $effect(() => {
+    if (selectedSongId === lastObservedSelectedSongId) {
+      return;
+    }
+
+    lastObservedSelectedSongId = selectedSongId;
+
+    if (
+      selectedSongId !== null &&
+      selectedSongId === pendingInternalSelectedSongId
+    ) {
+      pendingInternalSelectedSongId = null;
+      return;
+    }
+
+    pendingInternalSelectedSongId = null;
+    collapseSelectionToSongId(selectedSongId);
+  });
+
+  async function handleCreatePlaylistWithSongs() {
+    if (!newPlaylistName.trim() || newPlaylistSongIds.length === 0) return;
+    await playlistStore.createPlaylist(
+      newPlaylistName.trim(),
+      newPlaylistSongIds
+    );
     newPlaylistName = "";
-    newPlaylistSongId = null;
+    newPlaylistSongIds = [];
     newPlaylistDialog?.close();
   }
 </script>
@@ -215,10 +399,10 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="song-grid-row"
-              class:selected={selectedSongId === song.id}
+              class:selected={!!selectedSongLookup[song.id]}
               class:playing={playingSongId === song.id}
               class:even={index % 2 === 1}
-              onclick={() => handleRowClick(song)}
+              onclick={(event) => handleRowClick(event, song)}
               ondblclick={() => handleRowDoubleClick(song)}
               oncontextmenu={(e) => handleRowContextMenu(e, song)}
               style="position: absolute; top: 0; left: 0; width: 100%; height: {row.size}px; transform: translateY({row.start}px);"
@@ -271,7 +455,7 @@
       spellcheck="false"
       bind:value={newPlaylistName}
       onkeydown={(e) => {
-        if (e.key === "Enter") handleCreatePlaylistWithSong();
+        if (e.key === "Enter") handleCreatePlaylistWithSongs();
         if (e.key === "Escape") newPlaylistDialog?.close();
       }}
     />
@@ -281,7 +465,7 @@
       </button>
       <button
         class="btn btn-sm btn-primary"
-        onclick={handleCreatePlaylistWithSong}
+        onclick={handleCreatePlaylistWithSongs}
       >
         Create
       </button>

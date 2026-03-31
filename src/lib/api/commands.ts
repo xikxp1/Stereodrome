@@ -70,6 +70,13 @@ export async function getSongs(
   return invoke<Song[]>("get_songs", { albumId, artistId });
 }
 
+export async function removeSongsFromPlaylist(
+  playlistId: string,
+  positions: number[]
+): Promise<void> {
+  return invoke("remove_songs_from_playlist", { playlistId, positions });
+}
+
 // Playback commands
 export async function playSong(songId: string): Promise<void> {
   return invoke("play_song", { songId });
