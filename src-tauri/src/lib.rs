@@ -79,14 +79,8 @@ pub fn run() {
 
             // Restore persisted runtime volume before UI starts consuming playback state.
             {
-                let playback_settings = commands::read_playback_settings(app.handle());
                 let persisted_volume = commands::read_persisted_volume(app.handle());
                 let audio_player = app_state.audio_player.lock_recover();
-                if let Err(e) =
-                    audio_player.set_output_device(playback_settings.output_device_id.clone())
-                {
-                    warn!("Failed to apply persisted output device selection: {e}");
-                }
                 if let Err(e) = audio_player.set_volume(persisted_volume) {
                     warn!("Failed to apply persisted runtime volume: {e}");
                 }
@@ -147,8 +141,6 @@ pub fn run() {
             commands::set_volume,
             commands::seek_playback,
             commands::get_playback_status,
-            commands::list_audio_output_devices,
-            commands::get_audio_output_state,
             commands::get_queue,
             commands::add_to_queue,
             commands::add_songs_to_queue,

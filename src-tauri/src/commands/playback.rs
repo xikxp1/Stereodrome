@@ -5,10 +5,9 @@ use crate::audio::binaural::BinauralPreset;
 use crate::audio::compressor::DynamicsPreset;
 use crate::audio::equalizer::EqualizerSettings;
 use crate::audio::loudness;
-use crate::audio::output;
 use crate::audio::player::CrossfadePlayRequest;
 use crate::audio::queue::RepeatMode;
-use crate::audio::{AudioOutputDevice, AudioOutputState, PlaybackStatus, SongMetadata};
+use crate::audio::{PlaybackStatus, SongMetadata};
 use crate::cache::AudioCache;
 use crate::commands::queue::persist_and_emit;
 use crate::commands::settings::{
@@ -492,27 +491,6 @@ pub fn seek_playback(state: State<'_, AppState>, position: f64) -> AppResult<()>
 pub fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
     let audio_player = state.audio_player.lock_recover();
     audio_player.get_status()
-}
-
-#[tauri::command]
-pub fn list_audio_output_devices() -> AppResult<Vec<AudioOutputDevice>> {
-    output::list_audio_output_devices()
-}
-
-#[tauri::command]
-pub fn get_audio_output_state(state: State<'_, AppState>) -> AppResult<AudioOutputState> {
-    let devices = output::list_audio_output_devices()?;
-    let route = {
-        let audio_player = state.audio_player.lock_recover();
-        audio_player.get_output_route()
-    };
-
-    Ok(AudioOutputState {
-        devices,
-        active_device_id: route.active_device_id,
-        active_device_name: route.active_device_name,
-        using_default_fallback: route.using_default_fallback,
-    })
 }
 
 /// Check if two songs should transition gaplessly.

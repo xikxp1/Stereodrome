@@ -173,20 +173,6 @@ export interface PlaybackSettings {
   equalizer_enabled: boolean;
   equalizer_bands_db: number[];
   show_next_song_in_miniplayer: boolean;
-  output_device_id: string | null;
-  output_device_name: string | null;
-}
-
-export interface AudioOutputDevice {
-  id: string;
-  name: string;
-}
-
-export interface AudioOutputState {
-  devices: AudioOutputDevice[];
-  active_device_id: string | null;
-  active_device_name: string | null;
-  using_default_fallback: boolean;
 }
 
 export interface NotificationSettings {

@@ -13,8 +13,6 @@ import type {
   NormalizationStats,
   AnalysisProgress,
   PlaybackSettings,
-  AudioOutputDevice,
-  AudioOutputState,
   NotificationSettings,
   SyncSettings,
   LibrarySyncStatus,
@@ -108,14 +106,6 @@ export async function seekPlayback(position: number): Promise<void> {
 
 export async function getPlaybackStatus(): Promise<PlaybackState> {
   return invoke<PlaybackState>("get_playback_status");
-}
-
-export async function listAudioOutputDevices(): Promise<AudioOutputDevice[]> {
-  return invoke<AudioOutputDevice[]>("list_audio_output_devices");
-}
-
-export async function getAudioOutputState(): Promise<AudioOutputState> {
-  return invoke<AudioOutputState>("get_audio_output_state");
 }
 
 // Queue commands
