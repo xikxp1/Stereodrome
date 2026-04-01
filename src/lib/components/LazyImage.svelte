@@ -1,7 +1,45 @@
-<script lang="ts">
+<script lang="ts" module>
   import { getCoverArt } from "$lib/api/commands";
-  import { Music } from "lucide-svelte";
   import { SvelteMap } from "svelte/reactivity";
+
+  const coverArtUrlCache = new SvelteMap<string, string>();
+  const pendingCoverArtLoads = new SvelteMap<string, Promise<string>>();
+
+  function buildCacheKey(coverArtId: string, size: number) {
+    return `${coverArtId}-${size}`;
+  }
+
+  function loadSharedCoverArt(
+    coverArtId: string,
+    size: number
+  ): Promise<string> {
+    const cacheKey = buildCacheKey(coverArtId, size);
+    const cachedUrl = coverArtUrlCache.get(cacheKey);
+    if (cachedUrl) {
+      return Promise.resolve(cachedUrl);
+    }
+
+    const pendingLoad = pendingCoverArtLoads.get(cacheKey);
+    if (pendingLoad) {
+      return pendingLoad;
+    }
+
+    const nextLoad = getCoverArt(coverArtId, size)
+      .then((url) => {
+        coverArtUrlCache.set(cacheKey, url);
+        return url;
+      })
+      .finally(() => {
+        pendingCoverArtLoads.delete(cacheKey);
+      });
+
+    pendingCoverArtLoads.set(cacheKey, nextLoad);
+    return nextLoad;
+  }
+</script>
+
+<script lang="ts">
+  import { Music } from "lucide-svelte";
 
   interface Props {
     coverArtId: string | null | undefined;
@@ -15,25 +53,31 @@
   let element: HTMLDivElement | null = $state(null);
   let imageUrl = $state<string | null>(null);
   let isLoading = $state(false);
-
-  // Cache for loaded cover art URLs (shared across instances)
-  const urlCache = new SvelteMap<string, string>();
+  let activeCacheKey = $state<string | null>(null);
 
   $effect(() => {
-    if (!element || !coverArtId) return;
-
-    const cacheKey = `${coverArtId}-${size}`;
-
-    // Check cache first
-    if (urlCache.has(cacheKey)) {
-      imageUrl = urlCache.get(cacheKey)!;
+    if (!coverArtId) {
+      activeCacheKey = null;
+      imageUrl = null;
+      isLoading = false;
       return;
     }
 
+    const cacheKey = buildCacheKey(coverArtId, size);
+    activeCacheKey = cacheKey;
+    imageUrl = coverArtUrlCache.get(cacheKey) ?? null;
+    isLoading = false;
+
+    if (!element || imageUrl) {
+      return;
+    }
+
+    const requestedCoverArtId = coverArtId;
+    const requestedSize = size;
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting && !imageUrl && !isLoading) {
-          loadImage(cacheKey);
+          loadImage(cacheKey, requestedCoverArtId, requestedSize);
           observer.disconnect();
         }
       },
@@ -45,19 +89,26 @@
     return () => observer.disconnect();
   });
 
-  async function loadImage(cacheKey: string) {
-    if (!coverArtId || isLoading) return;
+  async function loadImage(
+    cacheKey: string,
+    requestedCoverArtId: string,
+    requestedSize: number
+  ) {
+    if (isLoading || activeCacheKey !== cacheKey) return;
 
     isLoading = true;
 
     try {
-      const url = await getCoverArt(coverArtId, size);
-      urlCache.set(cacheKey, url);
-      imageUrl = url;
+      const url = await loadSharedCoverArt(requestedCoverArtId, requestedSize);
+      if (activeCacheKey === cacheKey) {
+        imageUrl = url;
+      }
     } catch {
       // Failed to load - show placeholder
     } finally {
-      isLoading = false;
+      if (activeCacheKey === cacheKey) {
+        isLoading = false;
+      }
     }
   }
 </script>
