@@ -6,6 +6,19 @@ use rusqlite::Connection;
 use crate::error::AppResult;
 
 const SCHEMA: &str = include_str!("schema.sql");
+const QUERY_INDEX_MIGRATIONS: &str = "
+    CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name);
+    CREATE INDEX IF NOT EXISTS idx_albums_artist_id ON albums(artist_id);
+    CREATE INDEX IF NOT EXISTS idx_albums_artist_year_name ON albums(artist_id, year, name);
+    CREATE INDEX IF NOT EXISTS idx_albums_name ON albums(name);
+    CREATE INDEX IF NOT EXISTS idx_songs_album_id ON songs(album_id);
+    CREATE INDEX IF NOT EXISTS idx_songs_album_disc_track ON songs(album_id, disc_number, track_number);
+    CREATE INDEX IF NOT EXISTS idx_songs_artist_id ON songs(artist_id);
+    CREATE INDEX IF NOT EXISTS idx_songs_artist_album_disc_track ON songs(artist_id, album_id, disc_number, track_number);
+    CREATE INDEX IF NOT EXISTS idx_playlist_songs_playlist_id ON playlist_songs(playlist_id, position);
+    CREATE INDEX IF NOT EXISTS idx_playlist_songs_song_id ON playlist_songs(song_id);
+    CREATE INDEX IF NOT EXISTS idx_sync_state_updated_at ON sync_state(updated_at);
+";
 
 pub fn init_db(conn: &Connection) -> AppResult<()> {
     conn.execute_batch(SCHEMA)?;
@@ -92,9 +105,9 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_sync_state_updated_at ON sync_state(updated_at);",
+        );",
     )?;
+    conn.execute_batch(QUERY_INDEX_MIGRATIONS)?;
 
     Ok(())
 }
