@@ -2,10 +2,10 @@ use std::path::Path;
 
 use log::{debug, info, warn};
 use tantivy::{
-    Index, IndexReader, IndexSettings, IndexWriter, TantivyDocument,
+    Index, IndexReader, IndexSettings, IndexWriter, TantivyDocument, Term,
     collector::TopDocs,
     directory::MmapDirectory,
-    query::QueryParser,
+    query::{BooleanQuery, Occur, QueryParser, TermQuery},
     schema::{
         Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
     },
@@ -15,6 +15,7 @@ use tantivy::{
 use crate::error::{AppError, AppResult};
 
 const NGRAM_TOKENIZER: &str = "ngram3";
+const INDEX_WRITER_HEAP_SIZE_BYTES: usize = 50_000_000;
 
 /// Data for indexing an artist
 pub struct ArtistIndexData {
@@ -283,10 +284,9 @@ impl IndexManager {
         albums: &[AlbumIndexData],
         songs: &[SongIndexData],
     ) -> AppResult<()> {
-        // Create writer with 50MB buffer
         let mut writer: IndexWriter = self
             .index
-            .writer(50_000_000)
+            .writer(INDEX_WRITER_HEAP_SIZE_BYTES)
             .map_err(|e| AppError::Search(format!("Failed to create writer: {}", e)))?;
 
         // Delete all existing documents
@@ -301,65 +301,19 @@ impl IndexManager {
             songs.len()
         );
 
-        // Index artists
         for artist in artists {
-            let mut doc = TantivyDocument::new();
-            doc.add_text(self.schema.id, &artist.id);
-            doc.add_text(self.schema.entity_type, "artist");
-            doc.add_text(self.schema.name, &artist.name);
-            doc.add_i64(self.schema.album_count, artist.album_count as i64);
-            writer
-                .add_document(doc)
-                .map_err(|e| AppError::Search(format!("Failed to add artist: {}", e)))?;
+            self.add_artist_document(&writer, artist)?;
         }
 
-        // Index albums
         for album in albums {
-            let mut doc = TantivyDocument::new();
-            doc.add_text(self.schema.id, &album.id);
-            doc.add_text(self.schema.entity_type, "album");
-            doc.add_text(self.schema.name, &album.name);
-            doc.add_text(self.schema.artist_name, &album.artist_name);
-            if let Some(year) = album.year {
-                doc.add_i64(self.schema.year, year as i64);
-            }
-            doc.add_i64(self.schema.song_count, album.song_count as i64);
-            writer
-                .add_document(doc)
-                .map_err(|e| AppError::Search(format!("Failed to add album: {}", e)))?;
+            self.add_album_document(&writer, album)?;
         }
 
-        // Index songs
         for song in songs {
-            let mut doc = TantivyDocument::new();
-            doc.add_text(self.schema.id, &song.id);
-            doc.add_text(self.schema.entity_type, "song");
-            doc.add_text(self.schema.name, &song.title);
-            doc.add_text(self.schema.artist_name, &song.artist_name);
-            doc.add_text(self.schema.album_name, &song.album_name);
-            if let Some(ref genre) = song.genre {
-                doc.add_text(self.schema.genre, genre);
-            }
-            if let Some(year) = song.year {
-                doc.add_i64(self.schema.year, year as i64);
-            }
-            if let Some(duration) = song.duration {
-                doc.add_i64(self.schema.duration, duration as i64);
-            }
-            writer
-                .add_document(doc)
-                .map_err(|e| AppError::Search(format!("Failed to add song: {}", e)))?;
+            self.add_song_document(&writer, song)?;
         }
 
-        // Commit changes atomically
-        writer
-            .commit()
-            .map_err(|e| AppError::Search(format!("Failed to commit index: {}", e)))?;
-
-        // Reload reader to see committed changes
-        self.reader
-            .reload()
-            .map_err(|e| AppError::Search(format!("Failed to reload after commit: {}", e)))?;
+        self.commit_writer(&mut writer)?;
 
         let doc_count = self.reader.searcher().num_docs();
         info!(
@@ -369,6 +323,136 @@ impl IndexManager {
             songs.len(),
             doc_count
         );
+
+        Ok(())
+    }
+
+    /// Delete and re-add only the documents affected by an incremental sync.
+    pub fn upsert_documents(
+        &self,
+        artists: &[ArtistIndexData],
+        albums: &[AlbumIndexData],
+        songs: &[SongIndexData],
+    ) -> AppResult<()> {
+        let mut writer: IndexWriter = self
+            .index
+            .writer(INDEX_WRITER_HEAP_SIZE_BYTES)
+            .map_err(|e| AppError::Search(format!("Failed to create writer: {}", e)))?;
+
+        for artist in artists {
+            self.delete_document(&writer, "artist", &artist.id)?;
+            self.add_artist_document(&writer, artist)?;
+        }
+
+        for album in albums {
+            self.delete_document(&writer, "album", &album.id)?;
+            self.add_album_document(&writer, album)?;
+        }
+
+        for song in songs {
+            self.delete_document(&writer, "song", &song.id)?;
+            self.add_song_document(&writer, song)?;
+        }
+
+        self.commit_writer(&mut writer)?;
+
+        debug!(
+            "Search index incrementally updated: {} artists, {} albums, {} songs",
+            artists.len(),
+            albums.len(),
+            songs.len()
+        );
+
+        Ok(())
+    }
+
+    fn commit_writer(&self, writer: &mut IndexWriter) -> AppResult<()> {
+        writer
+            .commit()
+            .map_err(|e| AppError::Search(format!("Failed to commit index: {}", e)))?;
+
+        // Reload reader to see committed changes
+        self.reader
+            .reload()
+            .map_err(|e| AppError::Search(format!("Failed to reload after commit: {}", e)))?;
+
+        Ok(())
+    }
+
+    fn delete_document(&self, writer: &IndexWriter, entity_type: &str, id: &str) -> AppResult<()> {
+        let delete_query = BooleanQuery::new(vec![
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(self.schema.entity_type, entity_type),
+                    IndexRecordOption::Basic,
+                )),
+            ),
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(self.schema.id, id),
+                    IndexRecordOption::Basic,
+                )),
+            ),
+        ]);
+
+        writer
+            .delete_query(Box::new(delete_query))
+            .map_err(|e| AppError::Search(format!("Failed to delete document: {}", e)))?;
+
+        Ok(())
+    }
+
+    fn add_artist_document(&self, writer: &IndexWriter, artist: &ArtistIndexData) -> AppResult<()> {
+        let mut doc = TantivyDocument::new();
+        doc.add_text(self.schema.id, &artist.id);
+        doc.add_text(self.schema.entity_type, "artist");
+        doc.add_text(self.schema.name, &artist.name);
+        doc.add_i64(self.schema.album_count, artist.album_count as i64);
+        writer
+            .add_document(doc)
+            .map_err(|e| AppError::Search(format!("Failed to add artist: {}", e)))?;
+
+        Ok(())
+    }
+
+    fn add_album_document(&self, writer: &IndexWriter, album: &AlbumIndexData) -> AppResult<()> {
+        let mut doc = TantivyDocument::new();
+        doc.add_text(self.schema.id, &album.id);
+        doc.add_text(self.schema.entity_type, "album");
+        doc.add_text(self.schema.name, &album.name);
+        doc.add_text(self.schema.artist_name, &album.artist_name);
+        if let Some(year) = album.year {
+            doc.add_i64(self.schema.year, year as i64);
+        }
+        doc.add_i64(self.schema.song_count, album.song_count as i64);
+        writer
+            .add_document(doc)
+            .map_err(|e| AppError::Search(format!("Failed to add album: {}", e)))?;
+
+        Ok(())
+    }
+
+    fn add_song_document(&self, writer: &IndexWriter, song: &SongIndexData) -> AppResult<()> {
+        let mut doc = TantivyDocument::new();
+        doc.add_text(self.schema.id, &song.id);
+        doc.add_text(self.schema.entity_type, "song");
+        doc.add_text(self.schema.name, &song.title);
+        doc.add_text(self.schema.artist_name, &song.artist_name);
+        doc.add_text(self.schema.album_name, &song.album_name);
+        if let Some(ref genre) = song.genre {
+            doc.add_text(self.schema.genre, genre);
+        }
+        if let Some(year) = song.year {
+            doc.add_i64(self.schema.year, year as i64);
+        }
+        if let Some(duration) = song.duration {
+            doc.add_i64(self.schema.duration, duration as i64);
+        }
+        writer
+            .add_document(doc)
+            .map_err(|e| AppError::Search(format!("Failed to add song: {}", e)))?;
 
         Ok(())
     }
@@ -479,4 +563,79 @@ pub fn get_index_path(app_handle: &tauri::AppHandle) -> AppResult<std::path::Pat
     })?;
 
     Ok(app_dir.join("search_index"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{AlbumIndexData, ArtistIndexData, IndexManager};
+
+    fn temp_index_path(test_name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "stereodrome-search-{test_name}-{}",
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    #[test]
+    fn incremental_upsert_replaces_only_matching_entity_type() {
+        let index_path = temp_index_path("upsert");
+        let manager = IndexManager::new(&index_path).expect("create index");
+
+        manager
+            .rebuild_index(
+                &[ArtistIndexData {
+                    id: "shared-id".to_string(),
+                    name: "Artist Stable".to_string(),
+                    album_count: 1,
+                }],
+                &[AlbumIndexData {
+                    id: "shared-id".to_string(),
+                    name: "Album Old".to_string(),
+                    artist_name: "Artist Stable".to_string(),
+                    year: Some(2001),
+                    song_count: 10,
+                }],
+                &[],
+            )
+            .expect("seed index");
+
+        manager
+            .upsert_documents(
+                &[],
+                &[AlbumIndexData {
+                    id: "shared-id".to_string(),
+                    name: "Album New".to_string(),
+                    artist_name: "Artist Stable".to_string(),
+                    year: Some(2001),
+                    song_count: 10,
+                }],
+                &[],
+            )
+            .expect("upsert album");
+
+        let artist_hits = manager.search("artist stable", 10).expect("search artist");
+        assert!(
+            artist_hits
+                .iter()
+                .any(|hit| hit.entity_type == "artist" && hit.name == "Artist Stable")
+        );
+
+        let old_album_hits = manager.search("album old", 10).expect("search old album");
+        assert!(
+            !old_album_hits
+                .iter()
+                .any(|hit| hit.entity_type == "album" && hit.name == "Album Old")
+        );
+
+        let new_album_hits = manager.search("album new", 10).expect("search new album");
+        assert!(
+            new_album_hits
+                .iter()
+                .any(|hit| hit.entity_type == "album" && hit.name == "Album New")
+        );
+
+        let _ = fs::remove_dir_all(index_path);
+    }
 }

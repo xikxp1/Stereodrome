@@ -616,7 +616,7 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<(SyncResult, NewIte
     // Drop db lock before rebuilding search index.
     drop(db);
 
-    rebuild_search_index_from_db(state)?;
+    update_search_index_for_incremental_sync(state, &artists_data, &albums_data, &songs_data)?;
 
     let refreshed_artist_ids: HashSet<String> = artists_data
         .iter()
@@ -1518,6 +1518,94 @@ fn emit_library_content_updated(app_handle: &AppHandle, event: LibraryContentUpd
     }
 
     let _ = app_handle.emit("library-content-updated", &event);
+}
+
+fn update_search_index_for_incremental_sync(
+    state: &AppState,
+    artists: &[ArtistData],
+    albums: &[AlbumData],
+    songs: &[SongData],
+) -> AppResult<()> {
+    let artist_names_by_id: HashMap<&str, &str> = artists
+        .iter()
+        .map(|artist| (artist.id.as_str(), artist.name.as_str()))
+        .collect();
+    let album_names_by_id: HashMap<&str, &str> = albums
+        .iter()
+        .map(|album| (album.id.as_str(), album.name.as_str()))
+        .collect();
+
+    let artist_docs: Vec<ArtistIndexData> = artists
+        .iter()
+        .map(|artist| ArtistIndexData {
+            id: artist.id.clone(),
+            name: artist.name.clone(),
+            album_count: artist.album_count,
+        })
+        .collect();
+
+    let album_docs: Vec<AlbumIndexData> = albums
+        .iter()
+        .filter_map(|album| {
+            let artist_name = artist_names_by_id.get(album.artist_id.as_str())?;
+            Some(AlbumIndexData {
+                id: album.id.clone(),
+                name: album.name.clone(),
+                artist_name: (*artist_name).to_string(),
+                year: album.year,
+                song_count: album.song_count,
+            })
+        })
+        .collect();
+
+    let song_docs: Vec<SongIndexData> = songs
+        .iter()
+        .filter_map(|song| {
+            let artist_name = artist_names_by_id.get(song.artist_id.as_str())?;
+            let album_name = album_names_by_id.get(song.album_id.as_str())?;
+            Some(SongIndexData {
+                id: song.id.clone(),
+                title: song.title.clone(),
+                artist_name: (*artist_name).to_string(),
+                album_name: (*album_name).to_string(),
+                genre: song.genre.clone(),
+                year: song.year,
+                duration: song.duration,
+            })
+        })
+        .collect();
+
+    if album_docs.len() != albums.len() || song_docs.len() != songs.len() {
+        warn!(
+            "Incremental search update skipped {} albums and {} songs due to missing delta metadata",
+            albums.len().saturating_sub(album_docs.len()),
+            songs.len().saturating_sub(song_docs.len())
+        );
+    }
+
+    let mut search_index_guard = state.search_index.lock_recover();
+
+    if search_index_guard.is_none() {
+        debug!("Search index is None, creating new one...");
+        match IndexManager::new(&state.index_path) {
+            Ok(manager) => {
+                info!("Created new search index");
+                *search_index_guard = Some(manager);
+            }
+            Err(e) => {
+                warn!("Failed to create search index: {}", e);
+                return Ok(());
+            }
+        }
+    }
+
+    if let Some(ref index_manager) = *search_index_guard
+        && let Err(e) = index_manager.upsert_documents(&artist_docs, &album_docs, &song_docs)
+    {
+        warn!("Failed to incrementally update search index: {}", e);
+    }
+
+    Ok(())
 }
 
 /// Rebuild the search index from current database state.
