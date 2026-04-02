@@ -470,6 +470,7 @@ impl AudioPlayer {
 
         thread::spawn(move || {
             let mut analyzer = spectrum::SpectrumAnalyzer::new(DEFAULT_SAMPLE_RATE);
+            let mut emitted_idle_state = false;
 
             loop {
                 thread::sleep(Duration::from_millis(33)); // 30Hz updates
@@ -478,11 +479,15 @@ impl AudioPlayer {
 
                 // Only process when playing
                 if !is_playing {
-                    // Emit empty spectrum when not playing
-                    let _ = app_handle.emit("spectrum-data", spectrum::SpectrumData::default());
-                    analyzer.clear();
+                    if !emitted_idle_state {
+                        let _ = app_handle.emit("spectrum-data", spectrum::SpectrumData::default());
+                        analyzer.clear();
+                        emitted_idle_state = true;
+                    }
                     continue;
                 }
+
+                emitted_idle_state = false;
 
                 // Process samples and emit if we have data
                 if let Ok(mut cons) = consumer.try_lock()

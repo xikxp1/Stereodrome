@@ -223,17 +223,22 @@ pub fn start_spectrum_emitter(
 ) {
     thread::spawn(move || {
         let mut analyzer = SpectrumAnalyzer::new(sample_rate);
+        let mut emitted_idle_state = false;
 
         loop {
             thread::sleep(Duration::from_millis(UPDATE_INTERVAL_MS));
 
             // Only process when playing
             if !is_playing.load(Ordering::SeqCst) {
-                // Emit empty spectrum when not playing
-                let _ = app_handle.emit("spectrum-data", SpectrumData::default());
-                analyzer.clear();
+                if !emitted_idle_state {
+                    let _ = app_handle.emit("spectrum-data", SpectrumData::default());
+                    analyzer.clear();
+                    emitted_idle_state = true;
+                }
                 continue;
             }
+
+            emitted_idle_state = false;
 
             // Process samples and emit if we have data
             if let Ok(mut cons) = consumer.try_lock()
