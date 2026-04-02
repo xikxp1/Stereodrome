@@ -34,20 +34,20 @@ fn focus_main_window(app: &AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    let log_plugin_builder = tauri_plugin_log::Builder::new()
+        .targets([
+            Target::new(TargetKind::Stdout),
+            Target::new(TargetKind::LogDir { file_name: None }),
+            Target::new(TargetKind::Webview),
+        ])
+        .level(LevelFilter::Info)
+        .level_for("stereodrome", LevelFilter::Debug);
+
+    let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(
-            tauri_plugin_log::Builder::new()
-                .targets([
-                    Target::new(TargetKind::Stdout),
-                    Target::new(TargetKind::LogDir { file_name: None }),
-                    Target::new(TargetKind::Webview),
-                ])
-                .level(LevelFilter::Info)
-                .level_for("stereodrome", LevelFilter::Debug)
-                .build(),
-        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
@@ -62,7 +62,26 @@ pub fn run() {
     let builder = builder.plugin(tauri_nspanel::init());
 
     builder
-        .setup(|app| {
+        .setup(move |app| {
+            let (log_plugin, max_level, logger) = log_plugin_builder
+                .split(app.handle())
+                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+
+            #[cfg(debug_assertions)]
+            {
+                let _ = max_level;
+                let mut devtools_builder = tauri_plugin_devtools::Builder::default();
+                devtools_builder.attach_logger(logger);
+                app.handle().plugin(devtools_builder.init())?;
+            }
+
+            #[cfg(not(debug_assertions))]
+            {
+                tauri_plugin_log::attach_logger(max_level, logger)?;
+            }
+
+            app.handle().plugin(log_plugin)?;
+
             let db_path = db::get_db_path(app.handle())?;
             let index_path = search::get_index_path(app.handle())?;
 
