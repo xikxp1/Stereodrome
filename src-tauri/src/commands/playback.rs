@@ -1,4 +1,5 @@
 use log::{info, warn};
+use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
 use crate::audio::binaural::BinauralPreset;
@@ -19,7 +20,7 @@ use crate::state::AppState;
 
 /// Common song data needed for playback.
 struct SongData {
-    audio_data: Vec<u8>,
+    audio_data: Arc<[u8]>,
     metadata: SongMetadata,
     duration: f64,
     album_id: String,
@@ -77,7 +78,10 @@ async fn fetch_song_data(
     };
 
     let cache = AudioCache::new(app_handle)?;
-    let audio_data = cache.get_or_fetch(&state.client, song_id, &suffix).await?;
+    let audio_data: Arc<[u8]> = cache
+        .get_or_fetch(&state.client, song_id, &suffix)
+        .await?
+        .into();
 
     let norm_settings = read_normalization_settings(app_handle);
     let normalization_gain = if norm_settings.enabled {

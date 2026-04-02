@@ -53,7 +53,7 @@ pub struct PlaybackState {
 /// Commands sent to the audio thread
 enum AudioCommand {
     Play {
-        audio_data: Vec<u8>,
+        audio_data: Arc<[u8]>,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -69,7 +69,7 @@ enum AudioCommand {
     /// Append a song to the existing player for gapless playback.
     /// Unlike Play, this does NOT create a new player.
     AppendGapless {
-        audio_data: Vec<u8>,
+        audio_data: Arc<[u8]>,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -80,7 +80,7 @@ enum AudioCommand {
     /// Crossfade to a new song: keep the current sink fading out
     /// while a new sink fades in over the specified duration.
     CrossfadePlay {
-        audio_data: Vec<u8>,
+        audio_data: Arc<[u8]>,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -94,7 +94,7 @@ enum AudioCommand {
 
 #[derive(Debug)]
 pub struct CrossfadePlayRequest {
-    pub audio_data: Vec<u8>,
+    pub audio_data: Arc<[u8]>,
     pub metadata: SongMetadata,
     pub duration_secs: f64,
     pub normalization_gain: Option<f32>,
@@ -116,7 +116,6 @@ struct GaplessSegment {
 /// Inner playback state consolidated into a single struct for efficient locking
 struct PlaybackInner {
     current_song: Option<SongMetadata>,
-    current_audio_data: Option<(Vec<u8>, u64)>, // (data, byte_len)
     volume: f32,
     playback_start: Option<Instant>,
     paused_position: f64,
@@ -130,7 +129,6 @@ impl Default for PlaybackInner {
     fn default() -> Self {
         Self {
             current_song: None,
-            current_audio_data: None,
             volume: 0.8,
             playback_start: None,
             paused_position: 0.0,
@@ -285,7 +283,7 @@ impl AudioPlayer {
     #[allow(clippy::too_many_arguments)]
     pub fn play(
         &self,
-        audio_data: Vec<u8>,
+        audio_data: Arc<[u8]>,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -311,7 +309,7 @@ impl AudioPlayer {
     #[allow(clippy::too_many_arguments)]
     pub fn append_gapless(
         &self,
-        audio_data: Vec<u8>,
+        audio_data: Arc<[u8]>,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -876,7 +874,7 @@ fn run_audio_thread(
 
                     // Decode and play with coarse seek enabled for better seeking
                     let byte_len = audio_data.len() as u64;
-                    let cursor = Cursor::new(audio_data.clone());
+                    let cursor = Cursor::new(audio_data);
                     match Decoder::builder()
                         .with_data(cursor)
                         .with_byte_len(byte_len)
@@ -905,7 +903,6 @@ fn run_audio_thread(
                             // Update shared state (single lock acquisition)
                             {
                                 let mut inner = shared_state.write_inner();
-                                inner.current_audio_data = Some((audio_data, byte_len));
                                 inner.current_song = Some(metadata.clone());
                                 inner.playback_start = Some(Instant::now());
                                 inner.paused_position = 0.0;
@@ -987,7 +984,6 @@ fn run_audio_thread(
                     {
                         let mut inner = shared_state.write_inner();
                         inner.current_song = None;
-                        inner.current_audio_data = None;
                         inner.playback_start = None;
                         inner.paused_position = 0.0;
                         inner.duration = 0.0;
@@ -1122,7 +1118,7 @@ fn run_audio_thread(
                     crossfade_sink = current_sink.take();
 
                     let byte_len = audio_data.len() as u64;
-                    let cursor = Cursor::new(audio_data.clone());
+                    let cursor = Cursor::new(audio_data);
                     match Decoder::builder()
                         .with_data(cursor)
                         .with_byte_len(byte_len)
@@ -1148,7 +1144,6 @@ fn run_audio_thread(
                             // Update shared state for the new song
                             {
                                 let mut inner = shared_state.write_inner();
-                                inner.current_audio_data = Some((audio_data, byte_len));
                                 inner.current_song = Some(metadata.clone());
                                 inner.playback_start = Some(Instant::now());
                                 inner.paused_position = 0.0;
