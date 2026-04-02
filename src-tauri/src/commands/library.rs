@@ -9,6 +9,7 @@ use log::{debug, info, warn};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::task::JoinSet;
 
 use crate::error::{AppError, AppResult, MutexExt};
 use crate::search::{AlbumIndexData, ArtistIndexData, IndexManager, SongIndexData};
@@ -24,6 +25,8 @@ const FULL_LAST_SUCCESS_AT_KEY: &str = "library_full_last_success_at";
 const FULL_LAST_ERROR_KEY: &str = "library_full_last_error";
 const SYNC_SCHEDULER_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const SYNC_ALREADY_RUNNING_MESSAGE: &str = "Library sync already in progress";
+const ARTIST_FETCH_CONCURRENCY: usize = 8;
+const ALBUM_FETCH_CONCURRENCY: usize = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanStatus {
@@ -169,6 +172,39 @@ struct SongData {
     id: String,
     album_id: String,
     artist_id: String,
+    title: String,
+    track: Option<i32>,
+    disc_number: i32,
+    duration: Option<i32>,
+    bit_rate: Option<i32>,
+    size: Option<i64>,
+    suffix: Option<String>,
+    content_type: Option<String>,
+    path: Option<String>,
+    year: Option<i32>,
+    genre: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RemoteAlbumSummary {
+    id: String,
+    name: String,
+    year: Option<i32>,
+    song_count: i32,
+    duration: i32,
+    cover_art: Option<String>,
+}
+
+#[derive(Debug)]
+struct AlbumFetchRequest {
+    album_id: String,
+    artist_id: String,
+    album_year: Option<i32>,
+}
+
+#[derive(Debug)]
+struct RemoteSong {
+    id: String,
     title: String,
     track: Option<i32>,
     disc_number: i32,
@@ -494,10 +530,18 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<(SyncResult, NewIte
 
     let mut artists_to_refresh: Vec<String> = artists_to_refresh.into_iter().collect();
     artists_to_refresh.sort();
+    let mut artist_fetches = fetch_artist_albums_bounded(
+        state.client.clone(),
+        artists_to_refresh,
+        ARTIST_FETCH_CONCURRENCY,
+    )
+    .await;
+    artist_fetches.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut album_fetch_requests = Vec::new();
 
-    for artist_id in artists_to_refresh {
-        let artist_detail = match state.client.get_artist(&artist_id).await {
-            Ok(detail) => detail,
+    for (artist_id, artist_result) in artist_fetches {
+        let artist_albums = match artist_result {
+            Ok(albums) => albums,
             Err(e) => {
                 warn!("Error fetching artist {}: {}", artist_id, e);
                 continue;
@@ -516,11 +560,11 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<(SyncResult, NewIte
         artists_data.push(ArtistData {
             id: artist_id.clone(),
             name: artist_name,
-            album_count: artist_detail.album.len() as i32,
+            album_count: artist_albums.len() as i32,
             cover_art,
         });
 
-        for album in artist_detail.album {
+        for album in artist_albums {
             let album_id = album.id.clone();
             if !candidate_album_ids.contains(&album_id) {
                 continue;
@@ -535,30 +579,45 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<(SyncResult, NewIte
                 duration: Some(album.duration),
                 cover_art: album.cover_art,
             });
+            album_fetch_requests.push(AlbumFetchRequest {
+                album_id,
+                artist_id: artist_id.clone(),
+                album_year: album.year,
+            });
+        }
+    }
 
-            match state.client.get_album(&album_id).await {
-                Ok(album_detail) => {
-                    for song in album_detail.song {
-                        songs_data.push(SongData {
-                            id: song.id,
-                            album_id: album_id.clone(),
-                            artist_id: artist_id.clone(),
-                            title: song.title,
-                            track: song.track,
-                            disc_number: song.disc_number.unwrap_or(1),
-                            duration: song.duration,
-                            bit_rate: song.bit_rate,
-                            size: song.size,
-                            suffix: song.suffix,
-                            content_type: song.content_type,
-                            path: song.path,
-                            year: song.year.or(album.year),
-                            genre: song.genre,
-                        });
-                    }
+    let mut album_fetches = fetch_album_songs_bounded(
+        state.client.clone(),
+        album_fetch_requests,
+        ALBUM_FETCH_CONCURRENCY,
+    )
+    .await;
+    album_fetches.sort_by(|left, right| left.0.album_id.cmp(&right.0.album_id));
+
+    for (request, album_result) in album_fetches {
+        match album_result {
+            Ok(songs) => {
+                for song in songs {
+                    songs_data.push(SongData {
+                        id: song.id,
+                        album_id: request.album_id.clone(),
+                        artist_id: request.artist_id.clone(),
+                        title: song.title,
+                        track: song.track,
+                        disc_number: song.disc_number,
+                        duration: song.duration,
+                        bit_rate: song.bit_rate,
+                        size: song.size,
+                        suffix: song.suffix,
+                        content_type: song.content_type,
+                        path: song.path,
+                        year: song.year.or(request.album_year),
+                        genre: song.genre,
+                    });
                 }
-                Err(e) => warn!("Error fetching album {}: {}", album_id, e),
             }
+            Err(e) => warn!("Error fetching album {}: {}", request.album_id, e),
         }
     }
 
@@ -663,14 +722,24 @@ async fn run_full_reconcile_sync(state: &AppState) -> AppResult<(SyncResult, New
     let mut albums_data: Vec<AlbumData> = Vec::new();
     let mut songs_data: Vec<SongData> = Vec::new();
     let mut had_fetch_errors = false;
+    let mut artist_summaries_by_id: HashMap<String, _> = artist_summaries
+        .into_iter()
+        .map(|summary| (summary.id.clone(), summary))
+        .collect();
+    let mut artist_ids: Vec<String> = artist_summaries_by_id.keys().cloned().collect();
+    artist_ids.sort();
+    let mut artist_fetches =
+        fetch_artist_albums_bounded(state.client.clone(), artist_ids, ARTIST_FETCH_CONCURRENCY)
+            .await;
+    artist_fetches.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut album_fetch_requests = Vec::new();
 
-    for artist_summary in artist_summaries {
-        let artist_id = artist_summary.id;
-        let artist_name = artist_summary.name;
-        let artist_album_count = artist_summary.album_count;
-
-        let artist_detail = match state.client.get_artist(&artist_id).await {
-            Ok(detail) => detail,
+    for (artist_id, artist_result) in artist_fetches {
+        let Some(artist_summary) = artist_summaries_by_id.remove(&artist_id) else {
+            continue;
+        };
+        let artist_albums = match artist_result {
+            Ok(albums) => albums,
             Err(e) => {
                 had_fetch_errors = true;
                 warn!(
@@ -683,12 +752,12 @@ async fn run_full_reconcile_sync(state: &AppState) -> AppResult<(SyncResult, New
 
         artists_data.push(ArtistData {
             id: artist_id.clone(),
-            name: artist_name,
-            album_count: artist_album_count.max(artist_detail.album.len() as i32),
+            name: artist_summary.name,
+            album_count: artist_summary.album_count.max(artist_albums.len() as i32),
             cover_art: artist_summary.cover_art,
         });
 
-        for album in artist_detail.album {
+        for album in artist_albums {
             let album_id = album.id.clone();
 
             albums_data.push(AlbumData {
@@ -700,35 +769,50 @@ async fn run_full_reconcile_sync(state: &AppState) -> AppResult<(SyncResult, New
                 duration: Some(album.duration),
                 cover_art: album.cover_art,
             });
+            album_fetch_requests.push(AlbumFetchRequest {
+                album_id,
+                artist_id: artist_id.clone(),
+                album_year: album.year,
+            });
+        }
+    }
 
-            match state.client.get_album(&album_id).await {
-                Ok(album_detail) => {
-                    for song in album_detail.song {
-                        songs_data.push(SongData {
-                            id: song.id,
-                            album_id: album_id.clone(),
-                            artist_id: artist_id.clone(),
-                            title: song.title,
-                            track: song.track,
-                            disc_number: song.disc_number.unwrap_or(1),
-                            duration: song.duration,
-                            bit_rate: song.bit_rate,
-                            size: song.size,
-                            suffix: song.suffix,
-                            content_type: song.content_type,
-                            path: song.path,
-                            year: song.year.or(album.year),
-                            genre: song.genre,
-                        });
-                    }
+    let mut album_fetches = fetch_album_songs_bounded(
+        state.client.clone(),
+        album_fetch_requests,
+        ALBUM_FETCH_CONCURRENCY,
+    )
+    .await;
+    album_fetches.sort_by(|left, right| left.0.album_id.cmp(&right.0.album_id));
+
+    for (request, album_result) in album_fetches {
+        match album_result {
+            Ok(songs) => {
+                for song in songs {
+                    songs_data.push(SongData {
+                        id: song.id,
+                        album_id: request.album_id.clone(),
+                        artist_id: request.artist_id.clone(),
+                        title: song.title,
+                        track: song.track,
+                        disc_number: song.disc_number,
+                        duration: song.duration,
+                        bit_rate: song.bit_rate,
+                        size: song.size,
+                        suffix: song.suffix,
+                        content_type: song.content_type,
+                        path: song.path,
+                        year: song.year.or(request.album_year),
+                        genre: song.genre,
+                    });
                 }
-                Err(e) => {
-                    had_fetch_errors = true;
-                    warn!(
-                        "Error fetching album {} during full reconcile: {}",
-                        album_id, e
-                    );
-                }
+            }
+            Err(e) => {
+                had_fetch_errors = true;
+                warn!(
+                    "Error fetching album {} during full reconcile: {}",
+                    request.album_id, e
+                );
             }
         }
     }
@@ -924,6 +1008,136 @@ fn scan_newest_album_page(
         candidates,
         reached_previous_head: false,
     }
+}
+
+async fn fetch_artist_albums_bounded(
+    client: crate::client::SubsonicClientHandle,
+    artist_ids: Vec<String>,
+    concurrency: usize,
+) -> Vec<(String, Result<Vec<RemoteAlbumSummary>, String>)> {
+    let mut join_set = JoinSet::new();
+    let mut pending_artist_ids = artist_ids.into_iter();
+    let mut results = Vec::new();
+    let concurrency = concurrency.max(1);
+
+    for _ in 0..concurrency {
+        let Some(artist_id) = pending_artist_ids.next() else {
+            break;
+        };
+        spawn_artist_fetch(&mut join_set, &client, artist_id);
+    }
+
+    while let Some(join_result) = join_set.join_next().await {
+        match join_result {
+            Ok(result) => results.push(result),
+            Err(e) => {
+                warn!("Artist fetch task failed: {}", e);
+            }
+        }
+
+        if let Some(artist_id) = pending_artist_ids.next() {
+            spawn_artist_fetch(&mut join_set, &client, artist_id);
+        }
+    }
+
+    results
+}
+
+fn spawn_artist_fetch(
+    join_set: &mut JoinSet<(String, Result<Vec<RemoteAlbumSummary>, String>)>,
+    client: &crate::client::SubsonicClientHandle,
+    artist_id: String,
+) {
+    let client = client.clone();
+    join_set.spawn(async move {
+        let result = client
+            .get_artist(&artist_id)
+            .await
+            .map(|artist_detail| {
+                artist_detail
+                    .album
+                    .into_iter()
+                    .map(|album| RemoteAlbumSummary {
+                        id: album.id,
+                        name: album.name,
+                        year: album.year,
+                        song_count: album.song_count,
+                        duration: album.duration,
+                        cover_art: album.cover_art,
+                    })
+                    .collect()
+            })
+            .map_err(|e| e.to_string());
+        (artist_id, result)
+    });
+}
+
+async fn fetch_album_songs_bounded(
+    client: crate::client::SubsonicClientHandle,
+    requests: Vec<AlbumFetchRequest>,
+    concurrency: usize,
+) -> Vec<(AlbumFetchRequest, Result<Vec<RemoteSong>, String>)> {
+    let mut join_set = JoinSet::new();
+    let mut pending_requests = requests.into_iter();
+    let mut results = Vec::new();
+    let concurrency = concurrency.max(1);
+
+    for _ in 0..concurrency {
+        let Some(request) = pending_requests.next() else {
+            break;
+        };
+        spawn_album_fetch(&mut join_set, &client, request);
+    }
+
+    while let Some(join_result) = join_set.join_next().await {
+        match join_result {
+            Ok(result) => results.push(result),
+            Err(e) => {
+                warn!("Album fetch task failed: {}", e);
+            }
+        }
+
+        if let Some(request) = pending_requests.next() {
+            spawn_album_fetch(&mut join_set, &client, request);
+        }
+    }
+
+    results
+}
+
+fn spawn_album_fetch(
+    join_set: &mut JoinSet<(AlbumFetchRequest, Result<Vec<RemoteSong>, String>)>,
+    client: &crate::client::SubsonicClientHandle,
+    request: AlbumFetchRequest,
+) {
+    let client = client.clone();
+    join_set.spawn(async move {
+        let result = client
+            .get_album(&request.album_id)
+            .await
+            .map(|album_detail| {
+                album_detail
+                    .song
+                    .into_iter()
+                    .map(|song| RemoteSong {
+                        id: song.id,
+                        title: song.title,
+                        track: song.track,
+                        disc_number: song.disc_number.unwrap_or(1),
+                        duration: song.duration,
+                        bit_rate: song.bit_rate,
+                        size: song.size,
+                        suffix: song.suffix,
+                        content_type: song.content_type,
+                        path: song.path,
+                        year: song.year,
+                        genre: song.genre,
+                    })
+                    .collect()
+            })
+            .map_err(|e| e.to_string());
+        (request, result)
+    });
 }
 
 fn load_local_artists(conn: &Connection) -> AppResult<HashMap<String, LocalArtistRow>> {

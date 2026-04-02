@@ -175,15 +175,35 @@ impl ClientThread {
                 artist_id,
                 response_tx,
             } => {
-                let result = self.handle_get_artist(&artist_id).await;
-                let _ = response_tx.send(result);
+                let result = self.client.clone().ok_or(ClientError::NotConnected);
+                match result {
+                    Ok(client) => {
+                        tokio::spawn(async move {
+                            let result = Self::fetch_artist(&client, &artist_id).await;
+                            let _ = response_tx.send(result);
+                        });
+                    }
+                    Err(e) => {
+                        let _ = response_tx.send(Err(e));
+                    }
+                }
             }
             ClientRequest::GetAlbum {
                 album_id,
                 response_tx,
             } => {
-                let result = self.handle_get_album(&album_id).await;
-                let _ = response_tx.send(result);
+                let result = self.client.clone().ok_or(ClientError::NotConnected);
+                match result {
+                    Ok(client) => {
+                        tokio::spawn(async move {
+                            let result = Self::fetch_album(&client, &album_id).await;
+                            let _ = response_tx.send(result);
+                        });
+                    }
+                    Err(e) => {
+                        let _ = response_tx.send(Err(e));
+                    }
+                }
             }
             ClientRequest::GetNewestAlbums {
                 size,
@@ -385,9 +405,8 @@ impl ClientThread {
         Ok(artists)
     }
 
-    async fn handle_get_artist(&self, artist_id: &str) -> ClientResult<ArtistDetail> {
+    async fn fetch_artist(client: &Client, artist_id: &str) -> ClientResult<ArtistDetail> {
         debug!("Getting artist: {}", artist_id);
-        let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
         let artist = match timeout(API_TIMEOUT, client.get_artist(artist_id)).await {
             Ok(Ok(artist)) => artist,
@@ -418,9 +437,8 @@ impl ClientThread {
         })
     }
 
-    async fn handle_get_album(&self, album_id: &str) -> ClientResult<AlbumDetail> {
+    async fn fetch_album(client: &Client, album_id: &str) -> ClientResult<AlbumDetail> {
         debug!("Getting album: {}", album_id);
-        let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
         let album = match timeout(API_TIMEOUT, client.get_album(album_id)).await {
             Ok(Ok(album)) => album,
