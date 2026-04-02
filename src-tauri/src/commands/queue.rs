@@ -1,11 +1,13 @@
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
+use rusqlite::params_from_iter;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::audio::queue::{PlayQueue, QueueItem, RepeatMode};
 use crate::db::queue::save_queue;
-use crate::error::{AppResult, MutexExt};
+use crate::error::{AppError, AppResult, MutexExt};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize)]
@@ -52,11 +54,105 @@ pub(crate) fn persist_and_emit(state: &AppState, app_handle: &AppHandle) {
     let _ = app_handle.emit("queue-changed", &queue_state);
 }
 
+fn load_queue_items_for_song_ids(
+    state: &AppState,
+    song_ids: &[String],
+) -> AppResult<Vec<QueueItem>> {
+    if song_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = vec!["?"; song_ids.len()].join(", ");
+    let query = format!(
+        "SELECT s.id, s.title, a.name, al.name, s.duration
+         FROM songs s
+         LEFT JOIN artists a ON s.artist_id = a.id
+         LEFT JOIN albums al ON s.album_id = al.id
+         WHERE s.id IN ({placeholders})"
+    );
+
+    let conn = state.db.lock_recover();
+    let mut stmt = conn.prepare(&query)?;
+    let items_by_id = stmt
+        .query_map(params_from_iter(song_ids.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                QueueItem {
+                    song_id: row.get(0)?,
+                    title: row.get(1)?,
+                    artist: row
+                        .get::<_, Option<String>>(2)?
+                        .unwrap_or_else(|| "Unknown Artist".to_string()),
+                    album: row
+                        .get::<_, Option<String>>(3)?
+                        .unwrap_or_else(|| "Unknown Album".to_string()),
+                    duration: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                },
+            ))
+        })?
+        .collect::<Result<HashMap<_, _>, _>>()?;
+
+    let mut items = Vec::with_capacity(song_ids.len());
+    for song_id in song_ids {
+        if let Some(item) = items_by_id.get(song_id) {
+            items.push(item.clone());
+        }
+    }
+
+    Ok(items)
+}
+
 #[tauri::command]
 pub fn get_queue(state: State<'_, AppState>) -> QueueState {
     let mut queue = state.queue.lock_recover();
     queue.prepare_next_cycle_if_needed();
     QueueState::from_queue(&queue)
+}
+
+#[tauri::command]
+pub async fn play_song_with_queue(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+    song_id: String,
+    song_ids: Vec<String>,
+) -> AppResult<()> {
+    if !state.client.is_connected() {
+        return Err(AppError::NotConnected);
+    }
+
+    if song_ids.is_empty() {
+        return Err(AppError::Audio(
+            "Cannot play from an empty queue".to_string(),
+        ));
+    }
+
+    if state
+        .navigating
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(());
+    }
+
+    let result = async {
+        let queue_items = load_queue_items_for_song_ids(&state, &song_ids)?;
+        let current_index = queue_items
+            .iter()
+            .position(|item| item.song_id == song_id)
+            .ok_or_else(|| AppError::Audio("Selected song is not available".to_string()))?;
+
+        {
+            let mut queue = state.queue.lock_recover();
+            *queue = PlayQueue::load(queue_items, Some(current_index), false, RepeatMode::Off);
+        }
+
+        persist_and_emit(&state, &app_handle);
+        crate::commands::playback::play_song_by_id(&app_handle, &state, &song_id).await
+    }
+    .await;
+
+    state.navigating.store(false, Ordering::SeqCst);
+    result
 }
 
 #[tauri::command]

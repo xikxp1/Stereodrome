@@ -2,7 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { error } from "@tauri-apps/plugin-log";
-import { rerollNextQueueItem } from "$lib/api/commands";
+import {
+  playSongWithQueue as playSongWithQueueCommand,
+  rerollNextQueueItem,
+} from "$lib/api/commands";
 import type { QueueItem, QueueState, RepeatMode, Song } from "$lib/types";
 
 class QueueStore {
@@ -304,19 +307,12 @@ class QueueStore {
   // Helper to play a song and set up queue
   async playSongWithQueue(song: Song, allSongs?: Song[]) {
     if (allSongs && allSongs.length > 0) {
-      await this.clearQueue();
-      await this.addSongs(allSongs);
-
-      // Find the index of the song to play
-      const index = allSongs.findIndex((s) => s.id === song.id);
-      if (index >= 0) {
-        await this.playQueueItem(index);
-      }
+      await playSongWithQueueCommand(
+        song.id,
+        allSongs.map((entry) => entry.id)
+      );
     } else {
-      // Just play the single song by adding it and playing
-      await this.clearQueue();
-      await this.addSong(song);
-      await this.playQueueItem(0);
+      await playSongWithQueueCommand(song.id, [song.id]);
     }
   }
 

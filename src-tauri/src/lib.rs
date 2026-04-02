@@ -142,6 +142,7 @@ pub fn run() {
             commands::seek_playback,
             commands::get_playback_status,
             commands::get_queue,
+            commands::play_song_with_queue,
             commands::add_to_queue,
             commands::add_songs_to_queue,
             commands::insert_next_in_queue,

@@ -109,6 +109,13 @@ export async function getPlaybackStatus(): Promise<PlaybackState> {
 }
 
 // Queue commands
+export async function playSongWithQueue(
+  songId: string,
+  songIds: string[]
+): Promise<void> {
+  return invoke("play_song_with_queue", { songId, songIds });
+}
+
 export async function rerollNextQueueItem(): Promise<boolean> {
   return invoke<boolean>("reroll_next_queue_item");
 }

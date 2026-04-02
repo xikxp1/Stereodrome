@@ -237,17 +237,12 @@ pub(crate) async fn reapply_settings_to_current_song(
     Ok(true)
 }
 
-#[tauri::command]
-pub async fn play_song(
-    app_handle: AppHandle,
-    state: State<'_, AppState>,
-    song_id: String,
+pub(crate) async fn play_song_by_id(
+    app_handle: &AppHandle,
+    state: &AppState,
+    song_id: &str,
 ) -> AppResult<()> {
-    if !state.client.is_connected() {
-        return Err(AppError::NotConnected);
-    }
-
-    let data = fetch_song_data(&app_handle, &state, &song_id).await?;
+    let data = fetch_song_data(app_handle, state, song_id).await?;
 
     // Play the audio
     {
@@ -265,24 +260,37 @@ pub async fn play_song(
 
     // Spawn background loudness analysis if normalization is enabled but no data exists
     spawn_loudness_analysis_if_needed(
-        &app_handle,
-        &song_id,
+        app_handle,
+        song_id,
         &data.album_id,
         &data.suffix,
         data.normalization_gain,
     );
 
     // Prefetch next song for gapless playback
-    prefetch_next_song(&app_handle, &state);
+    prefetch_next_song(app_handle, state);
 
     // Check if next song is gapless-eligible and queue it on the same Sink
-    check_and_queue_gapless(&app_handle, &state);
+    check_and_queue_gapless(app_handle, state);
 
     // Report "now playing" to Subsonic server
     // Fire and forget - don't fail playback if scrobble fails
-    let _ = state.client.scrobble(&song_id, None, Some(false)).await;
+    let _ = state.client.scrobble(song_id, None, Some(false)).await;
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn play_song(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    song_id: String,
+) -> AppResult<()> {
+    if !state.client.is_connected() {
+        return Err(AppError::NotConnected);
+    }
+
+    play_song_by_id(&app_handle, &state, &song_id).await
 }
 
 /// Play a song with crossfade transition from the currently playing track.
