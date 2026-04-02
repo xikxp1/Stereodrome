@@ -38,7 +38,6 @@ souvlaki = "0.8.3"
 submarine = "0.1.1"
 tantivy = "0.25.0"
 tauri = { version = "2.10.3", features = ["tray-icon"] }
-tauri-plugin-devtools = "2.1.0"
 tauri-plugin-dialog = "2.6.0"
 tauri-plugin-log = "2.8.0"
 tauri-plugin-notification = "2.3.3"
