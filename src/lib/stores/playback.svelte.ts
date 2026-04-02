@@ -31,6 +31,14 @@ interface PlaybackState {
   song: SongMetadata | null;
 }
 
+interface CurrentTrack {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  coverArtId: string | null;
+}
+
 class PlaybackStore {
   private static readonly PERSIST_DEBOUNCE_MS = 250;
 
@@ -41,13 +49,7 @@ class PlaybackStore {
   volume = $state(0.8);
 
   // Current track info from backend (for TransportBar display)
-  currentTrack = $state<{
-    id: string;
-    title: string;
-    artist: string;
-    album: string;
-    coverArtId: string | null;
-  } | null>(null);
+  currentTrack = $state<CurrentTrack | null>(null);
 
   // Scrobble tracking - prevents duplicate scrobbles within the same playback
   private scrobbledSongId: string | null = null;
@@ -64,6 +66,29 @@ class PlaybackStore {
     this.setupEventListeners();
   }
 
+  private toCurrentTrack(song: SongMetadata): CurrentTrack {
+    return {
+      id: song.id,
+      title: song.title,
+      artist: song.artist || "Unknown Artist",
+      album: song.album || "",
+      coverArtId: song.cover_art_id || null,
+    };
+  }
+
+  private sameTrackMetadata(
+    current: CurrentTrack | null,
+    next: CurrentTrack | null
+  ): boolean {
+    return (
+      current?.id === next?.id &&
+      current?.title === next?.title &&
+      current?.artist === next?.artist &&
+      current?.album === next?.album &&
+      current?.coverArtId === next?.coverArtId
+    );
+  }
+
   private async setupEventListeners() {
     // Listen for combined playback state updates (10Hz)
     this.unlistenState = await listen<PlaybackState>(
@@ -76,6 +101,8 @@ class PlaybackStore {
         this.volume = state.volume;
 
         if (state.song) {
+          const nextTrack = this.toCurrentTrack(state.song);
+
           // Reset scrobble tracking when song changes or restarts (for repeat mode)
           const songChanged = state.song.id !== this.currentTrack?.id;
           const songRestarted =
@@ -96,13 +123,9 @@ class PlaybackStore {
             );
           }
 
-          this.currentTrack = {
-            id: state.song.id,
-            title: state.song.title,
-            artist: state.song.artist || "Unknown Artist",
-            album: state.song.album || "",
-            coverArtId: state.song.cover_art_id || null,
-          };
+          if (!this.sameTrackMetadata(this.currentTrack, nextTrack)) {
+            this.currentTrack = nextTrack;
+          }
 
           // Check scrobble threshold (50% of song played)
           if (this.shouldHandleSideEffects && state.duration > 0) {
@@ -122,7 +145,9 @@ class PlaybackStore {
 
           this.lastPosition = state.position;
         } else {
-          this.currentTrack = null;
+          if (this.currentTrack !== null) {
+            this.currentTrack = null;
+          }
         }
       }
     );
