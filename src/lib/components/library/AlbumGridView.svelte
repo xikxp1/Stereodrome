@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Album } from "$lib/types";
+  import type { Album, AlbumListEntry } from "$lib/types";
   import LazyImage from "$lib/components/LazyImage.svelte";
   import { getSongs } from "$lib/api/commands";
   import { queue } from "$lib/stores/queue.svelte";
@@ -10,10 +10,12 @@
     type VirtualItem,
   } from "@tanstack/svelte-virtual";
 
+  type AlbumGridItem = Album | AlbumListEntry;
+
   interface Props {
-    albums: Album[];
-    onSelect?: (album: Album) => void;
-    onNavigateToArtist?: (album: Album) => void;
+    albums: AlbumGridItem[];
+    onSelect?: (album: AlbumGridItem) => void;
+    onNavigateToArtist?: (album: AlbumGridItem) => void;
   }
 
   let { albums, onSelect, onNavigateToArtist }: Props = $props();
@@ -77,8 +79,9 @@
     };
   }
 
-  async function handleContextMenu(e: MouseEvent, album: Album) {
+  async function handleContextMenu(e: MouseEvent, album: AlbumGridItem) {
     e.preventDefault();
+    const artistId = album.artist_id;
     await showQueueableContextMenu({
       onPlayNext: async () => {
         const songs = await getSongs(album.id);
@@ -88,7 +91,7 @@
         const songs = await getSongs(album.id);
         await queue.addSongs(songs);
       },
-      onGoToArtist: album.artist_id
+      onGoToArtist: artistId
         ? () => {
             onNavigateToArtist?.(album);
           }
@@ -130,8 +133,12 @@
                 {#if album.year}
                   {album.year} &middot;
                 {/if}
-                {album.song_count}
-                {album.song_count === 1 ? "song" : "songs"}
+                {#if album.song_count != null}
+                  {album.song_count}
+                  {album.song_count === 1 ? "song" : "songs"}
+                {:else if album.duration}
+                  {Math.floor(album.duration / 60)} min
+                {/if}
               </p>
             </button>
           {/each}

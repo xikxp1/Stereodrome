@@ -4,6 +4,7 @@ import type {
   ConnectParams,
   Artist,
   Album,
+  AlbumListEntry,
   Song,
   SyncResult,
   ScanStatus,
@@ -59,6 +60,14 @@ export async function getArtists(): Promise<Artist[]> {
 
 export async function getAlbums(artistId?: string): Promise<Album[]> {
   return invoke<Album[]>("get_albums", { artistId });
+}
+
+export async function getAlbumList(
+  listType: string,
+  size?: number,
+  offset?: number
+): Promise<AlbumListEntry[]> {
+  return invoke<AlbumListEntry[]>("get_album_list", { listType, size, offset });
 }
 
 export async function getSongs(

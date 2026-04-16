@@ -2065,6 +2065,30 @@ pub async fn get_songs(
 }
 
 #[tauri::command]
+pub async fn get_album_list(
+    state: State<'_, AppState>,
+    list_type: String,
+    size: Option<u32>,
+    offset: Option<u32>,
+) -> AppResult<Vec<crate::client::AlbumListEntry>> {
+    if !state.client.is_connected() {
+        return Err(AppError::NotConnected);
+    }
+
+    let order = crate::client::AlbumListOrder::from_str(&list_type)
+        .ok_or_else(|| AppError::Subsonic(format!("Unknown album list type: {}", list_type)))?;
+
+    let size = size.unwrap_or(40) as usize;
+    let offset = offset.unwrap_or(0) as usize;
+
+    state
+        .client
+        .get_album_list(order, size, offset)
+        .await
+        .map_err(|e| AppError::Subsonic(e.to_string()))
+}
+
+#[tauri::command]
 pub async fn get_scan_status(state: State<'_, AppState>) -> AppResult<ScanStatus> {
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);

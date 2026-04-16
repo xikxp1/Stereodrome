@@ -34,6 +34,19 @@ export interface Album {
   artistName?: string;
 }
 
+export interface AlbumListEntry {
+  id: string;
+  name: string;
+  artist_id: string | null;
+  artistName: string | null;
+  year: number | null;
+  song_count: number | null;
+  duration: number | null;
+  cover_art_id: string | null;
+  play_count: number | null;
+  created: string | null;
+}
+
 export interface Song {
   id: string;
   album_id: string;

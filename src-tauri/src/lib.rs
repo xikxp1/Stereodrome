@@ -136,6 +136,7 @@ pub fn run() {
             commands::get_artists,
             commands::get_albums,
             commands::get_songs,
+            commands::get_album_list,
             commands::play_song,
             commands::pause_playback,
             commands::resume_playback,

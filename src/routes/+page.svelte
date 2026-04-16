@@ -20,6 +20,7 @@
   import {
     getArtists,
     getAlbums,
+    getAlbumList,
     getSongs,
     seekPlayback,
     getCoverArt,
@@ -39,6 +40,7 @@
   import type {
     Artist,
     Album,
+    AlbumListEntry,
     Song,
     Playlist,
     MiniPlayerPosition,
@@ -71,6 +73,11 @@
   let selectedAlbum = $state<Album | null>(null);
   let selectedSong = $state<Song | null>(null);
   let scrollToSongId = $state<string | null>(null);
+
+  // Album list state (server-side album lists)
+  let albumListEntries = $state<AlbumListEntry[]>([]);
+  let albumListLoading = $state(false);
+  let albumListError = $state<Error | null>(null);
 
   // Get current track from local playback state (no server latency)
   const currentTrack = $derived(playback.currentTrack);
@@ -152,6 +159,33 @@
   $effect(() => {
     if (connection.status.connected) {
       loadLibraryData();
+    }
+  });
+
+  // Fetch album list data when switching to album list views
+  $effect(() => {
+    if (
+      activeView === "recently_added" ||
+      activeView === "recently_played" ||
+      activeView === "most_played"
+    ) {
+      const listType =
+        activeView === "recently_added"
+          ? "newest"
+          : activeView === "recently_played"
+            ? "recent"
+            : "frequent";
+      albumListLoading = true;
+      albumListError = null;
+      getAlbumList(listType, 40)
+        .then((data) => {
+          albumListEntries = data;
+          albumListLoading = false;
+        })
+        .catch((e) => {
+          albumListError = e instanceof Error ? e : new Error(String(e));
+          albumListLoading = false;
+        });
     }
   });
 
@@ -469,8 +503,45 @@
     detailView = { type: "artist", artist };
   }
 
-  function handleAlbumGridSelect(album: Album) {
-    detailView = { type: "album", album };
+  function handleAlbumGridSelect(album: Album | AlbumListEntry) {
+    if ("synced_at" in album) {
+      // Full Album from local cache
+      detailView = { type: "album", album: album as Album };
+    } else {
+      // AlbumListEntry from server
+      handleAlbumListEntrySelect(album as AlbumListEntry);
+    }
+  }
+
+  function handleAlbumListEntrySelect(entry: Album | AlbumListEntry) {
+    // Try to find in local cache for full data
+    const localAlbum = albums.find((a) => a.id === entry.id);
+    if (localAlbum) {
+      detailView = { type: "album", album: localAlbum };
+    } else {
+      // Create a minimal Album from the entry
+      detailView = {
+        type: "album",
+        album: {
+          id: entry.id,
+          artist_id: entry.artist_id ?? "",
+          name: entry.name,
+          year: entry.year,
+          song_count: entry.song_count ?? 0,
+          duration: entry.duration,
+          cover_art_id: entry.cover_art_id,
+          synced_at: "",
+          artistName: entry.artistName ?? undefined,
+        },
+      };
+    }
+  }
+
+  function handleAlbumListEntryNavigateToArtist(album: Album | AlbumListEntry) {
+    const artistId = album.artist_id;
+    if (artistId) {
+      navigateToArtist(artistId);
+    }
   }
 
   function navigateToArtist(artistId: string) {
@@ -548,8 +619,10 @@
     navigateToAlbum(song.album_id);
   }
 
-  function handleAlbumNavigateToArtist(album: Album) {
-    navigateToArtist(album.artist_id);
+  function handleAlbumNavigateToArtist(album: Album | AlbumListEntry) {
+    if (album.artist_id) {
+      navigateToArtist(album.artist_id);
+    }
   }
 
   async function handleCoverArtClick() {
@@ -972,6 +1045,46 @@
               itemCount={gridFilteredAlbums.length}
               itemType="albums"
             />
+          {/if}
+        {:else if activeView === "recently_added" || activeView === "recently_played" || activeView === "most_played"}
+          {#if detailView?.type === "album" && detailView.album}
+            <!-- Album Detail: Header + Song List -->
+            <DetailHeader
+              title={detailView.album.name}
+              subtitle={detailView.album.artistName ?? ""}
+              coverArtId={detailView.album.cover_art_id}
+              onBack={handleDetailBack}
+            />
+
+            <div class="flex-1 overflow-hidden">
+              <SongList
+                songs={detailSongs}
+                isLoading={albumListLoading}
+                error={albumListError}
+                selectedSongId={selectedSong?.id}
+                playingSongId={playback.currentTrack?.id ?? null}
+                {scrollToSongId}
+                onSelect={handleSongSelect}
+                onPlay={handleDetailSongPlay}
+                onNavigateToArtist={handleSongNavigateToArtist}
+                onNavigateToAlbum={handleSongNavigateToAlbum}
+              />
+            </div>
+
+            <StatusBar
+              itemCount={detailSongs.length}
+              totalDuration={detailTotalDuration}
+              totalSize={detailTotalSize}
+            />
+          {:else}
+            <!-- Album List Grid -->
+            <AlbumGridView
+              albums={albumListEntries}
+              onSelect={handleAlbumListEntrySelect}
+              onNavigateToArtist={handleAlbumListEntryNavigateToArtist}
+            />
+
+            <StatusBar itemCount={albumListEntries.length} itemType="albums" />
           {/if}
         {/if}
       </main>

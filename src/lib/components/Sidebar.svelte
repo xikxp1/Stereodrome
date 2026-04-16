@@ -3,7 +3,16 @@
   import { connection } from "$lib/stores/connection.svelte";
   import { playlistStore } from "$lib/stores/playlist.svelte";
   import type { Playlist } from "$lib/types";
-  import { Music, User, Disc, Plus, ListMusic } from "lucide-svelte";
+  import {
+    Music,
+    User,
+    Disc,
+    Plus,
+    ListMusic,
+    Sparkles,
+    Clock,
+    TrendingUp,
+  } from "lucide-svelte";
   import { showPlaylistContextMenu } from "$lib/services/contextMenu";
 
   interface Props {
@@ -118,6 +127,30 @@
       >
         <Disc class="size-4" />
         Albums
+      </button>
+      <button
+        class="sidebar-item sub-item"
+        class:active={activeView === "recently_added" && !selectedPlaylistId}
+        onclick={() => selectView("recently_added")}
+      >
+        <Sparkles class="size-4" />
+        Recently Added
+      </button>
+      <button
+        class="sidebar-item sub-item"
+        class:active={activeView === "recently_played" && !selectedPlaylistId}
+        onclick={() => selectView("recently_played")}
+      >
+        <Clock class="size-4" />
+        Recently Played
+      </button>
+      <button
+        class="sidebar-item sub-item"
+        class:active={activeView === "most_played" && !selectedPlaylistId}
+        onclick={() => selectView("most_played")}
+      >
+        <TrendingUp class="size-4" />
+        Most Played
       </button>
 
       <div class="sidebar-title mt-4">Playlists</div>
@@ -258,5 +291,10 @@
       oklch(58% 0.2 250),
       oklch(52% 0.22 250)
     );
+  }
+
+  .sidebar-item.sub-item {
+    padding-left: 2rem;
+    font-size: 0.75rem;
   }
 </style>
