@@ -70,36 +70,30 @@ pub fn search_library(
 
     for hit in hits {
         match hit.entity_type.as_str() {
-            "song" => {
-                if songs.len() < limit {
-                    songs.push(SearchResultSong {
-                        id: hit.id,
-                        title: hit.name,
-                        artist: hit.artist_name,
-                        album: hit.album_name,
-                        duration: hit.duration.map(|d| d as i32),
-                    });
-                }
+            "song" if songs.len() < limit => {
+                songs.push(SearchResultSong {
+                    id: hit.id,
+                    title: hit.name,
+                    artist: hit.artist_name,
+                    album: hit.album_name,
+                    duration: hit.duration.map(|d| d as i32),
+                });
             }
-            "album" => {
-                if albums.len() < limit {
-                    albums.push(SearchResultAlbum {
-                        id: hit.id,
-                        name: hit.name,
-                        artist: hit.artist_name,
-                        year: hit.year.map(|y| y as i32),
-                        song_count: hit.song_count.unwrap_or(0) as i32,
-                    });
-                }
+            "album" if albums.len() < limit => {
+                albums.push(SearchResultAlbum {
+                    id: hit.id,
+                    name: hit.name,
+                    artist: hit.artist_name,
+                    year: hit.year.map(|y| y as i32),
+                    song_count: hit.song_count.unwrap_or(0) as i32,
+                });
             }
-            "artist" => {
-                if artists.len() < limit {
-                    artists.push(SearchResultArtist {
-                        id: hit.id,
-                        name: hit.name,
-                        album_count: hit.album_count.unwrap_or(0) as i32,
-                    });
-                }
+            "artist" if artists.len() < limit => {
+                artists.push(SearchResultArtist {
+                    id: hit.id,
+                    name: hit.name,
+                    album_count: hit.album_count.unwrap_or(0) as i32,
+                });
             }
             _ => {}
         }
