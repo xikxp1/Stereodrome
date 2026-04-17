@@ -1,5 +1,6 @@
 //! Message types for communication with the submarine client thread.
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 /// Server configuration for connection
@@ -71,6 +72,65 @@ pub struct AlbumSummaryInfo {
     pub id: String,
     pub artist_id: Option<String>,
     pub artist_name: Option<String>,
+}
+
+/// Album list type for getAlbumList2 queries
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlbumListOrder {
+    Newest,
+    Recent,
+    Frequent,
+    Random,
+    Highest,
+    AlphabeticalByName,
+    AlphabeticalByArtist,
+    Starred,
+}
+
+impl AlbumListOrder {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "newest" => Some(Self::Newest),
+            "recent" => Some(Self::Recent),
+            "frequent" => Some(Self::Frequent),
+            "random" => Some(Self::Random),
+            "highest" => Some(Self::Highest),
+            "alphabetical_by_name" => Some(Self::AlphabeticalByName),
+            "alphabetical_by_artist" => Some(Self::AlphabeticalByArtist),
+            "starred" => Some(Self::Starred),
+            _ => None,
+        }
+    }
+
+    pub fn to_submarine_order(self) -> submarine::api::get_album_list::Order {
+        use submarine::api::get_album_list::Order;
+        match self {
+            Self::Newest => Order::Newest,
+            Self::Recent => Order::Recent,
+            Self::Frequent => Order::Frequent,
+            Self::Random => Order::Random,
+            Self::Highest => Order::Highest,
+            Self::AlphabeticalByName => Order::AlphabeticalByName,
+            Self::AlphabeticalByArtist => Order::AlphabeticalByArtist,
+            Self::Starred => Order::Starred,
+        }
+    }
+}
+
+/// Album entry from getAlbumList2, richer than AlbumSummaryInfo
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlbumListEntry {
+    pub id: String,
+    pub name: String,
+    pub artist_id: Option<String>,
+    #[serde(rename = "artistName")]
+    pub artist_name: Option<String>,
+    pub year: Option<i32>,
+    pub song_count: Option<i32>,
+    pub duration: Option<i32>,
+    pub cover_art_id: Option<String>,
+    pub play_count: Option<i64>,
+    pub created: Option<String>,
 }
 
 /// Scan status from server
@@ -197,6 +257,13 @@ pub enum ClientRequest {
         size: usize,
         offset: usize,
         response_tx: oneshot::Sender<ClientResult<Vec<AlbumSummaryInfo>>>,
+    },
+    /// Get album list by type (newest, recent, frequent, etc.)
+    GetAlbumList {
+        order: AlbumListOrder,
+        size: usize,
+        offset: usize,
+        response_tx: oneshot::Sender<ClientResult<Vec<AlbumListEntry>>>,
     },
     /// Get library scan status
     GetScanStatus {

@@ -153,7 +153,7 @@ impl AudioCache {
         }
 
         // Sort by access time (oldest first)
-        entries.sort_by(|a, b| a.accessed.cmp(&b.accessed));
+        entries.sort_by_key(|a| a.accessed);
 
         // Remove files until under the limit
         let mut current_size = total_size;

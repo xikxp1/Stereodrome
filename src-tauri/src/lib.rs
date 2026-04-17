@@ -136,6 +136,7 @@ pub fn run() {
             commands::get_artists,
             commands::get_albums,
             commands::get_songs,
+            commands::get_album_list,
             commands::play_song,
             commands::pause_playback,
             commands::resume_playback,
@@ -208,14 +209,12 @@ pub fn run() {
                 label,
                 event: tauri::WindowEvent::CloseRequested { api, .. },
                 ..
-            } => {
-                if label == "main" {
-                    // Hide window instead of closing (minimize to tray)
-                    api.prevent_close();
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let _ = window.hide();
-                        info!("Window hidden to tray");
-                    }
+            } if label == "main" => {
+                // Hide window instead of closing (minimize to tray)
+                api.prevent_close();
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.hide();
+                    info!("Window hidden to tray");
                 }
             }
             tauri::RunEvent::Exit => {

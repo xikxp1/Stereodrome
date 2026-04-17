@@ -142,6 +142,28 @@ impl SubsonicClientHandle {
         response_rx.await.map_err(|_| ClientError::ChannelClosed)?
     }
 
+    /// Get album list by type (newest, recent, frequent, etc.)
+    pub async fn get_album_list(
+        &self,
+        order: AlbumListOrder,
+        size: usize,
+        offset: usize,
+    ) -> ClientResult<Vec<AlbumListEntry>> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.request_tx
+            .send(ClientRequest::GetAlbumList {
+                order,
+                size,
+                offset,
+                response_tx,
+            })
+            .await
+            .map_err(|_| ClientError::ChannelClosed)?;
+
+        response_rx.await.map_err(|_| ClientError::ChannelClosed)?
+    }
+
     /// Get library scan status
     pub async fn get_scan_status(&self) -> ClientResult<ScanStatusInfo> {
         let (response_tx, response_rx) = oneshot::channel();

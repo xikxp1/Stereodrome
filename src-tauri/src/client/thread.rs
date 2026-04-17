@@ -213,6 +213,15 @@ impl ClientThread {
                 let result = self.handle_get_newest_albums(size, offset).await;
                 let _ = response_tx.send(result);
             }
+            ClientRequest::GetAlbumList {
+                order,
+                size,
+                offset,
+                response_tx,
+            } => {
+                let result = self.handle_get_album_list(order, size, offset).await;
+                let _ = response_tx.send(result);
+            }
             ClientRequest::GetScanStatus { response_tx } => {
                 let result = self.handle_get_scan_status().await;
                 let _ = response_tx.send(result);
@@ -506,6 +515,60 @@ impl ClientThread {
                 id: album.id,
                 artist_id: album.artist_id,
                 artist_name: album.artist,
+            })
+            .collect())
+    }
+
+    async fn handle_get_album_list(
+        &self,
+        order: AlbumListOrder,
+        size: usize,
+        offset: usize,
+    ) -> ClientResult<Vec<AlbumListEntry>> {
+        debug!(
+            "Getting album list: order={:?}, size={}, offset={}",
+            order, size, offset
+        );
+        let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
+        let sub_order = order.to_submarine_order();
+
+        let albums = match timeout(
+            API_TIMEOUT,
+            client.get_album_list2(sub_order, Some(size), Some(offset), None::<String>),
+        )
+        .await
+        {
+            Ok(Ok(albums)) => albums,
+            Ok(Err(e)) => {
+                error!("Get album list ({:?}) API error: {}", order, e);
+                return Err(ClientError::ApiError(e.to_string()));
+            }
+            Err(_) => {
+                error!(
+                    "Get album list ({:?}) timeout after {:?}",
+                    order, API_TIMEOUT
+                );
+                return Err(ClientError::Timeout);
+            }
+        };
+
+        Ok(albums
+            .into_iter()
+            .map(|album| AlbumListEntry {
+                id: album.id,
+                name: if album.title.is_empty() {
+                    album.name.clone()
+                } else {
+                    album.title.clone()
+                },
+                artist_id: album.artist_id,
+                artist_name: album.artist,
+                year: album.year,
+                song_count: None, // submarine Child does not expose song_count
+                duration: album.duration,
+                cover_art_id: album.cover_art,
+                play_count: album.play_count,
+                created: album.created.map(|dt| dt.to_rfc3339()),
             })
             .collect())
     }

@@ -8,7 +8,7 @@ mod messages;
 mod thread;
 
 pub use handle::SubsonicClientHandle;
-pub use messages::{ClientError, ServerConfig};
+pub use messages::{AlbumListEntry, AlbumListOrder, ClientError, ServerConfig};
 
 /// Spawn the client thread and return a handle for communication.
 pub fn spawn() -> SubsonicClientHandle {
