@@ -20,7 +20,6 @@
   import {
     getArtists,
     getAlbums,
-    getAlbumList,
     getSongs,
     seekPlayback,
     getCoverArt,
@@ -36,6 +35,7 @@
   } from "@tauri-apps/api/window";
   import { error } from "@tauri-apps/plugin-log";
   import { playlistStore } from "$lib/stores/playlist.svelte";
+  import { albumListStore } from "$lib/stores/albumList.svelte";
   import { LIBRARY_REFRESHED_EVENT } from "$lib/services/libraryRefresh.svelte";
   import type {
     Artist,
@@ -73,11 +73,6 @@
   let selectedAlbum = $state<Album | null>(null);
   let selectedSong = $state<Song | null>(null);
   let scrollToSongId = $state<string | null>(null);
-
-  // Album list state (server-side album lists)
-  let albumListEntries = $state<AlbumListEntry[]>([]);
-  let albumListLoading = $state(false);
-  let albumListError = $state<Error | null>(null);
 
   // Get current track from local playback state (no server latency)
   const currentTrack = $derived(playback.currentTrack);
@@ -149,6 +144,13 @@
     const handler = () => {
       if (!connection.status.connected) return;
       void loadLibraryData();
+      if (
+        activeView === "recently_added" ||
+        activeView === "recently_played" ||
+        activeView === "most_played"
+      ) {
+        albumListStore.loadView(activeView);
+      }
     };
 
     window.addEventListener(LIBRARY_REFRESHED_EVENT, handler);
@@ -169,23 +171,7 @@
       activeView === "recently_played" ||
       activeView === "most_played"
     ) {
-      const listType =
-        activeView === "recently_added"
-          ? "newest"
-          : activeView === "recently_played"
-            ? "recent"
-            : "frequent";
-      albumListLoading = true;
-      albumListError = null;
-      getAlbumList(listType, 40)
-        .then((data) => {
-          albumListEntries = data;
-          albumListLoading = false;
-        })
-        .catch((e) => {
-          albumListError = e instanceof Error ? e : new Error(String(e));
-          albumListLoading = false;
-        });
+      albumListStore.loadView(activeView);
     }
   });
 
@@ -1059,8 +1045,8 @@
             <div class="flex-1 overflow-hidden">
               <SongList
                 songs={detailSongs}
-                isLoading={albumListLoading}
-                error={albumListError}
+                isLoading={albumListStore.isLoading}
+                error={albumListStore.error}
                 selectedSongId={selectedSong?.id}
                 playingSongId={playback.currentTrack?.id ?? null}
                 {scrollToSongId}
@@ -1079,12 +1065,17 @@
           {:else}
             <!-- Album List Grid -->
             <AlbumGridView
-              albums={albumListEntries}
+              albums={albumListStore.entries}
+              totalCount={albumListStore.totalCount}
               onSelect={handleAlbumListEntrySelect}
               onNavigateToArtist={handleAlbumListEntryNavigateToArtist}
             />
 
-            <StatusBar itemCount={albumListEntries.length} itemType="albums" />
+            <StatusBar
+              itemCount={albumListStore.entries.length}
+              totalCount={albumListStore.totalCount}
+              itemType="albums"
+            />
           {/if}
         {/if}
       </main>

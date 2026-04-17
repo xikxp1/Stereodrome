@@ -1934,6 +1934,13 @@ pub async fn get_artists(state: State<'_, AppState>) -> AppResult<Vec<Artist>> {
 }
 
 #[tauri::command]
+pub fn get_album_count(state: State<'_, AppState>) -> AppResult<i64> {
+    let db = state.db.lock_recover();
+    let count: i64 = db.query_row("SELECT COUNT(*) FROM albums", [], |row| row.get(0))?;
+    Ok(count)
+}
+
+#[tauri::command]
 pub async fn get_albums(
     state: State<'_, AppState>,
     artist_id: Option<String>,

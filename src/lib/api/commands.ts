@@ -58,6 +58,10 @@ export async function getArtists(): Promise<Artist[]> {
   return invoke<Artist[]>("get_artists");
 }
 
+export async function getAlbumCount(): Promise<number> {
+  return invoke<number>("get_album_count");
+}
+
 export async function getAlbums(artistId?: string): Promise<Album[]> {
   return invoke<Album[]>("get_albums", { artistId });
 }

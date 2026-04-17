@@ -3,7 +3,9 @@
   import LazyImage from "$lib/components/LazyImage.svelte";
   import { getSongs } from "$lib/api/commands";
   import { queue } from "$lib/stores/queue.svelte";
+  import { albumListStore } from "$lib/stores/albumList.svelte";
   import { showQueueableContextMenu } from "$lib/services/contextMenu";
+  import { untrack } from "svelte";
   import {
     createVirtualizer,
     type SvelteVirtualizer,
@@ -14,11 +16,17 @@
 
   interface Props {
     albums: AlbumGridItem[];
+    totalCount?: number;
     onSelect?: (album: AlbumGridItem) => void;
     onNavigateToArtist?: (album: AlbumGridItem) => void;
   }
 
-  let { albums, onSelect, onNavigateToArtist }: Props = $props();
+  let {
+    albums,
+    totalCount = 0,
+    onSelect,
+    onNavigateToArtist,
+  }: Props = $props();
   let scrollContainer: HTMLDivElement | null = $state(null);
   let containerWidth = $state(0);
 
@@ -32,23 +40,41 @@
   const columns = $derived(
     contentWidth >= 1024 ? 5 : contentWidth >= 768 ? 4 : 3
   );
-  const rowCount = $derived(Math.ceil(albums.length / columns));
-  const virtualizer = $derived(
-    createVirtualizer<HTMLDivElement, HTMLDivElement>({
-      count: rowCount,
-      getScrollElement: scrollContainer ? () => scrollContainer : () => null,
-      estimateSize: () => ESTIMATED_ROW_HEIGHT,
-      getItemKey: (index) => `album-row-${index}`,
-      overscan: 3,
-    })
-  );
+  // Total rows the virtualizer should account for (includes unloaded rows)
+  const totalAlbumCount = $derived(totalCount > 0 ? totalCount : albums.length);
+  const totalRowCount = $derived(Math.ceil(totalAlbumCount / columns));
+  // Rows that have been loaded with actual data
+  const loadedRowCount = $derived(Math.ceil(albums.length / columns));
+
+  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: 0,
+    getScrollElement: () => null,
+    estimateSize: () => ESTIMATED_ROW_HEIGHT,
+    getItemKey: (index) => `album-row-${index}`,
+    overscan: 3,
+  });
+
+  // Reactively update virtualizer options without recreating the instance.
+  // Use untrack to avoid infinite loop: setOptions updates the store,
+  // which would re-trigger this effect if $virtualizer were tracked.
+  $effect(() => {
+    const count = totalRowCount;
+    const scrollEl = scrollContainer;
+    untrack(() => {
+      $virtualizer.setOptions({
+        count,
+        getScrollElement: () => scrollEl ?? null,
+      });
+    });
+  });
+
   const virtualItems = $derived($virtualizer.getVirtualItems());
   const totalSize = $derived($virtualizer.getTotalSize());
 
   $effect(() => {
     void columns;
 
-    if (!scrollContainer || rowCount === 0) {
+    if (!scrollContainer || totalRowCount === 0) {
       return;
     }
 
@@ -57,9 +83,30 @@
     });
   });
 
+  // Infinite scroll: load more albums when near the end of loaded data
+  $effect(() => {
+    if (
+      !albumListStore.currentListType ||
+      albumListStore.isLoadingMore ||
+      !albumListStore.hasMore
+    )
+      return;
+
+    const range = $virtualizer.range;
+    if (!range || albums.length === 0) return;
+
+    if (range.endIndex >= loadedRowCount - 2) {
+      albumListStore.loadMore();
+    }
+  });
+
   function getAlbumsForRow(rowIndex: number) {
     const startIndex = rowIndex * columns;
     return albums.slice(startIndex, startIndex + columns);
+  }
+
+  function isRowLoaded(rowIndex: number): boolean {
+    return rowIndex < loadedRowCount;
   }
 
   function getRowStyle(item: VirtualItem) {
@@ -113,37 +160,61 @@
           use:measureRow={$virtualizer}
           style={getRowStyle(item)}
         >
-          {#each getAlbumsForRow(item.index) as album (album.id)}
-            <button
-              class="virtual-grid-card flex flex-col bg-base-200 hover:bg-base-300 transition-colors cursor-pointer text-left rounded-lg p-3"
-              onclick={() => onSelect?.(album)}
-              oncontextmenu={(e) => handleContextMenu(e, album)}
-            >
-              <LazyImage
-                coverArtId={album.cover_art_id}
-                size={200}
-                alt={album.name}
-                class="w-full mb-2"
-              />
-              <h3 class="font-medium text-sm truncate w-full">{album.name}</h3>
-              <p class="text-xs opacity-70 truncate w-full h-4">
-                {album.artistName ?? ""}
-              </p>
-              <p class="text-xs opacity-50">
-                {#if album.year}
-                  {album.year} &middot;
-                {/if}
-                {#if album.song_count != null}
-                  {album.song_count}
-                  {album.song_count === 1 ? "song" : "songs"}
-                {:else if album.duration}
-                  {Math.floor(album.duration / 60)} min
-                {/if}
-              </p>
-            </button>
-          {/each}
+          {#if isRowLoaded(item.index)}
+            {#each getAlbumsForRow(item.index) as album (album.id)}
+              <button
+                class="virtual-grid-card flex flex-col bg-base-200 hover:bg-base-300 transition-colors cursor-pointer text-left rounded-lg p-3"
+                onclick={() => onSelect?.(album)}
+                oncontextmenu={(e) => handleContextMenu(e, album)}
+              >
+                <LazyImage
+                  coverArtId={album.cover_art_id}
+                  size={200}
+                  alt={album.name}
+                  class="w-full mb-2"
+                />
+                <h3 class="font-medium text-sm truncate w-full">
+                  {album.name}
+                </h3>
+                <p class="text-xs opacity-70 truncate w-full h-4">
+                  {album.artistName ?? ""}
+                </p>
+                <p class="text-xs opacity-50">
+                  {#if album.year}
+                    {album.year} &middot;
+                  {/if}
+                  {#if album.song_count != null}
+                    {album.song_count}
+                    {album.song_count === 1 ? "song" : "songs"}
+                  {:else if album.duration}
+                    {Math.floor(album.duration / 60)} min
+                  {/if}
+                </p>
+              </button>
+            {/each}
+          {:else}
+            <!-- Skeleton rows for unloaded albums -->
+            {#each Array(columns)}
+              <div
+                class="virtual-grid-card flex flex-col bg-base-200 rounded-lg p-3 animate-pulse"
+              >
+                <div class="aspect-square bg-base-300 rounded mb-2"></div>
+                <div class="h-4 bg-base-300 rounded w-3/4 mb-1"></div>
+                <div class="h-3 bg-base-300 rounded w-1/2"></div>
+              </div>
+            {/each}
+          {/if}
         </div>
       {/each}
+
+      {#if albumListStore.isLoadingMore}
+        <div
+          class="absolute left-0 right-0 flex justify-center py-4"
+          style="transform: translateY({totalSize}px);"
+        >
+          <span class="loading loading-spinner loading-md opacity-50"></span>
+        </div>
+      {/if}
     </div>
   {:else}
     <div class="text-center text-sm opacity-50 py-8">No albums found.</div>

@@ -15,6 +15,7 @@
 
   interface Props {
     itemCount?: number;
+    totalCount?: number;
     totalDuration?: number;
     totalSize?: number;
     itemType?: "songs" | "artists" | "albums";
@@ -22,6 +23,7 @@
 
   let {
     itemCount = 0,
+    totalCount = 0,
     totalDuration = 0,
     totalSize = 0,
     itemType = "songs",
@@ -258,7 +260,13 @@
     const parts: string[] = [];
 
     if (itemCount > 0) {
-      parts.push(`${itemCount} ${getItemLabel(itemCount, itemType)}`);
+      if (totalCount > itemCount) {
+        parts.push(
+          `${itemCount} of ${totalCount} ${getItemLabel(totalCount, itemType)}`
+        );
+      } else {
+        parts.push(`${itemCount} ${getItemLabel(itemCount, itemType)}`);
+      }
     }
 
     if (totalDuration > 0) {

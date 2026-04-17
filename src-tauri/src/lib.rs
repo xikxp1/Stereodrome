@@ -134,6 +134,7 @@ pub fn run() {
             commands::reconcile_library_state,
             commands::get_library_sync_status,
             commands::get_artists,
+            commands::get_album_count,
             commands::get_albums,
             commands::get_songs,
             commands::get_album_list,
