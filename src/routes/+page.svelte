@@ -57,6 +57,10 @@
   let settingsOpen = $state(false);
   let selectedPlaylist = $state<Playlist | null>(null);
 
+  // Scroll restoration state
+  let artistGridScrollOffset: number | null = $state(null);
+  let albumGridScrollOffset: number | null = $state(null);
+
   // Keyboard shortcut state
   let previousVolume = $state(100); // For mute/unmute toggle (0-100 scale)
   let volumeAdjusting = $state(false);
@@ -465,6 +469,8 @@
     activeView = view;
     detailView = null; // Clear detail view when switching top-level views
     selectedPlaylist = null; // Deselect playlist when changing library views
+    artistGridScrollOffset = null;
+    albumGridScrollOffset = null;
   }
 
   function handlePlaylistSelect(playlist: Playlist | null) {
@@ -982,6 +988,10 @@
             <ArtistGridView
               artists={gridFilteredArtists}
               onSelect={handleArtistGridSelect}
+              restoreScrollOffset={artistGridScrollOffset}
+              onScrollOffsetChange={(offset) => {
+                artistGridScrollOffset = offset;
+              }}
             />
 
             <StatusBar
@@ -1025,6 +1035,10 @@
               albums={gridFilteredAlbums}
               onSelect={handleAlbumGridSelect}
               onNavigateToArtist={handleAlbumNavigateToArtist}
+              restoreScrollOffset={albumGridScrollOffset}
+              onScrollOffsetChange={(offset) => {
+                albumGridScrollOffset = offset;
+              }}
             />
 
             <StatusBar
@@ -1069,6 +1083,10 @@
               totalCount={albumListStore.totalCount}
               onSelect={handleAlbumListEntrySelect}
               onNavigateToArtist={handleAlbumListEntryNavigateToArtist}
+              restoreScrollOffset={albumGridScrollOffset}
+              onScrollOffsetChange={(offset) => {
+                albumGridScrollOffset = offset;
+              }}
             />
 
             <StatusBar

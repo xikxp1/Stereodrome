@@ -13,9 +13,16 @@
   interface Props {
     artists: Artist[];
     onSelect?: (artist: Artist) => void;
+    restoreScrollOffset?: number | null;
+    onScrollOffsetChange?: (offset: number) => void;
   }
 
-  let { artists, onSelect }: Props = $props();
+  let {
+    artists,
+    onSelect,
+    restoreScrollOffset = null,
+    onScrollOffsetChange,
+  }: Props = $props();
   let scrollContainer: HTMLDivElement | null = $state(null);
   let containerWidth = $state(0);
 
@@ -52,6 +59,35 @@
     requestAnimationFrame(() => {
       $virtualizer.measure();
     });
+  });
+
+  // Track scroll position and report to parent
+  $effect(() => {
+    if (!scrollContainer) return;
+    const el = scrollContainer;
+    const handleScroll = () => {
+      onScrollOffsetChange?.(el.scrollTop);
+    };
+    el.addEventListener("scroll", handleScroll);
+    return () => el.removeEventListener("scroll", handleScroll);
+  });
+
+  // Restore scroll position on mount
+  let scrollRestored = $state(false);
+
+  $effect(() => {
+    if (
+      restoreScrollOffset &&
+      !scrollRestored &&
+      scrollContainer &&
+      rowCount > 0
+    ) {
+      const offset = restoreScrollOffset;
+      requestAnimationFrame(() => {
+        $virtualizer.scrollToOffset(offset, { align: "start" });
+        scrollRestored = true;
+      });
+    }
   });
 
   function getArtistsForRow(rowIndex: number) {
