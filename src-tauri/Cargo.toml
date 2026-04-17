@@ -27,7 +27,7 @@ filetime = "0.2.27"
 fundsp = "0.23.0"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
 log = "0.4.29"
-rand = "0.10.0"
+rand = "0.10.1"
 ringbuf = "0.4.8"
 rodio = { version = "0.22.2", features = ["symphonia-all"] }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
@@ -38,17 +38,17 @@ souvlaki = "0.8.3"
 submarine = "0.1.1"
 tantivy = "0.25.0"
 tauri = { version = "2.10.3", features = ["tray-icon"] }
-tauri-plugin-dialog = "2.6.0"
+tauri-plugin-dialog = "2.7.0"
 tauri-plugin-log = "2.8.0"
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-opener = "2.5.3"
 tauri-plugin-prevent-default = "4.0.4"
 tauri-plugin-process = "2.3.1"
-tauri-plugin-single-instance = "2.4.0"
+tauri-plugin-single-instance = "2.4.1"
 tauri-plugin-store = "2.4.2"
 thiserror = "2.0.18"
-tokio = { version = "1.50.0", features = ["full"] }
-uuid = { version = "1.23.0", features = ["v4"] }
+tokio = { version = "1.52.1", features = ["full"] }
+uuid = { version = "1.23.1", features = ["v4"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
