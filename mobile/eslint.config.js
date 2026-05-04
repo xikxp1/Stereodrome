@@ -10,6 +10,7 @@ module.exports = defineConfig([
     languageOptions: {
       globals: {
         module: "readonly",
+        process: "readonly",
         require: "readonly",
       },
     },
@@ -22,6 +23,7 @@ module.exports = defineConfig([
     languageOptions: {
       parserOptions: {
         project: "./tsconfig.json",
+        tsconfigRootDir: process.cwd(),
       },
     },
     rules: {

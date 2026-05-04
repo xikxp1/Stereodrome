@@ -3,6 +3,9 @@ import ts from "typescript-eslint";
 import svelte from "eslint-plugin-svelte";
 import prettier from "eslint-config-prettier";
 import globals from "globals";
+import { fileURLToPath } from "node:url";
+
+const tsconfigRootDir = fileURLToPath(new URL(".", import.meta.url));
 
 /** @type {import('eslint').Linter.Config[]} */
 export default [
@@ -17,6 +20,9 @@ export default [
         ...globals.browser,
         ...globals.node,
       },
+      parserOptions: {
+        tsconfigRootDir,
+      },
     },
   },
   {
@@ -24,6 +30,7 @@ export default [
     languageOptions: {
       parserOptions: {
         parser: ts.parser,
+        tsconfigRootDir,
       },
     },
   },
@@ -33,6 +40,7 @@ export default [
       parser: svelte.parser,
       parserOptions: {
         parser: ts.parser,
+        tsconfigRootDir,
       },
     },
   },
@@ -50,6 +58,7 @@ export default [
       "node_modules/",
       "target/",
       "src-tauri/target/",
+      "mobile/",
       "mobile/node_modules/",
       "mobile/.expo/",
       "mobile/android/",
