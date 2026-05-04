@@ -3,7 +3,11 @@ build/
 dist/
 node_modules/
 src-tauri/target/
+target/
 src-tauri/gen/
+mobile/.expo/
+mobile/android/
+mobile/ios/
 .serena/
 bun.lockb
 src-tauri/bundle/linux/main.desktop.hbs

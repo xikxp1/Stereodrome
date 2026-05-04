@@ -48,7 +48,12 @@ export default [
       ".svelte-kit/",
       "dist/",
       "node_modules/",
+      "target/",
       "src-tauri/target/",
+      "mobile/node_modules/",
+      "mobile/.expo/",
+      "mobile/android/",
+      "mobile/ios/",
     ],
   },
 ];

@@ -6,12 +6,12 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
+    "check": "bun --bun svelte-kit sync && bun --bun svelte-check --tsconfig ./tsconfig.json",
+    "check:watch": "bun --bun svelte-kit sync && bun --bun svelte-check --tsconfig ./tsconfig.json --watch",
+    "lint": "bun --bun eslint .",
+    "lint:fix": "bun --bun eslint . --fix",
+    "format": "bun --bun prettier --write .",
+    "format:check": "bun --bun prettier --check .",
     "tauri": "tauri"
   },
   "license": "MIT",
@@ -39,6 +39,7 @@
     "@tailwindcss/typography": "0.5.19",
     "@tailwindcss/vite": "4.2.2",
     "@tauri-apps/cli": "2.10.1",
+    "brace-expansion": "^5.0.2",
     "daisyui": "5.5.19",
     "eslint": "10.2.0",
     "eslint-config-prettier": "10.1.8",
@@ -53,5 +54,8 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.58.2",
     "vite": "8.0.8"
+  },
+  "overrides": {
+    "brace-expansion": "^5.0.2"
   }
 }

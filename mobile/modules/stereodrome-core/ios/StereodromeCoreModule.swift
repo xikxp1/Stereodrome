@@ -1,0 +1,84 @@
+import ExpoModulesCore
+
+@_silgen_name("stereodrome_core_new")
+private func stereodromeCoreNew(_ dataDir: UnsafePointer<CChar>) -> OpaquePointer?
+
+@_silgen_name("stereodrome_core_destroy")
+private func stereodromeCoreDestroy(_ core: OpaquePointer?)
+
+@_silgen_name("stereodrome_core_call")
+private func stereodromeCoreCall(
+  _ core: OpaquePointer?,
+  _ method: UnsafePointer<CChar>,
+  _ payload: UnsafePointer<CChar>
+) -> UnsafeMutablePointer<CChar>?
+
+@_silgen_name("stereodrome_core_free_string")
+private func stereodromeCoreFreeString(_ value: UnsafeMutablePointer<CChar>?)
+
+public class StereodromeCoreModule: Module {
+  private var core: OpaquePointer?
+
+  deinit {
+    stereodromeCoreDestroy(core)
+  }
+
+  public func definition() -> ModuleDefinition {
+    Name("StereodromeCore")
+
+    AsyncFunction("initialize") { (_ dataDir: String) -> Bool in
+      if let existing = self.core {
+        stereodromeCoreDestroy(existing)
+      }
+      self.core = dataDir.withCString { stereodromeCoreNew($0) }
+      return self.core != nil
+    }
+
+    AsyncFunction("call") { (_ method: String, _ payload: String) -> String in
+      guard let core = self.core else {
+        return #"{"ok":false,"error":"Stereodrome Rust core is not initialized"}"#
+      }
+
+      return method.withCString { methodPointer in
+        payload.withCString { payloadPointer in
+          guard let resultPointer = stereodromeCoreCall(core, methodPointer, payloadPointer) else {
+            return #"{"ok":false,"error":"Rust returned null"}"#
+          }
+
+          let result = String(cString: resultPointer)
+          stereodromeCoreFreeString(resultPointer)
+          return result
+        }
+      }
+    }
+
+    AsyncFunction("getConnectionStatus") { () -> String in
+      return self.callSync(method: "getConnectionStatus", payload: "null")
+    }
+
+    AsyncFunction("getStreamUri") { (_ songId: String) -> String in
+      let escapedSongId = songId
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+      return self.callSync(method: "getStreamUri", payload: "\"\(escapedSongId)\"")
+    }
+  }
+
+  private func callSync(method: String, payload: String) -> String {
+    guard let core else {
+      return #"{"ok":false,"error":"Stereodrome Rust core is not initialized"}"#
+    }
+
+    return method.withCString { methodPointer in
+      payload.withCString { payloadPointer in
+        guard let resultPointer = stereodromeCoreCall(core, methodPointer, payloadPointer) else {
+          return #"{"ok":false,"error":"Rust returned null"}"#
+        }
+
+        let result = String(cString: resultPointer)
+        stereodromeCoreFreeString(resultPointer)
+        return result
+      }
+    }
+  }
+}
