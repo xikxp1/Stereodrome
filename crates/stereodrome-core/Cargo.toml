@@ -1,6 +1,6 @@
 [package]
 name = "stereodrome-core"
-version = "0.1.0"
+version = "0.1.17"
 edition = "2024"
 publish = false
 
@@ -15,4 +15,3 @@ submarine = "0.1.1"
 thiserror = "2.0.18"
 tokio = { version = "1.52.2", features = ["full"] }
 urlencoding = "2.1.3"
-

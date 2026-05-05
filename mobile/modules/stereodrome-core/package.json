@@ -1,6 +1,5 @@
 {
   "name": "stereodrome-core-module",
-  "version": "0.1.0",
   "private": true,
   "description": "Expo native module bridge for Stereodrome Rust core",
   "main": "src/index.ts",

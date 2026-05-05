@@ -5184,7 +5184,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stereodrome"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "base64 0.22.1",
  "bs2b",
@@ -5225,7 +5225,7 @@ dependencies = [
 
 [[package]]
 name = "stereodrome-core"
-version = "0.1.0"
+version = "0.1.17"
 dependencies = [
  "chrono",
  "md5 0.8.0",
@@ -5241,7 +5241,7 @@ dependencies = [
 
 [[package]]
 name = "stereodrome-ffi"
-version = "0.1.0"
+version = "0.1.17"
 dependencies = [
  "serde",
  "serde_json",
