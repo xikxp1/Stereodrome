@@ -55,7 +55,7 @@ build_android() {
     exit 1
   }
 
-  rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+  rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
   rm -rf "$ANDROID_OUT_DIR"
   mkdir -p "$ANDROID_OUT_DIR"
@@ -63,6 +63,7 @@ build_android() {
   cargo ndk \
     -t arm64-v8a \
     -t armeabi-v7a \
+    -t x86 \
     -t x86_64 \
     -o "$ANDROID_OUT_DIR" \
     build --release -p stereodrome-ffi
@@ -72,6 +73,7 @@ build_android() {
   for abi_target in \
     "arm64-v8a:aarch64-linux-android" \
     "armeabi-v7a:armv7-linux-androideabi" \
+    "x86:i686-linux-android" \
     "x86_64:x86_64-linux-android"
   do
     abi="${abi_target%%:*}"
