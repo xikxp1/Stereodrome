@@ -10,6 +10,9 @@ android {
   namespace "expo.modules.stereodromecore"
 
   defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+
     externalNativeBuild {
       cmake {
         arguments "-DANDROID_STL=c++_shared"
@@ -23,4 +26,3 @@ android {
     }
   }
 }
-

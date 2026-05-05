@@ -166,11 +166,24 @@ jobs:
       - name: Build iOS simulator app
         working-directory: mobile
         run: |
-          xcodebuild \
+          set -o pipefail
+          LOG_PATH="$RUNNER_TEMP/xcodebuild-ios-simulator.log"
+          SIM_ARCH="$(uname -m)"
+
+          if ! xcodebuild \
             -workspace ios/Stereodrome.xcworkspace \
             -scheme Stereodrome \
             -configuration Debug \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
+            -jobs 2 \
+            ARCHS="$SIM_ARCH" \
+            ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
-            build
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            build 2>&1 | tee "$LOG_PATH"; then
+            echo "::group::xcodebuild errors"
+            grep -E "error:|fatal error:|Command .* failed|BUILD FAILED|\\*\\* BUILD FAILED \\*\\*" "$LOG_PATH" || true
+            echo "::endgroup::"
+            exit 1
+          fi

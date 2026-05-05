@@ -294,18 +294,28 @@ jobs:
       - name: Build signed iOS archive
         working-directory: mobile
         run: |
-          xcodebuild \
+          set -o pipefail
+          LOG_PATH="$RUNNER_TEMP/xcodebuild-ios-release.log"
+
+          if ! xcodebuild \
             -workspace ios/Stereodrome.xcworkspace \
             -scheme Stereodrome \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/Stereodrome.xcarchive" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
+            -jobs 2 \
             CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             -allowProvisioningUpdates \
-            archive
+            archive 2>&1 | tee "$LOG_PATH"; then
+            echo "::group::xcodebuild errors"
+            grep -E "error:|fatal error:|Command .* failed|BUILD FAILED|\\*\\* ARCHIVE FAILED \\*\\*" "$LOG_PATH" || true
+            echo "::endgroup::"
+            exit 1
+          fi
 
       - name: Package iOS archive
         run: |
