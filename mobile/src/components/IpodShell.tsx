@@ -1,5 +1,5 @@
-import { Pressable, StyleSheet, View } from "react-native";
-import { useEffect } from "react";
+import { Animated, Easing, Pressable, StyleSheet, View } from "react-native";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useProgress } from "react-native-track-player";
 import { RefreshCw, Repeat2, Shuffle } from "lucide-react-native";
@@ -23,6 +23,8 @@ function formatPlaybackTime(seconds: number) {
 
 export function IpodShell() {
   const view = useViewStack();
+  const navigationProgress = useRef(new Animated.Value(1)).current;
+  const previousTransitionKey = useRef(view.transitionKey);
   const { subscribe } = useInputBus();
   const { buttonHandedness } = useMobileSettings();
   const playback = usePlayback();
@@ -32,6 +34,7 @@ export function IpodShell() {
   const current = stereodrome.status.connected
     ? view.current
     : { name: "connect" as const, title: "Connect" };
+  const navigationOffset = view.transitionDirection === "back" ? -24 : 24;
   const leftHandedButtons = buttonHandedness === "left";
   const playbackDuration =
     progress.duration || playback.currentSong?.duration || 0;
@@ -47,6 +50,47 @@ export function IpodShell() {
           playback.currentSong.title
         }`
       : current.title;
+  const screenStyle = useMemo(
+    () => ({
+      opacity: navigationProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0.72, 1],
+      }),
+      transform: [
+        {
+          translateX: navigationProgress.interpolate({
+            inputRange: [0, 1],
+            outputRange: [
+              view.transitionDirection === "replace" ? 0 : navigationOffset,
+              0,
+            ],
+          }),
+        },
+      ],
+    }),
+    [
+      navigationOffset,
+      navigationProgress,
+      view.transitionDirection,
+      view.transitionKey,
+    ]
+  );
+
+  useLayoutEffect(() => {
+    if (previousTransitionKey.current === view.transitionKey) {
+      return;
+    }
+
+    previousTransitionKey.current = view.transitionKey;
+    navigationProgress.stopAnimation();
+    navigationProgress.setValue(0);
+    Animated.timing(navigationProgress, {
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+  }, [navigationProgress, view.transitionKey]);
 
   useEffect(
     () =>
@@ -77,7 +121,11 @@ export function IpodShell() {
             rightText={playbackTime}
             title={headerTitle}
           />
-          <View style={styles.viewport}>{renderView(current)}</View>
+          <View style={styles.viewport}>
+            <Animated.View style={[styles.animatedViewport, screenStyle]}>
+              {renderView(current)}
+            </Animated.View>
+          </View>
         </View>
         <View style={styles.wheelSlot}>
           <Pressable
@@ -164,6 +212,10 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   viewport: {
+    flex: 1,
+    overflow: "hidden",
+  },
+  animatedViewport: {
     flex: 1,
   },
   wheelSlot: {

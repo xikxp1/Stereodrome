@@ -8,7 +8,16 @@ import { colors } from "@/components/theme";
 import { useInputBus } from "@/context/InputContext";
 import { usePlayback } from "@/context/PlaybackContext";
 
+const hapticTickIntervalMs = 45;
+let lastHapticTick = 0;
+
 function tick() {
+  const now = Date.now();
+  if (now - lastHapticTick < hapticTickIntervalMs) {
+    return;
+  }
+
+  lastHapticTick = now;
   void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 }
 
