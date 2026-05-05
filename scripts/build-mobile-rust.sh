@@ -66,6 +66,21 @@ build_android() {
     -t x86_64 \
     -o "$ANDROID_OUT_DIR" \
     build --release -p stereodrome-ffi
+
+  local abi
+  local target
+  for abi_target in \
+    "arm64-v8a:aarch64-linux-android" \
+    "armeabi-v7a:armv7-linux-androideabi" \
+    "x86_64:x86_64-linux-android"
+  do
+    abi="${abi_target%%:*}"
+    target="${abi_target#*:}"
+    mkdir -p "$ANDROID_OUT_DIR/$abi"
+    cp \
+      "$ROOT_DIR/target/$target/release/libstereodrome_ffi.a" \
+      "$ANDROID_OUT_DIR/$abi/libstereodrome_ffi.a"
+  done
 }
 
 case "${1:-all}" in
