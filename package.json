@@ -12,6 +12,7 @@
     "lint:fix": "bun --bun eslint . --fix",
     "format": "bun --bun prettier --write .",
     "format:check": "bun --bun prettier --check .",
+    "version:set": "bun scripts/set-version.mjs",
     "tauri": "bun node_modules/@tauri-apps/cli/tauri.js"
   },
   "license": "MIT",
