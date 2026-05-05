@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "bun --bun vite build",
     "preview": "vite preview",
     "check": "bun --bun svelte-kit sync && bun --bun svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "bun --bun svelte-kit sync && bun --bun svelte-check --tsconfig ./tsconfig.json --watch",
@@ -12,7 +12,7 @@
     "lint:fix": "bun --bun eslint . --fix",
     "format": "bun --bun prettier --write .",
     "format:check": "bun --bun prettier --check .",
-    "tauri": "tauri"
+    "tauri": "bun node_modules/@tauri-apps/cli/tauri.js"
   },
   "license": "MIT",
   "dependencies": {
@@ -20,7 +20,7 @@
     "@tanstack/db": "0.6.5",
     "@tanstack/svelte-query": "6.1.16",
     "@tanstack/svelte-virtual": "3.13.23",
-    "@tauri-apps/api": "2.10.1",
+    "@tauri-apps/api": "2.11.0",
     "@tauri-apps/plugin-dialog": "2.7.0",
     "@tauri-apps/plugin-log": "2.8.0",
     "@tauri-apps/plugin-notification": "2.3.3",
@@ -38,7 +38,7 @@
     "@sveltejs/vite-plugin-svelte": "7.0.0",
     "@tailwindcss/typography": "0.5.19",
     "@tailwindcss/vite": "4.2.2",
-    "@tauri-apps/cli": "2.10.1",
+    "@tauri-apps/cli": "2.11.0",
     "brace-expansion": "^5.0.2",
     "daisyui": "5.5.19",
     "eslint": "10.2.0",

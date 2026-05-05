@@ -57,7 +57,7 @@ jobs:
         run: cargo clippy -- -D warnings
 
       - name: Build desktop app
-        run: bun run tauri build -- --no-bundle
+        run: bun run tauri build --no-bundle
 
   mobile-android:
     runs-on: ubuntu-latest
