@@ -76,7 +76,8 @@ function getGroupMaxOffset(group: MarqueeGroup) {
 }
 
 function setMemberOffsets(group: MarqueeGroup, offset: number) {
-  const progress = group.state.maxOffset > 0 ? offset / group.state.maxOffset : 0;
+  const progress =
+    group.state.maxOffset > 0 ? offset / group.state.maxOffset : 0;
   group.members.forEach((member) => {
     member.updateOffset(Math.max(0, progress * member.maxOffset));
   });

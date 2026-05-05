@@ -99,7 +99,11 @@ function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
   return result;
 }
 
-function swapItems<T>(items: T[], firstIndex: number, secondIndex: number): T[] {
+function swapItems<T>(
+  items: T[],
+  firstIndex: number,
+  secondIndex: number
+): T[] {
   const result = [...items];
   [result[firstIndex], result[secondIndex]] = [
     result[secondIndex],
@@ -174,7 +178,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       (event) => {
         const index = event.index ?? null;
         setCurrentIndex(index);
-        setCurrentSong(index === null ? null : queue[index] ?? null);
+        setCurrentSong(index === null ? null : (queue[index] ?? null));
       }
     );
 
@@ -368,7 +372,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
   const isPlaying = playbackState.state === State.Playing;
   const nextIndex = nextQueueIndex(queue.length, currentIndex, repeatEnabled);
-  const nextSong = nextIndex === null ? null : queue[nextIndex] ?? null;
+  const nextSong = nextIndex === null ? null : (queue[nextIndex] ?? null);
   const value = useMemo(
     () => ({
       currentSong,

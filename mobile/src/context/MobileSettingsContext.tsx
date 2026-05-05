@@ -26,8 +26,9 @@ const defaultSettings: MobileSettings = {
   buttonHandedness: "right",
 };
 
-const MobileSettingsContext =
-  createContext<MobileSettingsContextValue | null>(null);
+const MobileSettingsContext = createContext<MobileSettingsContextValue | null>(
+  null
+);
 
 function parseSettings(raw: string): MobileSettings {
   const parsed = JSON.parse(raw) as Partial<MobileSettings>;

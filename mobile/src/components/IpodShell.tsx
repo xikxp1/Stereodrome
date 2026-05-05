@@ -38,12 +38,11 @@ export function IpodShell() {
   const leftHandedButtons = buttonHandedness === "left";
   const playbackDuration =
     progress.duration || playback.currentSong?.duration || 0;
-  const playbackTime =
-    playback.currentSong
-      ? `${formatPlaybackTime(progress.position)}/${formatPlaybackTime(
-          playbackDuration
-        )}`
-      : undefined;
+  const playbackTime = playback.currentSong
+    ? `${formatPlaybackTime(progress.position)}/${formatPlaybackTime(
+        playbackDuration
+      )}`
+    : undefined;
   const headerTitle =
     current.name !== "nowPlaying" && playback.currentSong
       ? `${playback.currentSong.artist ?? "Unknown Artist"} - ${
@@ -114,10 +113,14 @@ export function IpodShell() {
 
   return (
     <View style={styles.stage}>
-      <View style={[styles.shell, { paddingTop: Math.max(14, insets.top + 10) }]}>
+      <View
+        style={[styles.shell, { paddingTop: Math.max(14, insets.top + 10) }]}
+      >
         <View style={styles.screen}>
           <Header
-            marqueeTitle={current.name !== "nowPlaying" && !!playback.currentSong}
+            marqueeTitle={
+              current.name !== "nowPlaying" && !!playback.currentSong
+            }
             rightText={playbackTime}
             title={headerTitle}
           />
