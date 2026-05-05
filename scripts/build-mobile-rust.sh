@@ -55,6 +55,8 @@ build_android() {
     exit 1
   }
 
+  rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+
   rm -rf "$ANDROID_OUT_DIR"
   mkdir -p "$ANDROID_OUT_DIR"
 
