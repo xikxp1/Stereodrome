@@ -1,6 +1,6 @@
 [package]
 name = "stereodrome"
-version = "0.1.16"
+version = "0.1.17"
 description = "Desktop music player for Subsonic-compatible music servers"
 authors = ["Ivan Kachalkin<xikxp1@gmail.com>"]
 edition = "2024"
@@ -57,9 +57,3 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2.10.0"
-
-[profile.dev.package.ebur128]
-opt-level = 3
-
-[profile.dev.package.fundsp]
-opt-level = 3

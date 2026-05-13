@@ -1,0 +1,61 @@
+import type { ViewInstance } from "@/context/ViewContext";
+import { AlbumScreen } from "@/screens/AlbumScreen";
+import { AlbumsScreen } from "@/screens/AlbumsScreen";
+import { ArtistScreen } from "@/screens/ArtistScreen";
+import { ArtistsScreen } from "@/screens/ArtistsScreen";
+import { ConnectScreen } from "@/screens/ConnectScreen";
+import { HomeScreen } from "@/screens/HomeScreen";
+import { MusicScreen } from "@/screens/MusicScreen";
+import { NowPlayingScreen } from "@/screens/NowPlayingScreen";
+import { PlaylistScreen } from "@/screens/PlaylistScreen";
+import { PlaylistsScreen } from "@/screens/PlaylistsScreen";
+import { SearchScreen } from "@/screens/SearchScreen";
+import { SettingsScreen } from "@/screens/SettingsScreen";
+import { SongsScreen } from "@/screens/SongsScreen";
+
+export function renderView(view: ViewInstance) {
+  switch (view.name) {
+    case "connect":
+      return <ConnectScreen />;
+    case "music":
+      return <MusicScreen />;
+    case "artists":
+      return <ArtistsScreen />;
+    case "artist":
+      return (
+        <ArtistScreen
+          artistId={view.params?.artistId ?? ""}
+          title={view.params?.title ?? "Artist"}
+        />
+      );
+    case "albums":
+      return <AlbumsScreen />;
+    case "album":
+      return (
+        <AlbumScreen
+          albumId={view.params?.albumId ?? ""}
+          title={view.params?.title ?? "Album"}
+        />
+      );
+    case "songs":
+      return <SongsScreen />;
+    case "playlists":
+      return <PlaylistsScreen />;
+    case "playlist":
+      return (
+        <PlaylistScreen
+          playlistId={view.params?.playlistId ?? ""}
+          title={view.params?.title ?? "Playlist"}
+        />
+      );
+    case "search":
+      return <SearchScreen />;
+    case "nowPlaying":
+      return <NowPlayingScreen />;
+    case "settings":
+      return <SettingsScreen />;
+    case "home":
+    default:
+      return <HomeScreen />;
+  }
+}

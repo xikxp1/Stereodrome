@@ -1,0 +1,9 @@
+{
+  "platforms": ["ios", "android"],
+  "ios": {
+    "modules": ["StereodromeCoreModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.stereodromecore.StereodromeCoreModule"]
+  }
+}

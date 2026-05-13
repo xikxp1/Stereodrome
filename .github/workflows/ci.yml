@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  desktop:
     runs-on: ubuntu-latest
 
     steps:
@@ -55,3 +55,138 @@ jobs:
       - name: Rust clippy
         working-directory: src-tauri
         run: cargo clippy -- -D warnings
+
+      - name: Build desktop app
+        run: bun run tauri build --no-bundle
+
+  mobile-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Init Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+
+      - name: Configure Android NDK
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: bun install --frozen-lockfile
+
+      - name: Type check mobile
+        working-directory: mobile
+        run: bun run typecheck
+
+      - name: Lint mobile
+        working-directory: mobile
+        run: bun run lint
+
+      - name: Build Android Rust core
+        run: scripts/build-mobile-rust.sh android
+
+      - name: Generate Android project
+        working-directory: mobile
+        run: bunx expo prebuild --platform android --no-install
+
+      - name: Build Android app
+        working-directory: mobile/android
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+  mobile-ios:
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Init Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri
+
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: bun install --frozen-lockfile
+
+      - name: Type check mobile
+        working-directory: mobile
+        run: bun run typecheck
+
+      - name: Lint mobile
+        working-directory: mobile
+        run: bun run lint
+
+      - name: Build iOS Rust core
+        run: scripts/build-mobile-rust.sh ios
+
+      - name: Generate iOS project
+        working-directory: mobile
+        run: bunx expo prebuild --platform ios --no-install
+
+      - name: Install iOS pods
+        working-directory: mobile/ios
+        run: pod install
+
+      - name: Build iOS simulator app
+        working-directory: mobile
+        run: |
+          set -o pipefail
+          LOG_PATH="$RUNNER_TEMP/xcodebuild-ios-simulator.log"
+          SIM_ARCH="$(uname -m)"
+
+          if ! xcodebuild \
+            -workspace ios/Stereodrome.xcworkspace \
+            -scheme Stereodrome \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -jobs 2 \
+            ARCHS="$SIM_ARCH" \
+            ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            build 2>&1 | tee "$LOG_PATH"; then
+            echo "::group::xcodebuild errors"
+            grep -E "error:|fatal error:|Command .* failed|BUILD FAILED|\\*\\* BUILD FAILED \\*\\*" "$LOG_PATH" || true
+            echo "::endgroup::"
+            exit 1
+          fi

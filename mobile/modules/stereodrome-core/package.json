@@ -1,0 +1,22 @@
+{
+  "name": "stereodrome-core-module",
+  "private": true,
+  "version": "0.1.17",
+  "description": "Expo native module bridge for Stereodrome Rust core",
+  "main": "src/index.ts",
+  "license": "MIT",
+  "expo": {
+    "modules": {
+      "ios": {
+        "modules": [
+          "StereodromeCoreModule"
+        ]
+      },
+      "android": {
+        "modules": [
+          "expo.modules.stereodromecore.StereodromeCoreModule"
+        ]
+      }
+    }
+  }
+}

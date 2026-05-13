@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "crates/stereodrome-core",
+    "crates/stereodrome-ffi",
+    "src-tauri",
+]
+resolver = "3"
+
+[profile.dev.package.ebur128]
+opt-level = 3
+
+[profile.dev.package.fundsp]
+opt-level = 3

@@ -15,6 +15,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 env:
   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -23,7 +26,71 @@ env:
   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
 jobs:
+  version:
+    name: Set release version
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.release_version.outputs.release_version }}
+
+    steps:
+      - name: Resolve release version
+        id: release_version
+        shell: bash
+        run: |
+          RAW_VERSION="${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}"
+          RELEASE_VERSION="${RAW_VERSION#v}"
+
+          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release version must be semver, got '$RAW_VERSION'"
+            exit 1
+          fi
+
+          echo "release_version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_VERSION=$RELEASE_VERSION" >> "$GITHUB_ENV"
+
+      - name: Checkout default branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Apply release version
+        run: bun run version:set "$RELEASE_VERSION"
+
+      - name: Commit release version
+        run: |
+          if git diff --quiet; then
+            echo "Version files already set to $RELEASE_VERSION"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            Cargo.lock \
+            crates/stereodrome-core/Cargo.toml \
+            crates/stereodrome-ffi/Cargo.toml \
+            mobile/app.json \
+            mobile/modules/stereodrome-core/android/build.gradle \
+            mobile/modules/stereodrome-core/package.json \
+            src-tauri/Cargo.toml
+
+          if git diff --cached --quiet; then
+            echo "::error::Release version changed files, but no version files were staged"
+            exit 1
+          fi
+
+          git commit -m "chore: set release version $RELEASE_VERSION"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"
+
   build:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -48,6 +115,9 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Apply release version
+        run: bun run version:set "${{ needs.version.outputs.release_version }}"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -135,9 +205,251 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ env.CERT_ID }}
         with:
-          tagName: v__VERSION__
-          releaseName: "Stereodrome v__VERSION__"
+          tagName: v${{ needs.version.outputs.release_version }}
+          releaseName: "Stereodrome v${{ needs.version.outputs.release_version }}"
           releaseBody: ${{ steps.release_body.outputs.release_body }}
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  mobile-android:
+    needs: version
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Apply release version
+        run: bun run version:set "${{ needs.version.outputs.release_version }}"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Init Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+
+      - name: Configure Android NDK
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: bun install --frozen-lockfile
+
+      - name: Build Android Rust core
+        run: scripts/build-mobile-rust.sh android
+
+      - name: Generate Android project
+        working-directory: mobile
+        run: bunx expo prebuild --platform android --no-install
+
+      - name: Build Android release app
+        working-directory: mobile/android
+        run: ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon
+
+      - name: Upload Android release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: stereodrome-mobile-android-release
+          path: |
+            mobile/android/app/build/outputs/apk/release/*.apk
+            mobile/android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+
+  mobile-ios:
+    needs: version
+    runs-on: macos-26
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Apply release version
+        run: bun run version:set "${{ needs.version.outputs.release_version }}"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Init Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri
+
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: bun install --frozen-lockfile
+
+      - name: Build iOS Rust core
+        run: scripts/build-mobile-rust.sh ios
+
+      - name: Generate iOS project
+        working-directory: mobile
+        run: bunx expo prebuild --platform ios --no-install
+
+      - name: Install iOS pods
+        working-directory: mobile/ios
+        run: pod install
+
+      - name: Validate Apple signing secrets
+        run: |
+          for secret_name in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_TEAM_ID \
+            KEYCHAIN_PASSWORD
+          do
+            if [ -z "${!secret_name:-}" ]; then
+              echo "::error::$secret_name is required for signed iOS release builds"
+              exit 1
+            fi
+          done
+
+      - name: Import Apple code signing certificate
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/apple_certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Build signed iOS archive
+        working-directory: mobile
+        run: |
+          set -o pipefail
+          LOG_PATH="$RUNNER_TEMP/xcodebuild-ios-release.log"
+
+          if ! xcodebuild \
+            -workspace ios/Stereodrome.xcworkspace \
+            -scheme Stereodrome \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Stereodrome.xcarchive" \
+            -jobs 2 \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            -allowProvisioningUpdates \
+            archive 2>&1 | tee "$LOG_PATH"; then
+            echo "::group::xcodebuild errors"
+            grep -E "error:|fatal error:|Command .* failed|BUILD FAILED|\\*\\* ARCHIVE FAILED \\*\\*" "$LOG_PATH" || true
+            echo "::endgroup::"
+            exit 1
+          fi
+
+      - name: Export iOS IPA
+        working-directory: mobile
+        run: |
+          set -o pipefail
+          EXPORT_OPTIONS_PLIST="$RUNNER_TEMP/ExportOptions.plist"
+          EXPORT_PATH="$RUNNER_TEMP/Stereodrome-ipa"
+          LOG_PATH="$RUNNER_TEMP/xcodebuild-ios-export.log"
+
+          cat > "$EXPORT_OPTIONS_PLIST" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>destination</key>
+            <string>export</string>
+            <key>method</key>
+            <string>release-testing</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>thinning</key>
+            <string>&lt;none&gt;</string>
+          </dict>
+          </plist>
+          EOF
+
+          plutil -lint "$EXPORT_OPTIONS_PLIST"
+          mkdir -p "$EXPORT_PATH"
+
+          if ! xcodebuild \
+            -exportArchive \
+            -archivePath "$RUNNER_TEMP/Stereodrome.xcarchive" \
+            -exportPath "$EXPORT_PATH" \
+            -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
+            -allowProvisioningUpdates \
+            2>&1 | tee "$LOG_PATH"; then
+            echo "::group::xcodebuild export errors"
+            grep -E "error:|fatal error:|Command .* failed|EXPORT FAILED|\\*\\* EXPORT FAILED \\*\\*" "$LOG_PATH" || true
+            echo "::endgroup::"
+            exit 1
+          fi
+
+      - name: Upload iOS IPA artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: stereodrome-mobile-ios-ipa
+          path: ${{ runner.temp }}/Stereodrome-ipa/*.ipa
+          if-no-files-found: error
+
+      - name: Delete signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true

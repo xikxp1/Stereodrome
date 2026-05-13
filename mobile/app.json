@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Stereodrome",
+    "slug": "stereodrome-mobile",
+    "scheme": "stereodrome",
+    "version": "0.1.17",
+    "orientation": "portrait",
+    "icon": "../src-tauri/icons/icon.png",
+    "userInterfaceStyle": "automatic",
+    "plugins": ["expo-dev-client", "./modules/stereodrome-core/app.plugin.js"],
+    "ios": {
+      "bundleIdentifier": "dev.xikxp1.stereodrome.mobile",
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIBackgroundModes": ["audio"],
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false,
+          "NSAllowsArbitraryLoadsForMedia": true,
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "android": {
+      "package": "dev.xikxp1.stereodrome.mobile",
+      "adaptiveIcon": {
+        "foregroundImage": "../src-tauri/icons/android/mipmap-xxxhdpi/ic_launcher_foreground.png",
+        "backgroundColor": "#111111"
+      }
+    }
+  }
+}
