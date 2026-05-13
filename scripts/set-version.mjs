@@ -58,9 +58,32 @@ function updateCargoPackageVersion(text, path) {
   );
 }
 
+function updateCargoLockPackageVersion(text, packageName, path) {
+  return replaceExactlyOnce(
+    text,
+    new RegExp(
+      `(^name = "${escapeRegex(packageName)}"\\nversion = )"[^"]+"`,
+      "m"
+    ),
+    `$1"${version}"`,
+    path
+  );
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 await Promise.all([
   updateJsonVersion("mobile/app.json"),
   updateJsonVersion("mobile/modules/stereodrome-core/package.json"),
+  updateTextFile("Cargo.lock", (text, path) =>
+    ["stereodrome", "stereodrome-core", "stereodrome-ffi"].reduce(
+      (next, packageName) =>
+        updateCargoLockPackageVersion(next, packageName, path),
+      text
+    )
+  ),
   updateTextFile(
     "crates/stereodrome-core/Cargo.toml",
     updateCargoPackageVersion
