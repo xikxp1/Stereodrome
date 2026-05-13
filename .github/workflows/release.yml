@@ -60,9 +60,6 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Apply release version
-        run: bun run version:set "$RELEASE_VERSION"
-
       - name: Commit release version
         run: |
           if git diff --quiet; then
@@ -115,9 +112,6 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-
-      - name: Apply release version
-        run: bun run version:set "${{ needs.version.outputs.release_version }}"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -175,6 +169,7 @@ jobs:
 
       - name: Compose release body
         id: release_body
+        if: matrix.platform == 'ubuntu-latest'
         shell: bash
         run: |
           echo 'release_body<<EOF' >> $GITHUB_OUTPUT
@@ -188,6 +183,8 @@ jobs:
           | macOS (Universal) | `.dmg` |
           | Windows | `.msi` or `.exe` |
           | Linux | `.AppImage` or `.deb` |
+          | Android | `.apk` or `.aab` |
+          | iOS | TestFlight |
 
           ## Auto-Update
 
@@ -227,9 +224,6 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-
-      - name: Apply release version
-        run: bun run version:set "${{ needs.version.outputs.release_version }}"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -288,6 +282,9 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+      APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+      APPSTORE_API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
       KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
 
     steps:
@@ -301,9 +298,6 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-
-      - name: Apply release version
-        run: bun run version:set "${{ needs.version.outputs.release_version }}"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -333,14 +327,33 @@ jobs:
         working-directory: mobile/ios
         run: pod install
 
+      - name: Disable Pods code signing
+        working-directory: mobile/ios
+        run: |
+          ruby <<'RUBY'
+          require 'xcodeproj'
+
+          project = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
+          project.targets.each do |target|
+            target.build_configurations.each do |config|
+              config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+              config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+              config.build_settings['CODE_SIGN_IDENTITY'] = ''
+              config.build_settings['EXPANDED_CODE_SIGN_IDENTITY'] = ''
+            end
+          end
+          project.save
+          RUBY
+
       - name: Validate Apple signing secrets
         run: |
           for secret_name in \
             APPLE_CERTIFICATE \
             APPLE_CERTIFICATE_PASSWORD \
-            APPLE_ID \
-            APPLE_PASSWORD \
             APPLE_TEAM_ID \
+            APPSTORE_ISSUER_ID \
+            APPSTORE_API_KEY_ID \
+            APPSTORE_API_PRIVATE_KEY \
             KEYCHAIN_PASSWORD
           do
             if [ -z "${!secret_name:-}" ]; then
@@ -372,6 +385,13 @@ jobs:
             "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
+      - name: Write App Store Connect API key
+        run: |
+          AUTH_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPSTORE_API_KEY_ID}.p8"
+          printf '%s' "$APPSTORE_API_PRIVATE_KEY" > "$AUTH_KEY_PATH"
+          chmod 600 "$AUTH_KEY_PATH"
+          echo "APPSTORE_API_KEY_PATH=$AUTH_KEY_PATH" >> "$GITHUB_ENV"
+
       - name: Build signed iOS archive
         working-directory: mobile
         run: |
@@ -386,10 +406,12 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/Stereodrome.xcarchive" \
             -jobs 2 \
-            CODE_SIGNING_ALLOWED=YES \
             CODE_SIGN_STYLE=Automatic \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             COMPILER_INDEX_STORE_ENABLE=NO \
+            -authenticationKeyPath "$APPSTORE_API_KEY_PATH" \
+            -authenticationKeyID "$APPSTORE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID" \
             -allowProvisioningUpdates \
             archive 2>&1 | tee "$LOG_PATH"; then
             echo "::group::xcodebuild errors"
@@ -435,6 +457,9 @@ jobs:
             -archivePath "$RUNNER_TEMP/Stereodrome.xcarchive" \
             -exportPath "$EXPORT_PATH" \
             -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
+            -authenticationKeyPath "$APPSTORE_API_KEY_PATH" \
+            -authenticationKeyID "$APPSTORE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID" \
             -allowProvisioningUpdates \
             2>&1 | tee "$LOG_PATH"; then
             echo "::group::xcodebuild export errors"
