@@ -5237,6 +5237,7 @@ dependencies = [
  "submarine",
  "thiserror 2.0.18",
  "tokio",
+ "url",
  "urlencoding",
 ]
 

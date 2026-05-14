@@ -20,6 +20,7 @@ pub use queue::{QueueItem as SharedQueueItem, QueueState as SharedQueueState};
 
 const API_VERSION: &str = "1.16.1";
 const CLIENT_NAME: &str = "StereodromeMobile";
+const MOBILE_PLAYBACK_FORMAT: &str = "mp3";
 
 #[derive(Debug)]
 pub struct StereodromeCore {
@@ -592,7 +593,7 @@ impl StereodromeCore {
         Ok(subsonic::signed_url(
             &config,
             "stream",
-            &[("id", song_id.as_str())],
+            &[("id", song_id.as_str()), ("format", MOBILE_PLAYBACK_FORMAT)],
         ))
     }
 
@@ -676,9 +677,7 @@ impl StereodromeCore {
 
     pub async fn download_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
         let client = self.connected_client().await?;
-        let song = self.get_song_by_id(&song_id)?;
-        let suffix = song.suffix.as_deref().unwrap_or("mp3");
-        let path = self.audio_cache_path(&song_id, suffix)?;
+        let path = self.audio_cache_path(&song_id, MOBILE_PLAYBACK_FORMAT)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -696,7 +695,7 @@ impl StereodromeCore {
             .stream(
                 song_id.clone(),
                 None,
-                None::<String>,
+                Some(MOBILE_PLAYBACK_FORMAT),
                 None,
                 None::<String>,
                 None,
@@ -1174,22 +1173,6 @@ impl StereodromeCore {
             .collect())
     }
 
-    fn get_song_by_id(&self, song_id: &str) -> CoreResult<Song> {
-        let conn = Connection::open(&self.db_path)?;
-        conn.query_row(
-            "SELECT s.id, s.album_id, s.artist_id, s.title, s.track_number, s.disc_number,
-                    s.duration, s.bit_rate, s.size, s.suffix, s.content_type, s.path,
-                    s.year, s.genre, s.synced_at, ar.name, al.name
-             FROM songs s
-             LEFT JOIN artists ar ON s.artist_id = ar.id
-             LEFT JOIN albums al ON s.album_id = al.id
-             WHERE s.id = ?1",
-            [song_id],
-            Song::from_row,
-        )
-        .map_err(Into::into)
-    }
-
     fn audio_cache_dir(&self) -> CoreResult<PathBuf> {
         let path = self.data_dir.join("audio_cache");
         std::fs::create_dir_all(&path)?;
@@ -1207,6 +1190,20 @@ impl StereodromeCore {
     }
 
     fn cached_song_path(&self, song_id: &str) -> CoreResult<Option<PathBuf>> {
+        let mp3_path = self.audio_cache_path(song_id, MOBILE_PLAYBACK_FORMAT)?;
+        if mp3_path.exists() {
+            self.record_download(DownloadRecord {
+                entity_type: "song",
+                entity_id: song_id,
+                song_id,
+                status: "downloaded",
+                path: Some(&mp3_path),
+                bytes: mp3_path.metadata().map(|m| m.len()).unwrap_or(0),
+                error: None,
+            })?;
+            return Ok(Some(mp3_path));
+        }
+
         let conn = Connection::open(&self.db_path)?;
         let saved_path = conn
             .query_row(
@@ -1220,26 +1217,10 @@ impl StereodromeCore {
 
         if let Some(path) = saved_path {
             let path = PathBuf::from(path);
-            if path.exists() {
+            if path.exists() && is_mobile_playback_cache_path(&path) {
                 self.touch_download(song_id)?;
                 return Ok(Some(path));
             }
-        }
-
-        let song = self.get_song_by_id(song_id)?;
-        let suffix = song.suffix.as_deref().unwrap_or("mp3");
-        let path = self.audio_cache_path(song_id, suffix)?;
-        if path.exists() {
-            self.record_download(DownloadRecord {
-                entity_type: "song",
-                entity_id: song_id,
-                song_id,
-                status: "downloaded",
-                path: Some(&path),
-                bytes: path.metadata().map(|m| m.len()).unwrap_or(0),
-                error: None,
-            })?;
-            return Ok(Some(path));
         }
 
         Ok(None)
@@ -1493,7 +1474,15 @@ fn sanitize_file_component(value: &str) -> String {
 }
 
 fn path_to_file_uri(path: &Path) -> String {
-    format!("file://{}", path.to_string_lossy())
+    url::Url::from_file_path(path)
+        .map(|url| url.to_string())
+        .unwrap_or_else(|_| format!("file://{}", path.to_string_lossy()))
+}
+
+fn is_mobile_playback_cache_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(MOBILE_PLAYBACK_FORMAT))
 }
 
 struct PlaybackMarkers {

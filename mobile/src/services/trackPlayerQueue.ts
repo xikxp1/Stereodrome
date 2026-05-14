@@ -1,4 +1,4 @@
-import TrackPlayer, { RepeatMode } from "react-native-track-player";
+import TrackPlayer, { RepeatMode, TrackType } from "react-native-track-player";
 
 import { stereodromeCore } from "@/services/stereodromeCore";
 import type { QueueState } from "@/types/music";
@@ -23,10 +23,12 @@ export async function applyQueueStateToTrackPlayer(state: QueueState) {
     state.items.map(async (song) => ({
       id: song.song_id,
       url: await stereodromeCore.getStreamUri(song.song_id),
+      contentType: "audio/mpeg",
       title: song.title,
       artist: song.artist,
       album: song.album,
       duration: song.duration,
+      type: TrackType.Default,
     }))
   );
 
