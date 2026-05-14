@@ -23,6 +23,7 @@ const CLIENT_NAME: &str = "StereodromeMobile";
 
 #[derive(Debug)]
 pub struct StereodromeCore {
+    data_dir: PathBuf,
     db_path: PathBuf,
     config_path: PathBuf,
     server_config: Mutex<Option<ServerConfig>>,
@@ -42,6 +43,7 @@ impl StereodromeCore {
         let queue = db::load_queue(&db_path)?;
 
         Ok(Self {
+            data_dir: data_dir.to_path_buf(),
             db_path,
             config_path,
             server_config: Mutex::new(server_config),
@@ -582,6 +584,10 @@ impl StereodromeCore {
     }
 
     pub fn get_stream_uri(&self, song_id: String) -> CoreResult<String> {
+        if let Some(path) = self.cached_song_path(&song_id)? {
+            return Ok(path_to_file_uri(&path));
+        }
+
         let config = self.current_config()?;
         Ok(subsonic::signed_url(
             &config,
@@ -621,6 +627,154 @@ impl StereodromeCore {
         cover_art_id
             .map(|id| self.get_cover_art_uri(id, size))
             .transpose()
+    }
+
+    pub fn get_audio_cache_stats(&self) -> CoreResult<CacheStats> {
+        let max_size = self.max_cache_size()?;
+        let entries = self.audio_cache_entries()?;
+        Ok(CacheStats {
+            total_size: entries.iter().map(|(_, size)| *size).sum(),
+            file_count: entries.len() as u64,
+            max_size,
+        })
+    }
+
+    pub fn set_max_cache_size(&self, max_size: u64) -> CoreResult<CacheStats> {
+        let max_size = max_size.clamp(500 * 1024 * 1024, 50 * 1024 * 1024 * 1024);
+        self.set_setting("max_cache_size", &max_size.to_string())?;
+        self.enforce_audio_cache_limit()?;
+        self.get_audio_cache_stats()
+    }
+
+    pub fn clear_audio_cache(&self) -> CoreResult<CacheStats> {
+        for (path, _) in self.audio_cache_entries()? {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let conn = Connection::open(&self.db_path)?;
+        conn.execute("DELETE FROM download_items", [])?;
+        self.get_audio_cache_stats()
+    }
+
+    pub fn is_song_cached(&self, song_id: String) -> CoreResult<DownloadStatus> {
+        let path = self.cached_song_path(&song_id)?;
+        let bytes = path
+            .as_ref()
+            .and_then(|path| path.metadata().ok())
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        Ok(DownloadStatus {
+            song_id,
+            cached: path.is_some(),
+            path: path.as_ref().map(|path| path_to_file_uri(path)),
+            bytes,
+        })
+    }
+
+    pub async fn download_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
+        let client = self.connected_client().await?;
+        let song = self.get_song_by_id(&song_id)?;
+        let suffix = song.suffix.as_deref().unwrap_or("mp3");
+        let path = self.audio_cache_path(&song_id, suffix)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        self.record_download("song", &song_id, &song_id, "downloading", None, 0, None)?;
+        match client
+            .stream(
+                song_id.clone(),
+                None,
+                None::<String>,
+                None,
+                None::<String>,
+                None,
+                None,
+            )
+            .await
+        {
+            Ok(bytes) => {
+                std::fs::write(&path, &bytes)?;
+                self.record_download(
+                    "song",
+                    &song_id,
+                    &song_id,
+                    "downloaded",
+                    Some(&path),
+                    bytes.len() as u64,
+                    None,
+                )?;
+                self.enforce_audio_cache_limit()?;
+                Ok(DownloadStatus {
+                    song_id,
+                    cached: true,
+                    path: Some(path_to_file_uri(&path)),
+                    bytes: bytes.len() as u64,
+                })
+            }
+            Err(error) => {
+                self.record_download(
+                    "song",
+                    &song_id,
+                    &song_id,
+                    "failed",
+                    None,
+                    0,
+                    Some(&error.to_string()),
+                )?;
+                Err(CoreError::Subsonic(error.to_string()))
+            }
+        }
+    }
+
+    pub fn remove_cached_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
+        if let Some(path) = self.cached_song_path(&song_id)? {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let conn = Connection::open(&self.db_path)?;
+        conn.execute("DELETE FROM download_items WHERE song_id = ?1", [&song_id])?;
+        Ok(DownloadStatus {
+            song_id,
+            cached: false,
+            path: None,
+            bytes: 0,
+        })
+    }
+
+    pub async fn download_album(&self, album_id: String) -> CoreResult<Vec<DownloadStatus>> {
+        let songs = self.get_songs(Some(album_id), None)?;
+        let mut statuses = Vec::with_capacity(songs.len());
+        for song in songs {
+            statuses.push(self.download_song(song.id).await?);
+        }
+        Ok(statuses)
+    }
+
+    pub async fn download_playlist(&self, playlist_id: String) -> CoreResult<Vec<DownloadStatus>> {
+        let songs = self.get_playlist_songs(playlist_id).await?;
+        let mut statuses = Vec::with_capacity(songs.len());
+        for song in songs {
+            statuses.push(self.download_song(song.id).await?);
+        }
+        Ok(statuses)
+    }
+
+    pub async fn prefetch_next(&self) -> CoreResult<Option<DownloadStatus>> {
+        let next = {
+            let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
+            queue.peek_next().cloned()
+        };
+        match next {
+            Some(item) => self.download_song(item.song_id).await.map(Some),
+            None => Ok(None),
+        }
     }
 
     pub fn get_queue(&self) -> CoreResult<QueueState> {
@@ -894,6 +1048,173 @@ impl StereodromeCore {
             .collect())
     }
 
+    fn get_song_by_id(&self, song_id: &str) -> CoreResult<Song> {
+        let conn = Connection::open(&self.db_path)?;
+        conn.query_row(
+            "SELECT s.id, s.album_id, s.artist_id, s.title, s.track_number, s.disc_number,
+                    s.duration, s.bit_rate, s.size, s.suffix, s.content_type, s.path,
+                    s.year, s.genre, s.synced_at, ar.name, al.name
+             FROM songs s
+             LEFT JOIN artists ar ON s.artist_id = ar.id
+             LEFT JOIN albums al ON s.album_id = al.id
+             WHERE s.id = ?1",
+            [song_id],
+            Song::from_row,
+        )
+        .map_err(Into::into)
+    }
+
+    fn audio_cache_dir(&self) -> CoreResult<PathBuf> {
+        let path = self.data_dir.join("audio_cache");
+        std::fs::create_dir_all(&path)?;
+        Ok(path)
+    }
+
+    fn audio_cache_path(&self, song_id: &str, suffix: &str) -> CoreResult<PathBuf> {
+        let safe_id = sanitize_file_component(song_id);
+        let filename = if suffix.is_empty() {
+            safe_id
+        } else {
+            format!("{safe_id}.{suffix}")
+        };
+        Ok(self.audio_cache_dir()?.join(filename))
+    }
+
+    fn cached_song_path(&self, song_id: &str) -> CoreResult<Option<PathBuf>> {
+        let conn = Connection::open(&self.db_path)?;
+        let saved_path = conn
+            .query_row(
+                "SELECT path FROM download_items
+                 WHERE song_id = ?1 AND status = 'downloaded' AND path IS NOT NULL
+                 ORDER BY updated_at DESC LIMIT 1",
+                [song_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+
+        if let Some(path) = saved_path {
+            let path = PathBuf::from(path);
+            if path.exists() {
+                self.touch_download(song_id)?;
+                return Ok(Some(path));
+            }
+        }
+
+        let song = self.get_song_by_id(song_id)?;
+        let suffix = song.suffix.as_deref().unwrap_or("mp3");
+        let path = self.audio_cache_path(song_id, suffix)?;
+        if path.exists() {
+            self.record_download(
+                "song",
+                song_id,
+                song_id,
+                "downloaded",
+                Some(&path),
+                path.metadata().map(|m| m.len()).unwrap_or(0),
+                None,
+            )?;
+            return Ok(Some(path));
+        }
+
+        Ok(None)
+    }
+
+    fn audio_cache_entries(&self) -> CoreResult<Vec<(PathBuf, u64)>> {
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(self.audio_cache_dir()?)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                entries.push((path, entry.metadata()?.len()));
+            }
+        }
+        Ok(entries)
+    }
+
+    fn max_cache_size(&self) -> CoreResult<u64> {
+        let conn = Connection::open(&self.db_path)?;
+        let value = sync_value(&conn, "setting_max_cache_size")?
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(5 * 1024 * 1024 * 1024);
+        Ok(value.clamp(500 * 1024 * 1024, 50 * 1024 * 1024 * 1024))
+    }
+
+    fn set_setting(&self, key: &str, value: &str) -> CoreResult<()> {
+        let conn = Connection::open(&self.db_path)?;
+        write_sync_value(&conn, &format!("setting_{key}"), value)
+    }
+
+    fn enforce_audio_cache_limit(&self) -> CoreResult<()> {
+        let max_size = self.max_cache_size()?;
+        let mut entries = self.audio_cache_entries()?;
+        let mut total_size: u64 = entries.iter().map(|(_, size)| *size).sum();
+        if total_size <= max_size {
+            return Ok(());
+        }
+
+        entries.sort_by_key(|(path, _)| {
+            path.metadata()
+                .and_then(|metadata| metadata.accessed().or_else(|_| metadata.modified()))
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        });
+
+        for (path, size) in entries {
+            if total_size <= max_size {
+                break;
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    total_size = total_size.saturating_sub(size);
+                    let path_string = path.to_string_lossy().to_string();
+                    let conn = Connection::open(&self.db_path)?;
+                    conn.execute("DELETE FROM download_items WHERE path = ?1", [&path_string])?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        Ok(())
+    }
+
+    fn record_download(
+        &self,
+        entity_type: &str,
+        entity_id: &str,
+        song_id: &str,
+        status: &str,
+        path: Option<&Path>,
+        bytes: u64,
+        error: Option<&str>,
+    ) -> CoreResult<()> {
+        let conn = Connection::open(&self.db_path)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO download_items
+             (entity_type, entity_id, song_id, status, path, bytes, error, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                entity_type,
+                entity_id,
+                song_id,
+                status,
+                path.map(|path| path.to_string_lossy().to_string()),
+                bytes as i64,
+                error,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn touch_download(&self, song_id: &str) -> CoreResult<()> {
+        let conn = Connection::open(&self.db_path)?;
+        conn.execute(
+            "UPDATE download_items SET updated_at = ?1 WHERE song_id = ?2",
+            params![Utc::now().to_rfc3339(), song_id],
+        )?;
+        Ok(())
+    }
+
     fn with_queue_state(
         &self,
         mutate: impl FnOnce(&mut PlayQueue) -> CoreResult<()>,
@@ -996,4 +1317,18 @@ fn write_sync_value(conn: &Connection, key: &str, value: &str) -> CoreResult<()>
         params![key, value, Utc::now().to_rfc3339()],
     )?;
     Ok(())
+}
+
+fn sanitize_file_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => ch,
+        })
+        .collect()
+}
+
+fn path_to_file_uri(path: &Path) -> String {
+    format!("file://{}", path.to_string_lossy())
 }

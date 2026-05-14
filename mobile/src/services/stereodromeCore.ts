@@ -5,6 +5,8 @@ import type {
   Artist,
   Album,
   AlbumListEntry,
+  CacheStats,
+  DownloadStatus,
   LibrarySyncStatus,
   Playlist,
   QueueItem,
@@ -234,6 +236,33 @@ export const stereodromeCore = {
   },
   getStreamUri(songId: string): Promise<string> {
     return invokeJson("getStreamUri", songId);
+  },
+  getAudioCacheStats(): Promise<CacheStats> {
+    return invokeJson("getAudioCacheStats");
+  },
+  setMaxCacheSize(maxSize: number): Promise<CacheStats> {
+    return invokeJson("setMaxCacheSize", maxSize);
+  },
+  clearAudioCache(): Promise<CacheStats> {
+    return invokeJson("clearAudioCache");
+  },
+  isSongCached(songId: string): Promise<DownloadStatus> {
+    return invokeJson("isSongCached", songId);
+  },
+  downloadSong(songId: string): Promise<DownloadStatus> {
+    return invokeJson("downloadSong", songId);
+  },
+  removeCachedSong(songId: string): Promise<DownloadStatus> {
+    return invokeJson("removeCachedSong", songId);
+  },
+  downloadAlbum(albumId: string): Promise<DownloadStatus[]> {
+    return invokeJson("downloadAlbum", albumId);
+  },
+  downloadPlaylist(playlistId: string): Promise<DownloadStatus[]> {
+    return invokeJson("downloadPlaylist", playlistId);
+  },
+  prefetchNext(): Promise<DownloadStatus | null> {
+    return invokeJson("prefetchNext");
   },
   getQueue(): Promise<QueueState> {
     return invokeJson("getQueue");

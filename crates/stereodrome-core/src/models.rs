@@ -211,3 +211,18 @@ pub struct LibrarySyncStatus {
     pub incremental: SyncJobStatus,
     pub full_reconcile: SyncJobStatus,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheStats {
+    pub total_size: u64,
+    pub file_count: u64,
+    pub max_size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadStatus {
+    pub song_id: String,
+    pub cached: bool,
+    pub path: Option<String>,
+    pub bytes: u64,
+}

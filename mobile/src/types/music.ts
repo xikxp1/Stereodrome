@@ -142,3 +142,16 @@ export type LibrarySyncStatus = {
   incremental: SyncJobStatus;
   full_reconcile: SyncJobStatus;
 };
+
+export type CacheStats = {
+  total_size: number;
+  file_count: number;
+  max_size: number;
+};
+
+export type DownloadStatus = {
+  song_id: string;
+  cached: boolean;
+  path: string | null;
+  bytes: number;
+};

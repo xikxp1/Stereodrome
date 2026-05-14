@@ -191,6 +191,33 @@ fn dispatch(core: &StereodromeCore, method: &str, payload: Value) -> Result<Stri
             let song_id = parse_payload::<String>(payload)?;
             json_result(core.get_stream_uri(song_id))
         }
+        "getAudioCacheStats" => json_result(core.get_audio_cache_stats()),
+        "setMaxCacheSize" => {
+            let max_size = parse_payload::<u64>(payload)?;
+            json_result(core.set_max_cache_size(max_size))
+        }
+        "clearAudioCache" => json_result(core.clear_audio_cache()),
+        "isSongCached" => {
+            let song_id = parse_payload::<String>(payload)?;
+            json_result(core.is_song_cached(song_id))
+        }
+        "downloadSong" => {
+            let song_id = parse_payload::<String>(payload)?;
+            json_result(runtime.block_on(async { core.download_song(song_id).await }))
+        }
+        "removeCachedSong" => {
+            let song_id = parse_payload::<String>(payload)?;
+            json_result(core.remove_cached_song(song_id))
+        }
+        "downloadAlbum" => {
+            let album_id = parse_payload::<String>(payload)?;
+            json_result(runtime.block_on(async { core.download_album(album_id).await }))
+        }
+        "downloadPlaylist" => {
+            let playlist_id = parse_payload::<String>(payload)?;
+            json_result(runtime.block_on(async { core.download_playlist(playlist_id).await }))
+        }
+        "prefetchNext" => json_result(runtime.block_on(async { core.prefetch_next().await })),
         "getQueue" => json_result(core.get_queue()),
         "playSongWithQueue" => {
             let args = parse_payload::<PlaySongWithQueuePayload>(payload)?;

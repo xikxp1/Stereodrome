@@ -23,6 +23,10 @@ export function SettingsScreen() {
     queryKey: ["library-sync-status"],
     queryFn: stereodromeCore.getLibrarySyncStatus,
   });
+  const cacheStats = useQuery({
+    queryKey: ["audio-cache-stats"],
+    queryFn: stereodromeCore.getAudioCacheStats,
+  });
 
   async function runSync(mode: "full" | "incremental" | "reconcile") {
     setBusy(true);
@@ -89,6 +93,31 @@ export function SettingsScreen() {
         </Text>
       ) : null}
       {message ? <Text style={styles.copy}>{message}</Text> : null}
+      <Text style={styles.heading}>Cache</Text>
+      <Text style={styles.copy}>
+        {formatBytes(cacheStats.data?.total_size ?? 0)} cached across{" "}
+        {cacheStats.data?.file_count ?? 0} files
+      </Text>
+      <Pressable
+        disabled={busy}
+        onPress={async () => {
+          setBusy(true);
+          try {
+            await stereodromeCore.clearAudioCache();
+            await queryClient.invalidateQueries({
+              queryKey: ["audio-cache-stats"],
+            });
+            setMessage("Cache cleared");
+          } catch (e) {
+            setMessage(e instanceof Error ? e.message : String(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+        style={styles.secondaryButton}
+      >
+        <Text style={styles.secondaryButtonText}>Clear Audio Cache</Text>
+      </Pressable>
       <Text style={styles.heading}>Controls</Text>
       <View style={styles.segmentedControl}>
         <Pressable
@@ -220,3 +249,13 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 });
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024 * 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${Math.round(bytes / (1024 * 1024))} MB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
