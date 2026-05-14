@@ -6,11 +6,12 @@ import {
   Text,
   View,
 } from "react-native";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { colors } from "@/components/theme";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { useStereodrome } from "@/context/StereodromeContext";
+import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function SettingsScreen() {
   const stereodrome = useStereodrome();
@@ -18,12 +19,22 @@ export function SettingsScreen() {
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const syncStatus = useQuery({
+    queryKey: ["library-sync-status"],
+    queryFn: stereodromeCore.getLibrarySyncStatus,
+  });
 
-  async function sync() {
+  async function runSync(mode: "full" | "incremental" | "reconcile") {
     setBusy(true);
     setMessage(null);
     try {
-      await stereodrome.sync();
+      if (mode === "incremental") {
+        await stereodrome.syncIncremental();
+      } else if (mode === "reconcile") {
+        await stereodrome.reconcile();
+      } else {
+        await stereodrome.sync();
+      }
       await queryClient.invalidateQueries();
       setMessage("Library synced");
     } catch (e) {
@@ -39,13 +50,44 @@ export function SettingsScreen() {
       <Text style={styles.copy}>
         {stereodrome.status.server_url ?? "Not connected"}
       </Text>
-      <Pressable disabled={busy} onPress={sync} style={styles.button}>
+      <Pressable
+        disabled={busy}
+        onPress={() => runSync("full")}
+        style={styles.button}
+      >
         {busy ? (
           <ActivityIndicator color="#fff" />
         ) : (
           <Text style={styles.buttonText}>Sync Library</Text>
         )}
       </Pressable>
+      <View style={styles.buttonRow}>
+        <Pressable
+          disabled={busy}
+          onPress={() => runSync("incremental")}
+          style={styles.secondaryButton}
+        >
+          <Text style={styles.secondaryButtonText}>Incremental</Text>
+        </Pressable>
+        <Pressable
+          disabled={busy}
+          onPress={() => runSync("reconcile")}
+          style={styles.secondaryButton}
+        >
+          <Text style={styles.secondaryButtonText}>Reconcile</Text>
+        </Pressable>
+      </View>
+      <Text style={styles.copy}>
+        Last success:{" "}
+        {syncStatus.data?.incremental.last_success_at ??
+          syncStatus.data?.full_reconcile.last_success_at ??
+          "Never"}
+      </Text>
+      {syncStatus.data?.incremental.last_error ? (
+        <Text style={styles.error}>
+          {syncStatus.data.incremental.last_error}
+        </Text>
+      ) : null}
       {message ? <Text style={styles.copy}>{message}</Text> : null}
       <Text style={styles.heading}>Controls</Text>
       <View style={styles.segmentedControl}>
@@ -146,6 +188,31 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     height: 34,
     justifyContent: "center",
+    marginBottom: 12,
+  },
+  buttonRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
+  },
+  secondaryButton: {
+    alignItems: "center",
+    borderColor: colors.screenBorder,
+    borderRadius: 4,
+    borderWidth: 2,
+    flex: 1,
+    height: 32,
+    justifyContent: "center",
+  },
+  secondaryButtonText: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  error: {
+    color: "#ef4444",
+    fontSize: 12,
+    fontWeight: "700",
     marginBottom: 12,
   },
   buttonText: {

@@ -117,6 +117,12 @@ fn dispatch(core: &StereodromeCore, method: &str, payload: Value) -> Result<Stri
         }
         "getConnectionStatus" => json_result(core.get_connection_status()),
         "syncLibrary" => json_result(runtime.block_on(async { core.sync_library().await })),
+        "syncLibraryIncremental" => {
+            json_result(runtime.block_on(async { core.sync_library_incremental().await }))
+        }
+        "reconcileLibrary" => {
+            json_result(runtime.block_on(async { core.reconcile_library().await }))
+        }
         "getLibrarySyncStatus" => json_result(core.get_library_sync_status()),
         "getArtists" => json_result(core.get_artists()),
         "getAlbums" => {
@@ -142,6 +148,36 @@ fn dispatch(core: &StereodromeCore, method: &str, payload: Value) -> Result<Stri
         "getPlaylistSongs" => {
             let playlist_id = parse_payload::<String>(payload)?;
             json_result(runtime.block_on(async { core.get_playlist_songs(playlist_id).await }))
+        }
+        "createPlaylist" => {
+            let args = parse_payload::<CreatePlaylistPayload>(payload)?;
+            json_result(
+                runtime.block_on(async { core.create_playlist(args.name, args.song_ids).await }),
+            )
+        }
+        "renamePlaylist" => {
+            let args = parse_payload::<RenamePlaylistPayload>(payload)?;
+            json_result(
+                runtime.block_on(async { core.rename_playlist(args.playlist_id, args.name).await }),
+            )
+        }
+        "deletePlaylist" => {
+            let playlist_id = parse_payload::<String>(payload)?;
+            json_result(runtime.block_on(async { core.delete_playlist(playlist_id).await }))
+        }
+        "addSongsToPlaylist" => {
+            let args = parse_payload::<PlaylistSongIdsPayload>(payload)?;
+            json_result(runtime.block_on(async {
+                core.add_songs_to_playlist(args.playlist_id, args.song_ids)
+                    .await
+            }))
+        }
+        "removeSongsFromPlaylist" => {
+            let args = parse_payload::<PlaylistSongIndexesPayload>(payload)?;
+            json_result(runtime.block_on(async {
+                core.remove_songs_from_playlist(args.playlist_id, args.song_indexes)
+                    .await
+            }))
         }
         "getCoverArtUri" => {
             let args = parse_payload::<IdSizePayload>(payload)?;
@@ -240,6 +276,30 @@ struct PlaySongWithQueuePayload {
 struct MoveQueueItemPayload {
     from: usize,
     to: usize,
+}
+
+#[derive(Deserialize)]
+struct CreatePlaylistPayload {
+    name: String,
+    song_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RenamePlaylistPayload {
+    playlist_id: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct PlaylistSongIdsPayload {
+    playlist_id: String,
+    song_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct PlaylistSongIndexesPayload {
+    playlist_id: String,
+    song_indexes: Vec<i64>,
 }
 
 fn parse_payload<T: for<'de> Deserialize<'de>>(payload: Value) -> Result<T, String> {

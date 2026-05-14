@@ -144,6 +144,7 @@ impl StereodromeCore {
 
     pub async fn sync_library(&self) -> CoreResult<SyncResult> {
         let client = self.connected_client().await?;
+        self.record_sync_attempt("library_full", None)?;
         let indexes = client
             .get_artists(None::<String>)
             .await
@@ -233,40 +234,57 @@ impl StereodromeCore {
              VALUES ('library_last_success_at', ?1, ?1)",
             [&now],
         )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO sync_state (key, value, updated_at)
+             VALUES ('library_full_last_success_at', ?1, ?1)",
+            [&now],
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO sync_state (key, value, updated_at)
+             VALUES ('library_full_last_error', '', ?1)",
+            [&now],
+        )?;
         tx.commit()?;
         Ok(result)
     }
 
+    pub async fn sync_library_incremental(&self) -> CoreResult<SyncResult> {
+        self.record_sync_attempt("library_incremental", None)?;
+        match self.sync_library().await {
+            Ok(result) => {
+                self.record_sync_success("library_incremental")?;
+                Ok(result)
+            }
+            Err(error) => {
+                self.record_sync_attempt("library_incremental", Some(error.to_string()))?;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn reconcile_library(&self) -> CoreResult<SyncResult> {
+        self.record_sync_attempt("library_reconcile", None)?;
+        match self.sync_library().await {
+            Ok(result) => {
+                self.record_sync_success("library_reconcile")?;
+                Ok(result)
+            }
+            Err(error) => {
+                self.record_sync_attempt("library_reconcile", Some(error.to_string()))?;
+                Err(error)
+            }
+        }
+    }
+
     pub fn get_library_sync_status(&self) -> CoreResult<LibrarySyncStatus> {
         let conn = Connection::open(&self.db_path)?;
-        let last_success_at = conn
-            .query_row(
-                "SELECT value FROM sync_state WHERE key = 'library_last_success_at'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
+        let incremental = self.sync_job_status(&conn, "library_incremental", true, 60)?;
+        let reconcile = self.sync_job_status(&conn, "library_reconcile", false, 1440)?;
 
         Ok(LibrarySyncStatus {
             active_job: None,
-            incremental: SyncJobStatus {
-                enabled: false,
-                interval_minutes: 0,
-                running: false,
-                last_attempt_at: last_success_at.clone(),
-                last_success_at: last_success_at.clone(),
-                last_error: None,
-                next_run_at: None,
-            },
-            full_reconcile: SyncJobStatus {
-                enabled: false,
-                interval_minutes: 0,
-                running: false,
-                last_attempt_at: last_success_at.clone(),
-                last_success_at,
-                last_error: None,
-                next_run_at: None,
-            },
+            incremental,
+            full_reconcile: reconcile,
         })
     }
 
@@ -423,24 +441,20 @@ impl StereodromeCore {
     }
 
     pub async fn get_playlists(&self) -> CoreResult<Vec<Playlist>> {
-        let client = self.connected_client().await?;
-        let playlists = client
-            .get_playlists(None::<String>)
-            .await
-            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
-        Ok(playlists
-            .into_iter()
-            .map(|playlist| Playlist {
-                id: playlist.id,
-                name: playlist.name,
-                song_count: playlist.song_count,
-                duration: playlist.duration,
-                owner: playlist.owner,
-                cover_art_id: playlist.cover_art,
-                created_at: playlist.created.to_rfc3339(),
-                changed_at: playlist.changed.to_rfc3339(),
-            })
-            .collect())
+        if let Ok(client) = self.connected_client().await {
+            let playlists = client
+                .get_playlists(None::<String>)
+                .await
+                .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+            let mapped = playlists
+                .into_iter()
+                .map(playlist_from_subsonic)
+                .collect::<Vec<_>>();
+            self.save_playlists(&mapped)?;
+            return Ok(mapped);
+        }
+
+        self.get_local_playlists()
     }
 
     pub async fn get_playlist_songs(&self, playlist_id: String) -> CoreResult<Vec<Song>> {
@@ -473,6 +487,98 @@ impl StereodromeCore {
                 album: song.album,
             })
             .collect())
+    }
+
+    pub async fn create_playlist(
+        &self,
+        name: String,
+        song_ids: Vec<String>,
+    ) -> CoreResult<Playlist> {
+        let client = self.connected_client().await?;
+        let playlist = client
+            .create_playlist(name, song_ids)
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+        let mapped = playlist_from_subsonic(playlist.base);
+        self.save_playlists(std::slice::from_ref(&mapped))?;
+        Ok(mapped)
+    }
+
+    pub async fn rename_playlist(&self, playlist_id: String, name: String) -> CoreResult<()> {
+        let client = self.connected_client().await?;
+        client
+            .update_playlist(
+                playlist_id.clone(),
+                Some(name.clone()),
+                None::<String>,
+                None,
+                Vec::<String>::new(),
+                Vec::new(),
+            )
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+
+        let conn = Connection::open(&self.db_path)?;
+        conn.execute(
+            "UPDATE playlists SET name = ?1, synced_at = ?2 WHERE id = ?3",
+            params![name, Utc::now().to_rfc3339(), playlist_id],
+        )?;
+        Ok(())
+    }
+
+    pub async fn delete_playlist(&self, playlist_id: String) -> CoreResult<()> {
+        let client = self.connected_client().await?;
+        client
+            .delete_playlist(playlist_id.clone())
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+        let conn = Connection::open(&self.db_path)?;
+        conn.execute(
+            "DELETE FROM playlist_songs WHERE playlist_id = ?1",
+            [&playlist_id],
+        )?;
+        conn.execute("DELETE FROM playlists WHERE id = ?1", [&playlist_id])?;
+        Ok(())
+    }
+
+    pub async fn add_songs_to_playlist(
+        &self,
+        playlist_id: String,
+        song_ids: Vec<String>,
+    ) -> CoreResult<()> {
+        let client = self.connected_client().await?;
+        client
+            .update_playlist(
+                playlist_id,
+                None::<String>,
+                None::<String>,
+                None,
+                song_ids,
+                Vec::new(),
+            )
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn remove_songs_from_playlist(
+        &self,
+        playlist_id: String,
+        song_indexes: Vec<i64>,
+    ) -> CoreResult<()> {
+        let client = self.connected_client().await?;
+        client
+            .update_playlist(
+                playlist_id,
+                None::<String>,
+                None::<String>,
+                None,
+                Vec::<String>::new(),
+                song_indexes,
+            )
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+        Ok(())
     }
 
     pub fn get_stream_uri(&self, song_id: String) -> CoreResult<String> {
@@ -652,6 +758,101 @@ impl StereodromeCore {
             .ok_or(CoreError::NotConnected)
     }
 
+    fn get_local_playlists(&self) -> CoreResult<Vec<Playlist>> {
+        let conn = Connection::open(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, song_count, duration, owner, cover_art_id, created_at, changed_at
+             FROM playlists ORDER BY name COLLATE NOCASE",
+        )?;
+        rows_collect(stmt.query_map([], |row| {
+            Ok(Playlist {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                song_count: row.get(2)?,
+                duration: row.get(3)?,
+                owner: row.get(4)?,
+                cover_art_id: row.get(5)?,
+                created_at: row.get(6)?,
+                changed_at: row.get(7)?,
+            })
+        })?)
+    }
+
+    fn save_playlists(&self, playlists: &[Playlist]) -> CoreResult<()> {
+        let mut conn = Connection::open(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let now = Utc::now().to_rfc3339();
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO playlists
+                 (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, synced_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?;
+            for playlist in playlists {
+                stmt.execute(params![
+                    playlist.id,
+                    playlist.name,
+                    playlist.song_count,
+                    playlist.duration,
+                    playlist.owner,
+                    playlist.cover_art_id,
+                    playlist.created_at,
+                    playlist.changed_at,
+                    now
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn sync_job_status(
+        &self,
+        conn: &Connection,
+        prefix: &str,
+        enabled: bool,
+        interval_minutes: u32,
+    ) -> CoreResult<SyncJobStatus> {
+        let last_attempt_at = sync_value(conn, &format!("{prefix}_last_attempt_at"))?;
+        let last_success_at = sync_value(conn, &format!("{prefix}_last_success_at"))?;
+        let last_error =
+            sync_value(conn, &format!("{prefix}_last_error"))?.filter(|e| !e.is_empty());
+        let next_run_at = last_success_at.as_deref().and_then(|value| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|date| date + chrono::Duration::minutes(interval_minutes as i64))
+                .map(|date| date.to_rfc3339())
+        });
+
+        Ok(SyncJobStatus {
+            enabled,
+            interval_minutes,
+            running: false,
+            last_attempt_at,
+            last_success_at,
+            last_error,
+            next_run_at,
+        })
+    }
+
+    fn record_sync_attempt(&self, prefix: &str, error: Option<String>) -> CoreResult<()> {
+        let conn = Connection::open(&self.db_path)?;
+        let now = Utc::now().to_rfc3339();
+        write_sync_value(&conn, &format!("{prefix}_last_attempt_at"), &now)?;
+        if let Some(error) = error {
+            write_sync_value(&conn, &format!("{prefix}_last_error"), &error)?;
+        }
+        Ok(())
+    }
+
+    fn record_sync_success(&self, prefix: &str) -> CoreResult<()> {
+        let conn = Connection::open(&self.db_path)?;
+        let now = Utc::now().to_rfc3339();
+        write_sync_value(&conn, &format!("{prefix}_last_success_at"), &now)?;
+        write_sync_value(&conn, &format!("{prefix}_last_error"), "")?;
+        Ok(())
+    }
+
     fn load_queue_items_for_song_ids(&self, song_ids: &[String]) -> CoreResult<Vec<QueueItem>> {
         if song_ids.is_empty() {
             return Ok(Vec::new());
@@ -763,4 +964,36 @@ fn album_list_order(list_type: &str) -> CoreResult<Order> {
         "starred" => Ok(Order::Starred),
         other => Err(CoreError::InvalidAlbumListType(other.to_string())),
     }
+}
+
+fn playlist_from_subsonic(playlist: submarine::data::Playlist) -> Playlist {
+    Playlist {
+        id: playlist.id,
+        name: playlist.name,
+        song_count: playlist.song_count,
+        duration: playlist.duration,
+        owner: playlist.owner,
+        cover_art_id: playlist.cover_art,
+        created_at: playlist.created.to_rfc3339(),
+        changed_at: playlist.changed.to_rfc3339(),
+    }
+}
+
+fn sync_value(conn: &Connection, key: &str) -> CoreResult<Option<String>> {
+    conn.query_row(
+        "SELECT value FROM sync_state WHERE key = ?1",
+        [key],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn write_sync_value(conn: &Connection, key: &str, value: &str) -> CoreResult<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO sync_state (key, value, updated_at)
+         VALUES (?1, ?2, ?3)",
+        params![key, value, Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
 }

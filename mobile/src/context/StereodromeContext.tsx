@@ -14,6 +14,8 @@ type StereodromeContextValue = {
     password: string;
   }): Promise<void>;
   sync(): Promise<void>;
+  syncIncremental(): Promise<void>;
+  reconcile(): Promise<void>;
 };
 
 const disconnected: ConnectionStatus = {
@@ -59,6 +61,14 @@ export function StereodromeProvider({
     await stereodromeCore.syncLibrary();
   }
 
+  async function syncIncremental() {
+    await stereodromeCore.syncLibraryIncremental();
+  }
+
+  async function reconcile() {
+    await stereodromeCore.reconcileLibrary();
+  }
+
   useEffect(() => {
     let mounted = true;
     stereodromeCore
@@ -80,7 +90,16 @@ export function StereodromeProvider({
   }, []);
 
   const value = useMemo(
-    () => ({ ready, status, error, refreshStatus, connect, sync }),
+    () => ({
+      ready,
+      status,
+      error,
+      refreshStatus,
+      connect,
+      sync,
+      syncIncremental,
+      reconcile,
+    }),
     [error, ready, status]
   );
 

@@ -5,6 +5,7 @@ import type {
   Artist,
   Album,
   AlbumListEntry,
+  LibrarySyncStatus,
   Playlist,
   QueueItem,
   QueueState,
@@ -158,6 +159,21 @@ export const stereodromeCore = {
       return result;
     });
   },
+  syncLibraryIncremental(): Promise<SyncResult> {
+    return invokeJson<SyncResult>("syncLibraryIncremental").then((result) => {
+      emitCoreEvent("sync-status-changed", result);
+      return result;
+    });
+  },
+  reconcileLibrary(): Promise<SyncResult> {
+    return invokeJson<SyncResult>("reconcileLibrary").then((result) => {
+      emitCoreEvent("sync-status-changed", result);
+      return result;
+    });
+  },
+  getLibrarySyncStatus(): Promise<LibrarySyncStatus> {
+    return invokeJson("getLibrarySyncStatus");
+  },
   getArtists(): Promise<Artist[]> {
     return invokeJson("getArtists");
   },
@@ -182,6 +198,30 @@ export const stereodromeCore = {
   },
   getPlaylistSongs(id: string): Promise<Song[]> {
     return invokeJson("getPlaylistSongs", id);
+  },
+  createPlaylist(name: string, songIds: string[] = []): Promise<Playlist> {
+    return invokeJson("createPlaylist", { name, song_ids: songIds });
+  },
+  renamePlaylist(playlistId: string, name: string): Promise<void> {
+    return invokeJson("renamePlaylist", { playlist_id: playlistId, name });
+  },
+  deletePlaylist(playlistId: string): Promise<void> {
+    return invokeJson("deletePlaylist", playlistId);
+  },
+  addSongsToPlaylist(playlistId: string, songIds: string[]): Promise<void> {
+    return invokeJson("addSongsToPlaylist", {
+      playlist_id: playlistId,
+      song_ids: songIds,
+    });
+  },
+  removeSongsFromPlaylist(
+    playlistId: string,
+    songIndexes: number[]
+  ): Promise<void> {
+    return invokeJson("removeSongsFromPlaylist", {
+      playlist_id: playlistId,
+      song_indexes: songIndexes,
+    });
   },
   searchLibrary(query: string, limit = 25): Promise<SearchResults> {
     return invokeJson("searchLibrary", { query, limit });

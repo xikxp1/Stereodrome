@@ -126,3 +126,19 @@ export type SyncResult = {
   albums: number;
   songs: number;
 };
+
+export type SyncJobStatus = {
+  enabled: boolean;
+  interval_minutes: number;
+  running: boolean;
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  next_run_at: string | null;
+};
+
+export type LibrarySyncStatus = {
+  active_job: string | null;
+  incremental: SyncJobStatus;
+  full_reconcile: SyncJobStatus;
+};
