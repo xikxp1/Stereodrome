@@ -17,6 +17,7 @@ Pod::Spec.new do |s|
 
   s.dependency 'ExpoModulesCore'
   s.source_files = '**/*.{h,m,swift}'
+  s.exclude_files = 'rust-libs/**/*'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
   s.vendored_frameworks = 'rust-libs/StereodromeFfi.xcframework'
 end
