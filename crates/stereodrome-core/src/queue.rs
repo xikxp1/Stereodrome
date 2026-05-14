@@ -560,3 +560,296 @@ impl PlayQueue {
             && self.current_index == Some(self.items.len() - 1)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{PlayQueue, QueueItem, RepeatMode};
+
+    fn queue_item(id: &str) -> QueueItem {
+        QueueItem {
+            song_id: id.to_string(),
+            title: format!("Song {id}"),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration: 180,
+        }
+    }
+
+    fn song_ids(items: &[QueueItem]) -> Vec<String> {
+        items.iter().map(|item| item.song_id.clone()).collect()
+    }
+
+    fn shuffled_repeat_all_queue() -> PlayQueue {
+        let mut queue = PlayQueue::new();
+        queue.add_many(vec![
+            queue_item("a"),
+            queue_item("b"),
+            queue_item("c"),
+            queue_item("d"),
+        ]);
+        queue.shuffle = true;
+        queue.repeat_mode = RepeatMode::All;
+        queue.current_index = Some(queue.items.len() - 1);
+        queue
+    }
+
+    #[test]
+    fn peek_next_prepares_stable_wrap_preview_for_shuffle_repeat_all() {
+        let mut queue = shuffled_repeat_all_queue();
+        let current_song_id = queue.current_item().unwrap().song_id.clone();
+
+        let first_peek = queue.peek_next().unwrap().song_id.clone();
+        let second_peek = queue.peek_next().unwrap().song_id.clone();
+
+        assert_eq!(first_peek, second_peek);
+        assert_ne!(first_peek, current_song_id);
+        assert_eq!(
+            queue.prepared_next_item().map(|item| item.song_id.as_str()),
+            Some(first_peek.as_str())
+        );
+    }
+
+    #[test]
+    fn next_consumes_prepared_wrap_cycle() {
+        let mut queue = shuffled_repeat_all_queue();
+        let expected_next = queue.peek_next().unwrap().song_id.clone();
+        let current_song_id = queue.current_item().unwrap().song_id.clone();
+
+        let next_song_id = queue.next(false).unwrap().song_id.clone();
+
+        assert_eq!(next_song_id, expected_next);
+        assert_eq!(queue.current_index(), Some(0));
+        assert_eq!(queue.items().first().unwrap().song_id, expected_next);
+        assert!(queue.prepared_shuffle_cycle.is_none());
+        assert_ne!(queue.items().first().unwrap().song_id, current_song_id);
+
+        let mut ids = song_ids(queue.items());
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn manual_and_auto_wrap_both_use_prepared_preview() {
+        let mut manual_queue = shuffled_repeat_all_queue();
+        let manual_preview = manual_queue.peek_next().unwrap().song_id.clone();
+        assert_eq!(manual_queue.next(true).unwrap().song_id, manual_preview);
+
+        let mut auto_queue = shuffled_repeat_all_queue();
+        let auto_preview = auto_queue.peek_next().unwrap().song_id.clone();
+        assert_eq!(auto_queue.next(false).unwrap().song_id, auto_preview);
+    }
+
+    #[test]
+    fn mutating_queue_invalidates_prepared_cycle() {
+        let mut queue = shuffled_repeat_all_queue();
+        queue.peek_next();
+        assert!(queue.prepared_shuffle_cycle.is_some());
+
+        queue.add(queue_item("e"));
+        assert!(queue.prepared_shuffle_cycle.is_none());
+        assert!(queue.prepared_next_item().is_none());
+    }
+
+    #[test]
+    fn move_item_updates_canonical_order() {
+        let mut queue = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(2),
+            true,
+            RepeatMode::Off,
+        );
+
+        queue.items = vec![
+            queue_item("c"),
+            queue_item("a"),
+            queue_item("d"),
+            queue_item("b"),
+        ];
+        queue.original_order = vec![
+            queue_item("a"),
+            queue_item("b"),
+            queue_item("c"),
+            queue_item("d"),
+        ];
+
+        queue.move_item(0, 2);
+
+        assert_eq!(
+            song_ids(queue.items()),
+            vec![
+                "a".to_string(),
+                "d".to_string(),
+                "c".to_string(),
+                "b".to_string()
+            ]
+        );
+        assert_eq!(song_ids(&queue.original_order), song_ids(queue.items()));
+    }
+
+    #[test]
+    fn move_item_repositions_current_track() {
+        let mut move_current = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(1),
+            false,
+            RepeatMode::Off,
+        );
+
+        move_current.move_item(1, 3);
+        assert_eq!(move_current.current_index(), Some(3));
+
+        let mut move_before_current = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(2),
+            false,
+            RepeatMode::Off,
+        );
+
+        move_before_current.move_item(0, 3);
+        assert_eq!(move_before_current.current_index(), Some(1));
+
+        let mut move_after_current = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(2),
+            false,
+            RepeatMode::Off,
+        );
+
+        move_after_current.move_item(3, 1);
+        assert_eq!(move_after_current.current_index(), Some(3));
+    }
+
+    #[test]
+    fn move_item_invalidates_prepared_shuffle_cycle() {
+        let mut queue = shuffled_repeat_all_queue();
+        queue.peek_next();
+        assert!(queue.prepared_shuffle_cycle.is_some());
+
+        queue.move_item(0, 2);
+
+        assert!(queue.prepared_shuffle_cycle.is_none());
+        assert!(queue.prepared_next_item().is_none());
+    }
+
+    #[test]
+    fn disabling_shuffle_restores_reordered_visible_order() {
+        let mut queue = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(2),
+            true,
+            RepeatMode::Off,
+        );
+
+        queue.items = vec![
+            queue_item("c"),
+            queue_item("a"),
+            queue_item("d"),
+            queue_item("b"),
+        ];
+        queue.original_order = vec![
+            queue_item("a"),
+            queue_item("b"),
+            queue_item("c"),
+            queue_item("d"),
+        ];
+
+        queue.move_item(0, 2);
+        let reordered = song_ids(queue.items());
+        let current_song_id = queue.current_item().unwrap().song_id.clone();
+
+        queue.toggle_shuffle();
+
+        assert!(!queue.is_shuffle());
+        assert_eq!(song_ids(queue.items()), reordered);
+        assert_eq!(
+            queue.current_item().map(|item| item.song_id.as_str()),
+            Some(current_song_id.as_str())
+        );
+    }
+
+    #[test]
+    fn repeat_one_and_repeat_off_behavior_stays_unchanged() {
+        let items = vec![queue_item("a"), queue_item("b"), queue_item("c")];
+
+        let mut repeat_one = PlayQueue::load(items.clone(), Some(1), true, RepeatMode::One);
+        let repeat_one_peek = repeat_one.peek_next().unwrap().song_id.clone();
+        let repeat_one_next = repeat_one.next(false).unwrap().song_id.clone();
+        assert_eq!(repeat_one_peek, "b");
+        assert_eq!(repeat_one_next, "b");
+        assert!(repeat_one.prepared_shuffle_cycle.is_none());
+
+        let mut repeat_off = PlayQueue::load(items, Some(2), true, RepeatMode::Off);
+        assert!(repeat_off.peek_next().is_none());
+        assert!(repeat_off.next(false).is_none());
+        assert!(repeat_off.prepared_shuffle_cycle.is_none());
+    }
+
+    #[test]
+    fn disabling_shuffle_restores_original_order_after_wrap() {
+        let mut queue = shuffled_repeat_all_queue();
+        let original_order = song_ids(&queue.original_order);
+
+        queue.peek_next();
+        queue.next(false);
+        queue.toggle_shuffle();
+
+        assert!(!queue.is_shuffle());
+        assert_eq!(song_ids(queue.items()), original_order);
+        assert!(queue.prepared_shuffle_cycle.is_none());
+    }
+
+    #[test]
+    fn removing_current_item_preserves_pending_navigation_position() {
+        let mut queue = PlayQueue::load(
+            vec![queue_item("a"), queue_item("b"), queue_item("c")],
+            Some(1),
+            false,
+            RepeatMode::Off,
+        );
+
+        let removed = queue.remove(1).unwrap();
+
+        assert_eq!(removed.song_id, "b");
+        assert_eq!(queue.current_index(), None);
+        assert_eq!(queue.pending_navigation_index(), Some(1));
+        assert_eq!(
+            queue.next(false).map(|item| item.song_id.as_str()),
+            Some("c")
+        );
+        assert_eq!(queue.current_index(), Some(1));
+        assert_eq!(queue.pending_navigation_index(), None);
+    }
+}
