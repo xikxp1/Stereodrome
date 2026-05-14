@@ -106,22 +106,38 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [currentSong, setCurrentSong] = useState<PlayableSong | null>(null);
   const [currentIndex, setCurrentIndex] = useState<number | null>(null);
+  const [pendingNavigationIndex, setPendingNavigationIndex] = useState<
+    number | null
+  >(null);
   const [queue, setQueue] = useState<PlayableSong[]>([]);
   const [repeatMode, setRepeatMode] =
     useState<QueueState["repeat_mode"]>("Off");
   const [shuffleEnabled, setShuffleEnabled] = useState(false);
   const currentIndexRef = useRef<number | null>(null);
+  const pendingNavigationIndexRef = useRef<number | null>(null);
+  const currentSongRef = useRef<PlayableSong | null>(null);
   const queueRef = useRef<PlayableSong[]>([]);
 
   const applyQueueState = useCallback(async (state: QueueState) => {
     const songs = state.items.map(playableFromQueueItem);
     const index = state.current_index;
+    const pendingIndex = state.pending_navigation_index;
+    const removedCurrentIsStillPlaying =
+      index === null && pendingIndex !== null;
 
     currentIndexRef.current = index;
+    pendingNavigationIndexRef.current = pendingIndex;
     queueRef.current = songs;
     setQueue(songs);
     setCurrentIndex(index);
-    setCurrentSong(index === null ? null : (songs[index] ?? null));
+    setPendingNavigationIndex(pendingIndex);
+    if (removedCurrentIsStillPlaying) {
+      setCurrentSong(currentSongRef.current);
+    } else {
+      const nextCurrentSong = index === null ? null : (songs[index] ?? null);
+      currentSongRef.current = nextCurrentSong;
+      setCurrentSong(nextCurrentSong);
+    }
     setRepeatMode(state.repeat_mode);
     setShuffleEnabled(state.shuffle);
 
@@ -162,24 +178,33 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         const index = event.index ?? null;
         if (index === null) {
           currentIndexRef.current = null;
-          setCurrentIndex(null);
-          setCurrentSong(null);
+          if (pendingNavigationIndexRef.current === null) {
+            currentSongRef.current = null;
+            setCurrentIndex(null);
+            setPendingNavigationIndex(null);
+            setCurrentSong(null);
+          }
           return;
         }
 
         if (shouldSuppressTrackPlayerQueueEvent()) {
           currentIndexRef.current = index;
+          pendingNavigationIndexRef.current = null;
           setCurrentIndex(index);
-          setCurrentSong(queueRef.current[index] ?? null);
+          setPendingNavigationIndex(null);
+          currentSongRef.current = queueRef.current[index] ?? null;
+          setCurrentSong(currentSongRef.current);
           return;
         }
 
         const previousIndex = currentIndexRef.current;
+        const pendingIndex = pendingNavigationIndexRef.current;
         const queueLength = queueRef.current.length;
         const movedForward =
-          previousIndex !== null &&
-          (index === previousIndex + 1 ||
-            (previousIndex === queueLength - 1 && index === 0));
+          pendingIndex !== null ||
+          (previousIndex !== null &&
+            (index === previousIndex + 1 ||
+              (previousIndex === queueLength - 1 && index === 0)));
 
         void (async () => {
           const state = movedForward
@@ -379,7 +404,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const isPlaying = playbackState.state === State.Playing;
   const nextIndex =
     currentIndex === null
-      ? null
+      ? pendingNavigationIndex === null
+        ? null
+        : Math.min(pendingNavigationIndex, queue.length - 1)
       : currentIndex + 1 < queue.length
         ? currentIndex + 1
         : repeatMode === "All"

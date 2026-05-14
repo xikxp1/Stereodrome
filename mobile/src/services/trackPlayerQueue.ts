@@ -10,8 +10,13 @@ export function shouldSuppressTrackPlayerQueueEvent() {
 }
 
 export async function applyQueueStateToTrackPlayer(state: QueueState) {
-  suppressTrackEventsUntil = Date.now() + 1_000;
   await TrackPlayer.setRepeatMode(repeatModeForTrackPlayer(state.repeat_mode));
+
+  if (state.current_index === null && state.pending_navigation_index !== null) {
+    return;
+  }
+
+  suppressTrackEventsUntil = Date.now() + 1_000;
   await TrackPlayer.reset();
 
   const tracks = await Promise.all(
