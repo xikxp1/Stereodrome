@@ -252,6 +252,22 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+      - name: Resolve desktop target roots
+        shell: bash
+        run: |
+          target_roots=()
+          for dir in target src-tauri/target; do
+            if [ -d "$dir" ]; then
+              target_roots+=("$dir")
+            fi
+          done
+          if [ "${#target_roots[@]}" -eq 0 ]; then
+            echo "::error::No Cargo target directory found"
+            exit 1
+          fi
+
+          echo "DESKTOP_TARGET_ROOTS=${target_roots[*]}" >> "$GITHUB_ENV"
+
       - name: Prepare macOS release assets
         if: matrix.platform == 'macos-latest'
         shell: bash
@@ -259,7 +275,7 @@ jobs:
           dmg_files=()
           while IFS= read -r file; do
             dmg_files+=("$file")
-          done < <(find src-tauri/target -path '*/bundle/dmg/*.dmg' -type f | sort)
+          done < <(find $DESKTOP_TARGET_ROOTS -path '*/bundle/dmg/*.dmg' -type f | sort)
 
           if [ "${#dmg_files[@]}" -ne 1 ]; then
             echo "::error::Expected exactly one macOS DMG, found ${#dmg_files[@]}"
@@ -287,12 +303,12 @@ jobs:
           msi_files=()
           while IFS= read -r file; do
             msi_files+=("$file")
-          done < <(find src-tauri/target -path '*/bundle/msi/*.msi' -type f | sort)
+          done < <(find $DESKTOP_TARGET_ROOTS -path '*/bundle/msi/*.msi' -type f | sort)
 
           exe_files=()
           while IFS= read -r file; do
             exe_files+=("$file")
-          done < <(find src-tauri/target -path '*/bundle/nsis/*.exe' -type f | sort)
+          done < <(find $DESKTOP_TARGET_ROOTS -path '*/bundle/nsis/*.exe' -type f | sort)
 
           if [ "${#msi_files[@]}" -ne 1 ]; then
             echo "::error::Expected exactly one Windows MSI, found ${#msi_files[@]}"
@@ -327,12 +343,12 @@ jobs:
           appimage_files=()
           while IFS= read -r file; do
             appimage_files+=("$file")
-          done < <(find src-tauri/target -path '*/bundle/appimage/*.AppImage' -type f | sort)
+          done < <(find $DESKTOP_TARGET_ROOTS -path '*/bundle/appimage/*.AppImage' -type f | sort)
 
           deb_files=()
           while IFS= read -r file; do
             deb_files+=("$file")
-          done < <(find src-tauri/target -path '*/bundle/deb/*.deb' -type f | sort)
+          done < <(find $DESKTOP_TARGET_ROOTS -path '*/bundle/deb/*.deb' -type f | sort)
 
           if [ "${#appimage_files[@]}" -ne 1 ]; then
             echo "::error::Expected exactly one Linux AppImage, found ${#appimage_files[@]}"
