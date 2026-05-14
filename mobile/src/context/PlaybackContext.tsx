@@ -80,12 +80,26 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const queueRef = useRef<PlayableSong[]>([]);
   const isPlayingRef = useRef(false);
   const handlingEndedRef = useRef(false);
+  const expectedAudioSongIdRef = useRef<string | null>(null);
   const audioProcessingSettingsRef = useRef<AudioProcessingSettings | null>(
     null
   );
 
   const updateAudioStatus = useCallback(
     (status: AudioPlaybackStatus, songs = queueRef.current) => {
+      const expectedAudioSongId = expectedAudioSongIdRef.current;
+      if (
+        expectedAudioSongId &&
+        status.current_song_id !== expectedAudioSongId
+      ) {
+        isPlayingRef.current = status.is_playing;
+        setIsPlaying(status.is_playing);
+        return;
+      }
+      if (expectedAudioSongId) {
+        expectedAudioSongIdRef.current = null;
+      }
+
       isPlayingRef.current = status.is_playing;
       setIsPlaying(status.is_playing);
       setPosition(status.position);
@@ -130,6 +144,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const playCurrentQueueItem = useCallback(async () => {
+    expectedAudioSongIdRef.current = currentSongRef.current?.id ?? null;
     const status = await stereodromeCore.audioPlayCurrent();
     updateAudioStatus(status);
     void stereodromeCore.prefetchNext().catch(() => {});
@@ -157,6 +172,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       if (state.current_index !== null) {
         await playCurrentQueueItem();
       } else {
+        expectedAudioSongIdRef.current = null;
         await stereodromeCore.audioStop();
         setIsPlaying(false);
       }
@@ -224,6 +240,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         .audioGetStatus()
         .then(async (status) => {
           updateAudioStatus(status);
+          if (expectedAudioSongIdRef.current) {
+            return;
+          }
 
           if (status.current_song_id) {
             await stereodromeCore.reportPlaybackProgress({
@@ -390,6 +409,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const clearQueue = useCallback(async () => {
     try {
       const state = await stereodromeCore.clearQueue();
+      expectedAudioSongIdRef.current = null;
       await stereodromeCore.audioStop();
       await applyQueueState(state);
       setPosition(0);

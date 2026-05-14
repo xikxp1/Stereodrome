@@ -12,31 +12,61 @@ export function NowPlayingScreen() {
   const [nextCoverUri, setNextCoverUri] = useState<string | null>(null);
   const song = playback.currentSong;
   const nextSong = playback.nextSong;
+  const songId = song?.id ?? null;
+  const nextSongId = nextSong?.id ?? null;
   const duration = playback.duration || song?.duration || 0;
   const progressRatio =
     song && duration > 0 ? Math.min(1, playback.position / duration) : 0;
 
   useEffect(() => {
-    if (!song) {
+    if (!songId) {
       setCoverUri(null);
       return;
     }
+    let cancelled = false;
+    setCoverUri(null);
     stereodromeCore
-      .getSongCoverArtUri(song.id, 512)
-      .then(setCoverUri)
-      .catch(() => setCoverUri(null));
-  }, [song]);
+      .getSongCoverArtUri(songId, 512)
+      .then((uri) => {
+        if (!cancelled) {
+          setCoverUri(uri);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCoverUri(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [songId]);
 
   useEffect(() => {
-    if (!nextSong) {
+    if (!nextSongId) {
       setNextCoverUri(null);
       return;
     }
+    let cancelled = false;
+    setNextCoverUri(null);
     stereodromeCore
-      .getSongCoverArtUri(nextSong.id, 128)
-      .then(setNextCoverUri)
-      .catch(() => setNextCoverUri(null));
-  }, [nextSong]);
+      .getSongCoverArtUri(nextSongId, 128)
+      .then((uri) => {
+        if (!cancelled) {
+          setNextCoverUri(uri);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setNextCoverUri(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [nextSongId]);
 
   return (
     <View style={styles.container}>
