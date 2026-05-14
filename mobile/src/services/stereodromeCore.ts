@@ -5,6 +5,7 @@ import type {
   Artist,
   Album,
   AlbumListEntry,
+  AudioProcessingSettings,
   CacheStats,
   DownloadStatus,
   LibrarySyncStatus,
@@ -278,6 +279,14 @@ export const stereodromeCore = {
     progress: PlaybackProgress
   ): Promise<PlaybackStateSnapshot> {
     return invokeJson("reportPlaybackProgress", progress);
+  },
+  getAudioProcessingSettings(): Promise<AudioProcessingSettings> {
+    return invokeJson("getAudioProcessingSettings");
+  },
+  setAudioProcessingSettings(
+    settings: AudioProcessingSettings
+  ): Promise<AudioProcessingSettings> {
+    return invokeJson("setAudioProcessingSettings", settings);
   },
   getQueue(): Promise<QueueState> {
     return invokeJson("getQueue");

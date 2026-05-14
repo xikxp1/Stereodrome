@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Pressable,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from "react-native";
@@ -27,6 +28,23 @@ export function SettingsScreen() {
     queryKey: ["audio-cache-stats"],
     queryFn: stereodromeCore.getAudioCacheStats,
   });
+  const audioSettings = useQuery({
+    queryKey: ["audio-processing-settings"],
+    queryFn: stereodromeCore.getAudioProcessingSettings,
+  });
+
+  async function updateAudioSetting(
+    patch: Partial<NonNullable<typeof audioSettings.data>>
+  ) {
+    if (!audioSettings.data) {
+      return;
+    }
+    const next = await stereodromeCore.setAudioProcessingSettings({
+      ...audioSettings.data,
+      ...patch,
+    });
+    queryClient.setQueryData(["audio-processing-settings"], next);
+  }
 
   async function runSync(mode: "full" | "incremental" | "reconcile") {
     setBusy(true);
@@ -118,6 +136,42 @@ export function SettingsScreen() {
       >
         <Text style={styles.secondaryButtonText}>Clear Audio Cache</Text>
       </Pressable>
+      <Text style={styles.heading}>Audio Processing</Text>
+      <SettingSwitch
+        label="Normalization"
+        value={audioSettings.data?.normalization_enabled ?? false}
+        onValueChange={(value) =>
+          updateAudioSetting({ normalization_enabled: value })
+        }
+      />
+      <SettingSwitch
+        label="Equalizer"
+        value={audioSettings.data?.equalizer_enabled ?? false}
+        onValueChange={(value) =>
+          updateAudioSetting({ equalizer_enabled: value })
+        }
+      />
+      <SettingSwitch
+        label="Dynamics"
+        value={audioSettings.data?.dynamics_enabled ?? false}
+        onValueChange={(value) =>
+          updateAudioSetting({ dynamics_enabled: value })
+        }
+      />
+      <SettingSwitch
+        label="Binaural"
+        value={audioSettings.data?.binaural_enabled ?? false}
+        onValueChange={(value) =>
+          updateAudioSetting({ binaural_enabled: value })
+        }
+      />
+      <SettingSwitch
+        label="Crossfade"
+        value={audioSettings.data?.crossfade_enabled ?? false}
+        onValueChange={(value) =>
+          updateAudioSetting({ crossfade_enabled: value })
+        }
+      />
       <Text style={styles.heading}>Controls</Text>
       <View style={styles.segmentedControl}>
         <Pressable
@@ -244,11 +298,39 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginBottom: 12,
   },
+  settingRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 36,
+  },
+  settingLabel: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: "800",
+  },
   buttonText: {
     color: "#fff",
     fontWeight: "800",
   },
 });
+
+function SettingSwitch({
+  label,
+  value,
+  onValueChange,
+}: {
+  label: string;
+  value: boolean;
+  onValueChange(value: boolean): void;
+}) {
+  return (
+    <View style={styles.settingRow}>
+      <Text style={styles.settingLabel}>{label}</Text>
+      <Switch value={value} onValueChange={onValueChange} />
+    </View>
+  );
+}
 
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) {

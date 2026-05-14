@@ -869,6 +869,31 @@ impl StereodromeCore {
         )
     }
 
+    pub fn get_audio_processing_settings(&self) -> CoreResult<AudioProcessingSettings> {
+        let conn = Connection::open(&self.db_path)?;
+        let Some(json) = sync_value(&conn, "settings_audio_processing")? else {
+            return Ok(AudioProcessingSettings::default());
+        };
+        let mut settings =
+            serde_json::from_str::<AudioProcessingSettings>(&json).unwrap_or_default();
+        clamp_audio_processing_settings(&mut settings);
+        Ok(settings)
+    }
+
+    pub fn set_audio_processing_settings(
+        &self,
+        mut settings: AudioProcessingSettings,
+    ) -> CoreResult<AudioProcessingSettings> {
+        clamp_audio_processing_settings(&mut settings);
+        let conn = Connection::open(&self.db_path)?;
+        write_sync_value(
+            &conn,
+            "settings_audio_processing",
+            &serde_json::to_string(&settings)?,
+        )?;
+        Ok(settings)
+    }
+
     pub fn get_queue(&self) -> CoreResult<QueueState> {
         self.with_queue_state(|_| Ok(()))
     }
@@ -1484,4 +1509,30 @@ struct PlaybackMarkers {
     app_volume: f64,
     now_playing_song_id: Option<String>,
     scrobbled_song_id: Option<String>,
+}
+
+fn clamp_audio_processing_settings(settings: &mut AudioProcessingSettings) {
+    if settings.normalization_mode != "album" {
+        settings.normalization_mode = "track".to_string();
+    }
+    settings.target_lufs = settings.target_lufs.clamp(-24.0, -8.0);
+    settings.preamp_db = settings.preamp_db.clamp(-12.0, 12.0);
+    settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(500, 15_000);
+    if !matches!(
+        settings.dynamics_preset.as_str(),
+        "light" | "medium" | "heavy"
+    ) {
+        settings.dynamics_preset = "light".to_string();
+    }
+    if !matches!(
+        settings.binaural_preset.as_str(),
+        "light" | "medium" | "strong"
+    ) {
+        settings.binaural_preset = "medium".to_string();
+    }
+    settings.equalizer_bands_db.resize(12, 0.0);
+    settings.equalizer_bands_db.truncate(12);
+    for band in &mut settings.equalizer_bands_db {
+        *band = band.clamp(-12.0, 12.0);
+    }
 }

@@ -171,3 +171,20 @@ export type PlaybackProgress = {
   duration_seconds: number;
   is_playing: boolean;
 };
+
+export type AudioProcessingSettings = {
+  normalization_enabled: boolean;
+  normalization_mode: "track" | "album";
+  target_lufs: number;
+  preamp_db: number;
+  prevent_clipping: boolean;
+  dynamics_enabled: boolean;
+  dynamics_preset: "light" | "medium" | "heavy";
+  binaural_enabled: boolean;
+  binaural_preset: "light" | "medium" | "strong";
+  equalizer_enabled: boolean;
+  equalizer_bands_db: number[];
+  gapless_enabled: boolean;
+  crossfade_enabled: boolean;
+  crossfade_duration_ms: number;
+};

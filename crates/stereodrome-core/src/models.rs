@@ -244,3 +244,42 @@ pub struct PlaybackProgress {
     pub duration_seconds: f64,
     pub is_playing: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioProcessingSettings {
+    pub normalization_enabled: bool,
+    pub normalization_mode: String,
+    pub target_lufs: f64,
+    pub preamp_db: f64,
+    pub prevent_clipping: bool,
+    pub dynamics_enabled: bool,
+    pub dynamics_preset: String,
+    pub binaural_enabled: bool,
+    pub binaural_preset: String,
+    pub equalizer_enabled: bool,
+    pub equalizer_bands_db: Vec<f64>,
+    pub gapless_enabled: bool,
+    pub crossfade_enabled: bool,
+    pub crossfade_duration_ms: u32,
+}
+
+impl Default for AudioProcessingSettings {
+    fn default() -> Self {
+        Self {
+            normalization_enabled: false,
+            normalization_mode: "track".to_string(),
+            target_lufs: -14.0,
+            preamp_db: 0.0,
+            prevent_clipping: true,
+            dynamics_enabled: false,
+            dynamics_preset: "light".to_string(),
+            binaural_enabled: false,
+            binaural_preset: "medium".to_string(),
+            equalizer_enabled: false,
+            equalizer_bands_db: vec![0.0; 12],
+            gapless_enabled: true,
+            crossfade_enabled: false,
+            crossfade_duration_ms: 5000,
+        }
+    }
+}

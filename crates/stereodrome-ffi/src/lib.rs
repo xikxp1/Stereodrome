@@ -11,7 +11,7 @@ use std::ptr;
 use serde::Deserialize;
 use serde_json::Value;
 use stereodrome_core::queue::{QueueItem, RepeatMode};
-use stereodrome_core::{ConnectParams, PlaybackProgress, StereodromeCore};
+use stereodrome_core::{AudioProcessingSettings, ConnectParams, PlaybackProgress, StereodromeCore};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stereodrome_core_free_string(value: *mut c_char) {
@@ -226,6 +226,11 @@ fn dispatch(core: &StereodromeCore, method: &str, payload: Value) -> Result<Stri
         "reportPlaybackProgress" => {
             let progress = parse_payload::<PlaybackProgress>(payload)?;
             json_result(runtime.block_on(async { core.report_playback_progress(progress).await }))
+        }
+        "getAudioProcessingSettings" => json_result(core.get_audio_processing_settings()),
+        "setAudioProcessingSettings" => {
+            let settings = parse_payload::<AudioProcessingSettings>(payload)?;
+            json_result(core.set_audio_processing_settings(settings))
         }
         "getQueue" => json_result(core.get_queue()),
         "playSongWithQueue" => {
