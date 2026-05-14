@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -13,6 +14,24 @@ import { colors } from "@/components/theme";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
+import type { AudioProcessingSettings } from "@/types/music";
+
+const targetLufsPresets = [-18, -16, -14, -12, -10];
+const crossfadePresets = [2000, 5000, 8000, 12000];
+const eqLabels = [
+  "31",
+  "62",
+  "125",
+  "250",
+  "500",
+  "1k",
+  "2k",
+  "4k",
+  "8k",
+  "12k",
+  "16k",
+  "20k",
+];
 
 export function SettingsScreen() {
   const stereodrome = useStereodrome();
@@ -33,9 +52,7 @@ export function SettingsScreen() {
     queryFn: stereodromeCore.getAudioProcessingSettings,
   });
 
-  async function updateAudioSetting(
-    patch: Partial<NonNullable<typeof audioSettings.data>>
-  ) {
+  async function updateAudioSetting(patch: Partial<AudioProcessingSettings>) {
     if (!audioSettings.data) {
       return;
     }
@@ -67,7 +84,10 @@ export function SettingsScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <ScrollView
+      contentContainerStyle={styles.container}
+      showsVerticalScrollIndicator={false}
+    >
       <Text style={styles.heading}>Server</Text>
       <Text style={styles.copy}>
         {stereodrome.status.server_url ?? "Not connected"}
@@ -144,6 +164,46 @@ export function SettingsScreen() {
           updateAudioSetting({ normalization_enabled: value })
         }
       />
+      {audioSettings.data?.normalization_enabled ? (
+        <>
+          <SegmentedControl
+            label="Mode"
+            options={[
+              { label: "Track", value: "track" },
+              { label: "Album", value: "album" },
+            ]}
+            value={audioSettings.data.normalization_mode}
+            onChange={(value) =>
+              updateAudioSetting({ normalization_mode: value })
+            }
+          />
+          <PresetRow
+            label={`Target ${audioSettings.data.target_lufs} LUFS`}
+            options={targetLufsPresets.map((value) => ({
+              label: String(value),
+              value,
+            }))}
+            value={audioSettings.data.target_lufs}
+            onChange={(value) => updateAudioSetting({ target_lufs: value })}
+          />
+          <StepperRow
+            label="Preamp"
+            suffix=" dB"
+            value={audioSettings.data.preamp_db}
+            step={1}
+            min={-12}
+            max={12}
+            onChange={(value) => updateAudioSetting({ preamp_db: value })}
+          />
+          <SettingSwitch
+            label="Prevent clipping"
+            value={audioSettings.data.prevent_clipping}
+            onValueChange={(value) =>
+              updateAudioSetting({ prevent_clipping: value })
+            }
+          />
+        </>
+      ) : null}
       <SettingSwitch
         label="Equalizer"
         value={audioSettings.data?.equalizer_enabled ?? false}
@@ -151,6 +211,31 @@ export function SettingsScreen() {
           updateAudioSetting({ equalizer_enabled: value })
         }
       />
+      {audioSettings.data?.equalizer_enabled ? (
+        <>
+          <PresetRow
+            label="EQ Preset"
+            options={[
+              { label: "Flat", value: "flat" },
+              { label: "Bass", value: "bass" },
+              { label: "Vocal", value: "vocal" },
+              { label: "Bright", value: "bright" },
+            ]}
+            value={eqPreset(audioSettings.data.equalizer_bands_db)}
+            onChange={(value) =>
+              updateAudioSetting({
+                equalizer_bands_db: eqPresetBands(value),
+              })
+            }
+          />
+          <EqualizerBands
+            bands={audioSettings.data.equalizer_bands_db}
+            onChange={(bands) =>
+              updateAudioSetting({ equalizer_bands_db: bands })
+            }
+          />
+        </>
+      ) : null}
       <SettingSwitch
         label="Dynamics"
         value={audioSettings.data?.dynamics_enabled ?? false}
@@ -158,11 +243,42 @@ export function SettingsScreen() {
           updateAudioSetting({ dynamics_enabled: value })
         }
       />
+      {audioSettings.data?.dynamics_enabled ? (
+        <SegmentedControl
+          label="Dynamics preset"
+          options={[
+            { label: "Light", value: "light" },
+            { label: "Medium", value: "medium" },
+            { label: "Heavy", value: "heavy" },
+          ]}
+          value={audioSettings.data.dynamics_preset}
+          onChange={(value) => updateAudioSetting({ dynamics_preset: value })}
+        />
+      ) : null}
       <SettingSwitch
         label="Binaural"
         value={audioSettings.data?.binaural_enabled ?? false}
         onValueChange={(value) =>
           updateAudioSetting({ binaural_enabled: value })
+        }
+      />
+      {audioSettings.data?.binaural_enabled ? (
+        <SegmentedControl
+          label="Binaural preset"
+          options={[
+            { label: "Light", value: "light" },
+            { label: "Medium", value: "medium" },
+            { label: "Strong", value: "strong" },
+          ]}
+          value={audioSettings.data.binaural_preset}
+          onChange={(value) => updateAudioSetting({ binaural_preset: value })}
+        />
+      ) : null}
+      <SettingSwitch
+        label="Gapless"
+        value={audioSettings.data?.gapless_enabled ?? false}
+        onValueChange={(value) =>
+          updateAudioSetting({ gapless_enabled: value })
         }
       />
       <SettingSwitch
@@ -172,6 +288,19 @@ export function SettingsScreen() {
           updateAudioSetting({ crossfade_enabled: value })
         }
       />
+      {audioSettings.data?.crossfade_enabled ? (
+        <PresetRow
+          label={`${audioSettings.data.crossfade_duration_ms / 1000}s duration`}
+          options={crossfadePresets.map((value) => ({
+            label: `${value / 1000}s`,
+            value,
+          }))}
+          value={audioSettings.data.crossfade_duration_ms}
+          onChange={(value) =>
+            updateAudioSetting({ crossfade_duration_ms: value })
+          }
+        />
+      ) : null}
       <Text style={styles.heading}>Controls</Text>
       <View style={styles.segmentedControl}>
         <Pressable
@@ -219,14 +348,14 @@ export function SettingsScreen() {
           </Text>
         </Pressable>
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
     padding: 12,
+    paddingBottom: 24,
   },
   heading: {
     color: colors.text,
@@ -304,6 +433,77 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     minHeight: 36,
   },
+  controlLabel: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: "800",
+    marginBottom: 4,
+    marginTop: 6,
+    textTransform: "uppercase",
+  },
+  presetRow: {
+    flexDirection: "row",
+    gap: 6,
+    marginBottom: 8,
+  },
+  presetButton: {
+    alignItems: "center",
+    borderColor: colors.screenBorder,
+    borderRadius: 4,
+    borderWidth: 2,
+    flex: 1,
+    minHeight: 28,
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  presetButtonSelected: {
+    backgroundColor: colors.selected,
+  },
+  presetButtonText: {
+    color: colors.text,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  presetButtonTextSelected: {
+    color: colors.selectedText,
+  },
+  stepperRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    minHeight: 34,
+  },
+  stepperButton: {
+    alignItems: "center",
+    borderColor: colors.screenBorder,
+    borderRadius: 4,
+    borderWidth: 2,
+    height: 28,
+    justifyContent: "center",
+    width: 34,
+  },
+  stepperValue: {
+    color: colors.text,
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  eqGrid: {
+    gap: 6,
+    marginBottom: 8,
+  },
+  eqRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  eqLabel: {
+    color: colors.muted,
+    fontSize: 10,
+    fontWeight: "800",
+    width: 28,
+  },
   settingLabel: {
     color: colors.text,
     fontSize: 13,
@@ -314,6 +514,164 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 });
+
+function SegmentedControl<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: { label: string; value: T }[];
+  value: T;
+  onChange(value: T): void;
+}) {
+  return (
+    <>
+      <Text style={styles.controlLabel}>{label}</Text>
+      <View style={styles.segmentedControl}>
+        {options.map((option) => {
+          const selected = option.value === value;
+          return (
+            <Pressable
+              key={option.value}
+              onPress={() => onChange(option.value)}
+              style={[styles.segment, selected && styles.segmentSelected]}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  selected && styles.segmentSelectedText,
+                ]}
+              >
+                {option.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </>
+  );
+}
+
+function PresetRow<T extends string | number>({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: { label: string; value: T }[];
+  value: T;
+  onChange(value: T): void;
+}) {
+  return (
+    <>
+      <Text style={styles.controlLabel}>{label}</Text>
+      <View style={styles.presetRow}>
+        {options.map((option) => {
+          const selected = option.value === value;
+          return (
+            <Pressable
+              key={String(option.value)}
+              onPress={() => onChange(option.value)}
+              style={[
+                styles.presetButton,
+                selected && styles.presetButtonSelected,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.presetButtonText,
+                  selected && styles.presetButtonTextSelected,
+                ]}
+              >
+                {option.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </>
+  );
+}
+
+function StepperRow({
+  label,
+  suffix = "",
+  value,
+  step,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  suffix?: string;
+  value: number;
+  step: number;
+  min: number;
+  max: number;
+  onChange(value: number): void;
+}) {
+  return (
+    <>
+      <Text style={styles.controlLabel}>{label}</Text>
+      <View style={styles.stepperRow}>
+        <Pressable
+          onPress={() => onChange(clamp(value - step, min, max))}
+          style={styles.stepperButton}
+        >
+          <Text style={styles.presetButtonText}>-</Text>
+        </Pressable>
+        <Text style={styles.stepperValue}>
+          {formatNumber(value)}
+          {suffix}
+        </Text>
+        <Pressable
+          onPress={() => onChange(clamp(value + step, min, max))}
+          style={styles.stepperButton}
+        >
+          <Text style={styles.presetButtonText}>+</Text>
+        </Pressable>
+      </View>
+    </>
+  );
+}
+
+function EqualizerBands({
+  bands,
+  onChange,
+}: {
+  bands: number[];
+  onChange(bands: number[]): void;
+}) {
+  const normalizedBands = [...bands, ...Array(12).fill(0)].slice(0, 12);
+  return (
+    <>
+      <Text style={styles.controlLabel}>12-band EQ</Text>
+      <View style={styles.eqGrid}>
+        {normalizedBands.map((band, index) => (
+          <View key={eqLabels[index]} style={styles.eqRow}>
+            <Text style={styles.eqLabel}>{eqLabels[index]}</Text>
+            <Pressable
+              onPress={() => onChange(updateBand(normalizedBands, index, -1))}
+              style={styles.stepperButton}
+            >
+              <Text style={styles.presetButtonText}>-</Text>
+            </Pressable>
+            <Text style={styles.stepperValue}>{formatNumber(band)} dB</Text>
+            <Pressable
+              onPress={() => onChange(updateBand(normalizedBands, index, 1))}
+              style={styles.stepperButton}
+            >
+              <Text style={styles.presetButtonText}>+</Text>
+            </Pressable>
+          </View>
+        ))}
+      </View>
+    </>
+  );
+}
 
 function SettingSwitch({
   label,
@@ -340,4 +698,43 @@ function formatBytes(bytes: number) {
     return `${Math.round(bytes / (1024 * 1024))} MB`;
   }
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function formatNumber(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function updateBand(bands: number[], index: number, delta: number) {
+  return bands.map((band, bandIndex) =>
+    bandIndex === index ? clamp(band + delta, -12, 12) : band
+  );
+}
+
+function eqPreset(bands: number[]) {
+  const normalized = [...bands, ...Array(12).fill(0)].slice(0, 12);
+  const presets = ["flat", "bass", "vocal", "bright"] as const;
+  return (
+    presets.find(
+      (preset) =>
+        JSON.stringify(eqPresetBands(preset)) === JSON.stringify(normalized)
+    ) ?? "custom"
+  );
+}
+
+function eqPresetBands(preset: string) {
+  switch (preset) {
+    case "bass":
+      return [5, 4, 3, 2, 1, 0, 0, -1, -1, -1, -1, -1];
+    case "vocal":
+      return [-2, -1, 0, 2, 3, 4, 3, 2, 0, -1, -2, -2];
+    case "bright":
+      return [-2, -2, -1, 0, 0, 1, 2, 3, 4, 5, 5, 4];
+    case "flat":
+    default:
+      return Array(12).fill(0);
+  }
 }
