@@ -102,6 +102,25 @@ export type PlayableSong = Pick<
   "id" | "title" | "artist" | "album" | "duration"
 >;
 
+export type RepeatMode = "Off" | "All" | "One";
+
+export type QueueItem = {
+  song_id: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;
+};
+
+export type QueueState = {
+  items: QueueItem[];
+  current_index: number | null;
+  shuffle: boolean;
+  repeat_mode: RepeatMode;
+  pending_navigation_index: number | null;
+  prepared_next_item: QueueItem | null;
+};
+
 export type SyncResult = {
   artists: number;
   albums: number;

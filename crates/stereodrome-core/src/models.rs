@@ -195,23 +195,6 @@ pub struct SearchResults {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueueItem {
-    pub song_id: String,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
-    pub duration: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueueState {
-    pub items: Vec<QueueItem>,
-    pub current_index: Option<usize>,
-    pub shuffle: bool,
-    pub repeat_mode: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncJobStatus {
     pub enabled: bool,
     pub interval_minutes: u32,

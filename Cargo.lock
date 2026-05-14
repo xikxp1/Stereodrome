@@ -5204,6 +5204,7 @@ dependencies = [
  "serde",
  "serde_json",
  "souvlaki",
+ "stereodrome-core",
  "submarine",
  "tantivy",
  "tauri",

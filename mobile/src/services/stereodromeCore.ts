@@ -6,17 +6,27 @@ import type {
   Album,
   AlbumListEntry,
   Playlist,
+  QueueItem,
+  QueueState,
+  RepeatMode,
   SearchResults,
   Song,
   SyncResult,
 } from "@/types/music";
 
 type Envelope<T> = { ok: true; value: T } | { ok: false; error: string };
+type CoreEventName =
+  | "queue-changed"
+  | "playback-state"
+  | "sync-status-changed"
+  | "error";
+type CoreEventHandler<T = unknown> = (payload: T) => void;
 
 const unavailable =
   "Stereodrome native core is not available in this development build";
 
 let initializePromise: Promise<boolean> | null = null;
+const listeners = new Map<CoreEventName, Set<CoreEventHandler>>();
 
 function fileUriToPath(uri: string): string {
   if (!uri.startsWith("file://")) {
@@ -46,6 +56,40 @@ async function invokeJson<T>(
   return parseEnvelope<T>(
     await NativeStereodromeCore.call(name, JSON.stringify(payload))
   );
+}
+
+function emitCoreEvent<T>(name: CoreEventName, payload: T) {
+  listeners.get(name)?.forEach((listener) => listener(payload));
+}
+
+function queueItemFromSong(song: {
+  id: string;
+  title: string;
+  artist: string | null;
+  album: string | null;
+  duration: number | null;
+}): QueueItem {
+  return {
+    song_id: song.id,
+    title: song.title,
+    artist: song.artist ?? "Unknown Artist",
+    album: song.album ?? "Unknown Album",
+    duration: song.duration ?? 0,
+  };
+}
+
+async function queueMutation(
+  name: string,
+  payload: unknown = null
+): Promise<QueueState> {
+  try {
+    const state = await invokeJson<QueueState>(name, payload);
+    emitCoreEvent("queue-changed", state);
+    return state;
+  } catch (error) {
+    emitCoreEvent("error", error);
+    throw error;
+  }
 }
 
 async function ensureInitialized(): Promise<boolean> {
@@ -81,6 +125,17 @@ async function ensureInitialized(): Promise<boolean> {
 
 export const stereodromeCore = {
   initialize: ensureInitialized,
+  addEventListener<T = unknown>(
+    name: CoreEventName,
+    listener: CoreEventHandler<T>
+  ): () => void {
+    const current = listeners.get(name) ?? new Set<CoreEventHandler>();
+    current.add(listener as CoreEventHandler);
+    listeners.set(name, current);
+    return () => {
+      current.delete(listener as CoreEventHandler);
+    };
+  },
   getConnectionStatus(): Promise<ConnectionStatus> {
     return invokeJson("getConnectionStatus");
   },
@@ -98,7 +153,10 @@ export const stereodromeCore = {
     return invokeJson("disconnectServer");
   },
   syncLibrary(): Promise<SyncResult> {
-    return invokeJson("syncLibrary");
+    return invokeJson<SyncResult>("syncLibrary").then((result) => {
+      emitCoreEvent("sync-status-changed", result);
+      return result;
+    });
   },
   getArtists(): Promise<Artist[]> {
     return invokeJson("getArtists");
@@ -136,5 +194,73 @@ export const stereodromeCore = {
   },
   getStreamUri(songId: string): Promise<string> {
     return invokeJson("getStreamUri", songId);
+  },
+  getQueue(): Promise<QueueState> {
+    return invokeJson("getQueue");
+  },
+  playSongWithQueue(songId: string, songIds: string[]): Promise<QueueState> {
+    return queueMutation("playSongWithQueue", {
+      song_id: songId,
+      song_ids: songIds,
+    });
+  },
+  addToQueue(
+    song: Parameters<typeof queueItemFromSong>[0]
+  ): Promise<QueueState> {
+    return queueMutation("addToQueue", queueItemFromSong(song));
+  },
+  addSongsToQueue(
+    songs: Parameters<typeof queueItemFromSong>[0][]
+  ): Promise<QueueState> {
+    return queueMutation("addSongsToQueue", songs.map(queueItemFromSong));
+  },
+  insertNext(
+    song: Parameters<typeof queueItemFromSong>[0]
+  ): Promise<QueueState> {
+    return queueMutation("insertNext", queueItemFromSong(song));
+  },
+  insertNextSongs(
+    songs: Parameters<typeof queueItemFromSong>[0][]
+  ): Promise<QueueState> {
+    return queueMutation("insertNextSongs", songs.map(queueItemFromSong));
+  },
+  removeFromQueue(index: number): Promise<QueueState> {
+    return queueMutation("removeFromQueue", index);
+  },
+  clearQueue(): Promise<QueueState> {
+    return queueMutation("clearQueue");
+  },
+  moveQueueItem(from: number, to: number): Promise<QueueState> {
+    return queueMutation("moveQueueItem", { from, to });
+  },
+  async playQueueItem(index: number): Promise<QueueState> {
+    await invokeJson<QueueItem | null>("playQueueItem", index);
+    const state = await this.getQueue();
+    emitCoreEvent("queue-changed", state);
+    return state;
+  },
+  async playNext(force = true): Promise<QueueState> {
+    await invokeJson<QueueItem | null>("playNext", force);
+    const state = await this.getQueue();
+    emitCoreEvent("queue-changed", state);
+    return state;
+  },
+  async playPrevious(): Promise<QueueState> {
+    await invokeJson<QueueItem | null>("playPrevious");
+    const state = await this.getQueue();
+    emitCoreEvent("queue-changed", state);
+    return state;
+  },
+  toggleShuffle(): Promise<QueueState> {
+    return queueMutation("toggleShuffle");
+  },
+  setRepeatMode(mode: RepeatMode): Promise<QueueState> {
+    return queueMutation("setRepeatMode", mode);
+  },
+  cycleRepeatMode(): Promise<QueueState> {
+    return queueMutation("cycleRepeatMode");
+  },
+  rerollNext(): Promise<QueueState> {
+    return queueMutation("rerollNext");
   },
 };

@@ -10,6 +10,7 @@ use std::ptr;
 
 use serde::Deserialize;
 use serde_json::Value;
+use stereodrome_core::queue::{QueueItem, RepeatMode};
 use stereodrome_core::{ConnectParams, StereodromeCore};
 
 #[unsafe(no_mangle)]
@@ -154,6 +155,52 @@ fn dispatch(core: &StereodromeCore, method: &str, payload: Value) -> Result<Stri
             let song_id = parse_payload::<String>(payload)?;
             json_result(core.get_stream_uri(song_id))
         }
+        "getQueue" => json_result(core.get_queue()),
+        "playSongWithQueue" => {
+            let args = parse_payload::<PlaySongWithQueuePayload>(payload)?;
+            json_result(core.play_song_with_queue(args.song_id, args.song_ids))
+        }
+        "addToQueue" => {
+            let item = parse_payload::<QueueItem>(payload)?;
+            json_result(core.add_to_queue(item))
+        }
+        "addSongsToQueue" => {
+            let items = parse_payload::<Vec<QueueItem>>(payload)?;
+            json_result(core.add_songs_to_queue(items))
+        }
+        "insertNext" => {
+            let item = parse_payload::<QueueItem>(payload)?;
+            json_result(core.insert_next(item))
+        }
+        "insertNextSongs" => {
+            let items = parse_payload::<Vec<QueueItem>>(payload)?;
+            json_result(core.insert_next_songs(items))
+        }
+        "removeFromQueue" => {
+            let index = parse_payload::<usize>(payload)?;
+            json_result(core.remove_from_queue(index))
+        }
+        "clearQueue" => json_result(core.clear_queue()),
+        "moveQueueItem" => {
+            let args = parse_payload::<MoveQueueItemPayload>(payload)?;
+            json_result(core.move_queue_item(args.from, args.to))
+        }
+        "playQueueItem" => {
+            let index = parse_payload::<usize>(payload)?;
+            json_result(core.play_queue_item(index))
+        }
+        "playNext" => {
+            let force = parse_payload::<Option<bool>>(payload)?;
+            json_result(core.play_next(force))
+        }
+        "playPrevious" => json_result(core.play_previous()),
+        "toggleShuffle" => json_result(core.toggle_shuffle()),
+        "setRepeatMode" => {
+            let mode = parse_payload::<RepeatMode>(payload)?;
+            json_result(core.set_repeat_mode(mode))
+        }
+        "cycleRepeatMode" => json_result(core.cycle_repeat_mode()),
+        "rerollNext" => json_result(core.reroll_next()),
         other => Err(format!("unknown method: {other}")),
     }
 }
@@ -181,6 +228,18 @@ struct SearchPayload {
 struct IdSizePayload {
     id: String,
     size: Option<i32>,
+}
+
+#[derive(Deserialize)]
+struct PlaySongWithQueuePayload {
+    song_id: String,
+    song_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct MoveQueueItemPayload {
+    from: usize,
+    to: usize,
 }
 
 fn parse_payload<T: for<'de> Deserialize<'de>>(payload: Value) -> Result<T, String> {
