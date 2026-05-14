@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Stereodrome",
-    "slug": "stereodrome-mobile",
+    "slug": "stereodrome",
     "scheme": "stereodrome",
     "version": "0.1.17",
     "orientation": "portrait",

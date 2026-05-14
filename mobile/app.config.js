@@ -5,7 +5,7 @@ module.exports = () => {
   const extra = expo.extra || {};
   const eas = extra.eas || {};
   const ios = expo.ios || {};
-  const slug = process.env.EAS_PROJECT_SLUG || expo.slug;
+  const slug = expo.slug;
   const projectId = process.env.EAS_PROJECT_ID || eas.projectId;
   const buildNumber = process.env.IOS_BUILD_NUMBER || ios.buildNumber || "1";
 

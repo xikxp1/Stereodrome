@@ -33,7 +33,10 @@ build_ios() {
   rm -rf "$IOS_OUT_DIR"
   mkdir -p "$IOS_OUT_DIR"
 
-  local sim_dir="$IOS_OUT_DIR/simulator"
+  local framework_build_dir="$IOS_OUT_DIR/build"
+  local device_framework="$framework_build_dir/ios-arm64/StereodromeFfi.framework"
+  local simulator_framework="$framework_build_dir/ios-arm64_x86_64-simulator/StereodromeFfi.framework"
+  local sim_dir="$framework_build_dir/simulator"
   mkdir -p "$sim_dir"
   local sim_universal="$sim_dir/libstereodrome_ffi.a"
   lipo -create \
@@ -41,12 +44,66 @@ build_ios() {
     "$ROOT_DIR/target/x86_64-apple-ios/release/libstereodrome_ffi.a" \
     -output "$sim_universal"
 
+  create_static_framework \
+    "$ROOT_DIR/target/aarch64-apple-ios/release/libstereodrome_ffi.a" \
+    "$device_framework"
+  create_static_framework \
+    "$sim_universal" \
+    "$simulator_framework"
+
   xcodebuild -create-xcframework \
-    -library "$ROOT_DIR/target/aarch64-apple-ios/release/libstereodrome_ffi.a" \
-    -headers "$FFI_INCLUDE_DIR" \
-    -library "$sim_universal" \
-    -headers "$FFI_INCLUDE_DIR" \
+    -framework "$device_framework" \
+    -framework "$simulator_framework" \
     -output "$IOS_OUT_DIR/StereodromeFfi.xcframework"
+
+  rm -rf "$framework_build_dir"
+}
+
+create_static_framework() {
+  local library_path="$1"
+  local framework_path="$2"
+
+  rm -rf "$framework_path"
+  mkdir -p "$framework_path/Headers" "$framework_path/Modules"
+
+  cp "$library_path" "$framework_path/StereodromeFfi"
+  cp "$FFI_INCLUDE_DIR/stereodrome_ffi.h" "$framework_path/Headers/stereodrome_ffi.h"
+
+  cat > "$framework_path/Modules/module.modulemap" <<'EOF'
+framework module StereodromeFfi {
+  umbrella header "stereodrome_ffi.h"
+
+  export *
+  module * { export * }
+}
+EOF
+
+  cat > "$framework_path/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>StereodromeFfi</string>
+  <key>CFBundleIdentifier</key>
+  <string>dev.xikxp1.stereodrome.ffi</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>StereodromeFfi</string>
+  <key>CFBundlePackageType</key>
+  <string>FMWK</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>MinimumOSVersion</key>
+  <string>15.1</string>
+</dict>
+</plist>
+EOF
 }
 
 build_android() {
