@@ -5204,6 +5204,7 @@ dependencies = [
  "serde",
  "serde_json",
  "souvlaki",
+ "stereodrome-audio",
  "stereodrome-core",
  "submarine",
  "tantivy",
@@ -5222,6 +5223,21 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "stereodrome-audio"
+version = "0.1.17"
+dependencies = [
+ "bs2b",
+ "ebur128",
+ "fundsp",
+ "log",
+ "ringbuf",
+ "rodio",
+ "rustfft",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -5247,8 +5263,10 @@ version = "0.1.17"
 dependencies = [
  "serde",
  "serde_json",
+ "stereodrome-audio",
  "stereodrome-core",
  "tokio",
+ "url",
 ]
 
 [[package]]
