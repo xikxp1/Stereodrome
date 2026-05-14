@@ -24,6 +24,9 @@ export function AlbumScreen({ albumId }: { albumId: string; title: string }) {
           await playback.playSong(song, songs.data ?? [song]);
           view.showNowPlaying();
         },
+        onLongSelect: async () => {
+          await stereodromeCore.downloadAlbum(albumId);
+        },
       }))}
     />
   );

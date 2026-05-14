@@ -683,7 +683,15 @@ impl StereodromeCore {
             std::fs::create_dir_all(parent)?;
         }
 
-        self.record_download("song", &song_id, &song_id, "downloading", None, 0, None)?;
+        self.record_download(DownloadRecord {
+            entity_type: "song",
+            entity_id: &song_id,
+            song_id: &song_id,
+            status: "downloading",
+            path: None,
+            bytes: 0,
+            error: None,
+        })?;
         match client
             .stream(
                 song_id.clone(),
@@ -698,15 +706,15 @@ impl StereodromeCore {
         {
             Ok(bytes) => {
                 std::fs::write(&path, &bytes)?;
-                self.record_download(
-                    "song",
-                    &song_id,
-                    &song_id,
-                    "downloaded",
-                    Some(&path),
-                    bytes.len() as u64,
-                    None,
-                )?;
+                self.record_download(DownloadRecord {
+                    entity_type: "song",
+                    entity_id: &song_id,
+                    song_id: &song_id,
+                    status: "downloaded",
+                    path: Some(&path),
+                    bytes: bytes.len() as u64,
+                    error: None,
+                })?;
                 self.enforce_audio_cache_limit()?;
                 Ok(DownloadStatus {
                     song_id,
@@ -716,15 +724,16 @@ impl StereodromeCore {
                 })
             }
             Err(error) => {
-                self.record_download(
-                    "song",
-                    &song_id,
-                    &song_id,
-                    "failed",
-                    None,
-                    0,
-                    Some(&error.to_string()),
-                )?;
+                let error_message = error.to_string();
+                self.record_download(DownloadRecord {
+                    entity_type: "song",
+                    entity_id: &song_id,
+                    song_id: &song_id,
+                    status: "failed",
+                    path: None,
+                    bytes: 0,
+                    error: Some(&error_message),
+                })?;
                 Err(CoreError::Subsonic(error.to_string()))
             }
         }
@@ -845,28 +854,28 @@ impl StereodromeCore {
             None
         };
 
-        self.save_playback_state(
-            Some(progress.song_id),
-            progress.position_seconds,
-            progress.duration_seconds,
-            progress.is_playing,
-            previous.app_volume,
+        self.save_playback_state(PlaybackStateWrite {
+            song_id: Some(progress.song_id),
+            position_seconds: progress.position_seconds,
+            duration_seconds: progress.duration_seconds,
+            was_playing: progress.is_playing,
+            app_volume: previous.app_volume,
             now_playing_song_id,
             scrobbled_song_id,
-        )
+        })
     }
 
     pub fn save_playback_position(&self, progress: PlaybackProgress) -> CoreResult<PlaybackState> {
         let previous = self.playback_markers()?;
-        self.save_playback_state(
-            Some(progress.song_id),
-            progress.position_seconds,
-            progress.duration_seconds,
-            progress.is_playing,
-            previous.app_volume,
-            previous.now_playing_song_id,
-            previous.scrobbled_song_id,
-        )
+        self.save_playback_state(PlaybackStateWrite {
+            song_id: Some(progress.song_id),
+            position_seconds: progress.position_seconds,
+            duration_seconds: progress.duration_seconds,
+            was_playing: progress.is_playing,
+            app_volume: previous.app_volume,
+            now_playing_song_id: previous.now_playing_song_id,
+            scrobbled_song_id: previous.scrobbled_song_id,
+        })
     }
 
     pub fn get_audio_processing_settings(&self) -> CoreResult<AudioProcessingSettings> {
@@ -1221,15 +1230,15 @@ impl StereodromeCore {
         let suffix = song.suffix.as_deref().unwrap_or("mp3");
         let path = self.audio_cache_path(song_id, suffix)?;
         if path.exists() {
-            self.record_download(
-                "song",
+            self.record_download(DownloadRecord {
+                entity_type: "song",
+                entity_id: song_id,
                 song_id,
-                song_id,
-                "downloaded",
-                Some(&path),
-                path.metadata().map(|m| m.len()).unwrap_or(0),
-                None,
-            )?;
+                status: "downloaded",
+                path: Some(&path),
+                bytes: path.metadata().map(|m| m.len()).unwrap_or(0),
+                error: None,
+            })?;
             return Ok(Some(path));
         }
 
@@ -1294,29 +1303,20 @@ impl StereodromeCore {
         Ok(())
     }
 
-    fn record_download(
-        &self,
-        entity_type: &str,
-        entity_id: &str,
-        song_id: &str,
-        status: &str,
-        path: Option<&Path>,
-        bytes: u64,
-        error: Option<&str>,
-    ) -> CoreResult<()> {
+    fn record_download(&self, record: DownloadRecord<'_>) -> CoreResult<()> {
         let conn = Connection::open(&self.db_path)?;
         conn.execute(
             "INSERT OR REPLACE INTO download_items
              (entity_type, entity_id, song_id, status, path, bytes, error, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                entity_type,
-                entity_id,
-                song_id,
-                status,
-                path.map(|path| path.to_string_lossy().to_string()),
-                bytes as i64,
-                error,
+                record.entity_type,
+                record.entity_id,
+                record.song_id,
+                record.status,
+                record.path.map(|path| path.to_string_lossy().to_string()),
+                record.bytes as i64,
+                record.error,
                 Utc::now().to_rfc3339()
             ],
         )?;
@@ -1356,16 +1356,7 @@ impl StereodromeCore {
         }))
     }
 
-    fn save_playback_state(
-        &self,
-        song_id: Option<String>,
-        position_seconds: f64,
-        duration_seconds: f64,
-        was_playing: bool,
-        app_volume: f64,
-        now_playing_song_id: Option<String>,
-        scrobbled_song_id: Option<String>,
-    ) -> CoreResult<PlaybackState> {
+    fn save_playback_state(&self, state: PlaybackStateWrite) -> CoreResult<PlaybackState> {
         let conn = Connection::open(&self.db_path)?;
         let updated_at = Utc::now().to_rfc3339();
         conn.execute(
@@ -1374,13 +1365,13 @@ impl StereodromeCore {
               now_playing_song_id, scrobbled_song_id, updated_at)
              VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                song_id,
-                position_seconds.max(0.0),
-                duration_seconds.max(0.0),
-                was_playing as i64,
-                app_volume.clamp(0.0, 2.0),
-                now_playing_song_id,
-                scrobbled_song_id,
+                state.song_id,
+                state.position_seconds.max(0.0),
+                state.duration_seconds.max(0.0),
+                state.was_playing as i64,
+                state.app_volume.clamp(0.0, 2.0),
+                state.now_playing_song_id,
+                state.scrobbled_song_id,
                 updated_at
             ],
         )?;
@@ -1506,6 +1497,26 @@ fn path_to_file_uri(path: &Path) -> String {
 }
 
 struct PlaybackMarkers {
+    app_volume: f64,
+    now_playing_song_id: Option<String>,
+    scrobbled_song_id: Option<String>,
+}
+
+struct DownloadRecord<'a> {
+    entity_type: &'a str,
+    entity_id: &'a str,
+    song_id: &'a str,
+    status: &'a str,
+    path: Option<&'a Path>,
+    bytes: u64,
+    error: Option<&'a str>,
+}
+
+struct PlaybackStateWrite {
+    song_id: Option<String>,
+    position_seconds: f64,
+    duration_seconds: f64,
+    was_playing: bool,
     app_volume: f64,
     now_playing_song_id: Option<String>,
     scrobbled_song_id: Option<String>,

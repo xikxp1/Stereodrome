@@ -23,6 +23,9 @@ export function SongsScreen() {
           await playback.playSong(song, songs.data ?? [song]);
           view.showNowPlaying();
         },
+        onLongSelect: async () => {
+          await stereodromeCore.insertNext(song);
+        },
       }))}
     />
   );

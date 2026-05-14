@@ -4,11 +4,13 @@ import { AlbumsScreen } from "@/screens/AlbumsScreen";
 import { ArtistScreen } from "@/screens/ArtistScreen";
 import { ArtistsScreen } from "@/screens/ArtistsScreen";
 import { ConnectScreen } from "@/screens/ConnectScreen";
+import { DownloadsScreen } from "@/screens/DownloadsScreen";
 import { HomeScreen } from "@/screens/HomeScreen";
 import { MusicScreen } from "@/screens/MusicScreen";
 import { NowPlayingScreen } from "@/screens/NowPlayingScreen";
 import { PlaylistScreen } from "@/screens/PlaylistScreen";
 import { PlaylistsScreen } from "@/screens/PlaylistsScreen";
+import { QueueScreen } from "@/screens/QueueScreen";
 import { SearchScreen } from "@/screens/SearchScreen";
 import { SettingsScreen } from "@/screens/SettingsScreen";
 import { SongsScreen } from "@/screens/SongsScreen";
@@ -48,6 +50,10 @@ export function renderView(view: ViewInstance) {
           title={view.params?.title ?? "Playlist"}
         />
       );
+    case "queue":
+      return <QueueScreen />;
+    case "downloads":
+      return <DownloadsScreen />;
     case "search":
       return <SearchScreen />;
     case "nowPlaying":

@@ -26,6 +26,14 @@ export function HomeScreen() {
           onSelect: () => view.push({ name: "search", title: "Search" }),
         },
         {
+          label: "Downloads",
+          onSelect: () => view.push({ name: "downloads", title: "Downloads" }),
+        },
+        {
+          label: "Queue",
+          onSelect: () => view.push({ name: "queue", title: "Queue" }),
+        },
+        {
           label: "Settings",
           onSelect: () => view.push({ name: "settings", title: "Settings" }),
         },
