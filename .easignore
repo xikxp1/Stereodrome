@@ -1,0 +1,21 @@
+.DS_Store
+node_modules
+target
+mobile/node_modules
+mobile/.expo
+mobile/android
+mobile/ios
+mobile/modules/stereodrome-core/android/rust-libs
+/build
+/.svelte-kit
+/package
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# The release workflow builds this before running local EAS. It must be in the
+# EAS archive so CocoaPods can link the StereodromeCoreModule pod.
+!mobile/modules/stereodrome-core/ios/rust-libs
+!mobile/modules/stereodrome-core/ios/rust-libs/**
