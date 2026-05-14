@@ -4,18 +4,22 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import TrackPlayer, {
   Capability,
   Event,
-  RepeatMode,
   State,
   usePlaybackState,
   useProgress,
 } from "react-native-track-player";
 
 import { stereodromeCore } from "@/services/stereodromeCore";
+import {
+  applyQueueStateToTrackPlayer,
+  shouldSuppressTrackPlayerQueueEvent,
+} from "@/services/trackPlayerQueue";
 import type { PlayableSong, QueueItem, QueueState } from "@/types/music";
 
 type PlaybackContextValue = {
@@ -96,18 +100,6 @@ function playableFromQueueItem(item: QueueItem): PlayableSong {
   };
 }
 
-function repeatModeForTrackPlayer(mode: QueueState["repeat_mode"]) {
-  switch (mode) {
-    case "All":
-      return RepeatMode.Queue;
-    case "One":
-      return RepeatMode.Track;
-    case "Off":
-    default:
-      return RepeatMode.Off;
-  }
-}
-
 export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const playbackState = usePlaybackState();
   const progress = useProgress(5_000);
@@ -118,11 +110,15 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [repeatMode, setRepeatMode] =
     useState<QueueState["repeat_mode"]>("Off");
   const [shuffleEnabled, setShuffleEnabled] = useState(false);
+  const currentIndexRef = useRef<number | null>(null);
+  const queueRef = useRef<PlayableSong[]>([]);
 
   const applyQueueState = useCallback(async (state: QueueState) => {
     const songs = state.items.map(playableFromQueueItem);
     const index = state.current_index;
 
+    currentIndexRef.current = index;
+    queueRef.current = songs;
     setQueue(songs);
     setCurrentIndex(index);
     setCurrentSong(index === null ? null : (songs[index] ?? null));
@@ -130,27 +126,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     setShuffleEnabled(state.shuffle);
 
     await ensurePlayerReady();
-    await TrackPlayer.setRepeatMode(
-      repeatModeForTrackPlayer(state.repeat_mode)
-    );
-    await TrackPlayer.reset();
-    const tracks = await Promise.all(
-      songs.map(async (song) => ({
-        id: song.id,
-        url: await stereodromeCore.getStreamUri(song.id),
-        title: song.title,
-        artist: song.artist ?? undefined,
-        album: song.album ?? undefined,
-        duration: song.duration ?? undefined,
-      }))
-    );
-
-    if (tracks.length > 0) {
-      await TrackPlayer.add(tracks);
-      if (index !== null) {
-        await TrackPlayer.skip(index);
-      }
-    }
+    await applyQueueStateToTrackPlayer(state);
   }, []);
 
   useEffect(() => {
@@ -184,8 +160,36 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       Event.PlaybackActiveTrackChanged,
       (event) => {
         const index = event.index ?? null;
-        setCurrentIndex(index);
-        setCurrentSong(index === null ? null : (queue[index] ?? null));
+        if (index === null) {
+          currentIndexRef.current = null;
+          setCurrentIndex(null);
+          setCurrentSong(null);
+          return;
+        }
+
+        if (shouldSuppressTrackPlayerQueueEvent()) {
+          currentIndexRef.current = index;
+          setCurrentIndex(index);
+          setCurrentSong(queueRef.current[index] ?? null);
+          return;
+        }
+
+        const previousIndex = currentIndexRef.current;
+        const queueLength = queueRef.current.length;
+        const movedForward =
+          previousIndex !== null &&
+          (index === previousIndex + 1 ||
+            (previousIndex === queueLength - 1 && index === 0));
+
+        void (async () => {
+          const state = movedForward
+            ? await stereodromeCore.playNext(false)
+            : await stereodromeCore.playQueueItem(index);
+          await applyQueueState(state);
+          void stereodromeCore.prefetchNext().catch(() => {});
+        })().catch((playbackError) => {
+          setError(errorMessage(playbackError));
+        });
       }
     );
 
@@ -204,7 +208,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       trackSubscription.remove();
       unsubscribeQueue();
     };
-  }, [applyQueueState, queue]);
+  }, [applyQueueState]);
 
   useEffect(() => {
     if (!currentSong) {
