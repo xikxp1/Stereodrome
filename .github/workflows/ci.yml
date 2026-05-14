@@ -259,6 +259,7 @@ jobs:
             ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             COMPILER_INDEX_STORE_ENABLE=NO \
+            ENABLE_DEBUG_DYLIB=NO \
             build 2>&1 | tee "$LOG_PATH"; then
             echo "::group::xcodebuild errors"
             grep -E "error:|fatal error:|Command .* failed|BUILD FAILED|\\*\\* BUILD FAILED \\*\\*" "$LOG_PATH" || true
