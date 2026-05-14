@@ -121,10 +121,29 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Remove broken Cargo installer stub (macOS)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          if command -v cargo >/dev/null && cargo --help 2>&1 | grep -q 'rustup-init'; then
+            rm -f "$(command -v cargo)"
+          fi
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Verify Rust toolchain
+        shell: bash
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          which rustc
+          rustc --version
+          which cargo
+          cargo --version
+          cargo metadata --format-version 1 --no-deps >/dev/null
 
       - name: Init Rust cache
         uses: Swatinem/rust-cache@v2
@@ -288,6 +307,7 @@ jobs:
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
+      EAS_PROJECT_SLUG: stereodrome
       IOS_BUILD_NUMBER: ${{ github.run_number }}
 
     steps:
