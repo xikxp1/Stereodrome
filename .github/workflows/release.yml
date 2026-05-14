@@ -134,21 +134,35 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
+      - name: Init Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          prefix-key: v1-rust
+          cache-bin: false
+
       - name: Verify Rust toolchain
         shell: bash
         run: |
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.cargo/bin:$PATH"
+          toolchain_cargo="$(rustup which cargo)"
+          if [ -x "$HOME/.cargo/bin/cargo" ] && "$HOME/.cargo/bin/cargo" --help 2>&1 | grep -q rustup-init; then
+            rm -f "$HOME/.cargo/bin/cargo"
+          fi
+          if command -v cygpath >/dev/null; then
+            toolchain_bin="$(dirname "$(cygpath -u "$toolchain_cargo")")"
+            echo "$(cygpath -w "$HOME/.cargo/bin")" >> "$GITHUB_PATH"
+            echo "$(cygpath -w "$toolchain_bin")" >> "$GITHUB_PATH"
+          else
+            toolchain_bin="$(dirname "$toolchain_cargo")"
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            echo "$toolchain_bin" >> "$GITHUB_PATH"
+          fi
+          export PATH="$toolchain_bin:$HOME/.cargo/bin:$PATH"
           which rustc
           rustc --version
           which cargo
           cargo --version
           cargo metadata --format-version 1 --no-deps >/dev/null
-
-      - name: Init Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - name: Install dependencies (Ubuntu)
         if: matrix.platform == 'ubuntu-latest'
@@ -184,10 +198,12 @@ jobs:
         run: bun install
 
       - name: Install git-cliff
-        run: cargo install git-cliff || true
+        if: matrix.platform == 'ubuntu-latest'
+        run: cargo install git-cliff
 
       - name: Generate changelog
         id: changelog
+        if: matrix.platform == 'ubuntu-latest'
         shell: bash
         run: |
           echo 'changelog<<EOF' >> $GITHUB_OUTPUT
@@ -370,6 +386,31 @@ jobs:
           workspaces: |
             .
             src-tauri
+          prefix-key: v1-rust
+          cache-bin: false
+
+      - name: Verify Rust toolchain
+        shell: bash
+        run: |
+          toolchain_cargo="$(rustup which cargo)"
+          if [ -x "$HOME/.cargo/bin/cargo" ] && "$HOME/.cargo/bin/cargo" --help 2>&1 | grep -q rustup-init; then
+            rm -f "$HOME/.cargo/bin/cargo"
+          fi
+          if command -v cygpath >/dev/null; then
+            toolchain_bin="$(dirname "$(cygpath -u "$toolchain_cargo")")"
+            echo "$(cygpath -w "$HOME/.cargo/bin")" >> "$GITHUB_PATH"
+            echo "$(cygpath -w "$toolchain_bin")" >> "$GITHUB_PATH"
+          else
+            toolchain_bin="$(dirname "$toolchain_cargo")"
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            echo "$toolchain_bin" >> "$GITHUB_PATH"
+          fi
+          export PATH="$toolchain_bin:$HOME/.cargo/bin:$PATH"
+          which rustc
+          rustc --version
+          which cargo
+          cargo --version
+          cargo metadata --format-version 1 --no-deps >/dev/null
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
@@ -474,6 +515,31 @@ jobs:
           workspaces: |
             .
             src-tauri
+          prefix-key: v1-rust
+          cache-bin: false
+
+      - name: Verify Rust toolchain
+        shell: bash
+        run: |
+          toolchain_cargo="$(rustup which cargo)"
+          if [ -x "$HOME/.cargo/bin/cargo" ] && "$HOME/.cargo/bin/cargo" --help 2>&1 | grep -q rustup-init; then
+            rm -f "$HOME/.cargo/bin/cargo"
+          fi
+          if command -v cygpath >/dev/null; then
+            toolchain_bin="$(dirname "$(cygpath -u "$toolchain_cargo")")"
+            echo "$(cygpath -w "$HOME/.cargo/bin")" >> "$GITHUB_PATH"
+            echo "$(cygpath -w "$toolchain_bin")" >> "$GITHUB_PATH"
+          else
+            toolchain_bin="$(dirname "$toolchain_cargo")"
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            echo "$toolchain_bin" >> "$GITHUB_PATH"
+          fi
+          export PATH="$toolchain_bin:$HOME/.cargo/bin:$PATH"
+          which rustc
+          rustc --version
+          which cargo
+          cargo --version
+          cargo metadata --format-version 1 --no-deps >/dev/null
 
       - name: Install mobile dependencies
         working-directory: mobile
