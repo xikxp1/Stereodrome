@@ -1,5 +1,4 @@
 import { Image, StyleSheet, Text, View } from "react-native";
-import { useProgress } from "react-native-track-player";
 
 import { SyncedMarqueeText } from "@/components/SyncedMarqueeText";
 import { colors } from "@/components/theme";
@@ -9,14 +8,13 @@ import { useEffect, useState } from "react";
 
 export function NowPlayingScreen() {
   const playback = usePlayback();
-  const progress = useProgress(500);
   const [coverUri, setCoverUri] = useState<string | null>(null);
   const [nextCoverUri, setNextCoverUri] = useState<string | null>(null);
   const song = playback.currentSong;
   const nextSong = playback.nextSong;
-  const duration = progress.duration || song?.duration || 0;
+  const duration = playback.duration || song?.duration || 0;
   const progressRatio =
-    song && duration > 0 ? Math.min(1, progress.position / duration) : 0;
+    song && duration > 0 ? Math.min(1, playback.position / duration) : 0;
 
   useEffect(() => {
     if (!song) {
@@ -64,7 +62,7 @@ export function NowPlayingScreen() {
           accessibilityValue={{
             min: 0,
             max: Math.max(0, duration),
-            now: Math.max(0, Math.min(progress.position, duration)),
+            now: Math.max(0, Math.min(playback.position, duration)),
           }}
           pointerEvents="none"
           style={styles.progressTrack}

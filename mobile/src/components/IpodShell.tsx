@@ -1,7 +1,6 @@
 import { Animated, Easing, Pressable, StyleSheet, View } from "react-native";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useProgress } from "react-native-track-player";
 import { RefreshCw, Repeat2, Shuffle } from "lucide-react-native";
 
 import { ClickWheel } from "@/components/ClickWheel";
@@ -28,7 +27,6 @@ export function IpodShell() {
   const { subscribe } = useInputBus();
   const { buttonHandedness } = useMobileSettings();
   const playback = usePlayback();
-  const progress = useProgress(500);
   const stereodrome = useStereodrome();
   const insets = useSafeAreaInsets();
   const current = stereodrome.status.connected
@@ -37,9 +35,9 @@ export function IpodShell() {
   const navigationOffset = view.transitionDirection === "back" ? -24 : 24;
   const leftHandedButtons = buttonHandedness === "left";
   const playbackDuration =
-    progress.duration || playback.currentSong?.duration || 0;
+    playback.duration || playback.currentSong?.duration || 0;
   const playbackTime = playback.currentSong
-    ? `${formatPlaybackTime(progress.position)}/${formatPlaybackTime(
+    ? `${formatPlaybackTime(playback.position)}/${formatPlaybackTime(
         playbackDuration
       )}`
     : undefined;

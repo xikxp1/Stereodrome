@@ -172,6 +172,14 @@ export type PlaybackProgress = {
   is_playing: boolean;
 };
 
+export type AudioPlaybackStatus = {
+  is_playing: boolean;
+  current_song_id: string | null;
+  position: number;
+  duration: number;
+  volume: number;
+};
+
 export type AudioProcessingSettings = {
   normalization_enabled: boolean;
   normalization_mode: "track" | "album";

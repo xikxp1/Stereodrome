@@ -6,6 +6,7 @@ import type {
   Album,
   AlbumListEntry,
   AudioProcessingSettings,
+  AudioPlaybackStatus,
   CacheStats,
   DownloadStatus,
   LibrarySyncStatus,
@@ -280,6 +281,30 @@ export const stereodromeCore = {
     progress: PlaybackProgress
   ): Promise<PlaybackStateSnapshot> {
     return invokeJson("reportPlaybackProgress", progress);
+  },
+  audioPlayCurrent(): Promise<AudioPlaybackStatus> {
+    return invokeJson("audioPlayCurrent");
+  },
+  audioApplySettings(): Promise<AudioPlaybackStatus> {
+    return invokeJson("audioApplySettings");
+  },
+  audioPause(): Promise<void> {
+    return invokeJson("audioPause");
+  },
+  audioResume(): Promise<void> {
+    return invokeJson("audioResume");
+  },
+  audioStop(): Promise<void> {
+    return invokeJson("audioStop");
+  },
+  audioSeek(positionSeconds: number): Promise<void> {
+    return invokeJson("audioSeek", positionSeconds);
+  },
+  audioSetVolume(volume: number): Promise<void> {
+    return invokeJson("audioSetVolume", volume);
+  },
+  audioGetStatus(): Promise<AudioPlaybackStatus> {
+    return invokeJson("audioGetStatus");
   },
   getAudioProcessingSettings(): Promise<AudioProcessingSettings> {
     return invokeJson("getAudioProcessingSettings");
