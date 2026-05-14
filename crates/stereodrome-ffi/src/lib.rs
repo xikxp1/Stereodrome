@@ -6,15 +6,30 @@
 //! Tauri adapter.
 
 use std::ffi::{CStr, CString, c_char};
+use std::path::PathBuf;
 use std::ptr;
+use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::Value;
+use stereodrome_audio::{
+    AudioPlayer, BinauralPreset, DynamicsPreset, EqualizerSettings, SongMetadata,
+};
 use stereodrome_core::queue::{QueueItem, RepeatMode};
 use stereodrome_core::{AudioProcessingSettings, ConnectParams, PlaybackProgress, StereodromeCore};
+use url::Url;
+
+pub struct MobileCore {
+    core: StereodromeCore,
+    audio: AudioPlayer,
+}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn stereodrome_core_free_string(value: *mut c_char) {
+/// # Safety
+///
+/// `value` must be a pointer returned by this library from a previous FFI call
+/// and must not have been freed already.
+pub unsafe extern "C" fn stereodrome_core_free_string(value: *mut c_char) {
     if value.is_null() {
         return;
     }
@@ -25,19 +40,24 @@ pub extern "C" fn stereodrome_core_free_string(value: *mut c_char) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut StereodromeCore {
+pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCore {
     let Some(data_dir) = read_c_string(data_dir) else {
         return ptr::null_mut();
     };
 
-    match StereodromeCore::new(data_dir) {
-        Ok(core) => Box::into_raw(Box::new(core)),
-        Err(_) => ptr::null_mut(),
+    match (StereodromeCore::new(data_dir), AudioPlayer::new()) {
+        (Ok(core), Ok(audio)) => Box::into_raw(Box::new(MobileCore { core, audio })),
+        (Err(_), _) => ptr::null_mut(),
+        (_, Err(_)) => ptr::null_mut(),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn stereodrome_core_destroy(core: *mut StereodromeCore) {
+/// # Safety
+///
+/// `core` must be a pointer returned by `stereodrome_core_new` and must not be
+/// used after this function returns.
+pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
     if core.is_null() {
         return;
     }
@@ -48,14 +68,12 @@ pub extern "C" fn stereodrome_core_destroy(core: *mut StereodromeCore) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn stereodrome_core_get_connection_status(
-    core: *mut StereodromeCore,
-) -> *mut c_char {
-    let Some(core) = core_ref(core) else {
+pub extern "C" fn stereodrome_core_get_connection_status(core: *mut MobileCore) -> *mut c_char {
+    let Some(mobile) = mobile_ref(core) else {
         return json_error("core is not initialized");
     };
 
-    match core.get_connection_status() {
+    match mobile.core.get_connection_status() {
         Ok(status) => json_ok(status),
         Err(error) => json_error(&error.to_string()),
     }
@@ -63,17 +81,17 @@ pub extern "C" fn stereodrome_core_get_connection_status(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stereodrome_core_get_stream_uri(
-    core: *mut StereodromeCore,
+    core: *mut MobileCore,
     song_id: *const c_char,
 ) -> *mut c_char {
-    let Some(core) = core_ref(core) else {
+    let Some(mobile) = mobile_ref(core) else {
         return json_error("core is not initialized");
     };
     let Some(song_id) = read_c_string(song_id) else {
         return json_error("song_id is required");
     };
 
-    match core.get_stream_uri(song_id) {
+    match mobile.core.get_stream_uri(song_id) {
         Ok(uri) => json_ok(uri),
         Err(error) => json_error(&error.to_string()),
     }
@@ -81,11 +99,11 @@ pub extern "C" fn stereodrome_core_get_stream_uri(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stereodrome_core_call(
-    core: *mut StereodromeCore,
+    core: *mut MobileCore,
     method: *const c_char,
     payload: *const c_char,
 ) -> *mut c_char {
-    let Some(core) = core_ref(core) else {
+    let Some(mobile) = mobile_ref(core) else {
         return json_error("core is not initialized");
     };
     let Some(method) = read_c_string(method) else {
@@ -97,14 +115,15 @@ pub extern "C" fn stereodrome_core_call(
         Err(error) => return json_error(&format!("invalid payload: {error}")),
     };
 
-    match dispatch(core, &method, payload) {
+    match dispatch(mobile, &method, payload) {
         Ok(value) => into_c_string(value),
         Err(error) => json_error(&error),
     }
 }
 
-fn dispatch(core: &StereodromeCore, method: &str, payload: Value) -> Result<String, String> {
+fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String, String> {
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    let core = &mobile.core;
 
     match method {
         "connectServer" => {
@@ -232,6 +251,24 @@ fn dispatch(core: &StereodromeCore, method: &str, payload: Value) -> Result<Stri
             let settings = parse_payload::<AudioProcessingSettings>(payload)?;
             json_result(core.set_audio_processing_settings(settings))
         }
+        "audioPlayCurrent" => {
+            json_result(runtime.block_on(async { play_current_queue_item(mobile, None).await }))
+        }
+        "audioApplySettings" => {
+            json_result(runtime.block_on(async { apply_audio_settings(mobile).await }))
+        }
+        "audioPause" => json_result(mobile.audio.pause().map(|_| ())),
+        "audioResume" => json_result(mobile.audio.resume().map(|_| ())),
+        "audioStop" => json_result(mobile.audio.stop().map(|_| ())),
+        "audioSeek" => {
+            let position = parse_payload::<f64>(payload)?;
+            json_result(mobile.audio.seek(position).map(|_| ()))
+        }
+        "audioSetVolume" => {
+            let volume = parse_payload::<f32>(payload)?;
+            json_result(mobile.audio.set_volume(volume).map(|_| ()))
+        }
+        "audioGetStatus" => json_result(Ok::<_, String>(mobile.audio.get_status())),
         "getQueue" => json_result(core.get_queue()),
         "playSongWithQueue" => {
             let args = parse_payload::<PlaySongWithQueuePayload>(payload)?;
@@ -359,7 +396,147 @@ fn json_result<T: serde::Serialize, E: ToString>(result: Result<T, E>) -> Result
     result.map(json_ok_string).map_err(|e| e.to_string())
 }
 
-fn core_ref<'a>(core: *mut StereodromeCore) -> Option<&'a StereodromeCore> {
+async fn play_current_queue_item(
+    mobile: &MobileCore,
+    seek_position: Option<f64>,
+) -> Result<stereodrome_audio::PlaybackStatus, String> {
+    let queue = mobile.core.get_queue().map_err(|e| e.to_string())?;
+    let Some(index) = queue.current_index else {
+        mobile.audio.stop().map_err(|e| e.to_string())?;
+        return Ok(mobile.audio.get_status());
+    };
+    let item = queue
+        .items
+        .get(index)
+        .cloned()
+        .ok_or_else(|| "current queue index is out of range".to_string())?;
+
+    let status = mobile
+        .core
+        .download_song(item.song_id.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    let path = status
+        .path
+        .as_deref()
+        .ok_or_else(|| format!("song {} did not produce a cached audio path", item.song_id))?;
+    let audio_path = file_uri_to_path(path)?;
+    let audio_data = std::fs::read(&audio_path).map_err(|e| e.to_string())?;
+    let settings = mobile
+        .core
+        .get_audio_processing_settings()
+        .map_err(|e| e.to_string())?;
+    let processing = audio_processing_from_settings(&settings)?;
+
+    mobile
+        .audio
+        .play(
+            Arc::<[u8]>::from(audio_data),
+            SongMetadata {
+                id: item.song_id,
+                title: item.title,
+                artist: item.artist,
+                album: item.album,
+                cover_art_id: None,
+            },
+            item.duration as f64,
+            processing.normalization_gain,
+            processing.dynamics_preset,
+            processing.binaural_preset,
+            processing.equalizer_settings,
+        )
+        .map_err(|e| e.to_string())?;
+
+    if let Some(position) = seek_position {
+        mobile.audio.seek(position).map_err(|e| e.to_string())?;
+    }
+
+    Ok(mobile.audio.get_status())
+}
+
+async fn apply_audio_settings(
+    mobile: &MobileCore,
+) -> Result<stereodrome_audio::PlaybackStatus, String> {
+    let status = mobile.audio.get_status();
+    let Some(_) = status.current_song_id else {
+        return Ok(status);
+    };
+    let was_playing = status.is_playing;
+    let position = status.position;
+    let next_status = play_current_queue_item(mobile, Some(position)).await?;
+    if !was_playing {
+        mobile.audio.pause().map_err(|e| e.to_string())?;
+    }
+    Ok(next_status)
+}
+
+struct AudioProcessing {
+    normalization_gain: Option<f32>,
+    dynamics_preset: Option<DynamicsPreset>,
+    binaural_preset: Option<BinauralPreset>,
+    equalizer_settings: Option<EqualizerSettings>,
+}
+
+fn audio_processing_from_settings(
+    settings: &AudioProcessingSettings,
+) -> Result<AudioProcessing, String> {
+    let normalization_gain = if settings.normalization_enabled || settings.preamp_db.abs() > 0.01 {
+        Some(10.0_f32.powf(settings.preamp_db as f32 / 20.0))
+    } else {
+        None
+    };
+    let dynamics_preset = if settings.dynamics_enabled {
+        Some(match settings.dynamics_preset.as_str() {
+            "light" => DynamicsPreset::Light,
+            "medium" => DynamicsPreset::Medium,
+            "heavy" => DynamicsPreset::Heavy,
+            other => return Err(format!("unknown dynamics preset: {other}")),
+        })
+    } else {
+        None
+    };
+    let binaural_preset = if settings.binaural_enabled {
+        Some(match settings.binaural_preset.as_str() {
+            "light" => BinauralPreset::Default,
+            "medium" => BinauralPreset::Jmeier,
+            "strong" => BinauralPreset::Aggressive,
+            other => return Err(format!("unknown binaural preset: {other}")),
+        })
+    } else {
+        None
+    };
+    let equalizer_settings = if settings.equalizer_enabled {
+        Some(EqualizerSettings::new(
+            settings
+                .equalizer_bands_db
+                .iter()
+                .map(|value| *value as f32)
+                .collect(),
+        ))
+    } else {
+        None
+    };
+
+    Ok(AudioProcessing {
+        normalization_gain,
+        dynamics_preset,
+        binaural_preset,
+        equalizer_settings,
+    })
+}
+
+fn file_uri_to_path(value: &str) -> Result<PathBuf, String> {
+    if value.starts_with("file://") {
+        Url::parse(value)
+            .map_err(|e| e.to_string())?
+            .to_file_path()
+            .map_err(|_| format!("invalid file URI: {value}"))
+    } else {
+        Ok(PathBuf::from(value))
+    }
+}
+
+fn mobile_ref<'a>(core: *mut MobileCore) -> Option<&'a MobileCore> {
     if core.is_null() {
         None
     } else {

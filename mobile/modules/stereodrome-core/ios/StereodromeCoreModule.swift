@@ -1,3 +1,4 @@
+import AVFoundation
 import ExpoModulesCore
 
 @_silgen_name("stereodrome_core_new")
@@ -27,6 +28,7 @@ public class StereodromeCoreModule: Module {
     Name("StereodromeCore")
 
     AsyncFunction("initialize") { (_ dataDir: String) -> Bool in
+      self.configureAudioSession()
       if let existing = self.core {
         stereodromeCoreDestroy(existing)
       }
@@ -79,6 +81,17 @@ public class StereodromeCoreModule: Module {
         stereodromeCoreFreeString(resultPointer)
         return result
       }
+    }
+  }
+
+  private func configureAudioSession() {
+    let session = AVAudioSession.sharedInstance()
+    do {
+      try session.setCategory(.playback, mode: .default)
+      try session.setActive(true)
+    } catch {
+      // Rust returns playback errors through the FFI call path; session setup
+      // failure should not prevent core initialization in development builds.
     }
   }
 }
