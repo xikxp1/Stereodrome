@@ -506,6 +506,17 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Select Xcode 26.3
+        shell: bash
+        run: |
+          # Xcode 26.4.1 on macos-26 currently fails Release archives while linking SwiftUICore.
+          xcode_app=/Applications/Xcode_26.3.app
+          if [ ! -d "$xcode_app" ]; then
+            echo "::error::$xcode_app is required for iOS release builds"
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode_app/Contents/Developer"
+
       - name: Show Xcode version
         run: xcodebuild -version
 
@@ -566,13 +577,15 @@ jobs:
 
       - name: Generate iOS project
         working-directory: mobile
-        run: bunx expo prebuild --platform ios --clean --no-install --non-interactive
+        run: bunx expo prebuild --platform ios --clean --no-install
 
       - name: Build iOS Rust core
         run: scripts/build-mobile-rust.sh ios
 
       - name: Build iOS IPA with local EAS
         working-directory: mobile
+        env:
+          NODE_ENV: production
         run: |
           mkdir -p build/ios
           bunx eas-cli build \
