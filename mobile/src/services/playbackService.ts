@@ -18,6 +18,14 @@ export async function playbackService() {
     await TrackPlayer.play();
     void stereodromeCore.prefetchNext().catch(() => {});
   });
+  TrackPlayer.addEventListener(Event.PlaybackQueueEnded, async () => {
+    const state = await stereodromeCore.playNext(false);
+    await applyQueueStateToTrackPlayer(state);
+    if (state.current_index !== null) {
+      await TrackPlayer.play();
+      void stereodromeCore.prefetchNext().catch(() => {});
+    }
+  });
   TrackPlayer.addEventListener(Event.RemoteSeek, (event) =>
     TrackPlayer.seekTo(event.position)
   );

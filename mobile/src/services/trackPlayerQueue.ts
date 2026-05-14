@@ -19,24 +19,19 @@ export async function applyQueueStateToTrackPlayer(state: QueueState) {
   suppressTrackEventsUntil = Date.now() + 1_000;
   await TrackPlayer.reset();
 
-  const tracks = await Promise.all(
-    state.items.map(async (song) => ({
-      id: song.song_id,
-      url: await stereodromeCore.getStreamUri(song.song_id),
+  const current =
+    state.current_index === null ? null : state.items[state.current_index];
+  if (current) {
+    await TrackPlayer.add({
+      id: current.song_id,
+      url: await stereodromeCore.getStreamUri(current.song_id),
       contentType: "audio/mpeg",
-      title: song.title,
-      artist: song.artist,
-      album: song.album,
-      duration: song.duration,
+      title: current.title,
+      artist: current.artist,
+      album: current.album,
+      duration: current.duration,
       type: TrackType.Default,
-    }))
-  );
-
-  if (tracks.length > 0) {
-    await TrackPlayer.add(tracks);
-    if (state.current_index !== null) {
-      await TrackPlayer.skip(state.current_index);
-    }
+    });
   }
 }
 
@@ -51,10 +46,9 @@ export async function applyAudioProcessingSettingsToTrackPlayer(
 
 function repeatModeForTrackPlayer(mode: QueueState["repeat_mode"]) {
   switch (mode) {
-    case "All":
-      return RepeatMode.Queue;
     case "One":
       return RepeatMode.Track;
+    case "All":
     case "Off":
     default:
       return RepeatMode.Off;

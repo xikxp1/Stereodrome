@@ -211,28 +211,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         }
 
         if (shouldSuppressTrackPlayerQueueEvent()) {
-          currentIndexRef.current = index;
-          pendingNavigationIndexRef.current = null;
-          setCurrentIndex(index);
-          setPendingNavigationIndex(null);
-          currentSongRef.current = queueRef.current[index] ?? null;
-          setCurrentSong(currentSongRef.current);
           return;
         }
 
-        const previousIndex = currentIndexRef.current;
-        const pendingIndex = pendingNavigationIndexRef.current;
-        const queueLength = queueRef.current.length;
-        const movedForward =
-          pendingIndex !== null ||
-          (previousIndex !== null &&
-            (index === previousIndex + 1 ||
-              (previousIndex === queueLength - 1 && index === 0)));
-
         void (async () => {
-          const state = movedForward
-            ? await stereodromeCore.playNext(false)
-            : await stereodromeCore.playQueueItem(index);
+          const state = await stereodromeCore.playQueueItem(index);
           await applyQueueState(state);
           void stereodromeCore.prefetchNext().catch(() => {});
         })().catch((playbackError) => {
