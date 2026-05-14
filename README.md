@@ -1,6 +1,6 @@
 # Stereodrome
 
-Desktop music player for Subsonic-compatible servers, inspired by classic iTunes-era library browsing.
+Desktop and mobile music player for Subsonic-compatible servers, inspired by classic iTunes-era library browsing.
 
 <p align="center">
   <img src="docs/assets/main.png" alt="Main screen">
@@ -38,6 +38,8 @@ Stereodrome works with Subsonic API-compatible servers, including:
 - **macOS** 10.15 (Catalina) or later
 - **Windows** 10 or later
 - **Linux** with GTK 3 and WebKit2GTK
+- **iOS** 15 or later
+- **Android** 7 or later
 
 ## Installation
 
@@ -50,25 +52,12 @@ Download the latest build for your platform from [Releases](https://github.com/x
 3. Sync your library.
 4. Start playback and adjust settings from the top bar and settings panel.
 
-## Keyboard Shortcuts
+## Development
 
-| Shortcut             | Action                            |
-| -------------------- | --------------------------------- |
-| `Space`              | Play / Pause                      |
-| `↑` / `↓`            | Move selection in song list       |
-| `Enter`              | Play selected song                |
-| `Shift + ←` / `→`    | Seek backward / forward (10s)     |
-| `Cmd/Ctrl + ↑` / `↓` | Volume up / down                  |
-| `Cmd/Ctrl + ←` / `→` | Previous / Next track             |
-| `M`                  | Mute / Unmute                     |
-| `S`                  | Toggle shuffle                    |
-| `D`                  | Reroll next song                  |
-| `R`                  | Cycle repeat mode                 |
-| `Q`                  | Toggle queue panel                |
-| `V`                  | Toggle spectrum visualizer        |
-| `Cmd/Ctrl + K`       | Focus search                      |
-| `Cmd/Ctrl + ,`       | Open settings                     |
-| `Escape`             | Unfocus active input/search field |
+`bun install` - Install dependencies (from root directory for desktop or from `mobile` for iOS/Android)
+`bun run tauri dev` - Tauri development server
+`bun run rust:os` or `bun run rust:android` from `mobile` directory - Cross-compile Rust dependencies for your platform
+`bun run ios` or `bun run android` - Build and run the mobile app
 
 ## License
 
