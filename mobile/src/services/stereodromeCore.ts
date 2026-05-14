@@ -23,6 +23,7 @@ import type {
 type Envelope<T> = { ok: true; value: T } | { ok: false; error: string };
 type CoreEventName =
   | "queue-changed"
+  | "audio-processing-settings-changed"
   | "playback-state"
   | "sync-status-changed"
   | "error";
@@ -286,7 +287,13 @@ export const stereodromeCore = {
   setAudioProcessingSettings(
     settings: AudioProcessingSettings
   ): Promise<AudioProcessingSettings> {
-    return invokeJson("setAudioProcessingSettings", settings);
+    return invokeJson<AudioProcessingSettings>(
+      "setAudioProcessingSettings",
+      settings
+    ).then((nextSettings) => {
+      emitCoreEvent("audio-processing-settings-changed", nextSettings);
+      return nextSettings;
+    });
   },
   getQueue(): Promise<QueueState> {
     return invokeJson("getQueue");

@@ -1,7 +1,7 @@
 import TrackPlayer, { RepeatMode, TrackType } from "react-native-track-player";
 
 import { stereodromeCore } from "@/services/stereodromeCore";
-import type { QueueState } from "@/types/music";
+import type { AudioProcessingSettings, QueueState } from "@/types/music";
 
 let suppressTrackEventsUntil = 0;
 
@@ -40,6 +40,15 @@ export async function applyQueueStateToTrackPlayer(state: QueueState) {
   }
 }
 
+export async function applyAudioProcessingSettingsToTrackPlayer(
+  settings: AudioProcessingSettings
+) {
+  const preampGain = settings.normalization_enabled
+    ? Math.pow(10, settings.preamp_db / 20)
+    : 1;
+  await TrackPlayer.setVolume(clamp(preampGain, 0, 1));
+}
+
 function repeatModeForTrackPlayer(mode: QueueState["repeat_mode"]) {
   switch (mode) {
     case "All":
@@ -50,4 +59,8 @@ function repeatModeForTrackPlayer(mode: QueueState["repeat_mode"]) {
     default:
       return RepeatMode.Off;
   }
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }

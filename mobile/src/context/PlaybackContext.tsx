@@ -17,10 +17,16 @@ import TrackPlayer, {
 
 import { stereodromeCore } from "@/services/stereodromeCore";
 import {
+  applyAudioProcessingSettingsToTrackPlayer,
   applyQueueStateToTrackPlayer,
   shouldSuppressTrackPlayerQueueEvent,
 } from "@/services/trackPlayerQueue";
-import type { PlayableSong, QueueItem, QueueState } from "@/types/music";
+import type {
+  AudioProcessingSettings,
+  PlayableSong,
+  QueueItem,
+  QueueState,
+} from "@/types/music";
 
 type PlaybackContextValue = {
   currentSong: PlayableSong | null;
@@ -117,6 +123,18 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const pendingNavigationIndexRef = useRef<number | null>(null);
   const currentSongRef = useRef<PlayableSong | null>(null);
   const queueRef = useRef<PlayableSong[]>([]);
+  const audioProcessingSettingsRef = useRef<AudioProcessingSettings | null>(
+    null
+  );
+
+  const applyAudioProcessingSettings = useCallback(
+    async (settings: AudioProcessingSettings) => {
+      audioProcessingSettingsRef.current = settings;
+      await ensurePlayerReady();
+      await applyAudioProcessingSettingsToTrackPlayer(settings);
+    },
+    []
+  );
 
   const applyQueueState = useCallback(async (state: QueueState) => {
     const songs = state.items.map(playableFromQueueItem);
@@ -143,6 +161,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
     await ensurePlayerReady();
     await applyQueueStateToTrackPlayer(state);
+    if (audioProcessingSettingsRef.current) {
+      await applyAudioProcessingSettingsToTrackPlayer(
+        audioProcessingSettingsRef.current
+      );
+    }
   }, []);
 
   useEffect(() => {
@@ -226,14 +249,37 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         });
       }
     );
+    const unsubscribeAudioSettings =
+      stereodromeCore.addEventListener<AudioProcessingSettings>(
+        "audio-processing-settings-changed",
+        (settings) => {
+          void applyAudioProcessingSettings(settings).catch((playbackError) => {
+            setError(errorMessage(playbackError));
+          });
+        }
+      );
+
+    stereodromeCore
+      .getAudioProcessingSettings()
+      .then((settings) => {
+        if (mounted) {
+          void applyAudioProcessingSettings(settings);
+        }
+      })
+      .catch((playbackError) => {
+        if (mounted) {
+          setError(errorMessage(playbackError));
+        }
+      });
 
     return () => {
       mounted = false;
       errorSubscription.remove();
       trackSubscription.remove();
       unsubscribeQueue();
+      unsubscribeAudioSettings();
     };
-  }, [applyQueueState]);
+  }, [applyAudioProcessingSettings, applyQueueState]);
 
   useEffect(() => {
     if (!currentSong) {
