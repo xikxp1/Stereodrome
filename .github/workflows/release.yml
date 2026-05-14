@@ -207,11 +207,11 @@ jobs:
 
           | Platform | Download |
           |----------|----------|
-          | macOS (Universal) | `.dmg` |
-          | Windows | `.msi` or `.exe` |
-          | Linux | `.AppImage` or `.deb` |
-          | Android | `.apk` or `.aab` |
-          | iOS | TestFlight |
+          | macOS (Universal) | [DMG](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-macos-universal.dmg) |
+          | Windows | [MSI](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-windows-x64.msi) or [EXE](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-windows-x64-setup.exe) |
+          | Linux | [AppImage](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-linux-x64.AppImage) or [DEB](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-linux-amd64.deb) |
+          | Android | [APK](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-android.apk) or [AAB](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-android.aab) |
+          | iOS | [IPA](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome.ipa) or TestFlight |
 
           ## Auto-Update
 
@@ -236,8 +236,116 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+      - name: Prepare macOS release assets
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          dmg_files=()
+          while IFS= read -r file; do
+            dmg_files+=("$file")
+          done < <(find src-tauri/target -path '*/bundle/dmg/*.dmg' -type f | sort)
+
+          if [ "${#dmg_files[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one macOS DMG, found ${#dmg_files[@]}"
+            exit 1
+          fi
+
+          mkdir -p release-assets
+          cp "${dmg_files[0]}" release-assets/Stereodrome-macos-universal.dmg
+
+      - name: Upload macOS artifacts to GitHub Release
+        if: matrix.platform == 'macos-latest'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release upload \
+            "v${{ needs.version.outputs.release_version }}" \
+            release-assets/Stereodrome-macos-universal.dmg \
+            --clobber
+
+      - name: Prepare Windows release assets
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          msi_files=()
+          while IFS= read -r file; do
+            msi_files+=("$file")
+          done < <(find src-tauri/target -path '*/bundle/msi/*.msi' -type f | sort)
+
+          exe_files=()
+          while IFS= read -r file; do
+            exe_files+=("$file")
+          done < <(find src-tauri/target -path '*/bundle/nsis/*.exe' -type f | sort)
+
+          if [ "${#msi_files[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one Windows MSI, found ${#msi_files[@]}"
+            exit 1
+          fi
+
+          if [ "${#exe_files[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one Windows EXE, found ${#exe_files[@]}"
+            exit 1
+          fi
+
+          mkdir -p release-assets
+          cp "${msi_files[0]}" release-assets/Stereodrome-windows-x64.msi
+          cp "${exe_files[0]}" release-assets/Stereodrome-windows-x64-setup.exe
+
+      - name: Upload Windows artifacts to GitHub Release
+        if: matrix.platform == 'windows-latest'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release upload \
+            "v${{ needs.version.outputs.release_version }}" \
+            release-assets/Stereodrome-windows-x64.msi \
+            release-assets/Stereodrome-windows-x64-setup.exe \
+            --clobber
+
+      - name: Prepare Linux release assets
+        if: matrix.platform == 'ubuntu-latest'
+        shell: bash
+        run: |
+          appimage_files=()
+          while IFS= read -r file; do
+            appimage_files+=("$file")
+          done < <(find src-tauri/target -path '*/bundle/appimage/*.AppImage' -type f | sort)
+
+          deb_files=()
+          while IFS= read -r file; do
+            deb_files+=("$file")
+          done < <(find src-tauri/target -path '*/bundle/deb/*.deb' -type f | sort)
+
+          if [ "${#appimage_files[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one Linux AppImage, found ${#appimage_files[@]}"
+            exit 1
+          fi
+
+          if [ "${#deb_files[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one Linux DEB, found ${#deb_files[@]}"
+            exit 1
+          fi
+
+          mkdir -p release-assets
+          cp "${appimage_files[0]}" release-assets/Stereodrome-linux-x64.AppImage
+          cp "${deb_files[0]}" release-assets/Stereodrome-linux-amd64.deb
+
+      - name: Upload Linux artifacts to GitHub Release
+        if: matrix.platform == 'ubuntu-latest'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release upload \
+            "v${{ needs.version.outputs.release_version }}" \
+            release-assets/Stereodrome-linux-x64.AppImage \
+            release-assets/Stereodrome-linux-amd64.deb \
+            --clobber
+
   mobile-android:
-    needs: version
+    needs: [version, build]
     runs-on: ubuntu-latest
 
     steps:
@@ -292,17 +400,48 @@ jobs:
         working-directory: mobile/android
         run: ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon
 
+      - name: Prepare Android release assets
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apk_files=(mobile/android/app/build/outputs/apk/release/*.apk)
+          aab_files=(mobile/android/app/build/outputs/bundle/release/*.aab)
+
+          if [ "${#apk_files[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one release APK, found ${#apk_files[@]}"
+            exit 1
+          fi
+
+          if [ "${#aab_files[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one release AAB, found ${#aab_files[@]}"
+            exit 1
+          fi
+
+          mkdir -p mobile/build/android
+          cp "${apk_files[0]}" mobile/build/android/Stereodrome-android.apk
+          cp "${aab_files[0]}" mobile/build/android/Stereodrome-android.aab
+
       - name: Upload Android release artifacts
         uses: actions/upload-artifact@v7
         with:
           name: stereodrome-mobile-android-release
           path: |
-            mobile/android/app/build/outputs/apk/release/*.apk
-            mobile/android/app/build/outputs/bundle/release/*.aab
+            mobile/build/android/Stereodrome-android.apk
+            mobile/build/android/Stereodrome-android.aab
           if-no-files-found: error
 
+      - name: Upload Android artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload \
+            "v${{ needs.version.outputs.release_version }}" \
+            mobile/build/android/Stereodrome-android.apk \
+            mobile/build/android/Stereodrome-android.aab \
+            --clobber
+
   mobile-ios:
-    needs: version
+    needs: [version, build]
     runs-on: macos-26
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
@@ -383,6 +522,15 @@ jobs:
           name: stereodrome-mobile-ios-ipa
           path: mobile/build/ios/Stereodrome.ipa
           if-no-files-found: error
+
+      - name: Upload iOS IPA to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload \
+            "v${{ needs.version.outputs.release_version }}" \
+            mobile/build/ios/Stereodrome.ipa \
+            --clobber
 
       - name: Upload iOS IPA to TestFlight
         uses: apple-actions/upload-testflight-build@v5
