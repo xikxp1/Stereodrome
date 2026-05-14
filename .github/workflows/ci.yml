@@ -183,17 +183,6 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Select Xcode 26.3
-        shell: bash
-        run: |
-          # Xcode 26.4.1 on macos-26 currently fails iOS links involving SwiftUICore.
-          xcode_app=/Applications/Xcode_26.3.app
-          if [ ! -d "$xcode_app" ]; then
-            echo "::error::$xcode_app is required for iOS CI builds"
-            exit 1
-          fi
-          sudo xcode-select -s "$xcode_app/Contents/Developer"
-
       - name: Show Xcode version
         run: xcodebuild -version
 
