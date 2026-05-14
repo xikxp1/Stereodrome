@@ -777,6 +777,98 @@ impl StereodromeCore {
         }
     }
 
+    pub fn get_playback_state(&self) -> CoreResult<PlaybackState> {
+        let conn = Connection::open(&self.db_path)?;
+        let state = conn
+            .query_row(
+                "SELECT current_song_id, position_seconds, duration_seconds, was_playing,
+                        app_volume, updated_at
+                 FROM playback_state WHERE id = 1",
+                [],
+                |row| {
+                    Ok(PlaybackState {
+                        current_song_id: row.get(0)?,
+                        position_seconds: row.get(1)?,
+                        duration_seconds: row.get(2)?,
+                        was_playing: row.get::<_, i64>(3)? != 0,
+                        app_volume: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
+
+        Ok(state.unwrap_or_else(|| PlaybackState {
+            current_song_id: None,
+            position_seconds: 0.0,
+            duration_seconds: 0.0,
+            was_playing: false,
+            app_volume: 1.0,
+            updated_at: Utc::now().to_rfc3339(),
+        }))
+    }
+
+    pub async fn report_playback_progress(
+        &self,
+        progress: PlaybackProgress,
+    ) -> CoreResult<PlaybackState> {
+        let previous = self.playback_markers()?;
+        let now_playing_song_id =
+            if previous.now_playing_song_id.as_deref() == Some(&progress.song_id) {
+                previous.now_playing_song_id.clone()
+            } else {
+                if let Ok(client) = self.connected_client().await {
+                    let _ = client
+                        .scrobble(vec![(progress.song_id.clone(), None)], Some(false))
+                        .await;
+                }
+                Some(progress.song_id.clone())
+            };
+
+        let should_submit = progress.duration_seconds > 0.0
+            && progress.position_seconds / progress.duration_seconds >= 0.5
+            && previous.scrobbled_song_id.as_deref() != Some(&progress.song_id);
+        let scrobbled_song_id = if should_submit {
+            if let Ok(client) = self.connected_client().await {
+                let timestamp = chrono::Utc::now().timestamp_millis().max(0) as usize;
+                let _ = client
+                    .scrobble(
+                        vec![(progress.song_id.clone(), Some(timestamp))],
+                        Some(true),
+                    )
+                    .await;
+            }
+            Some(progress.song_id.clone())
+        } else if previous.now_playing_song_id.as_deref() == Some(&progress.song_id) {
+            previous.scrobbled_song_id
+        } else {
+            None
+        };
+
+        self.save_playback_state(
+            Some(progress.song_id),
+            progress.position_seconds,
+            progress.duration_seconds,
+            progress.is_playing,
+            previous.app_volume,
+            now_playing_song_id,
+            scrobbled_song_id,
+        )
+    }
+
+    pub fn save_playback_position(&self, progress: PlaybackProgress) -> CoreResult<PlaybackState> {
+        let previous = self.playback_markers()?;
+        self.save_playback_state(
+            Some(progress.song_id),
+            progress.position_seconds,
+            progress.duration_seconds,
+            progress.is_playing,
+            previous.app_volume,
+            previous.now_playing_song_id,
+            previous.scrobbled_song_id,
+        )
+    }
+
     pub fn get_queue(&self) -> CoreResult<QueueState> {
         self.with_queue_state(|_| Ok(()))
     }
@@ -1215,6 +1307,61 @@ impl StereodromeCore {
         Ok(())
     }
 
+    fn playback_markers(&self) -> CoreResult<PlaybackMarkers> {
+        let conn = Connection::open(&self.db_path)?;
+        let markers = conn
+            .query_row(
+                "SELECT app_volume, now_playing_song_id, scrobbled_song_id
+                 FROM playback_state WHERE id = 1",
+                [],
+                |row| {
+                    Ok(PlaybackMarkers {
+                        app_volume: row.get(0)?,
+                        now_playing_song_id: row.get(1)?,
+                        scrobbled_song_id: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?;
+
+        Ok(markers.unwrap_or(PlaybackMarkers {
+            app_volume: 1.0,
+            now_playing_song_id: None,
+            scrobbled_song_id: None,
+        }))
+    }
+
+    fn save_playback_state(
+        &self,
+        song_id: Option<String>,
+        position_seconds: f64,
+        duration_seconds: f64,
+        was_playing: bool,
+        app_volume: f64,
+        now_playing_song_id: Option<String>,
+        scrobbled_song_id: Option<String>,
+    ) -> CoreResult<PlaybackState> {
+        let conn = Connection::open(&self.db_path)?;
+        let updated_at = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR REPLACE INTO playback_state
+             (id, current_song_id, position_seconds, duration_seconds, was_playing, app_volume,
+              now_playing_song_id, scrobbled_song_id, updated_at)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                song_id,
+                position_seconds.max(0.0),
+                duration_seconds.max(0.0),
+                was_playing as i64,
+                app_volume.clamp(0.0, 2.0),
+                now_playing_song_id,
+                scrobbled_song_id,
+                updated_at
+            ],
+        )?;
+        self.get_playback_state()
+    }
+
     fn with_queue_state(
         &self,
         mutate: impl FnOnce(&mut PlayQueue) -> CoreResult<()>,
@@ -1331,4 +1478,10 @@ fn sanitize_file_component(value: &str) -> String {
 
 fn path_to_file_uri(path: &Path) -> String {
     format!("file://{}", path.to_string_lossy())
+}
+
+struct PlaybackMarkers {
+    app_volume: f64,
+    now_playing_song_id: Option<String>,
+    scrobbled_song_id: Option<String>,
 }

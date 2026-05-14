@@ -86,6 +86,18 @@ CREATE TABLE IF NOT EXISTS queue_state (
     repeat_mode TEXT NOT NULL DEFAULT 'Off'
 );
 
+CREATE TABLE IF NOT EXISTS playback_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    current_song_id TEXT,
+    position_seconds REAL NOT NULL DEFAULT 0,
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    was_playing INTEGER NOT NULL DEFAULT 0,
+    app_volume REAL NOT NULL DEFAULT 1,
+    now_playing_song_id TEXT,
+    scrobbled_song_id TEXT,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,

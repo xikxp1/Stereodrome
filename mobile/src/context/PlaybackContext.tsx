@@ -12,6 +12,7 @@ import TrackPlayer, {
   RepeatMode,
   State,
   usePlaybackState,
+  useProgress,
 } from "react-native-track-player";
 
 import { stereodromeCore } from "@/services/stereodromeCore";
@@ -109,6 +110,7 @@ function repeatModeForTrackPlayer(mode: QueueState["repeat_mode"]) {
 
 export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const playbackState = usePlaybackState();
+  const progress = useProgress(5_000);
   const [error, setError] = useState<string | null>(null);
   const [currentSong, setCurrentSong] = useState<PlayableSong | null>(null);
   const [currentIndex, setCurrentIndex] = useState<number | null>(null);
@@ -204,6 +206,23 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     };
   }, [applyQueueState, queue]);
 
+  useEffect(() => {
+    if (!currentSong) {
+      return;
+    }
+
+    void stereodromeCore
+      .reportPlaybackProgress({
+        song_id: currentSong.id,
+        position_seconds: progress.position,
+        duration_seconds: progress.duration || currentSong.duration || 0,
+        is_playing: playbackState.state === State.Playing,
+      })
+      .catch((playbackError) => {
+        setError(errorMessage(playbackError));
+      });
+  }, [currentSong, playbackState.state, progress.duration, progress.position]);
+
   const playSong = useCallback(
     async (song: PlayableSong, songs: PlayableSong[] = [song]) => {
       setError(null);
@@ -218,6 +237,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         );
         await applyQueueState(state);
         await TrackPlayer.play();
+        void stereodromeCore.prefetchNext().catch(() => {});
       } catch (playbackError) {
         setError(errorMessage(playbackError));
       }
@@ -299,6 +319,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       const state = await stereodromeCore.playNext(true);
       await applyQueueState(state);
       await TrackPlayer.play();
+      void stereodromeCore.prefetchNext().catch(() => {});
     } catch (playbackError) {
       setError(errorMessage(playbackError));
     }
@@ -310,6 +331,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       const state = await stereodromeCore.playPrevious();
       await applyQueueState(state);
       await TrackPlayer.play();
+      void stereodromeCore.prefetchNext().catch(() => {});
     } catch (playbackError) {
       setError(errorMessage(playbackError));
     }
@@ -321,6 +343,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         const state = await stereodromeCore.playQueueItem(index);
         await applyQueueState(state);
         await TrackPlayer.play();
+        void stereodromeCore.prefetchNext().catch(() => {});
       } catch (playbackError) {
         setError(errorMessage(playbackError));
       }

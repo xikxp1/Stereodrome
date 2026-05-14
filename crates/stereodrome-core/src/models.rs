@@ -226,3 +226,21 @@ pub struct DownloadStatus {
     pub path: Option<String>,
     pub bytes: u64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackState {
+    pub current_song_id: Option<String>,
+    pub position_seconds: f64,
+    pub duration_seconds: f64,
+    pub was_playing: bool,
+    pub app_volume: f64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackProgress {
+    pub song_id: String,
+    pub position_seconds: f64,
+    pub duration_seconds: f64,
+    pub is_playing: bool,
+}

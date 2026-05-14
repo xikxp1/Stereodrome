@@ -155,3 +155,19 @@ export type DownloadStatus = {
   path: string | null;
   bytes: number;
 };
+
+export type PlaybackStateSnapshot = {
+  current_song_id: string | null;
+  position_seconds: number;
+  duration_seconds: number;
+  was_playing: boolean;
+  app_volume: number;
+  updated_at: string;
+};
+
+export type PlaybackProgress = {
+  song_id: string;
+  position_seconds: number;
+  duration_seconds: number;
+  is_playing: boolean;
+};

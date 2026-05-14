@@ -8,6 +8,8 @@ import type {
   CacheStats,
   DownloadStatus,
   LibrarySyncStatus,
+  PlaybackProgress,
+  PlaybackStateSnapshot,
   Playlist,
   QueueItem,
   QueueState,
@@ -263,6 +265,19 @@ export const stereodromeCore = {
   },
   prefetchNext(): Promise<DownloadStatus | null> {
     return invokeJson("prefetchNext");
+  },
+  getPlaybackState(): Promise<PlaybackStateSnapshot> {
+    return invokeJson("getPlaybackState");
+  },
+  savePlaybackPosition(
+    progress: PlaybackProgress
+  ): Promise<PlaybackStateSnapshot> {
+    return invokeJson("savePlaybackPosition", progress);
+  },
+  reportPlaybackProgress(
+    progress: PlaybackProgress
+  ): Promise<PlaybackStateSnapshot> {
+    return invokeJson("reportPlaybackProgress", progress);
   },
   getQueue(): Promise<QueueState> {
     return invokeJson("getQueue");
