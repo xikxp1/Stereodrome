@@ -37,6 +37,7 @@ impl StereodromeCore {
         let data_dir = data_dir.as_ref();
         std::fs::create_dir_all(data_dir)?;
         std::fs::create_dir_all(data_dir.join("cover_art"))?;
+        std::fs::create_dir_all(data_dir.join("cover_cache"))?;
         let db_path = data_dir.join("stereodrome.db");
         let config_path = data_dir.join("server_config.json");
         db::init(&db_path)?;
@@ -597,17 +598,16 @@ impl StereodromeCore {
         ))
     }
 
-    pub fn get_cover_art_uri(&self, cover_art_id: String, size: Option<i32>) -> CoreResult<String> {
-        let config = self.current_config()?;
-        let size_string = size.map(|s| s.to_string());
-        let mut params = vec![("id", cover_art_id.as_str())];
-        if let Some(size) = size_string.as_deref() {
-            params.push(("size", size));
-        }
-        Ok(subsonic::signed_url(&config, "getCoverArt", &params))
+    pub async fn get_cover_art_uri(
+        &self,
+        cover_art_id: String,
+        size: Option<i32>,
+    ) -> CoreResult<String> {
+        let path = self.get_or_cache_cover_art(&cover_art_id, size).await?;
+        Ok(path_to_file_uri(&path))
     }
 
-    pub fn get_song_cover_art_uri(
+    pub async fn get_song_cover_art_uri(
         &self,
         song_id: String,
         size: Option<i32>,
@@ -625,9 +625,10 @@ impl StereodromeCore {
             .optional()?
             .flatten();
 
-        cover_art_id
-            .map(|id| self.get_cover_art_uri(id, size))
-            .transpose()
+        match cover_art_id {
+            Some(id) => self.get_cover_art_uri(id, size).await.map(Some),
+            None => Ok(None),
+        }
     }
 
     pub fn get_audio_cache_stats(&self) -> CoreResult<CacheStats> {
@@ -1187,6 +1188,43 @@ impl StereodromeCore {
             format!("{safe_id}.{suffix}")
         };
         Ok(self.audio_cache_dir()?.join(filename))
+    }
+
+    fn cover_cache_dir(&self) -> CoreResult<PathBuf> {
+        let path = self.data_dir.join("cover_cache");
+        std::fs::create_dir_all(&path)?;
+        Ok(path)
+    }
+
+    fn cover_cache_path(&self, cover_art_id: &str, size: Option<i32>) -> CoreResult<PathBuf> {
+        let safe_id = sanitize_file_component(cover_art_id);
+        let filename = match size {
+            Some(size) => format!("{safe_id}_{size}.jpg"),
+            None => format!("{safe_id}.jpg"),
+        };
+        Ok(self.cover_cache_dir()?.join(filename))
+    }
+
+    async fn get_or_cache_cover_art(
+        &self,
+        cover_art_id: &str,
+        size: Option<i32>,
+    ) -> CoreResult<PathBuf> {
+        let path = self.cover_cache_path(cover_art_id, size)?;
+        if path.exists() {
+            return Ok(path);
+        }
+
+        let client = self.connected_client().await?;
+        let bytes = client
+            .get_cover_art(cover_art_id, size)
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, bytes)?;
+        Ok(path)
     }
 
     fn cached_song_path(&self, song_id: &str) -> CoreResult<Option<PathBuf>> {

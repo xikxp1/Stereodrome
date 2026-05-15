@@ -200,11 +200,15 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         }
         "getCoverArtUri" => {
             let args = parse_payload::<IdSizePayload>(payload)?;
-            json_result(core.get_cover_art_uri(args.id, args.size))
+            json_result(
+                runtime.block_on(async { core.get_cover_art_uri(args.id, args.size).await }),
+            )
         }
         "getSongCoverArtUri" => {
             let args = parse_payload::<IdSizePayload>(payload)?;
-            json_result(core.get_song_cover_art_uri(args.id, args.size))
+            json_result(
+                runtime.block_on(async { core.get_song_cover_art_uri(args.id, args.size).await }),
+            )
         }
         "getStreamUri" => {
             let song_id = parse_payload::<String>(payload)?;
