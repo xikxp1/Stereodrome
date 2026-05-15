@@ -9,10 +9,6 @@ export function DownloadsScreen() {
     queryKey: ["audio-cache-stats"],
     queryFn: stereodromeCore.getAudioCacheStats,
   });
-  const songs = useQuery({
-    queryKey: ["songs"],
-    queryFn: () => stereodromeCore.getSongs(),
-  });
 
   async function refreshCache() {
     await queryClient.invalidateQueries({ queryKey: ["audio-cache-stats"] });
@@ -20,7 +16,7 @@ export function DownloadsScreen() {
 
   return (
     <SelectableList
-      empty={songs.isLoading ? "Loading downloads" : "No songs synced"}
+      empty={cacheStats.isLoading ? "Loading downloads" : "No download actions"}
       options={[
         {
           label: "Cache Usage",
@@ -45,18 +41,6 @@ export function DownloadsScreen() {
             await refreshCache();
           },
         },
-        ...(songs.data ?? []).map((song) => ({
-          label: song.title,
-          sublabel: [song.artist, song.album].filter(Boolean).join(" - "),
-          onSelect: async () => {
-            await stereodromeCore.downloadSong(song.id);
-            await refreshCache();
-          },
-          onLongSelect: async () => {
-            await stereodromeCore.removeCachedSong(song.id);
-            await refreshCache();
-          },
-        })),
       ]}
     />
   );
