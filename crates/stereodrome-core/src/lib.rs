@@ -605,8 +605,7 @@ impl StereodromeCore {
         size: Option<i32>,
     ) -> CoreResult<String> {
         let path = self.get_or_cache_cover_art(&cover_art_id, size).await?;
-        self.prefetch_large_cover_art_if_small(&cover_art_id, size)
-            .await;
+        self.prefetch_large_cover_art_if_small(&cover_art_id, size);
         Ok(path_to_file_uri(&path))
     }
 
@@ -1240,12 +1239,39 @@ impl StereodromeCore {
         Ok(path)
     }
 
-    async fn prefetch_large_cover_art_if_small(&self, cover_art_id: &str, size: Option<i32>) {
-        if should_prefetch_large_cover_art(size) {
-            let _ = self
-                .get_or_cache_cover_art(cover_art_id, Some(LARGE_COVER_ART_SIZE))
-                .await;
+    fn prefetch_large_cover_art_if_small(&self, cover_art_id: &str, size: Option<i32>) {
+        if !should_prefetch_large_cover_art(size) {
+            return;
         }
+
+        let Ok(path) = self.cover_cache_path(cover_art_id, Some(LARGE_COVER_ART_SIZE)) else {
+            return;
+        };
+        if path.exists() {
+            return;
+        }
+
+        let Ok(client_guard) = self.client.try_lock() else {
+            return;
+        };
+        let Some(client) = client_guard.clone() else {
+            return;
+        };
+        drop(client_guard);
+
+        let cover_art_id = cover_art_id.to_string();
+        tokio::spawn(async move {
+            let Ok(bytes) = client
+                .get_cover_art(&cover_art_id, Some(LARGE_COVER_ART_SIZE))
+                .await
+            else {
+                return;
+            };
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(path, bytes);
+        });
     }
 
     fn cached_song_path(&self, song_id: &str) -> CoreResult<Option<PathBuf>> {
