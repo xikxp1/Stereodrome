@@ -8,7 +8,7 @@
 use std::ffi::{CStr, CString, c_char};
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Mutex, Once};
 
 use log::{Level, LevelFilter, Metadata, Record};
 use serde::Deserialize;
@@ -25,6 +25,9 @@ use url::Url;
 
 static MOBILE_LOGGER: MobileLogger = MobileLogger;
 static INIT_LOGGER: Once = Once::new();
+static LOG_CALLBACK: Mutex<Option<MobileLogCallback>> = Mutex::new(None);
+
+type MobileLogCallback = extern "C" fn(*const c_char);
 
 struct MobileLogger;
 
@@ -35,12 +38,19 @@ impl log::Log for MobileLogger {
 
     fn log(&self, record: &Record<'_>) {
         if self.enabled(record.metadata()) {
-            eprintln!(
+            let message = format!(
                 "[stereodrome-rust][{}][{}] {}",
                 record.level(),
                 record.target(),
                 record.args()
             );
+            if let Some(callback) = LOG_CALLBACK.lock().ok().and_then(|guard| *guard)
+                && let Ok(message) = CString::new(message.as_str())
+            {
+                callback(message.as_ptr());
+                return;
+            }
+            eprintln!("{message}");
         }
     }
 
@@ -53,6 +63,14 @@ fn init_mobile_logging() {
             log::set_max_level(LevelFilter::Debug);
         }
     });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn stereodrome_core_set_log_callback(callback: Option<MobileLogCallback>) {
+    init_mobile_logging();
+    if let Ok(mut current) = LOG_CALLBACK.lock() {
+        *current = callback;
+    }
 }
 
 pub struct MobileCore {

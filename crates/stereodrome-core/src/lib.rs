@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::Utc;
+use log::{debug, info, warn};
 use queue::{PlayQueue, QueueItem, QueueState, RepeatMode};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use submarine::{Client, api::get_album_list::Order, auth::AuthBuilder};
@@ -36,6 +37,7 @@ pub struct StereodromeCore {
 impl StereodromeCore {
     pub fn new(data_dir: impl AsRef<Path>) -> CoreResult<Self> {
         let data_dir = data_dir.as_ref();
+        info!("Initializing Stereodrome Rust core at {}", data_dir.display());
         std::fs::create_dir_all(data_dir)?;
         std::fs::create_dir_all(data_dir.join("cover_art"))?;
         std::fs::create_dir_all(data_dir.join("cover_cache"))?;
@@ -56,6 +58,7 @@ impl StereodromeCore {
     }
 
     pub async fn connect_server(&self, params: ConnectParams) -> CoreResult<ConnectionStatus> {
+        info!("Connecting to Subsonic server at {}", params.url);
         let client = build_client(&params.url, &params.username, &params.password);
         let ping = client
             .ping()
@@ -76,6 +79,10 @@ impl StereodromeCore {
             .lock()
             .map_err(|_| CoreError::LockPoisoned)? = Some(config.clone());
 
+        info!(
+            "Connected to Subsonic server at {} as {}",
+            config.url, config.username
+        );
         Ok(ConnectionStatus {
             connected: true,
             server_url: Some(config.url),
@@ -98,6 +105,7 @@ impl StereodromeCore {
     }
 
     pub async fn restore_session(&self) -> CoreResult<ConnectionStatus> {
+        info!("Restoring saved Subsonic session");
         let config = {
             self.server_config
                 .lock()
@@ -106,6 +114,7 @@ impl StereodromeCore {
         };
 
         let Some(config) = config else {
+            debug!("No saved Subsonic session to restore");
             return Ok(ConnectionStatus::disconnected());
         };
 
@@ -113,6 +122,7 @@ impl StereodromeCore {
         match client.ping().await {
             Ok(ping) => {
                 *self.client.lock().await = Some(client);
+                info!("Restored Subsonic session for {}", config.username);
                 Ok(ConnectionStatus {
                     connected: true,
                     server_url: Some(config.url),
@@ -120,16 +130,20 @@ impl StereodromeCore {
                     server_version: Some(ping.version),
                 })
             }
-            Err(_) => Ok(ConnectionStatus {
-                connected: false,
-                server_url: Some(config.url),
-                username: Some(config.username),
-                server_version: None,
-            }),
+            Err(error) => {
+                warn!("Failed to restore Subsonic session: {error}");
+                Ok(ConnectionStatus {
+                    connected: false,
+                    server_url: Some(config.url),
+                    username: Some(config.username),
+                    server_version: None,
+                })
+            }
         }
     }
 
     pub async fn disconnect_server(&self) -> CoreResult<()> {
+        info!("Disconnecting Subsonic server");
         *self.client.lock().await = None;
         *self
             .server_config
@@ -161,6 +175,7 @@ impl StereodromeCore {
     }
 
     pub async fn sync_library(&self) -> CoreResult<SyncResult> {
+        info!("Starting full library sync");
         let client = self.connected_client().await?;
         self.record_sync_attempt("library_full", None)?;
         let indexes = client
@@ -171,6 +186,7 @@ impl StereodromeCore {
             .into_iter()
             .flat_map(|index| index.artist)
             .collect::<Vec<_>>();
+        info!("Full library sync fetched {} artists", artists.len());
 
         let mut result = SyncResult::default();
         let now = Utc::now().to_rfc3339();
@@ -263,17 +279,27 @@ impl StereodromeCore {
             [&now],
         )?;
         tx.commit()?;
+        info!(
+            "Full library sync complete: artists={}, albums={}, songs={}",
+            result.artists, result.albums, result.songs
+        );
         Ok(result)
     }
 
     pub async fn sync_library_incremental(&self) -> CoreResult<SyncResult> {
+        info!("Starting incremental library sync");
         self.record_sync_attempt("library_incremental", None)?;
         match self.sync_library().await {
             Ok(result) => {
                 self.record_sync_success("library_incremental")?;
+                info!(
+                    "Incremental library sync complete: artists={}, albums={}, songs={}",
+                    result.artists, result.albums, result.songs
+                );
                 Ok(result)
             }
             Err(error) => {
+                warn!("Incremental library sync failed: {error}");
                 self.record_sync_attempt("library_incremental", Some(error.to_string()))?;
                 Err(error)
             }
@@ -281,6 +307,7 @@ impl StereodromeCore {
     }
 
     pub async fn reconcile_library(&self) -> CoreResult<SyncResult> {
+        info!("Starting full library sync with reconciliation");
         self.record_sync_attempt("library_reconcile", None)?;
 
         let result = match self.sync_library().await {
@@ -289,6 +316,7 @@ impl StereodromeCore {
                 let synced_at = sync_value(&conn, "library_last_success_at")?.ok_or_else(|| {
                     CoreError::InvalidInput("library sync did not record a success time".to_string())
                 })?;
+                info!("Pruning library rows not refreshed at {synced_at}");
                 prune_stale_library_rows(&conn, &synced_at).map(|()| result)
             }
             Err(error) => Err(error),
@@ -297,9 +325,14 @@ impl StereodromeCore {
         match result {
             Ok(result) => {
                 self.record_sync_success("library_reconcile")?;
+                info!(
+                    "Full library sync with reconciliation complete: artists={}, albums={}, songs={}",
+                    result.artists, result.albums, result.songs
+                );
                 Ok(result)
             }
             Err(error) => {
+                warn!("Full library sync with reconciliation failed: {error}");
                 self.record_sync_attempt("library_reconcile", Some(error.to_string()))?;
                 Err(error)
             }
@@ -313,6 +346,10 @@ impl StereodromeCore {
             .await
             .map_err(|e| CoreError::Subsonic(e.to_string()))?;
 
+        debug!(
+            "Subsonic scan status: scanning={}, count={:?}",
+            status.scanning, status.count
+        );
         Ok(ScanStatus {
             scanning: status.scanning,
             count: status.count,
@@ -320,12 +357,17 @@ impl StereodromeCore {
     }
 
     pub async fn start_scan(&self) -> CoreResult<ScanStatus> {
+        info!("Starting Subsonic server scan");
         let client = self.connected_client().await?;
         let status = client
             .start_scan()
             .await
             .map_err(|e| CoreError::Subsonic(e.to_string()))?;
 
+        info!(
+            "Subsonic server scan requested: scanning={}, count={:?}",
+            status.scanning, status.count
+        );
         Ok(ScanStatus {
             scanning: status.scanning,
             count: status.count,

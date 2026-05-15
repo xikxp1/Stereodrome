@@ -17,6 +17,24 @@ private func stereodromeCoreCall(
 @_silgen_name("stereodrome_core_free_string")
 private func stereodromeCoreFreeString(_ value: UnsafeMutablePointer<CChar>?)
 
+private typealias StereodromeRustLogCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
+
+@_silgen_name("stereodrome_core_set_log_callback")
+private func stereodromeCoreSetLogCallback(_ callback: StereodromeRustLogCallback?)
+
+private weak var activeStereodromeCoreModule: StereodromeCoreModule?
+
+private func stereodromeRustLogCallback(_ message: UnsafePointer<CChar>?) {
+  guard let message else {
+    return
+  }
+  let logMessage = String(cString: message)
+  NSLog("%@", logMessage)
+  DispatchQueue.main.async {
+    activeStereodromeCoreModule?.emitRustLog(logMessage)
+  }
+}
+
 public class StereodromeCoreModule: Module {
   private var core: OpaquePointer?
 
@@ -28,6 +46,8 @@ public class StereodromeCoreModule: Module {
     Name("StereodromeCore")
 
     AsyncFunction("initialize") { (_ dataDir: String) -> Bool in
+      activeStereodromeCoreModule = self
+      stereodromeCoreSetLogCallback(stereodromeRustLogCallback)
       self.configureAudioSession()
       if let existing = self.core {
         stereodromeCoreDestroy(existing)
@@ -64,6 +84,10 @@ public class StereodromeCoreModule: Module {
         .replacingOccurrences(of: "\"", with: "\\\"")
       return self.callSync(method: "getStreamUri", payload: "\"\(escapedSongId)\"")
     }
+  }
+
+  fileprivate func emitRustLog(_ message: String) {
+    appContext?.jsLogger.info(message)
   }
 
   private func callSync(method: String, payload: String) -> String {

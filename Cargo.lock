@@ -5245,6 +5245,7 @@ name = "stereodrome-core"
 version = "0.1.17"
 dependencies = [
  "chrono",
+ "log",
  "md5 0.8.0",
  "rand 0.10.1",
  "rusqlite",

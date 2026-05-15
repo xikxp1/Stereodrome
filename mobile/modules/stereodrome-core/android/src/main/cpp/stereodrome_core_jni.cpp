@@ -1,11 +1,19 @@
 #include <jni.h>
 #include <stdint.h>
+#include <android/log.h>
 
 extern "C" {
 void stereodrome_core_free_string(char *value);
 void *stereodrome_core_new(const char *data_dir);
 void stereodrome_core_destroy(void *core);
 char *stereodrome_core_call(void *core, const char *method, const char *payload);
+void stereodrome_core_set_log_callback(void (*callback)(const char *message));
+}
+
+static void rust_log_callback(const char *message) {
+  if (message != nullptr) {
+    __android_log_write(ANDROID_LOG_INFO, "StereodromeRust", message);
+  }
 }
 
 static jstring take_rust_string(JNIEnv *env, char *value) {
@@ -21,6 +29,7 @@ static jstring take_rust_string(JNIEnv *env, char *value) {
 extern "C" JNIEXPORT jlong JNICALL
 Java_expo_modules_stereodromecore_StereodromeCoreJni_nativeInitialize(
     JNIEnv *env, jobject, jstring data_dir) {
+  stereodrome_core_set_log_callback(rust_log_callback);
   const char *data_dir_chars = env->GetStringUTFChars(data_dir, nullptr);
   void *core = stereodrome_core_new(data_dir_chars);
   env->ReleaseStringUTFChars(data_dir, data_dir_chars);
@@ -44,4 +53,3 @@ Java_expo_modules_stereodromecore_StereodromeCoreJni_nativeCall(
   env->ReleaseStringUTFChars(payload, payload_chars);
   return take_rust_string(env, result);
 }
-
