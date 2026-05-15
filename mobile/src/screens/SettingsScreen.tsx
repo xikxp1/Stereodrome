@@ -531,6 +531,7 @@ export function SettingsScreen({ category }: { category?: string }) {
         empty="Settings unavailable"
         options={options}
         preserveSelectionOnChange
+        resetSelectionKey={selectedCategory ?? "root"}
       />
       <Modal
         animationType="fade"

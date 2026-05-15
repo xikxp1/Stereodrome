@@ -103,11 +103,13 @@ export function SelectableList({
   options,
   empty = "Nothing here",
   preserveSelectionOnChange = false,
+  resetSelectionKey,
 }: {
   options: SelectableOption[];
   disabled?: boolean;
   empty?: string;
   preserveSelectionOnChange?: boolean;
+  resetSelectionKey?: string | number | null;
 }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const { subscribe } = useInputBus();
@@ -116,6 +118,7 @@ export function SelectableList({
   const activeIndexRef = useRef(activeIndex);
   const listHeightRef = useRef(0);
   const optionsRef = useRef(options);
+  const resetSelectionKeyRef = useRef(resetSelectionKey);
   const scrollOffsetRef = useRef(0);
   const optionsSignature = useMemo(
     () => options.map((option) => option.label).join("\u001e"),
@@ -129,6 +132,16 @@ export function SelectableList({
   useEffect(() => {
     optionsRef.current = options;
   }, [options]);
+
+  const resetSelection = useCallback(() => {
+    scrollOffsetRef.current = 0;
+    activeIndexRef.current = 0;
+    setActiveIndex(0);
+    listRef.current?.scrollToOffset({
+      animated: false,
+      offset: 0,
+    });
+  }, []);
 
   const scrollSelectedIntoView = useCallback((index: number) => {
     const listHeight = listHeightRef.current;
@@ -179,7 +192,11 @@ export function SelectableList({
   );
 
   useEffect(() => {
-    if (preserveSelectionOnChange) {
+    const shouldResetSelection =
+      resetSelectionKeyRef.current !== resetSelectionKey;
+    resetSelectionKeyRef.current = resetSelectionKey;
+
+    if (!shouldResetSelection && preserveSelectionOnChange) {
       const clampedIndex =
         options.length === 0
           ? 0
@@ -193,18 +210,14 @@ export function SelectableList({
     }
 
     requestAnimationFrame(() => {
-      scrollOffsetRef.current = 0;
-      activeIndexRef.current = 0;
-      setActiveIndex(0);
-      listRef.current?.scrollToOffset({
-        animated: false,
-        offset: 0,
-      });
+      resetSelection();
     });
   }, [
     options.length,
     optionsSignature,
     preserveSelectionOnChange,
+    resetSelection,
+    resetSelectionKey,
     scrollSelectedIntoView,
   ]);
 
