@@ -6,6 +6,7 @@
 //! Tauri adapter.
 
 use std::ffi::{CStr, CString, c_char};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::{Arc, Mutex, Once};
@@ -25,6 +26,7 @@ use url::Url;
 
 static MOBILE_LOGGER: MobileLogger = MobileLogger;
 static INIT_LOGGER: Once = Once::new();
+static INIT_PANIC_HOOK: Once = Once::new();
 static LOG_CALLBACK: Mutex<Option<MobileLogCallback>> = Mutex::new(None);
 
 type MobileLogCallback = extern "C" fn(*const c_char);
@@ -63,6 +65,26 @@ fn init_mobile_logging() {
             log::set_max_level(LevelFilter::Debug);
         }
     });
+    INIT_PANIC_HOOK.call_once(|| {
+        panic::set_hook(Box::new(|panic_info| {
+            let location = panic_info
+                .location()
+                .map(|location| {
+                    format!(
+                        "{}:{}:{}",
+                        location.file(),
+                        location.line(),
+                        location.column()
+                    )
+                })
+                .unwrap_or_else(|| "unknown location".to_string());
+            log::error!(
+                target: "stereodrome_ffi",
+                "Rust panic at {location}: {}",
+                panic_payload_message(panic_info.payload())
+            );
+        }));
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -84,27 +106,41 @@ pub struct MobileCore {
 /// `value` must be a pointer returned by this library from a previous FFI call
 /// and must not have been freed already.
 pub unsafe extern "C" fn stereodrome_core_free_string(value: *mut c_char) {
-    if value.is_null() {
-        return;
-    }
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+        if value.is_null() {
+            return;
+        }
 
-    unsafe {
-        let _ = CString::from_raw(value);
-    }
+        unsafe {
+            let _ = CString::from_raw(value);
+        }
+    }));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCore {
     init_mobile_logging();
 
-    let Some(data_dir) = read_c_string(data_dir) else {
-        return ptr::null_mut();
-    };
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        let Some(data_dir) = read_c_string(data_dir) else {
+            return ptr::null_mut();
+        };
 
-    match (StereodromeCore::new(data_dir), AudioPlayer::new()) {
-        (Ok(core), Ok(audio)) => Box::into_raw(Box::new(MobileCore { core, audio })),
-        (Err(_), _) => ptr::null_mut(),
-        (_, Err(_)) => ptr::null_mut(),
+        match (StereodromeCore::new(data_dir), AudioPlayer::new()) {
+            (Ok(core), Ok(audio)) => Box::into_raw(Box::new(MobileCore { core, audio })),
+            (Err(_), _) => ptr::null_mut(),
+            (_, Err(_)) => ptr::null_mut(),
+        }
+    })) {
+        Ok(core) => core,
+        Err(payload) => {
+            log::error!(
+                target: "stereodrome_ffi",
+                "Rust panic while initializing mobile core: {}",
+                panic_payload_message(payload.as_ref())
+            );
+            ptr::null_mut()
+        }
     }
 }
 
@@ -114,17 +150,23 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
 /// `core` must be a pointer returned by `stereodrome_core_new` and must not be
 /// used after this function returns.
 pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
-    if core.is_null() {
-        return;
-    }
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+        if core.is_null() {
+            return;
+        }
 
-    unsafe {
-        let _ = Box::from_raw(core);
-    }
+        unsafe {
+            let _ = Box::from_raw(core);
+        }
+    }));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stereodrome_core_get_connection_status(core: *mut MobileCore) -> *mut c_char {
+    catch_json_response(|| stereodrome_core_get_connection_status_inner(core))
+}
+
+fn stereodrome_core_get_connection_status_inner(core: *mut MobileCore) -> *mut c_char {
     let Some(mobile) = mobile_ref(core) else {
         return json_error("core is not initialized");
     };
@@ -137,6 +179,13 @@ pub extern "C" fn stereodrome_core_get_connection_status(core: *mut MobileCore) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stereodrome_core_get_stream_uri(
+    core: *mut MobileCore,
+    song_id: *const c_char,
+) -> *mut c_char {
+    catch_json_response(|| stereodrome_core_get_stream_uri_inner(core, song_id))
+}
+
+fn stereodrome_core_get_stream_uri_inner(
     core: *mut MobileCore,
     song_id: *const c_char,
 ) -> *mut c_char {
@@ -155,6 +204,14 @@ pub extern "C" fn stereodrome_core_get_stream_uri(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stereodrome_core_call(
+    core: *mut MobileCore,
+    method: *const c_char,
+    payload: *const c_char,
+) -> *mut c_char {
+    catch_json_response(|| stereodrome_core_call_inner(core, method, payload))
+}
+
+fn stereodrome_core_call_inner(
     core: *mut MobileCore,
     method: *const c_char,
     payload: *const c_char,
@@ -466,6 +523,30 @@ fn parse_optional_string(payload: Value) -> Result<Option<String>, String> {
 
 fn json_result<T: serde::Serialize, E: ToString>(result: Result<T, E>) -> Result<String, String> {
     result.map(json_ok_string).map_err(|e| e.to_string())
+}
+
+fn catch_json_response(operation: impl FnOnce() -> *mut c_char) -> *mut c_char {
+    match panic::catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(response) => response,
+        Err(payload) => {
+            let message = panic_payload_message(payload.as_ref());
+            log::error!(
+                target: "stereodrome_ffi",
+                "Rust panic while handling mobile FFI call: {message}"
+            );
+            json_error(&format!("Rust panic: {message}"))
+        }
+    }
+}
+
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "non-string panic payload".to_string()
 }
 
 async fn play_current_queue_item(
