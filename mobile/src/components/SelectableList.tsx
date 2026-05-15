@@ -80,9 +80,11 @@ const SelectableRow = memo(
 export function SelectableList({
   options,
   empty = "Nothing here",
+  preserveSelectionOnChange = false,
 }: {
   options: SelectableOption[];
   empty?: string;
+  preserveSelectionOnChange?: boolean;
 }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const { subscribe } = useInputBus();
@@ -93,10 +95,7 @@ export function SelectableList({
   const optionsRef = useRef(options);
   const scrollOffsetRef = useRef(0);
   const optionsSignature = useMemo(
-    () =>
-      options
-        .map((option) => `${option.label}\u001f${option.sublabel ?? ""}`)
-        .join("\u001e"),
+    () => options.map((option) => option.label).join("\u001e"),
     [options]
   );
 
@@ -157,16 +156,34 @@ export function SelectableList({
   );
 
   useEffect(() => {
-    scrollOffsetRef.current = 0;
-    activeIndexRef.current = 0;
-    setActiveIndex(0);
+    if (preserveSelectionOnChange) {
+      const clampedIndex =
+        options.length === 0
+          ? 0
+          : Math.min(activeIndexRef.current, options.length - 1);
+      activeIndexRef.current = clampedIndex;
+      setActiveIndex(clampedIndex);
+      requestAnimationFrame(() => {
+        scrollSelectedIntoView(clampedIndex);
+      });
+      return;
+    }
+
     requestAnimationFrame(() => {
+      scrollOffsetRef.current = 0;
+      activeIndexRef.current = 0;
+      setActiveIndex(0);
       listRef.current?.scrollToOffset({
         animated: false,
         offset: 0,
       });
     });
-  }, [optionsSignature]);
+  }, [
+    options.length,
+    optionsSignature,
+    preserveSelectionOnChange,
+    scrollSelectedIntoView,
+  ]);
 
   useEffect(
     () =>
