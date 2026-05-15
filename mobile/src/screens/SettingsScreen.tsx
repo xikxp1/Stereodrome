@@ -19,11 +19,12 @@ import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
-import type { AudioProcessingSettings } from "@/types/music";
+import type { AudioProcessingSettings, LibrarySyncStatus } from "@/types/music";
 
 const lufsPresets = [-18, -16, -14, -12, -10];
 const crossfadePresets = [1000, 3000, 5000, 8000, 12000];
 const cacheSizePresetsGb = [0.5, 1, 2, 5, 10, 20, 50];
+const librarySyncStatusQueryKey = ["library-sync-status"] as const;
 const eqLabels = [
   "32",
   "64",
@@ -145,7 +146,7 @@ export function SettingsScreen({ category }: { category?: string }) {
   const [textEditSaving, setTextEditSaving] = useState(false);
   const [textEditValue, setTextEditValue] = useState("");
   const syncStatus = useQuery({
-    queryKey: ["library-sync-status"],
+    queryKey: librarySyncStatusQueryKey,
     queryFn: stereodromeCore.getLibrarySyncStatus,
   });
   const cacheStats = useQuery({
@@ -274,7 +275,9 @@ export function SettingsScreen({ category }: { category?: string }) {
               : "Running full reconcile"
           : "Idle",
         onSelect: () =>
-          queryClient.invalidateQueries({ queryKey: ["library-sync-status"] }),
+          queryClient.invalidateQueries({
+            queryKey: librarySyncStatusQueryKey,
+          }),
       },
       {
         kind: "action",
@@ -311,7 +314,7 @@ export function SettingsScreen({ category }: { category?: string }) {
               sublabel: syncStatus.data.incremental.last_error,
               onSelect: () =>
                 queryClient.invalidateQueries({
-                  queryKey: ["library-sync-status"],
+                  queryKey: librarySyncStatusQueryKey,
                 }),
             },
           ]
@@ -324,7 +327,7 @@ export function SettingsScreen({ category }: { category?: string }) {
               sublabel: syncStatus.data.full.last_error,
               onSelect: () =>
                 queryClient.invalidateQueries({
-                  queryKey: ["library-sync-status"],
+                  queryKey: librarySyncStatusQueryKey,
                 }),
             },
           ]
@@ -337,7 +340,7 @@ export function SettingsScreen({ category }: { category?: string }) {
               sublabel: syncStatus.data.full_reconcile.last_error,
               onSelect: () =>
                 queryClient.invalidateQueries({
-                  queryKey: ["library-sync-status"],
+                  queryKey: librarySyncStatusQueryKey,
                 }),
             },
           ]
@@ -455,6 +458,10 @@ export function SettingsScreen({ category }: { category?: string }) {
 
   async function runSync(mode: "full" | "incremental" | "reconcile") {
     await runBusy(mode, async () => {
+      queryClient.setQueryData<LibrarySyncStatus>(
+        librarySyncStatusQueryKey,
+        (status) => markSyncStatusRunning(status, mode)
+      );
       if (mode === "full") {
         await stereodrome.sync();
         setMessage("Full sync complete");
@@ -465,7 +472,12 @@ export function SettingsScreen({ category }: { category?: string }) {
         await stereodrome.reconcile();
         setMessage("Full reconcile complete");
       }
-      await queryClient.invalidateQueries();
+      await queryClient.invalidateQueries({
+        queryKey: librarySyncStatusQueryKey,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["artists"] });
+      await queryClient.invalidateQueries({ queryKey: ["albums"] });
+      await queryClient.invalidateQueries({ queryKey: ["songs"] });
     });
   }
 
@@ -882,6 +894,31 @@ function parseSettingsCategory(value: string | undefined) {
   return settingsCategories.some((category) => category.id === value)
     ? (value as SettingsCategory)
     : null;
+}
+
+function markSyncStatusRunning(
+  status: LibrarySyncStatus | undefined,
+  mode: "full" | "incremental" | "reconcile"
+) {
+  if (!status) {
+    return status;
+  }
+
+  const key = syncJobKey(mode);
+  return {
+    ...status,
+    active_job: mode,
+    [key]: {
+      ...status[key],
+      running: true,
+      last_attempt_at: new Date().toISOString(),
+      last_error: null,
+    },
+  };
+}
+
+function syncJobKey(mode: "full" | "incremental" | "reconcile") {
+  return mode === "reconcile" ? "full_reconcile" : mode;
 }
 
 function onOff(value: boolean) {
