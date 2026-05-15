@@ -10,6 +10,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::{Arc, Mutex, Once};
+use std::thread;
 
 use log::{Level, LevelFilter, Metadata, Record};
 use serde::Deserialize;
@@ -20,7 +21,8 @@ use stereodrome_audio::{
 };
 use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
-    AudioProcessingSettings, ConnectParams, PlaybackProgress, ServerSettingsUpdate, StereodromeCore,
+    AudioProcessingSettings, ConnectParams, LibrarySyncStatus, PlaybackProgress,
+    ServerSettingsUpdate, StereodromeCore,
 };
 use url::Url;
 
@@ -98,6 +100,38 @@ pub extern "C" fn stereodrome_core_set_log_callback(callback: Option<MobileLogCa
 pub struct MobileCore {
     core: StereodromeCore,
     audio: AudioPlayer,
+    data_dir: PathBuf,
+    sync_state: Arc<Mutex<MobileSyncState>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MobileSyncJob {
+    Full,
+    Incremental,
+    Reconcile,
+}
+
+impl MobileSyncJob {
+    fn active_job(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Incremental => "incremental",
+            Self::Reconcile => "reconcile",
+        }
+    }
+
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Full => "full library sync",
+            Self::Incremental => "incremental library sync",
+            Self::Reconcile => "full library sync with reconciliation",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct MobileSyncState {
+    active_job: Option<MobileSyncJob>,
 }
 
 #[unsafe(no_mangle)]
@@ -126,8 +160,14 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
             return ptr::null_mut();
         };
 
-        match (StereodromeCore::new(data_dir), AudioPlayer::new()) {
-            (Ok(core), Ok(audio)) => Box::into_raw(Box::new(MobileCore { core, audio })),
+        let data_dir = PathBuf::from(data_dir);
+        match (StereodromeCore::new(&data_dir), AudioPlayer::new()) {
+            (Ok(core), Ok(audio)) => Box::into_raw(Box::new(MobileCore {
+                core,
+                audio,
+                data_dir,
+                sync_state: Arc::new(Mutex::new(MobileSyncState::default())),
+            })),
             (Err(_), _) => ptr::null_mut(),
             (_, Err(_)) => ptr::null_mut(),
         }
@@ -252,16 +292,14 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(runtime.block_on(async { core.disconnect_server().await }))
         }
         "getConnectionStatus" => json_result(core.get_connection_status()),
-        "syncLibrary" => json_result(runtime.block_on(async { core.sync_library().await })),
+        "syncLibrary" => json_result(start_sync_job(mobile, MobileSyncJob::Full)),
         "syncLibraryIncremental" => {
-            json_result(runtime.block_on(async { core.sync_library_incremental().await }))
+            json_result(start_sync_job(mobile, MobileSyncJob::Incremental))
         }
-        "reconcileLibrary" => {
-            json_result(runtime.block_on(async { core.reconcile_library().await }))
-        }
+        "reconcileLibrary" => json_result(start_sync_job(mobile, MobileSyncJob::Reconcile)),
         "getScanStatus" => json_result(runtime.block_on(async { core.get_scan_status().await })),
         "startScan" => json_result(runtime.block_on(async { core.start_scan().await })),
-        "getLibrarySyncStatus" => json_result(core.get_library_sync_status()),
+        "getLibrarySyncStatus" => json_result(get_mobile_library_sync_status(mobile)),
         "getArtists" => json_result(core.get_artists()),
         "getAlbums" => {
             let artist_id = parse_optional_string(payload)?;
@@ -523,6 +561,111 @@ fn parse_optional_string(payload: Value) -> Result<Option<String>, String> {
 
 fn json_result<T: serde::Serialize, E: ToString>(result: Result<T, E>) -> Result<String, String> {
     result.map(json_ok_string).map_err(|e| e.to_string())
+}
+
+fn start_sync_job(mobile: &MobileCore, job: MobileSyncJob) -> Result<(), String> {
+    {
+        let mut state = mobile
+            .sync_state
+            .lock()
+            .map_err(|_| "sync state lock is poisoned".to_string())?;
+        if let Some(active_job) = state.active_job {
+            return Err(format!(
+                "{} is already running",
+                active_job.display_name()
+            ));
+        }
+        state.active_job = Some(job);
+    }
+
+    let data_dir = mobile.data_dir.clone();
+    let sync_state = Arc::clone(&mobile.sync_state);
+    thread::spawn(move || {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| run_sync_job(data_dir, job)));
+        match result {
+            Ok(Ok(())) => {
+                log::info!(
+                    target: "stereodrome_ffi",
+                    "Mobile {} finished",
+                    job.display_name()
+                );
+            }
+            Ok(Err(error)) => {
+                log::warn!(
+                    target: "stereodrome_ffi",
+                    "Mobile {} failed: {error}",
+                    job.display_name()
+                );
+            }
+            Err(payload) => {
+                log::error!(
+                    target: "stereodrome_ffi",
+                    "Mobile {} panicked: {}",
+                    job.display_name(),
+                    panic_payload_message(payload.as_ref())
+                );
+            }
+        }
+
+        if let Ok(mut state) = sync_state.lock()
+            && state.active_job == Some(job)
+        {
+            state.active_job = None;
+        }
+    });
+
+    Ok(())
+}
+
+fn run_sync_job(data_dir: PathBuf, job: MobileSyncJob) -> Result<(), String> {
+    log::info!(
+        target: "stereodrome_ffi",
+        "Starting mobile {} in background",
+        job.display_name()
+    );
+    let core = StereodromeCore::new(data_dir).map_err(|error| error.to_string())?;
+    let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
+    runtime
+        .block_on(async { core.restore_session().await })
+        .map_err(|error| error.to_string())?;
+
+    match job {
+        MobileSyncJob::Full => runtime
+            .block_on(async { core.sync_library().await })
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        MobileSyncJob::Incremental => runtime
+            .block_on(async { core.sync_library_incremental().await })
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        MobileSyncJob::Reconcile => runtime
+            .block_on(async { core.reconcile_library().await })
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+    }
+}
+
+fn get_mobile_library_sync_status(mobile: &MobileCore) -> Result<LibrarySyncStatus, String> {
+    let mut status = mobile
+        .core
+        .get_library_sync_status()
+        .map_err(|error| error.to_string())?;
+    let active_job = mobile
+        .sync_state
+        .lock()
+        .map_err(|_| "sync state lock is poisoned".to_string())?
+        .active_job;
+
+    if let Some(job) = active_job {
+        status.active_job = Some(job.active_job().to_string());
+        match job {
+            MobileSyncJob::Full => status.full.running = true,
+            MobileSyncJob::Incremental => status.incremental.running = true,
+            MobileSyncJob::Reconcile => status.full_reconcile.running = true,
+        }
+    }
+
+    Ok(status)
 }
 
 fn catch_json_response(operation: impl FnOnce() -> *mut c_char) -> *mut c_char {

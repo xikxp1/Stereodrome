@@ -154,6 +154,7 @@ export function SettingsScreen({ category }: { category?: string }) {
   const syncStatus = useQuery({
     queryKey: librarySyncStatusQueryKey,
     queryFn: stereodromeCore.getLibrarySyncStatus,
+    refetchInterval: (query) => (query.state.data?.active_job ? 2000 : false),
   });
   const scanStatus = useQuery({
     queryKey: scanStatusQueryKey,
@@ -480,10 +481,10 @@ export function SettingsScreen({ category }: { category?: string }) {
       );
       if (mode === "incremental") {
         await stereodrome.syncIncremental();
-        setMessage("Incremental sync complete");
+        setMessage("Incremental sync started");
       } else {
         await stereodrome.reconcile();
-        setMessage("Full sync complete");
+        setMessage("Full sync started");
       }
       await queryClient.invalidateQueries({
         queryKey: librarySyncStatusQueryKey,

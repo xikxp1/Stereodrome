@@ -19,7 +19,6 @@ import type {
   ScanStatus,
   SearchResults,
   Song,
-  SyncResult,
 } from "@/types/music";
 
 type Envelope<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -167,23 +166,17 @@ export const stereodromeCore = {
   disconnectServer(): Promise<void> {
     return invokeJson("disconnectServer");
   },
-  syncLibrary(): Promise<SyncResult> {
-    return invokeJson<SyncResult>("syncLibrary").then((result) => {
-      emitCoreEvent("sync-status-changed", result);
-      return result;
-    });
+  async syncLibrary(): Promise<void> {
+    await invokeJson<void>("syncLibrary");
+    emitCoreEvent("sync-status-changed", null);
   },
-  syncLibraryIncremental(): Promise<SyncResult> {
-    return invokeJson<SyncResult>("syncLibraryIncremental").then((result) => {
-      emitCoreEvent("sync-status-changed", result);
-      return result;
-    });
+  async syncLibraryIncremental(): Promise<void> {
+    await invokeJson<void>("syncLibraryIncremental");
+    emitCoreEvent("sync-status-changed", null);
   },
-  reconcileLibrary(): Promise<SyncResult> {
-    return invokeJson<SyncResult>("reconcileLibrary").then((result) => {
-      emitCoreEvent("sync-status-changed", result);
-      return result;
-    });
+  async reconcileLibrary(): Promise<void> {
+    await invokeJson<void>("reconcileLibrary");
+    emitCoreEvent("sync-status-changed", null);
   },
   getScanStatus(): Promise<ScanStatus> {
     return invokeJson("getScanStatus");
