@@ -34,24 +34,27 @@ class StereodromeCoreModule : Module() {
     }
 
     AsyncFunction("setNowPlayingInfo") { payload: Map<String, Any?> ->
-      val context = appContext.reactContext ?: return@AsyncFunction
-      StereodromeMediaSessionState.setNowPlayingInfo(
-        context,
-        NowPlayingInfo.fromPayload(payload),
-      )
+      appContext.reactContext?.let { context ->
+        StereodromeMediaSessionState.setNowPlayingInfo(
+          context,
+          NowPlayingInfo.fromPayload(payload),
+        )
+      }
     }
 
     AsyncFunction("updateNowPlayingProgress") { payload: Map<String, Any?> ->
-      val context = appContext.reactContext ?: return@AsyncFunction
-      StereodromeMediaSessionState.updateProgress(
-        context,
-        NowPlayingProgress.fromPayload(payload),
-      )
+      appContext.reactContext?.let { context ->
+        StereodromeMediaSessionState.updateProgress(
+          context,
+          NowPlayingProgress.fromPayload(payload),
+        )
+      }
     }
 
     AsyncFunction("clearNowPlayingInfo") {
-      val context = appContext.reactContext ?: return@AsyncFunction
-      StereodromeMediaSessionState.clear(context)
+      appContext.reactContext?.let { context ->
+        StereodromeMediaSessionState.clear(context)
+      }
     }
   }
 
