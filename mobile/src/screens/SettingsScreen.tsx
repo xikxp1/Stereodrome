@@ -323,10 +323,10 @@ export function SettingsScreen({ category }: { category?: string }) {
         kind: "action",
         label: "Full sync",
         sublabel:
-          busyAction === "reconcile"
+          busyAction === "full"
             ? "Syncing..."
             : `Last: ${formatTimestamp(syncStatus.data?.full_reconcile.last_success_at)}`,
-        onSelect: () => runSync("reconcile"),
+        onSelect: () => runSync("full"),
       },
       ...(syncStatus.data?.incremental.last_error
         ? [
@@ -473,7 +473,7 @@ export function SettingsScreen({ category }: { category?: string }) {
     });
   }
 
-  async function runSync(mode: "incremental" | "reconcile") {
+  async function runSync(mode: "incremental" | "full") {
     await runBusy(mode, async () => {
       queryClient.setQueryData<LibrarySyncStatus>(
         librarySyncStatusQueryKey,
@@ -483,7 +483,7 @@ export function SettingsScreen({ category }: { category?: string }) {
         await stereodrome.syncIncremental();
         setMessage("Incremental sync started");
       } else {
-        await stereodrome.reconcile();
+        await stereodrome.sync();
         setMessage("Full sync started");
       }
       await queryClient.invalidateQueries({
@@ -913,7 +913,7 @@ function parseSettingsCategory(value: string | undefined) {
 
 function markSyncStatusRunning(
   status: LibrarySyncStatus | undefined,
-  mode: "incremental" | "reconcile"
+  mode: "incremental" | "full"
 ) {
   if (!status) {
     return status;
@@ -922,7 +922,7 @@ function markSyncStatusRunning(
   const key = syncJobKey(mode);
   return {
     ...status,
-    active_job: mode,
+    active_job: key,
     [key]: {
       ...status[key],
       running: true,
@@ -932,8 +932,8 @@ function markSyncStatusRunning(
   };
 }
 
-function syncJobKey(mode: "incremental" | "reconcile") {
-  return mode === "reconcile" ? "full_reconcile" : mode;
+function syncJobKey(mode: "incremental" | "full") {
+  return mode === "full" ? "full_reconcile" : mode;
 }
 
 function formatScanStatus(status: ScanStatus) {

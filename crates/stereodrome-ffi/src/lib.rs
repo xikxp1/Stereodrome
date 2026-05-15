@@ -108,15 +108,13 @@ pub struct MobileCore {
 enum MobileSyncJob {
     Full,
     Incremental,
-    Reconcile,
 }
 
 impl MobileSyncJob {
     fn active_job(self) -> &'static str {
         match self {
-            Self::Full => "full",
+            Self::Full => "full_reconcile",
             Self::Incremental => "incremental",
-            Self::Reconcile => "reconcile",
         }
     }
 
@@ -124,7 +122,6 @@ impl MobileSyncJob {
         match self {
             Self::Full => "full library sync",
             Self::Incremental => "incremental library sync",
-            Self::Reconcile => "full library sync with reconciliation",
         }
     }
 }
@@ -296,7 +293,6 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         "syncLibraryIncremental" => {
             json_result(start_sync_job(mobile, MobileSyncJob::Incremental))
         }
-        "reconcileLibrary" => json_result(start_sync_job(mobile, MobileSyncJob::Reconcile)),
         "getScanStatus" => json_result(runtime.block_on(async { core.get_scan_status().await })),
         "startScan" => json_result(runtime.block_on(async { core.start_scan().await })),
         "getLibrarySyncStatus" => json_result(get_mobile_library_sync_status(mobile)),
@@ -631,15 +627,11 @@ fn run_sync_job(data_dir: PathBuf, job: MobileSyncJob) -> Result<(), String> {
 
     match job {
         MobileSyncJob::Full => runtime
-            .block_on(async { core.sync_library().await })
+            .block_on(async { core.reconcile_library().await })
             .map(|_| ())
             .map_err(|error| error.to_string()),
         MobileSyncJob::Incremental => runtime
             .block_on(async { core.sync_library_incremental().await })
-            .map(|_| ())
-            .map_err(|error| error.to_string()),
-        MobileSyncJob::Reconcile => runtime
-            .block_on(async { core.reconcile_library().await })
             .map(|_| ())
             .map_err(|error| error.to_string()),
     }
@@ -659,9 +651,8 @@ fn get_mobile_library_sync_status(mobile: &MobileCore) -> Result<LibrarySyncStat
     if let Some(job) = active_job {
         status.active_job = Some(job.active_job().to_string());
         match job {
-            MobileSyncJob::Full => status.full.running = true,
+            MobileSyncJob::Full => status.full_reconcile.running = true,
             MobileSyncJob::Incremental => status.incremental.running = true,
-            MobileSyncJob::Reconcile => status.full_reconcile.running = true,
         }
     }
 

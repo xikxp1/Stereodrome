@@ -174,10 +174,6 @@ export const stereodromeCore = {
     await invokeJson<void>("syncLibraryIncremental");
     emitCoreEvent("sync-status-changed", null);
   },
-  async reconcileLibrary(): Promise<void> {
-    await invokeJson<void>("reconcileLibrary");
-    emitCoreEvent("sync-status-changed", null);
-  },
   getScanStatus(): Promise<ScanStatus> {
     return invokeJson("getScanStatus");
   },
