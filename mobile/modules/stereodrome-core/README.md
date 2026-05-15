@@ -23,4 +23,5 @@ bun run rust:android
 
 The iOS script writes `ios/rust-libs/StereodromeFfi.xcframework`.
 The Android script writes ABI-specific static libraries under
-`android/rust-libs/<abi>/libstereodrome_ffi.a`.
+`android/rust-libs/<abi>/libstereodrome_ffi.a`. Android builds target API 26
+or newer because the Rust audio backend links Android AAudio.

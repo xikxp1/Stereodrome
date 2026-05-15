@@ -122,6 +122,7 @@ build_android() {
     -t armeabi-v7a \
     -t x86 \
     -t x86_64 \
+    -P 26 \
     -o "$ANDROID_OUT_DIR" \
     build --release -p stereodrome-ffi
 

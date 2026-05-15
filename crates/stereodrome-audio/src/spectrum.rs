@@ -1,24 +1,15 @@
 //! Spectrum analyzer using FFT to compute frequency band magnitudes.
-//! Processes audio samples from a ring buffer and emits spectrum data via Tauri events.
+//! Processes audio samples from a ring buffer into normalized frequency bands.
 
 use ringbuf::HeapCons;
 use ringbuf::traits::Consumer;
 use rustfft::{FftPlanner, num_complex::Complex};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
-use tauri::{AppHandle, Emitter};
 
 /// FFT window size - 2048 samples provides good frequency resolution at 44.1kHz
 const FFT_SIZE: usize = 2048;
 
 /// Number of frequency bands for visualization
 const NUM_BANDS: usize = 12;
-
-/// Update rate for spectrum emission (30Hz)
-#[allow(dead_code)]
-const UPDATE_INTERVAL_MS: u64 = 33;
 
 /// Spectrum data emitted to frontend
 #[derive(Debug, Clone, serde::Serialize)]
@@ -211,41 +202,4 @@ impl SpectrumAnalyzer {
         self.sample_buffer.clear();
         self.smoothed_bands.fill(0.0);
     }
-}
-
-/// Start the spectrum emitter thread that processes samples and emits events
-#[allow(dead_code)]
-pub fn start_spectrum_emitter(
-    app_handle: AppHandle,
-    consumer: Arc<Mutex<HeapCons<f32>>>,
-    is_playing: Arc<AtomicBool>,
-    sample_rate: u32,
-) {
-    thread::spawn(move || {
-        let mut analyzer = SpectrumAnalyzer::new(sample_rate);
-        let mut emitted_idle_state = false;
-
-        loop {
-            thread::sleep(Duration::from_millis(UPDATE_INTERVAL_MS));
-
-            // Only process when playing
-            if !is_playing.load(Ordering::SeqCst) {
-                if !emitted_idle_state {
-                    let _ = app_handle.emit("spectrum-data", SpectrumData::default());
-                    analyzer.clear();
-                    emitted_idle_state = true;
-                }
-                continue;
-            }
-
-            emitted_idle_state = false;
-
-            // Process samples and emit if we have data
-            if let Ok(mut cons) = consumer.try_lock()
-                && let Some(spectrum) = analyzer.process(&mut cons)
-            {
-                let _ = app_handle.emit("spectrum-data", spectrum);
-            }
-        }
-    });
 }

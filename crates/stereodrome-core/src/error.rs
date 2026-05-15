@@ -4,6 +4,8 @@ pub type CoreResult<T> = Result<T, CoreError>;
 pub enum CoreError {
     #[error("not connected to a Subsonic server")]
     NotConnected,
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
     #[error("unsupported album list type: {0}")]
     InvalidAlbumListType(String),
     #[error("shared state lock was poisoned")]

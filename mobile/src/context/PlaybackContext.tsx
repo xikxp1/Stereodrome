@@ -4,26 +4,29 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
-import TrackPlayer, {
-  Capability,
-  Event,
-  RepeatMode,
-  State,
-  usePlaybackState,
-} from "react-native-track-player";
 
 import { stereodromeCore } from "@/services/stereodromeCore";
-import type { PlayableSong } from "@/types/music";
+import type {
+  AudioPlaybackStatus,
+  AudioProcessingSettings,
+  PlayableSong,
+  QueueItem,
+  QueueState,
+} from "@/types/music";
 
 type PlaybackContextValue = {
   currentSong: PlayableSong | null;
+  duration: number;
   error: string | null;
   isPlaying: boolean;
   nextSong: PlayableSong | null;
+  position: number;
   repeatEnabled: boolean;
   shuffleEnabled: boolean;
+  queue: PlayableSong[];
   playSong(song: PlayableSong, queue?: PlayableSong[]): Promise<void>;
   toggle(): Promise<void>;
   toggleRepeat(): Promise<void>;
@@ -32,132 +35,168 @@ type PlaybackContextValue = {
   seekBy(seconds: number): Promise<void>;
   next(): Promise<void>;
   previous(): Promise<void>;
+  playQueueIndex(index: number): Promise<void>;
+  removeQueueIndex(index: number): Promise<void>;
+  clearQueue(): Promise<void>;
 };
 
 const PlaybackContext = createContext<PlaybackContextValue | null>(null);
 
-let playerReadyPromise: Promise<void> | null = null;
-
 async function ensurePlayerReady() {
-  if (!playerReadyPromise) {
-    playerReadyPromise = (async () => {
-      try {
-        await TrackPlayer.setupPlayer({
-          autoHandleInterruptions: true,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!message.toLowerCase().includes("already")) {
-          throw error;
-        }
-      }
-
-      await TrackPlayer.updateOptions({
-        capabilities: [
-          Capability.Play,
-          Capability.Pause,
-          Capability.SkipToNext,
-          Capability.SkipToPrevious,
-          Capability.SeekTo,
-        ],
-        compactCapabilities: [
-          Capability.Play,
-          Capability.Pause,
-          Capability.SkipToNext,
-        ],
-      });
-    })();
-  }
-
-  try {
-    await playerReadyPromise;
-  } catch (error) {
-    playerReadyPromise = null;
-    throw error;
-  }
+  await stereodromeCore.initialize();
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function shuffled<T>(items: T[]): T[] {
-  const result = [...items];
-  for (let index = result.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
-  }
-  return result;
-}
-
-function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
-  const result = [...items];
-  const [item] = result.splice(fromIndex, 1);
-  if (item !== undefined) {
-    result.splice(toIndex, 0, item);
-  }
-  return result;
-}
-
-function swapItems<T>(
-  items: T[],
-  firstIndex: number,
-  secondIndex: number
-): T[] {
-  const result = [...items];
-  [result[firstIndex], result[secondIndex]] = [
-    result[secondIndex],
-    result[firstIndex],
-  ];
-  return result;
-}
-
-function nextQueueIndex(
-  queueLength: number,
-  index: number | null,
-  repeat: boolean
-): number | null {
-  if (queueLength === 0 || index === null) {
-    return null;
-  }
-
-  if (index + 1 < queueLength) {
-    return index + 1;
-  }
-
-  return repeat ? 0 : null;
-}
-
-async function swapNativeQueueItems(firstIndex: number, secondIndex: number) {
-  if (firstIndex === secondIndex) {
-    return;
-  }
-
-  if (firstIndex < secondIndex) {
-    await TrackPlayer.move(firstIndex, secondIndex);
-    await TrackPlayer.move(secondIndex - 1, firstIndex);
-    return;
-  }
-
-  await TrackPlayer.move(firstIndex, secondIndex);
-  await TrackPlayer.move(secondIndex + 1, firstIndex);
+function playableFromQueueItem(item: QueueItem): PlayableSong {
+  return {
+    id: item.song_id,
+    title: item.title,
+    artist: item.artist,
+    album: item.album,
+    duration: item.duration,
+  };
 }
 
 export function PlaybackProvider({ children }: { children: React.ReactNode }) {
-  const playbackState = usePlaybackState();
   const [error, setError] = useState<string | null>(null);
   const [currentSong, setCurrentSong] = useState<PlayableSong | null>(null);
   const [currentIndex, setCurrentIndex] = useState<number | null>(null);
+  const [pendingNavigationIndex, setPendingNavigationIndex] = useState<
+    number | null
+  >(null);
   const [queue, setQueue] = useState<PlayableSong[]>([]);
-  const [repeatEnabled, setRepeatEnabled] = useState(false);
+  const [repeatMode, setRepeatMode] =
+    useState<QueueState["repeat_mode"]>("Off");
   const [shuffleEnabled, setShuffleEnabled] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [position, setPosition] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const currentIndexRef = useRef<number | null>(null);
+  const pendingNavigationIndexRef = useRef<number | null>(null);
+  const currentSongRef = useRef<PlayableSong | null>(null);
+  const queueRef = useRef<PlayableSong[]>([]);
+  const isPlayingRef = useRef(false);
+  const handlingEndedRef = useRef(false);
+  const crossfadeInProgressRef = useRef(false);
+  const crossfadeAttemptedSongIdRef = useRef<string | null>(null);
+  const expectedAudioSongIdRef = useRef<string | null>(null);
+  const audioProcessingSettingsRef = useRef<AudioProcessingSettings | null>(
+    null
+  );
+
+  const updateAudioStatus = useCallback(
+    (status: AudioPlaybackStatus, songs = queueRef.current) => {
+      const expectedAudioSongId = expectedAudioSongIdRef.current;
+      if (
+        expectedAudioSongId &&
+        status.current_song_id !== expectedAudioSongId
+      ) {
+        isPlayingRef.current = status.is_playing;
+        setIsPlaying(status.is_playing);
+        return;
+      }
+      if (expectedAudioSongId) {
+        expectedAudioSongIdRef.current = null;
+      }
+
+      isPlayingRef.current = status.is_playing;
+      setIsPlaying(status.is_playing);
+      setPosition(status.position);
+      setDuration(status.duration);
+
+      if (status.current_song_id) {
+        const song =
+          songs.find((candidate) => candidate.id === status.current_song_id) ??
+          currentSongRef.current;
+        currentSongRef.current = song;
+        setCurrentSong(song);
+      } else if (currentIndexRef.current === null) {
+        currentSongRef.current = null;
+        setCurrentSong(null);
+      }
+    },
+    []
+  );
+
+  const applyQueueState = useCallback(async (state: QueueState) => {
+    const songs = state.items.map(playableFromQueueItem);
+    const index = state.current_index;
+    const pendingIndex = state.pending_navigation_index;
+    const removedCurrentIsStillPlaying =
+      index === null && pendingIndex !== null;
+
+    currentIndexRef.current = index;
+    pendingNavigationIndexRef.current = pendingIndex;
+    queueRef.current = songs;
+    setQueue(songs);
+    setCurrentIndex(index);
+    setPendingNavigationIndex(pendingIndex);
+    if (removedCurrentIsStillPlaying) {
+      setCurrentSong(currentSongRef.current);
+    } else {
+      const nextCurrentSong = index === null ? null : (songs[index] ?? null);
+      currentSongRef.current = nextCurrentSong;
+      setCurrentSong(nextCurrentSong);
+    }
+    setRepeatMode(state.repeat_mode);
+    setShuffleEnabled(state.shuffle);
+  }, []);
+
+  const prepareNextPlayback = useCallback(async () => {
+    await stereodromeCore.prefetchNext();
+    await stereodromeCore.audioPrepareNextTransition();
+  }, []);
+
+  const playCurrentQueueItem = useCallback(async () => {
+    expectedAudioSongIdRef.current = currentSongRef.current?.id ?? null;
+    crossfadeAttemptedSongIdRef.current = null;
+    const status = await stereodromeCore.audioPlayCurrent();
+    updateAudioStatus(status);
+    void prepareNextPlayback().catch(() => {});
+  }, [prepareNextPlayback, updateAudioStatus]);
+
+  const applyAudioProcessingSettings = useCallback(
+    async (settings: AudioProcessingSettings) => {
+      audioProcessingSettingsRef.current = settings;
+      await ensurePlayerReady();
+      const status = await stereodromeCore.audioApplySettings();
+      updateAudioStatus(status);
+      void prepareNextPlayback().catch(() => {});
+    },
+    [prepareNextPlayback, updateAudioStatus]
+  );
+
+  const handlePlaybackEnded = useCallback(async () => {
+    if (handlingEndedRef.current) {
+      return;
+    }
+
+    handlingEndedRef.current = true;
+    try {
+      const state = await stereodromeCore.playNext(false);
+      await applyQueueState(state);
+      if (state.current_index !== null) {
+        await playCurrentQueueItem();
+      } else {
+        expectedAudioSongIdRef.current = null;
+        await stereodromeCore.audioStop();
+        setIsPlaying(false);
+      }
+    } finally {
+      handlingEndedRef.current = false;
+    }
+  }, [applyQueueState, playCurrentQueueItem]);
 
   useEffect(() => {
     let mounted = true;
     ensurePlayerReady()
-      .then(() => {
+      .then(() => stereodromeCore.getQueue())
+      .then((state) => {
         if (mounted) {
-          setError(null);
+          void applyQueueState(state);
         }
       })
       .catch((setupError) => {
@@ -166,28 +205,126 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         }
       });
 
-    const errorSubscription = TrackPlayer.addEventListener(
-      Event.PlaybackError,
-      (playbackError) => {
-        setError(playbackError.message);
+    const unsubscribeQueue = stereodromeCore.addEventListener<QueueState>(
+      "queue-changed",
+      (state) => {
+        void applyQueueState(state).catch((playbackError) => {
+          setError(errorMessage(playbackError));
+        });
       }
     );
+    const unsubscribeAudioSettings =
+      stereodromeCore.addEventListener<AudioProcessingSettings>(
+        "audio-processing-settings-changed",
+        (settings) => {
+          void applyAudioProcessingSettings(settings).catch((playbackError) => {
+            setError(errorMessage(playbackError));
+          });
+        }
+      );
 
-    const trackSubscription = TrackPlayer.addEventListener(
-      Event.PlaybackActiveTrackChanged,
-      (event) => {
-        const index = event.index ?? null;
-        setCurrentIndex(index);
-        setCurrentSong(index === null ? null : (queue[index] ?? null));
-      }
-    );
+    stereodromeCore
+      .getAudioProcessingSettings()
+      .then((settings) => {
+        if (mounted) {
+          void applyAudioProcessingSettings(settings);
+        }
+      })
+      .catch((playbackError) => {
+        if (mounted) {
+          setError(errorMessage(playbackError));
+        }
+      });
 
     return () => {
       mounted = false;
-      errorSubscription.remove();
-      trackSubscription.remove();
+      unsubscribeQueue();
+      unsubscribeAudioSettings();
     };
-  }, [queue]);
+  }, [applyAudioProcessingSettings, applyQueueState]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void stereodromeCore
+        .audioGetStatus()
+        .then(async (status) => {
+          const queueSongId = currentSongRef.current?.id ?? null;
+          const audioMovedToQueuedSong =
+            status.current_song_id !== null &&
+            queueSongId !== null &&
+            status.current_song_id !== queueSongId &&
+            queueRef.current.some((song) => song.id === status.current_song_id);
+
+          updateAudioStatus(status);
+          if (expectedAudioSongIdRef.current) {
+            return;
+          }
+
+          if (audioMovedToQueuedSong && !crossfadeInProgressRef.current) {
+            const state = await stereodromeCore.playNext(false);
+            await applyQueueState(state);
+            void prepareNextPlayback().catch(() => {});
+            return;
+          }
+
+          if (status.current_song_id) {
+            await stereodromeCore.reportPlaybackProgress({
+              song_id: status.current_song_id,
+              position_seconds: status.position,
+              duration_seconds: status.duration,
+              is_playing: status.is_playing,
+            });
+          }
+
+          const settings = audioProcessingSettingsRef.current;
+          const crossfadeWindowSeconds =
+            (settings?.crossfade_duration_ms ?? 0) / 1000;
+          const shouldCrossfade =
+            settings?.crossfade_enabled === true &&
+            status.is_playing &&
+            status.current_song_id !== null &&
+            crossfadeAttemptedSongIdRef.current !== status.current_song_id &&
+            status.duration > 0 &&
+            status.duration - status.position <= crossfadeWindowSeconds &&
+            status.duration - status.position > 0.5 &&
+            !crossfadeInProgressRef.current;
+          if (shouldCrossfade) {
+            crossfadeInProgressRef.current = true;
+            crossfadeAttemptedSongIdRef.current = status.current_song_id;
+            try {
+              const state = await stereodromeCore.audioCrossfadeNext();
+              if (state) {
+                await applyQueueState(state);
+                void prepareNextPlayback().catch(() => {});
+              }
+            } finally {
+              crossfadeInProgressRef.current = false;
+            }
+          }
+
+          const playbackFinished =
+            status.current_song_id !== null &&
+            status.duration > 0 &&
+            status.position >= status.duration - 0.2 &&
+            !status.is_playing;
+          if (playbackFinished) {
+            await handlePlaybackEnded();
+          }
+        })
+        .catch((playbackError) => {
+          setError(errorMessage(playbackError));
+        });
+    }, 1_000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [
+    applyQueueState,
+    handlePlaybackEnded,
+    prepareNextPlayback,
+    updateAudioStatus,
+  ]);
 
   const playSong = useCallback(
     async (song: PlayableSong, songs: PlayableSong[] = [song]) => {
@@ -197,191 +334,172 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       try {
         await ensurePlayerReady();
 
-        const startIndex = Math.max(
-          0,
-          songs.findIndex((candidate) => candidate.id === song.id)
+        const state = await stereodromeCore.playSongWithQueue(
+          song.id,
+          songs.map((candidate) => candidate.id)
         );
-        const orderedSongs = shuffleEnabled
-          ? [
-              ...songs.slice(0, startIndex + 1),
-              ...shuffled(songs.slice(startIndex + 1)),
-            ]
-          : songs;
-
-        setQueue(orderedSongs);
-        setCurrentIndex(startIndex);
-        const tracks = await Promise.all(
-          orderedSongs.map(async (candidate) => ({
-            id: candidate.id,
-            url: await stereodromeCore.getStreamUri(candidate.id),
-            title: candidate.title,
-            artist: candidate.artist ?? undefined,
-            album: candidate.album ?? undefined,
-            duration: candidate.duration ?? undefined,
-          }))
-        );
-        await TrackPlayer.reset();
-        await TrackPlayer.add(tracks);
-        await TrackPlayer.skip(startIndex);
-        await TrackPlayer.play();
+        await applyQueueState(state);
+        await playCurrentQueueItem();
       } catch (playbackError) {
         setError(errorMessage(playbackError));
       }
     },
-    [shuffleEnabled]
+    [applyQueueState, playCurrentQueueItem]
   );
 
   const toggle = useCallback(async () => {
     try {
       await ensurePlayerReady();
-      const state = await TrackPlayer.getPlaybackState();
-      if (state.state === State.Playing) {
-        await TrackPlayer.pause();
-      } else {
-        await TrackPlayer.play();
+      if (isPlayingRef.current) {
+        await stereodromeCore.audioPause();
+        isPlayingRef.current = false;
+        setIsPlaying(false);
+      } else if (currentSongRef.current) {
+        await stereodromeCore.audioResume();
+        isPlayingRef.current = true;
+        setIsPlaying(true);
+      } else if (currentIndexRef.current !== null) {
+        await playCurrentQueueItem();
       }
+    } catch (playbackError) {
+      setError(errorMessage(playbackError));
+    }
+  }, [playCurrentQueueItem]);
+
+  const toggleRepeat = useCallback(async () => {
+    try {
+      await ensurePlayerReady();
+      const state = await stereodromeCore.cycleRepeatMode();
+      await applyQueueState(state);
+    } catch (playbackError) {
+      setError(errorMessage(playbackError));
+    }
+  }, [applyQueueState]);
+
+  const rerollNext = useCallback(async () => {
+    try {
+      await ensurePlayerReady();
+      const state = await stereodromeCore.rerollNext();
+      await applyQueueState(state);
+    } catch (playbackError) {
+      setError(errorMessage(playbackError));
+    }
+  }, [applyQueueState]);
+
+  const toggleShuffle = useCallback(async () => {
+    try {
+      await ensurePlayerReady();
+      const state = await stereodromeCore.toggleShuffle();
+      await applyQueueState(state);
+    } catch (playbackError) {
+      setError(errorMessage(playbackError));
+    }
+  }, [applyQueueState]);
+
+  const seekBy = useCallback(async (seconds: number) => {
+    try {
+      await ensurePlayerReady();
+      const status = await stereodromeCore.audioGetStatus();
+      const nextPosition = Math.max(
+        0,
+        status.duration > 0
+          ? Math.min(status.duration, status.position + seconds)
+          : status.position + seconds
+      );
+      await stereodromeCore.audioSeek(nextPosition);
+      setPosition(nextPosition);
     } catch (playbackError) {
       setError(errorMessage(playbackError));
     }
   }, []);
 
-  const toggleRepeat = useCallback(async () => {
-    try {
-      await ensurePlayerReady();
-      const nextRepeatEnabled = !repeatEnabled;
-      await TrackPlayer.setRepeatMode(
-        nextRepeatEnabled ? RepeatMode.Queue : RepeatMode.Off
-      );
-      setRepeatEnabled(nextRepeatEnabled);
-    } catch (playbackError) {
-      setError(errorMessage(playbackError));
-    }
-  }, [repeatEnabled]);
-
-  const rerollNext = useCallback(async () => {
-    const nextIndex = nextQueueIndex(queue.length, currentIndex, repeatEnabled);
-    if (currentIndex === null || nextIndex === null) {
-      return;
-    }
-
-    const candidates = queue
-      .map((_, index) => index)
-      .filter((index) => index !== currentIndex && index !== nextIndex);
-    if (candidates.length === 0) {
-      return;
-    }
-
-    try {
-      await ensurePlayerReady();
-      const randomIndex =
-        candidates[Math.floor(Math.random() * candidates.length)];
-      await swapNativeQueueItems(nextIndex, randomIndex);
-      setQueue((currentQueue) =>
-        swapItems(currentQueue, nextIndex, randomIndex)
-      );
-    } catch (playbackError) {
-      setError(errorMessage(playbackError));
-    }
-  }, [currentIndex, queue, repeatEnabled]);
-
-  const toggleShuffle = useCallback(async () => {
-    const nextShuffleEnabled = !shuffleEnabled;
-
-    try {
-      await ensurePlayerReady();
-      if (nextShuffleEnabled && currentIndex !== null) {
-        const firstUpcomingIndex = currentIndex + 1;
-        const upcoming = queue.slice(firstUpcomingIndex);
-        const nextUpcoming = shuffled(upcoming);
-        let workingQueue = [...queue];
-
-        for (let offset = 0; offset < nextUpcoming.length; offset += 1) {
-          const targetIndex = firstUpcomingIndex + offset;
-          const sourceIndex = workingQueue.findIndex(
-            (candidate, index) =>
-              index >= firstUpcomingIndex &&
-              candidate.id === nextUpcoming[offset]?.id
-          );
-
-          if (sourceIndex !== -1 && sourceIndex !== targetIndex) {
-            await TrackPlayer.move(sourceIndex, targetIndex);
-            workingQueue = moveItem(workingQueue, sourceIndex, targetIndex);
-          }
-        }
-
-        setQueue(workingQueue);
-      }
-
-      setShuffleEnabled(nextShuffleEnabled);
-    } catch (playbackError) {
-      setError(errorMessage(playbackError));
-    }
-  }, [currentIndex, queue, shuffleEnabled]);
-
-  const seekBy = useCallback(
-    async (seconds: number) => {
-      if (!currentSong) {
-        return;
-      }
-
-      try {
-        await ensurePlayerReady();
-        const progress = await TrackPlayer.getProgress();
-        const duration = progress.duration || currentSong.duration || 0;
-        const nextPosition = Math.max(
-          0,
-          duration > 0
-            ? Math.min(duration, progress.position + seconds)
-            : progress.position + seconds
-        );
-        await TrackPlayer.seekTo(nextPosition);
-      } catch (playbackError) {
-        setError(errorMessage(playbackError));
-      }
-    },
-    [currentSong]
-  );
-
   const next = useCallback(async () => {
     try {
       await ensurePlayerReady();
-      await TrackPlayer.skipToNext();
-      const index = await TrackPlayer.getActiveTrackIndex();
-      if (index !== undefined) {
-        setCurrentIndex(index);
-        setCurrentSong(queue[index] ?? null);
-      }
+      const state = await stereodromeCore.playNext(true);
+      await applyQueueState(state);
+      await playCurrentQueueItem();
     } catch (playbackError) {
       setError(errorMessage(playbackError));
     }
-  }, [queue]);
+  }, [applyQueueState, playCurrentQueueItem]);
 
   const previous = useCallback(async () => {
     try {
       await ensurePlayerReady();
-      await TrackPlayer.skipToPrevious();
-      const index = await TrackPlayer.getActiveTrackIndex();
-      if (index !== undefined) {
-        setCurrentIndex(index);
-        setCurrentSong(queue[index] ?? null);
-      }
+      const state = await stereodromeCore.playPrevious();
+      await applyQueueState(state);
+      await playCurrentQueueItem();
     } catch (playbackError) {
       setError(errorMessage(playbackError));
     }
-  }, [queue]);
+  }, [applyQueueState, playCurrentQueueItem]);
 
-  const isPlaying = playbackState.state === State.Playing;
-  const nextIndex = nextQueueIndex(queue.length, currentIndex, repeatEnabled);
+  const playQueueIndex = useCallback(
+    async (index: number) => {
+      try {
+        const state = await stereodromeCore.playQueueItem(index);
+        await applyQueueState(state);
+        await playCurrentQueueItem();
+      } catch (playbackError) {
+        setError(errorMessage(playbackError));
+      }
+    },
+    [applyQueueState, playCurrentQueueItem]
+  );
+
+  const removeQueueIndex = useCallback(
+    async (index: number) => {
+      try {
+        const state = await stereodromeCore.removeFromQueue(index);
+        await applyQueueState(state);
+      } catch (playbackError) {
+        setError(errorMessage(playbackError));
+      }
+    },
+    [applyQueueState]
+  );
+
+  const clearQueue = useCallback(async () => {
+    try {
+      const state = await stereodromeCore.clearQueue();
+      expectedAudioSongIdRef.current = null;
+      await stereodromeCore.audioStop();
+      await applyQueueState(state);
+      setPosition(0);
+      setDuration(0);
+      setIsPlaying(false);
+    } catch (playbackError) {
+      setError(errorMessage(playbackError));
+    }
+  }, [applyQueueState]);
+
+  const nextIndex =
+    currentIndex === null
+      ? pendingNavigationIndex === null
+        ? null
+        : Math.min(pendingNavigationIndex, queue.length - 1)
+      : currentIndex + 1 < queue.length
+        ? currentIndex + 1
+        : repeatMode === "All"
+          ? 0
+          : null;
   const nextSong = nextIndex === null ? null : (queue[nextIndex] ?? null);
   const value = useMemo(
     () => ({
       currentSong,
+      duration,
       error,
       isPlaying,
       nextSong,
-      repeatEnabled,
+      position,
+      queue,
+      repeatEnabled: repeatMode !== "Off",
       shuffleEnabled,
+      clearQueue,
       playSong,
+      playQueueIndex,
+      removeQueueIndex,
       toggle,
       toggleRepeat,
       toggleShuffle,
@@ -392,19 +510,25 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     }),
     [
       currentSong,
+      duration,
       error,
       isPlaying,
       next,
       nextSong,
-      playSong,
+      position,
       previous,
-      repeatEnabled,
-      rerollNext,
-      seekBy,
+      queue,
+      repeatMode,
       shuffleEnabled,
+      clearQueue,
+      playSong,
+      playQueueIndex,
+      removeQueueIndex,
       toggle,
       toggleRepeat,
       toggleShuffle,
+      rerollNext,
+      seekBy,
     ]
   );
 
@@ -416,9 +540,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function usePlayback() {
-  const value = useContext(PlaybackContext);
-  if (!value) {
-    throw new Error("usePlayback must be used inside PlaybackProvider");
+  const context = useContext(PlaybackContext);
+  if (!context) {
+    throw new Error("usePlayback must be used within PlaybackProvider");
   }
-  return value;
+  return context;
 }

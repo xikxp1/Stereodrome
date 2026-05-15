@@ -29,6 +29,9 @@ export function PlaylistScreen({
           await playback.playSong(song, songs.data ?? [song]);
           view.showNowPlaying();
         },
+        onLongSelect: async () => {
+          await stereodromeCore.downloadPlaylist(playlistId);
+        },
       }))}
     />
   );

@@ -17,6 +17,8 @@ export type ViewName =
   | "songs"
   | "playlists"
   | "playlist"
+  | "queue"
+  | "downloads"
   | "search"
   | "nowPlaying"
   | "settings";

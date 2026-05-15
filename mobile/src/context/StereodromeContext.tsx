@@ -13,7 +13,12 @@ type StereodromeContextValue = {
     username: string;
     password: string;
   }): Promise<void>;
+  updateServerSettings(params: {
+    url?: string;
+    username?: string;
+  }): Promise<void>;
   sync(): Promise<void>;
+  syncIncremental(): Promise<void>;
 };
 
 const disconnected: ConnectionStatus = {
@@ -55,8 +60,21 @@ export function StereodromeProvider({
     setError(null);
   }
 
+  async function updateServerSettings(params: {
+    url?: string;
+    username?: string;
+  }) {
+    const next = await stereodromeCore.updateServerSettings(params);
+    setStatus(next);
+    setError(null);
+  }
+
   async function sync() {
     await stereodromeCore.syncLibrary();
+  }
+
+  async function syncIncremental() {
+    await stereodromeCore.syncLibraryIncremental();
   }
 
   useEffect(() => {
@@ -80,7 +98,16 @@ export function StereodromeProvider({
   }, []);
 
   const value = useMemo(
-    () => ({ ready, status, error, refreshStatus, connect, sync }),
+    () => ({
+      ready,
+      status,
+      error,
+      refreshStatus,
+      connect,
+      updateServerSettings,
+      sync,
+      syncIncremental,
+    }),
     [error, ready, status]
   );
 

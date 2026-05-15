@@ -1,5 +1,4 @@
 import { Image, StyleSheet, Text, View } from "react-native";
-import { useProgress } from "react-native-track-player";
 
 import { SyncedMarqueeText } from "@/components/SyncedMarqueeText";
 import { colors } from "@/components/theme";
@@ -9,36 +8,65 @@ import { useEffect, useState } from "react";
 
 export function NowPlayingScreen() {
   const playback = usePlayback();
-  const progress = useProgress(500);
   const [coverUri, setCoverUri] = useState<string | null>(null);
   const [nextCoverUri, setNextCoverUri] = useState<string | null>(null);
   const song = playback.currentSong;
   const nextSong = playback.nextSong;
-  const duration = progress.duration || song?.duration || 0;
+  const songId = song?.id ?? null;
+  const nextSongId = nextSong?.id ?? null;
+  const duration = playback.duration || song?.duration || 0;
   const progressRatio =
-    song && duration > 0 ? Math.min(1, progress.position / duration) : 0;
+    song && duration > 0 ? Math.min(1, playback.position / duration) : 0;
 
   useEffect(() => {
-    if (!song) {
+    if (!songId) {
       setCoverUri(null);
       return;
     }
+    let cancelled = false;
+    setCoverUri(null);
     stereodromeCore
-      .getSongCoverArtUri(song.id, 512)
-      .then(setCoverUri)
-      .catch(() => setCoverUri(null));
-  }, [song]);
+      .getSongCoverArtUri(songId, 512)
+      .then((uri) => {
+        if (!cancelled) {
+          setCoverUri(uri);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCoverUri(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [songId]);
 
   useEffect(() => {
-    if (!nextSong) {
+    if (!nextSongId) {
       setNextCoverUri(null);
       return;
     }
+    let cancelled = false;
+    setNextCoverUri(null);
     stereodromeCore
-      .getSongCoverArtUri(nextSong.id, 128)
-      .then(setNextCoverUri)
-      .catch(() => setNextCoverUri(null));
-  }, [nextSong]);
+      .getSongCoverArtUri(nextSongId, 128)
+      .then((uri) => {
+        if (!cancelled) {
+          setNextCoverUri(uri);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setNextCoverUri(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [nextSongId]);
 
   return (
     <View style={styles.container}>
@@ -64,7 +92,7 @@ export function NowPlayingScreen() {
           accessibilityValue={{
             min: 0,
             max: Math.max(0, duration),
-            now: Math.max(0, Math.min(progress.position, duration)),
+            now: Math.max(0, Math.min(playback.position, duration)),
           }}
           pointerEvents="none"
           style={styles.progressTrack}
@@ -125,25 +153,17 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   cover: {
-    width: "62%",
     aspectRatio: 1,
     borderRadius: 4,
     marginBottom: 12,
-    maxHeight: 180,
-    maxWidth: 180,
-    minHeight: 112,
-    minWidth: 112,
+    width: "70%",
   },
   coverPlaceholder: {
-    width: "62%",
     aspectRatio: 1,
     backgroundColor: "#d8d8d0",
     borderRadius: 4,
     marginBottom: 12,
-    maxHeight: 180,
-    maxWidth: 180,
-    minHeight: 112,
-    minWidth: 112,
+    width: "70%",
   },
   title: {
     color: colors.text,

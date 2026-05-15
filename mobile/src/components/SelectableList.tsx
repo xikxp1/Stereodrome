@@ -9,7 +9,7 @@ import {
   View,
   type ListRenderItemInfo,
 } from "react-native";
-import { ChevronRight } from "lucide-react-native";
+import { ChevronRight, Info, Pencil } from "lucide-react-native";
 
 import { useInputBus } from "@/context/InputContext";
 import { colors } from "@/components/theme";
@@ -19,12 +19,14 @@ const edgePaddingRows = 2;
 
 export type SelectableOption = {
   label: string;
+  kind?: "action" | "editable" | "info";
   sublabel?: string;
   onSelect(): void | Promise<void>;
   onLongSelect?(): void | Promise<void>;
 };
 
 type SelectableRowProps = {
+  disabled: boolean;
   index: number;
   item: SelectableOption;
   selected: boolean;
@@ -34,6 +36,7 @@ type SelectableRowProps = {
 
 const SelectableRow = memo(
   function SelectableRow({
+    disabled,
     index,
     item,
     selected,
@@ -43,6 +46,7 @@ const SelectableRow = memo(
     return (
       <Pressable
         delayLongPress={450}
+        disabled={disabled}
         onLongPress={() => onLongPress(index)}
         onPress={() => onPress(index)}
         style={[styles.row, selected && styles.selected]}
@@ -63,26 +67,49 @@ const SelectableRow = memo(
             </Text>
           ) : null}
         </View>
-        <ChevronRight
-          color={selected ? colors.selectedText : colors.muted}
-          size={16}
-        />
+        <RowAccessory kind={item.kind ?? "action"} selected={selected} />
       </Pressable>
     );
   },
   (previous, next) =>
     previous.index === next.index &&
     previous.item.label === next.item.label &&
+    previous.item.kind === next.item.kind &&
     previous.item.sublabel === next.item.sublabel &&
     previous.selected === next.selected
 );
 
+function RowAccessory({
+  kind,
+  selected,
+}: {
+  kind: NonNullable<SelectableOption["kind"]>;
+  selected: boolean;
+}) {
+  const color = selected ? colors.selectedText : colors.muted;
+  const style = styles.accessory;
+
+  if (kind === "editable") {
+    return <Pencil color={color} size={14} style={style} />;
+  }
+  if (kind === "info") {
+    return <Info color={color} size={14} style={style} />;
+  }
+  return <ChevronRight color={color} size={16} style={style} />;
+}
+
 export function SelectableList({
+  disabled = false,
   options,
   empty = "Nothing here",
+  preserveSelectionOnChange = false,
+  resetSelectionKey,
 }: {
   options: SelectableOption[];
+  disabled?: boolean;
   empty?: string;
+  preserveSelectionOnChange?: boolean;
+  resetSelectionKey?: string | number | null;
 }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const { subscribe } = useInputBus();
@@ -91,12 +118,10 @@ export function SelectableList({
   const activeIndexRef = useRef(activeIndex);
   const listHeightRef = useRef(0);
   const optionsRef = useRef(options);
+  const resetSelectionKeyRef = useRef(resetSelectionKey);
   const scrollOffsetRef = useRef(0);
   const optionsSignature = useMemo(
-    () =>
-      options
-        .map((option) => `${option.label}\u001f${option.sublabel ?? ""}`)
-        .join("\u001e"),
+    () => options.map((option) => option.label).join("\u001e"),
     [options]
   );
 
@@ -107,6 +132,16 @@ export function SelectableList({
   useEffect(() => {
     optionsRef.current = options;
   }, [options]);
+
+  const resetSelection = useCallback(() => {
+    scrollOffsetRef.current = 0;
+    activeIndexRef.current = 0;
+    setActiveIndex(0);
+    listRef.current?.scrollToOffset({
+      animated: false,
+      offset: 0,
+    });
+  }, []);
 
   const scrollSelectedIntoView = useCallback((index: number) => {
     const listHeight = listHeightRef.current;
@@ -157,20 +192,41 @@ export function SelectableList({
   );
 
   useEffect(() => {
-    scrollOffsetRef.current = 0;
-    activeIndexRef.current = 0;
-    setActiveIndex(0);
-    requestAnimationFrame(() => {
-      listRef.current?.scrollToOffset({
-        animated: false,
-        offset: 0,
+    const shouldResetSelection =
+      resetSelectionKeyRef.current !== resetSelectionKey;
+    resetSelectionKeyRef.current = resetSelectionKey;
+
+    if (!shouldResetSelection && preserveSelectionOnChange) {
+      const clampedIndex =
+        options.length === 0
+          ? 0
+          : Math.min(activeIndexRef.current, options.length - 1);
+      activeIndexRef.current = clampedIndex;
+      setActiveIndex(clampedIndex);
+      requestAnimationFrame(() => {
+        scrollSelectedIntoView(clampedIndex);
       });
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      resetSelection();
     });
-  }, [optionsSignature]);
+  }, [
+    options.length,
+    optionsSignature,
+    preserveSelectionOnChange,
+    resetSelection,
+    resetSelectionKey,
+    scrollSelectedIntoView,
+  ]);
 
   useEffect(
     () =>
       subscribe((input) => {
+        if (disabled) {
+          return;
+        }
         if (input === "scroll_forward") {
           activateIndex(
             Math.min(optionsRef.current.length - 1, activeIndexRef.current + 1)
@@ -186,7 +242,7 @@ export function SelectableList({
           void optionsRef.current[activeIndexRef.current]?.onLongSelect?.();
         }
       }),
-    [activateIndex, subscribe]
+    [activateIndex, disabled, subscribe]
   );
 
   const data = useMemo(() => options, [options]);
@@ -213,6 +269,7 @@ export function SelectableList({
   const renderItem = useCallback(
     ({ item, index }: ListRenderItemInfo<SelectableOption>) => (
       <SelectableRow
+        disabled={disabled}
         index={index}
         item={item}
         onLongPress={handleRowLongPress}
@@ -278,6 +335,9 @@ const styles = StyleSheet.create({
   },
   labelGroup: {
     flex: 1,
+  },
+  accessory: {
+    marginLeft: 6,
   },
   label: {
     color: colors.text,

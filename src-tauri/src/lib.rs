@@ -48,6 +48,8 @@ pub fn run() {
                 ])
                 .level(LevelFilter::Info)
                 .level_for("stereodrome", LevelFilter::Debug)
+                .level_for("stereodrome_audio", LevelFilter::Debug)
+                .level_for("stereodrome_core", LevelFilter::Debug)
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())

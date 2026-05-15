@@ -7,7 +7,7 @@ use rodio::source::SeekError;
 use rodio::{ChannelCount, SampleRate, Source};
 use std::time::Duration;
 
-use crate::audio::compressor::{Compressor, DynamicsPreset};
+use crate::compressor::{Compressor, DynamicsPreset};
 
 /// A Source wrapper that applies compression and look-ahead limiting.
 pub struct DynamicsSource<S>

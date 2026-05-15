@@ -6,7 +6,7 @@ use rodio::Decoder;
 use rodio::Source;
 use std::io::Cursor;
 
-use crate::error::{AppError, AppResult};
+use crate::error::{AudioError, AudioResult};
 
 pub struct LoudnessResult {
     pub integrated_lufs: f64,
@@ -17,20 +17,20 @@ pub struct LoudnessResult {
 ///
 /// Decodes the full file and measures loudness. Typically takes 1-3 seconds
 /// for a 4-minute song at 44.1kHz stereo.
-pub fn analyze_loudness(audio_data: Vec<u8>) -> AppResult<LoudnessResult> {
+pub fn analyze_loudness(audio_data: Vec<u8>) -> AudioResult<LoudnessResult> {
     let byte_len = audio_data.len() as u64;
     let cursor = Cursor::new(audio_data);
     let source = Decoder::builder()
         .with_data(cursor)
         .with_byte_len(byte_len)
         .build()
-        .map_err(|e| AppError::Audio(format!("Failed to decode audio for analysis: {e}")))?;
+        .map_err(|e| AudioError::Playback(format!("Failed to decode audio for analysis: {e}")))?;
 
     let channels = source.channels().get() as u32;
     let sample_rate = source.sample_rate().get();
 
     let mut analyzer = EbuR128::new(channels, sample_rate, Mode::I | Mode::TRUE_PEAK)
-        .map_err(|e| AppError::Audio(format!("Failed to create EBU R128 analyzer: {e}")))?;
+        .map_err(|e| AudioError::Playback(format!("Failed to create EBU R128 analyzer: {e}")))?;
 
     // Collect samples in chunks for efficient processing
     let chunk_size = (sample_rate as usize) * (channels as usize); // ~1 second of audio
@@ -41,7 +41,7 @@ pub fn analyze_loudness(audio_data: Vec<u8>) -> AppResult<LoudnessResult> {
         if buffer.len() >= chunk_size {
             analyzer
                 .add_frames_f32(&buffer)
-                .map_err(|e| AppError::Audio(format!("Failed to add frames: {e}")))?;
+                .map_err(|e| AudioError::Playback(format!("Failed to add frames: {e}")))?;
             buffer.clear();
         }
     }
@@ -50,19 +50,19 @@ pub fn analyze_loudness(audio_data: Vec<u8>) -> AppResult<LoudnessResult> {
     if !buffer.is_empty() {
         analyzer
             .add_frames_f32(&buffer)
-            .map_err(|e| AppError::Audio(format!("Failed to add frames: {e}")))?;
+            .map_err(|e| AudioError::Playback(format!("Failed to add frames: {e}")))?;
     }
 
     let integrated_lufs = analyzer
         .loudness_global()
-        .map_err(|e| AppError::Audio(format!("Failed to get integrated loudness: {e}")))?;
+        .map_err(|e| AudioError::Playback(format!("Failed to get integrated loudness: {e}")))?;
 
     // Get max true peak across all channels
     let mut true_peak: f64 = 0.0;
     for ch in 0..channels {
         let peak = analyzer
             .true_peak(ch)
-            .map_err(|e| AppError::Audio(format!("Failed to get true peak: {e}")))?;
+            .map_err(|e| AudioError::Playback(format!("Failed to get true peak: {e}")))?;
         if peak > true_peak {
             true_peak = peak;
         }
