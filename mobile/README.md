@@ -16,7 +16,9 @@ Build the Rust native library before creating native dev builds:
 bun run rust:ios
 ```
 
-Android builds additionally require the Android SDK/NDK and `cargo-ndk`:
+Android builds additionally require the Android SDK/NDK and `cargo-ndk`.
+The Rust audio backend links Android AAudio, so builds target Android API 26
+or newer:
 
 ```sh
 cargo install cargo-ndk

@@ -13,5 +13,13 @@ set_target_properties(
 add_library(stereodrome_core_jni SHARED stereodrome_core_jni.cpp)
 
 find_library(log-lib log)
+find_library(android-lib android)
+find_library(aaudio-lib aaudio)
 
-target_link_libraries(stereodrome_core_jni stereodrome_ffi ${log-lib})
+target_link_libraries(
+  stereodrome_core_jni
+  stereodrome_ffi
+  ${aaudio-lib}
+  ${android-lib}
+  ${log-lib}
+)

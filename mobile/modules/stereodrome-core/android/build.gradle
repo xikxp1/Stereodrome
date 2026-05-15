@@ -10,6 +10,7 @@ android {
   namespace "expo.modules.stereodromecore"
 
   defaultConfig {
+    minSdkVersion 26
     versionCode 1
     versionName "0.1.17"
 
