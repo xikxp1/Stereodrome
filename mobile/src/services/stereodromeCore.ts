@@ -288,6 +288,12 @@ export const stereodromeCore = {
   audioApplySettings(): Promise<AudioPlaybackStatus> {
     return invokeJson("audioApplySettings");
   },
+  audioPrepareNextTransition(): Promise<void> {
+    return invokeJson("audioPrepareNextTransition");
+  },
+  audioCrossfadeNext(): Promise<QueueState | null> {
+    return invokeJson("audioCrossfadeNext");
+  },
   audioPause(): Promise<void> {
     return invokeJson("audioPause");
   },

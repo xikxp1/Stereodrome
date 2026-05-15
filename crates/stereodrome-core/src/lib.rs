@@ -798,6 +798,35 @@ impl StereodromeCore {
         }
     }
 
+    pub fn peek_next_queue_item(&self) -> CoreResult<Option<QueueItem>> {
+        let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
+        Ok(queue.peek_next().cloned())
+    }
+
+    pub fn songs_are_gapless_eligible(
+        &self,
+        current_song_id: &str,
+        next_song_id: &str,
+    ) -> CoreResult<bool> {
+        let conn = Connection::open(&self.db_path)?;
+        let Some(current) = gapless_track_info(&conn, current_song_id)? else {
+            return Ok(false);
+        };
+        let Some(next) = gapless_track_info(&conn, next_song_id)? else {
+            return Ok(false);
+        };
+
+        if current.album_id != next.album_id {
+            return Ok(false);
+        }
+
+        let same_disc_consecutive = current.disc_number == next.disc_number
+            && next.track_number == current.track_number + 1;
+        let next_disc_first_track =
+            next.disc_number == current.disc_number + 1 && next.track_number == 1;
+        Ok(same_disc_consecutive || next_disc_first_track)
+    }
+
     pub fn get_playback_state(&self) -> CoreResult<PlaybackState> {
         let conn = Connection::open(&self.db_path)?;
         let state = conn
@@ -1580,6 +1609,7 @@ mod tests {
         LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, StereodromeCore, path_to_file_uri,
         should_prefetch_large_cover_art,
     };
+    use rusqlite::Connection;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1626,6 +1656,34 @@ mod tests {
         std::fs::remove_dir_all(data_dir).ok();
     }
 
+    #[test]
+    fn detects_gapless_eligible_adjacent_album_tracks() {
+        let data_dir = unique_temp_dir("gapless-eligible");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        seed_gapless_songs(&core);
+
+        assert!(
+            core.songs_are_gapless_eligible("disc1-track1", "disc1-track2")
+                .expect("same disc eligibility")
+        );
+        assert!(
+            core.songs_are_gapless_eligible("disc1-track2", "disc2-track1")
+                .expect("next disc eligibility")
+        );
+        assert!(
+            !core
+                .songs_are_gapless_eligible("disc1-track1", "disc1-track3")
+                .expect("non-adjacent ineligible")
+        );
+        assert!(
+            !core
+                .songs_are_gapless_eligible("disc1-track2", "other-album-track1")
+                .expect("different album ineligible")
+        );
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1633,12 +1691,61 @@ mod tests {
             .as_nanos();
         std::env::temp_dir().join(format!("stereodrome-{name}-{}-{nanos}", std::process::id()))
     }
+
+    fn seed_gapless_songs(core: &StereodromeCore) {
+        let conn = Connection::open(&core.db_path).expect("open test db");
+        conn.execute(
+            "INSERT INTO artists (id, name, synced_at) VALUES ('artist', 'Artist', 'now')",
+            [],
+        )
+        .expect("insert artist");
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, synced_at)
+             VALUES ('album', 'artist', 'Album', 'now'), ('other', 'artist', 'Other', 'now')",
+            [],
+        )
+        .expect("insert albums");
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, track_number, disc_number, synced_at)
+             VALUES
+                ('disc1-track1', 'album', 'artist', 'One', 1, 1, 'now'),
+                ('disc1-track2', 'album', 'artist', 'Two', 2, 1, 'now'),
+                ('disc1-track3', 'album', 'artist', 'Three', 3, 1, 'now'),
+                ('disc2-track1', 'album', 'artist', 'Three', 1, 2, 'now'),
+                ('other-album-track1', 'other', 'artist', 'Other One', 1, 1, 'now')",
+            [],
+        )
+        .expect("insert songs");
+    }
 }
 
 struct PlaybackMarkers {
     app_volume: f64,
     now_playing_song_id: Option<String>,
     scrobbled_song_id: Option<String>,
+}
+
+struct GaplessTrackInfo {
+    album_id: String,
+    disc_number: i32,
+    track_number: i32,
+}
+
+fn gapless_track_info(conn: &Connection, song_id: &str) -> CoreResult<Option<GaplessTrackInfo>> {
+    let info = conn
+        .query_row(
+            "SELECT album_id, disc_number, track_number FROM songs WHERE id = ?1",
+            [song_id],
+            |row| {
+                Ok(GaplessTrackInfo {
+                    album_id: row.get(0)?,
+                    disc_number: row.get::<_, Option<i32>>(1)?.unwrap_or(1),
+                    track_number: row.get::<_, Option<i32>>(2)?.unwrap_or(0),
+                })
+            },
+        )
+        .optional()?;
+    Ok(info)
 }
 
 struct DownloadRecord<'a> {

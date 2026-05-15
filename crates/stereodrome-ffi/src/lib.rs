@@ -13,9 +13,10 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::Value;
 use stereodrome_audio::{
-    AudioPlayer, BinauralPreset, DynamicsPreset, EqualizerSettings, SongMetadata,
+    AudioPlayer, BinauralPreset, CrossfadePlayRequest, DynamicsPreset, EqualizerSettings,
+    SongMetadata,
 };
-use stereodrome_core::queue::{QueueItem, RepeatMode};
+use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{AudioProcessingSettings, ConnectParams, PlaybackProgress, StereodromeCore};
 use url::Url;
 
@@ -261,6 +262,12 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         "audioApplySettings" => {
             json_result(runtime.block_on(async { apply_audio_settings(mobile).await }))
         }
+        "audioPrepareNextTransition" => {
+            json_result(runtime.block_on(async { prepare_next_transition(mobile).await }))
+        }
+        "audioCrossfadeNext" => {
+            json_result(runtime.block_on(async { crossfade_next(mobile).await }))
+        }
         "audioPause" => json_result(mobile.audio.pause().map(|_| ())),
         "audioResume" => json_result(mobile.audio.resume().map(|_| ())),
         "audioStop" => json_result(mobile.audio.stop().map(|_| ())),
@@ -415,39 +422,18 @@ async fn play_current_queue_item(
         .cloned()
         .ok_or_else(|| "current queue index is out of range".to_string())?;
 
-    let status = mobile
-        .core
-        .download_song(item.song_id.clone())
-        .await
-        .map_err(|e| e.to_string())?;
-    let path = status
-        .path
-        .as_deref()
-        .ok_or_else(|| format!("song {} did not produce a cached audio path", item.song_id))?;
-    let audio_path = file_uri_to_path(path)?;
-    let audio_data = std::fs::read(&audio_path).map_err(|e| e.to_string())?;
-    let settings = mobile
-        .core
-        .get_audio_processing_settings()
-        .map_err(|e| e.to_string())?;
-    let processing = audio_processing_from_settings(&settings)?;
+    let prepared = prepare_queue_item_audio(mobile, item).await?;
 
     mobile
         .audio
         .play(
-            Arc::<[u8]>::from(audio_data),
-            SongMetadata {
-                id: item.song_id,
-                title: item.title,
-                artist: item.artist,
-                album: item.album,
-                cover_art_id: None,
-            },
-            item.duration as f64,
-            processing.normalization_gain,
-            processing.dynamics_preset,
-            processing.binaural_preset,
-            processing.equalizer_settings,
+            prepared.audio_data,
+            prepared.metadata,
+            prepared.duration_secs,
+            prepared.processing.normalization_gain,
+            prepared.processing.dynamics_preset,
+            prepared.processing.binaural_preset,
+            prepared.processing.equalizer_settings,
         )
         .map_err(|e| e.to_string())?;
 
@@ -456,6 +442,120 @@ async fn play_current_queue_item(
     }
 
     Ok(mobile.audio.get_status())
+}
+
+async fn prepare_next_transition(mobile: &MobileCore) -> Result<(), String> {
+    let settings = mobile
+        .core
+        .get_audio_processing_settings()
+        .map_err(|e| e.to_string())?;
+    if !settings.gapless_enabled {
+        return Ok(());
+    }
+    if mobile.audio.get_status().current_song_id.is_none() {
+        return Ok(());
+    }
+
+    let queue = mobile.core.get_queue().map_err(|e| e.to_string())?;
+    if queue.repeat_mode == RepeatMode::One {
+        return Ok(());
+    }
+    let Some(current_index) = queue.current_index else {
+        return Ok(());
+    };
+    let Some(current) = queue.items.get(current_index) else {
+        return Ok(());
+    };
+    let Some(next) = mobile
+        .core
+        .peek_next_queue_item()
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+    if current.song_id == next.song_id
+        || !mobile
+            .core
+            .songs_are_gapless_eligible(&current.song_id, &next.song_id)
+            .map_err(|e| e.to_string())?
+    {
+        return Ok(());
+    }
+
+    let prepared = prepare_queue_item_audio(mobile, next).await?;
+    mobile
+        .audio
+        .append_gapless(
+            prepared.audio_data,
+            prepared.metadata,
+            prepared.duration_secs,
+            prepared.processing.normalization_gain,
+            prepared.processing.dynamics_preset,
+            prepared.processing.binaural_preset,
+            prepared.processing.equalizer_settings,
+        )
+        .map_err(|e| e.to_string())
+}
+
+async fn crossfade_next(mobile: &MobileCore) -> Result<Option<QueueState>, String> {
+    let settings = mobile
+        .core
+        .get_audio_processing_settings()
+        .map_err(|e| e.to_string())?;
+    if !settings.crossfade_enabled
+        || mobile.audio.is_crossfade_initiated()
+        || !mobile.audio.get_status().is_playing
+    {
+        return Ok(None);
+    }
+
+    let queue = mobile.core.get_queue().map_err(|e| e.to_string())?;
+    if queue.repeat_mode == RepeatMode::One {
+        return Ok(None);
+    }
+    let Some(current_index) = queue.current_index else {
+        return Ok(None);
+    };
+    let Some(current) = queue.items.get(current_index) else {
+        return Ok(None);
+    };
+    let Some(next) = mobile
+        .core
+        .peek_next_queue_item()
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    if settings.gapless_enabled
+        && mobile
+            .core
+            .songs_are_gapless_eligible(&current.song_id, &next.song_id)
+            .map_err(|e| e.to_string())?
+    {
+        return Ok(None);
+    }
+
+    let prepared = prepare_queue_item_audio(mobile, next).await?;
+    mobile
+        .audio
+        .crossfade_play(CrossfadePlayRequest {
+            audio_data: prepared.audio_data,
+            metadata: prepared.metadata,
+            duration_secs: prepared.duration_secs,
+            normalization_gain: prepared.processing.normalization_gain,
+            dynamics_preset: prepared.processing.dynamics_preset,
+            binaural_preset: prepared.processing.binaural_preset,
+            equalizer_settings: prepared.processing.equalizer_settings,
+            crossfade_duration_ms: settings.crossfade_duration_ms,
+        })
+        .map_err(|e| e.to_string())?;
+
+    mobile
+        .core
+        .play_next(Some(false))
+        .map_err(|e| e.to_string())?;
+    Ok(Some(mobile.core.get_queue().map_err(|e| e.to_string())?))
 }
 
 async fn apply_audio_settings(
@@ -479,6 +579,48 @@ struct AudioProcessing {
     dynamics_preset: Option<DynamicsPreset>,
     binaural_preset: Option<BinauralPreset>,
     equalizer_settings: Option<EqualizerSettings>,
+}
+
+struct PreparedAudioItem {
+    audio_data: Arc<[u8]>,
+    metadata: SongMetadata,
+    duration_secs: f64,
+    processing: AudioProcessing,
+}
+
+async fn prepare_queue_item_audio(
+    mobile: &MobileCore,
+    item: QueueItem,
+) -> Result<PreparedAudioItem, String> {
+    let status = mobile
+        .core
+        .download_song(item.song_id.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    let path = status
+        .path
+        .as_deref()
+        .ok_or_else(|| format!("song {} did not produce a cached audio path", item.song_id))?;
+    let audio_path = file_uri_to_path(path)?;
+    let audio_data = std::fs::read(&audio_path).map_err(|e| e.to_string())?;
+    let settings = mobile
+        .core
+        .get_audio_processing_settings()
+        .map_err(|e| e.to_string())?;
+    let processing = audio_processing_from_settings(&settings)?;
+
+    Ok(PreparedAudioItem {
+        audio_data: Arc::<[u8]>::from(audio_data),
+        metadata: SongMetadata {
+            id: item.song_id,
+            title: item.title,
+            artist: item.artist,
+            album: item.album,
+            cover_art_id: None,
+        },
+        duration_secs: item.duration as f64,
+        processing,
+    })
 }
 
 fn audio_processing_from_settings(

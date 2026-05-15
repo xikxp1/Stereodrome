@@ -80,6 +80,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const queueRef = useRef<PlayableSong[]>([]);
   const isPlayingRef = useRef(false);
   const handlingEndedRef = useRef(false);
+  const crossfadeInProgressRef = useRef(false);
+  const crossfadeAttemptedSongIdRef = useRef<string | null>(null);
   const expectedAudioSongIdRef = useRef<string | null>(null);
   const audioProcessingSettingsRef = useRef<AudioProcessingSettings | null>(
     null
@@ -143,12 +145,18 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     setShuffleEnabled(state.shuffle);
   }, []);
 
+  const prepareNextPlayback = useCallback(async () => {
+    await stereodromeCore.prefetchNext();
+    await stereodromeCore.audioPrepareNextTransition();
+  }, []);
+
   const playCurrentQueueItem = useCallback(async () => {
     expectedAudioSongIdRef.current = currentSongRef.current?.id ?? null;
+    crossfadeAttemptedSongIdRef.current = null;
     const status = await stereodromeCore.audioPlayCurrent();
     updateAudioStatus(status);
-    void stereodromeCore.prefetchNext().catch(() => {});
-  }, [updateAudioStatus]);
+    void prepareNextPlayback().catch(() => {});
+  }, [prepareNextPlayback, updateAudioStatus]);
 
   const applyAudioProcessingSettings = useCallback(
     async (settings: AudioProcessingSettings) => {
@@ -156,8 +164,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       await ensurePlayerReady();
       const status = await stereodromeCore.audioApplySettings();
       updateAudioStatus(status);
+      void prepareNextPlayback().catch(() => {});
     },
-    [updateAudioStatus]
+    [prepareNextPlayback, updateAudioStatus]
   );
 
   const handlePlaybackEnded = useCallback(async () => {
@@ -239,8 +248,22 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       void stereodromeCore
         .audioGetStatus()
         .then(async (status) => {
+          const queueSongId = currentSongRef.current?.id ?? null;
+          const audioMovedToQueuedSong =
+            status.current_song_id !== null &&
+            queueSongId !== null &&
+            status.current_song_id !== queueSongId &&
+            queueRef.current.some((song) => song.id === status.current_song_id);
+
           updateAudioStatus(status);
           if (expectedAudioSongIdRef.current) {
+            return;
+          }
+
+          if (audioMovedToQueuedSong && !crossfadeInProgressRef.current) {
+            const state = await stereodromeCore.playNext(false);
+            await applyQueueState(state);
+            void prepareNextPlayback().catch(() => {});
             return;
           }
 
@@ -251,6 +274,32 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
               duration_seconds: status.duration,
               is_playing: status.is_playing,
             });
+          }
+
+          const settings = audioProcessingSettingsRef.current;
+          const crossfadeWindowSeconds =
+            (settings?.crossfade_duration_ms ?? 0) / 1000;
+          const shouldCrossfade =
+            settings?.crossfade_enabled === true &&
+            status.is_playing &&
+            status.current_song_id !== null &&
+            crossfadeAttemptedSongIdRef.current !== status.current_song_id &&
+            status.duration > 0 &&
+            status.duration - status.position <= crossfadeWindowSeconds &&
+            status.duration - status.position > 0.5 &&
+            !crossfadeInProgressRef.current;
+          if (shouldCrossfade) {
+            crossfadeInProgressRef.current = true;
+            crossfadeAttemptedSongIdRef.current = status.current_song_id;
+            try {
+              const state = await stereodromeCore.audioCrossfadeNext();
+              if (state) {
+                await applyQueueState(state);
+                void prepareNextPlayback().catch(() => {});
+              }
+            } finally {
+              crossfadeInProgressRef.current = false;
+            }
           }
 
           const playbackFinished =
@@ -270,7 +319,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     return () => {
       clearInterval(interval);
     };
-  }, [handlePlaybackEnded, updateAudioStatus]);
+  }, [
+    applyQueueState,
+    handlePlaybackEnded,
+    prepareNextPlayback,
+    updateAudioStatus,
+  ]);
 
   const playSong = useCallback(
     async (song: PlayableSong, songs: PlayableSong[] = [song]) => {
