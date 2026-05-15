@@ -39,7 +39,7 @@ Stereodrome works with Subsonic API-compatible servers, including:
 - **Windows** 10 or later
 - **Linux** with GTK 3 and WebKit2GTK
 - **iOS** 15 or later
-- **Android** 7 or later
+- **Android** 8 or later
 
 ## Installation
 
