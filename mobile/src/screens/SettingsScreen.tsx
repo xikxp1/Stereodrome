@@ -1,10 +1,20 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import {
+  type KeyboardTypeOptions,
+  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 
 import {
   SelectableList,
   type SelectableOption,
 } from "@/components/SelectableList";
+import { colors } from "@/components/theme";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
@@ -30,6 +40,13 @@ const eqLabels = [
 const eqMinDb = -12;
 const eqMaxDb = 12;
 const eqStepDb = 0.5;
+
+type TextEditConfig = {
+  title: string;
+  value: string;
+  keyboardType?: KeyboardTypeOptions;
+  onSubmit(value: string): Promise<void>;
+};
 
 type EqPresetId =
   | "flat"
@@ -96,6 +113,10 @@ export function SettingsScreen() {
   const queryClient = useQueryClient();
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [textEdit, setTextEdit] = useState<TextEditConfig | null>(null);
+  const [textEditError, setTextEditError] = useState<string | null>(null);
+  const [textEditSaving, setTextEditSaving] = useState(false);
+  const [textEditValue, setTextEditValue] = useState("");
   const syncStatus = useQuery({
     queryKey: ["library-sync-status"],
     queryFn: stereodromeCore.getLibrarySyncStatus,
@@ -109,19 +130,28 @@ export function SettingsScreen() {
     queryFn: stereodromeCore.getAudioProcessingSettings,
   });
 
+  function openTextEdit(config: TextEditConfig) {
+    setTextEdit(config);
+    setTextEditError(null);
+    setTextEditValue(config.value);
+  }
+
   const settings = audioSettings.data;
   const options: SelectableOption[] = [
     {
+      kind: "info",
       label: "Server",
       sublabel: stereodrome.status.server_url ?? "Not connected",
       onSelect: () => stereodrome.refreshStatus(),
     },
     {
+      kind: "info",
       label: "Username",
       sublabel: stereodrome.status.username ?? "-",
       onSelect: () => stereodrome.refreshStatus(),
     },
     {
+      kind: "info",
       label: "Server Version",
       sublabel: stereodrome.status.server_version ?? "-",
       onSelect: () => stereodrome.refreshStatus(),
@@ -129,6 +159,7 @@ export function SettingsScreen() {
     ...(stereodrome.status.connected
       ? [
           {
+            kind: "action" as const,
             label: "Disconnect",
             sublabel: "Sign out of this server",
             onSelect: async () => {
@@ -142,6 +173,7 @@ export function SettingsScreen() {
         ]
       : []),
     {
+      kind: "info",
       label: "Library Sync",
       sublabel: syncStatus.data?.active_job
         ? syncStatus.data.active_job === "incremental"
@@ -154,6 +186,7 @@ export function SettingsScreen() {
         queryClient.invalidateQueries({ queryKey: ["library-sync-status"] }),
     },
     {
+      kind: "action",
       label: "Full Sync",
       sublabel:
         busyAction === "full"
@@ -162,6 +195,7 @@ export function SettingsScreen() {
       onSelect: () => runSync("full"),
     },
     {
+      kind: "action",
       label: "Incremental Sync",
       sublabel:
         busyAction === "incremental"
@@ -170,6 +204,7 @@ export function SettingsScreen() {
       onSelect: () => runSync("incremental"),
     },
     {
+      kind: "action",
       label: "Full Reconcile",
       sublabel:
         busyAction === "reconcile"
@@ -180,6 +215,7 @@ export function SettingsScreen() {
     ...(syncStatus.data?.incremental.last_error
       ? [
           {
+            kind: "info" as const,
             label: "Incremental Error",
             sublabel: syncStatus.data.incremental.last_error,
             onSelect: () =>
@@ -192,6 +228,7 @@ export function SettingsScreen() {
     ...(syncStatus.data?.full.last_error
       ? [
           {
+            kind: "info" as const,
             label: "Full Sync Error",
             sublabel: syncStatus.data.full.last_error,
             onSelect: () =>
@@ -204,6 +241,7 @@ export function SettingsScreen() {
     ...(syncStatus.data?.full_reconcile.last_error
       ? [
           {
+            kind: "info" as const,
             label: "Reconcile Error",
             sublabel: syncStatus.data.full_reconcile.last_error,
             onSelect: () =>
@@ -214,6 +252,7 @@ export function SettingsScreen() {
         ]
       : []),
     {
+      kind: "editable",
       label: "Button Layout",
       sublabel:
         mobileSettings.buttonHandedness === "right"
@@ -221,9 +260,10 @@ export function SettingsScreen() {
           : "Left handed",
       onSelect: () => mobileSettings.toggleButtonHandedness(),
     },
-    ...playbackOptions(settings, updateAudioSetting),
-    ...normalizationOptions(settings, updateAudioSetting),
+    ...playbackOptions(settings, updateAudioSetting, openTextEdit),
+    ...normalizationOptions(settings, updateAudioSetting, openTextEdit),
     {
+      kind: "info",
       label: "Audio Cache",
       sublabel: `${formatBytes(cacheStats.data?.total_size ?? 0)} used, ${
         cacheStats.data?.file_count ?? 0
@@ -232,12 +272,32 @@ export function SettingsScreen() {
         queryClient.invalidateQueries({ queryKey: ["audio-cache-stats"] }),
     },
     {
+      kind: "editable",
       label: "Maximum Cache Size",
       sublabel: formatBytes(cacheStats.data?.max_size ?? 0),
-      onSelect: () => cycleCacheSize(1),
+      onSelect: () =>
+        openTextEdit({
+          title: "Maximum Cache Size (GB)",
+          value: formatInputNumber(
+            (cacheStats.data?.max_size ?? 0) / 1024 ** 3
+          ),
+          keyboardType: "decimal-pad",
+          onSubmit: async (value) => {
+            const gb = parseNumberInput(value, "Maximum cache size");
+            if (gb <= 0) {
+              throw new Error("Maximum cache size must be greater than 0");
+            }
+            await stereodromeCore.setMaxCacheSize(Math.round(gb * 1024 ** 3));
+            await queryClient.invalidateQueries({
+              queryKey: ["audio-cache-stats"],
+            });
+            setMessage(`Cache limit set to ${formatCacheSizePreset(gb)}`);
+          },
+        }),
       onLongSelect: () => cycleCacheSize(-1),
     },
     {
+      kind: "action",
       label: "Clear Audio Cache",
       sublabel:
         busyAction === "clear-cache" ? "Clearing..." : "Remove cached audio",
@@ -254,6 +314,7 @@ export function SettingsScreen() {
     ...(message
       ? [
           {
+            kind: "info" as const,
             label: "Last Action",
             sublabel: message,
             onSelect: () => setMessage(null),
@@ -317,22 +378,91 @@ export function SettingsScreen() {
     });
   }
 
+  async function submitTextEdit() {
+    if (!textEdit || textEditSaving) {
+      return;
+    }
+
+    setTextEditSaving(true);
+    setMessage(null);
+    setTextEditError(null);
+    try {
+      await textEdit.onSubmit(textEditValue);
+      setTextEdit(null);
+    } catch (e) {
+      setTextEditError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTextEditSaving(false);
+    }
+  }
+
   return (
-    <SelectableList
-      empty="Settings unavailable"
-      options={options}
-      preserveSelectionOnChange
-    />
+    <View style={styles.container}>
+      <SelectableList
+        disabled={textEdit !== null}
+        empty="Settings unavailable"
+        options={options}
+        preserveSelectionOnChange
+      />
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setTextEdit(null)}
+        transparent
+        visible={textEdit !== null}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{textEdit?.title}</Text>
+            <TextInput
+              autoFocus
+              keyboardType={textEdit?.keyboardType ?? "default"}
+              onChangeText={setTextEditValue}
+              onSubmitEditing={submitTextEdit}
+              selectTextOnFocus
+              style={styles.modalInput}
+              value={textEditValue}
+            />
+            {textEditError ? (
+              <Text numberOfLines={2} style={styles.modalError}>
+                {textEditError}
+              </Text>
+            ) : null}
+            <View style={styles.modalActions}>
+              <Pressable
+                disabled={textEditSaving}
+                onPress={() => setTextEdit(null)}
+                style={styles.modalButton}
+              >
+                <Text style={styles.modalButtonText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                disabled={textEditSaving}
+                onPress={submitTextEdit}
+                style={[styles.modalButton, styles.modalPrimaryButton]}
+              >
+                <Text style={styles.modalPrimaryButtonText}>
+                  {textEditSaving ? "Saving..." : "Save"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </View>
   );
 }
 
 function playbackOptions(
   settings: AudioProcessingSettings | undefined,
-  updateAudioSetting: (patch: Partial<AudioProcessingSettings>) => Promise<void>
+  updateAudioSetting: (
+    patch: Partial<AudioProcessingSettings>
+  ) => Promise<void>,
+  openTextEdit: (config: TextEditConfig) => void
 ): SelectableOption[] {
   if (!settings) {
     return [
       {
+        kind: "info",
         label: "Playback",
         sublabel: "Loading...",
         onSelect: () => {},
@@ -343,12 +473,14 @@ function playbackOptions(
   const activeEqPreset = getEqPreset(settings.equalizer_bands_db);
   return [
     {
+      kind: "editable",
       label: "Gapless Playback",
       sublabel: onOff(settings.gapless_enabled),
       onSelect: () =>
         updateAudioSetting({ gapless_enabled: !settings.gapless_enabled }),
     },
     {
+      kind: "editable",
       label: "Crossfade",
       sublabel: onOff(settings.crossfade_enabled),
       onSelect: () =>
@@ -357,15 +489,22 @@ function playbackOptions(
     ...(settings.crossfade_enabled
       ? [
           {
+            kind: "editable" as const,
             label: "Crossfade Duration",
             sublabel: `${settings.crossfade_duration_ms / 1000}s`,
             onSelect: () =>
-              updateAudioSetting({
-                crossfade_duration_ms: cycleNumber(
-                  crossfadePresets,
-                  settings.crossfade_duration_ms,
-                  1
-                ),
+              openTextEdit({
+                title: "Crossfade Duration (seconds)",
+                value: formatInputNumber(settings.crossfade_duration_ms / 1000),
+                keyboardType: "decimal-pad",
+                onSubmit: async (value) => {
+                  const seconds = parseNumberInput(value, "Crossfade duration");
+                  await updateAudioSetting({
+                    crossfade_duration_ms: Math.round(
+                      clamp(seconds, 0.5, 15) * 1000
+                    ),
+                  });
+                },
               }),
             onLongSelect: () =>
               updateAudioSetting({
@@ -379,6 +518,7 @@ function playbackOptions(
         ]
       : []),
     {
+      kind: "editable",
       label: "Binaural Crossfeed",
       sublabel: onOff(settings.binaural_enabled),
       onSelect: () =>
@@ -387,6 +527,7 @@ function playbackOptions(
     ...(settings.binaural_enabled
       ? [
           {
+            kind: "editable" as const,
             label: "Binaural Preset",
             sublabel: labelForPreset(settings.binaural_preset),
             onSelect: () =>
@@ -409,12 +550,14 @@ function playbackOptions(
         ]
       : []),
     {
+      kind: "editable",
       label: "Equalizer",
       sublabel: onOff(settings.equalizer_enabled),
       onSelect: () =>
         updateAudioSetting({ equalizer_enabled: !settings.equalizer_enabled }),
     },
     {
+      kind: "editable",
       label: "EQ Preset",
       sublabel:
         eqPresets.find((preset) => preset.id === activeEqPreset)?.label ??
@@ -445,16 +588,25 @@ function playbackOptions(
         }),
     },
     ...sanitizeEqBands(settings.equalizer_bands_db).map((band, index) => ({
+      kind: "editable" as const,
       label: `EQ ${eqLabels[index]}`,
       sublabel: formatDb(band),
       onSelect: () =>
-        updateAudioSetting({
-          equalizer_enabled: true,
-          equalizer_bands_db: updateBand(
-            settings.equalizer_bands_db,
-            index,
-            eqStepDb
-          ),
+        openTextEdit({
+          title: `EQ ${eqLabels[index]} (dB)`,
+          value: formatInputNumber(band),
+          keyboardType: "numbers-and-punctuation",
+          onSubmit: async (value) => {
+            const db = parseNumberInput(value, `EQ ${eqLabels[index]}`);
+            await updateAudioSetting({
+              equalizer_enabled: true,
+              equalizer_bands_db: setBand(
+                settings.equalizer_bands_db,
+                index,
+                clamp(db, eqMinDb, eqMaxDb)
+              ),
+            });
+          },
         }),
       onLongSelect: () =>
         updateAudioSetting({
@@ -471,11 +623,15 @@ function playbackOptions(
 
 function normalizationOptions(
   settings: AudioProcessingSettings | undefined,
-  updateAudioSetting: (patch: Partial<AudioProcessingSettings>) => Promise<void>
+  updateAudioSetting: (
+    patch: Partial<AudioProcessingSettings>
+  ) => Promise<void>,
+  openTextEdit: (config: TextEditConfig) => void
 ): SelectableOption[] {
   if (!settings) {
     return [
       {
+        kind: "info",
         label: "Volume Normalization",
         sublabel: "Loading...",
         onSelect: () => {},
@@ -485,6 +641,7 @@ function normalizationOptions(
 
   return [
     {
+      kind: "editable",
       label: "Volume Normalization",
       sublabel: onOff(settings.normalization_enabled),
       onSelect: () =>
@@ -495,6 +652,7 @@ function normalizationOptions(
     ...(settings.normalization_enabled
       ? [
           {
+            kind: "editable" as const,
             label: "Normalization Mode",
             sublabel: labelForPreset(settings.normalization_mode),
             onSelect: () =>
@@ -504,11 +662,20 @@ function normalizationOptions(
               }),
           },
           {
+            kind: "editable" as const,
             label: "Target Level",
             sublabel: `${settings.target_lufs} LUFS`,
             onSelect: () =>
-              updateAudioSetting({
-                target_lufs: cycleNumber(lufsPresets, settings.target_lufs, 1),
+              openTextEdit({
+                title: "Target Level (LUFS)",
+                value: formatInputNumber(settings.target_lufs),
+                keyboardType: "numbers-and-punctuation",
+                onSubmit: async (value) => {
+                  const lufs = parseNumberInput(value, "Target level");
+                  await updateAudioSetting({
+                    target_lufs: clamp(lufs, -24, -8),
+                  });
+                },
               }),
             onLongSelect: () =>
               updateAudioSetting({
@@ -516,11 +683,20 @@ function normalizationOptions(
               }),
           },
           {
+            kind: "editable" as const,
             label: "Preamp",
             sublabel: formatDb(settings.preamp_db),
             onSelect: () =>
-              updateAudioSetting({
-                preamp_db: clamp(settings.preamp_db + 0.5, -6, 6),
+              openTextEdit({
+                title: "Preamp (dB)",
+                value: formatInputNumber(settings.preamp_db),
+                keyboardType: "numbers-and-punctuation",
+                onSubmit: async (value) => {
+                  const db = parseNumberInput(value, "Preamp");
+                  await updateAudioSetting({
+                    preamp_db: clamp(db, -12, 12),
+                  });
+                },
               }),
             onLongSelect: () =>
               updateAudioSetting({
@@ -528,6 +704,7 @@ function normalizationOptions(
               }),
           },
           {
+            kind: "editable" as const,
             label: "Prevent Clipping",
             sublabel: onOff(settings.prevent_clipping),
             onSelect: () =>
@@ -536,6 +713,7 @@ function normalizationOptions(
               }),
           },
           {
+            kind: "editable" as const,
             label: "Dynamics Processing",
             sublabel: onOff(settings.dynamics_enabled),
             onSelect: () =>
@@ -546,6 +724,7 @@ function normalizationOptions(
           ...(settings.dynamics_enabled
             ? [
                 {
+                  kind: "editable" as const,
                   label: "Dynamics Amount",
                   sublabel: labelForPreset(settings.dynamics_preset),
                   onSelect: () =>
@@ -662,8 +841,26 @@ function updateBand(bands: number[], index: number, delta: number) {
   );
 }
 
+function setBand(bands: number[], index: number, value: number) {
+  return sanitizeEqBands(bands).map((band, bandIndex) =>
+    bandIndex === index ? value : band
+  );
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function parseNumberInput(value: string, label: string) {
+  const parsed = Number(value.trim().replace(",", "."));
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} must be a number`);
+  }
+  return parsed;
+}
+
+function formatInputNumber(value: number) {
+  return Number.isInteger(value) ? `${value}` : `${Number(value.toFixed(2))}`;
 }
 
 function formatDb(value: number) {
@@ -673,3 +870,74 @@ function formatDb(value: number) {
 function formatCacheSizePreset(value: number) {
   return value < 1 ? `${value * 1000}MB` : `${value}GB`;
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  modalActions: {
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "flex-end",
+  },
+  modalButton: {
+    borderColor: "#b9b9b2",
+    borderRadius: 4,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  modalButtonText: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  modalCard: {
+    backgroundColor: "#f7f7ef",
+    borderColor: "#b9b9b2",
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: 12,
+    width: "82%",
+  },
+  modalInput: {
+    backgroundColor: "#fff",
+    borderColor: "#c9c9c1",
+    borderRadius: 4,
+    borderWidth: 1,
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "700",
+    height: 36,
+    marginBottom: 10,
+    paddingHorizontal: 8,
+  },
+  modalError: {
+    color: "#b3261e",
+    fontSize: 11,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  modalOverlay: {
+    alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.38)",
+    flex: 1,
+    justifyContent: "center",
+    padding: 14,
+  },
+  modalPrimaryButton: {
+    backgroundColor: colors.selected,
+    borderColor: colors.selected,
+  },
+  modalPrimaryButtonText: {
+    color: colors.selectedText,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  modalTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "800",
+    marginBottom: 8,
+  },
+});
