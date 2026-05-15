@@ -517,7 +517,15 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         queue,
       })
       .catch(() => {});
-  }, [currentSong, currentIndex, duration, isPlaying, nextSong, position, queue]);
+  }, [
+    currentSong,
+    currentIndex,
+    duration,
+    isPlaying,
+    nextSong,
+    position,
+    queue,
+  ]);
 
   const value = useMemo(
     () => ({
