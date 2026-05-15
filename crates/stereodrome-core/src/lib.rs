@@ -680,6 +680,16 @@ impl StereodromeCore {
     }
 
     pub async fn download_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
+        if let Some(path) = self.cached_song_path(&song_id)? {
+            let bytes = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            return Ok(DownloadStatus {
+                song_id,
+                cached: true,
+                path: Some(path_to_file_uri(&path)),
+                bytes,
+            });
+        }
+
         let client = self.connected_client().await?;
         let path = self.audio_cache_path(&song_id, MOBILE_PLAYBACK_FORMAT)?;
         if let Some(parent) = path.parent() {
@@ -1540,7 +1550,11 @@ fn is_mobile_playback_cache_path(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{LARGE_COVER_ART_SIZE, should_prefetch_large_cover_art};
+    use super::{
+        LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, StereodromeCore, path_to_file_uri,
+        should_prefetch_large_cover_art,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn prefetches_large_cover_art_for_small_requests() {
@@ -1558,6 +1572,40 @@ mod tests {
         )));
         assert!(!should_prefetch_large_cover_art(Some(0)));
         assert!(!should_prefetch_large_cover_art(None));
+    }
+
+    #[tokio::test]
+    async fn download_song_returns_existing_cache_without_connection() {
+        let data_dir = unique_temp_dir("download-song-cache-hit");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let song_id = "cached-song";
+        let cache_path = core
+            .audio_cache_path(song_id, MOBILE_PLAYBACK_FORMAT)
+            .expect("cache path");
+        std::fs::write(&cache_path, b"cached audio").expect("write cache file");
+
+        let status = core
+            .download_song(song_id.to_string())
+            .await
+            .expect("cache hit works offline");
+
+        assert!(status.cached);
+        assert_eq!(status.song_id, song_id);
+        assert_eq!(status.bytes, 12);
+        assert_eq!(
+            status.path.as_deref(),
+            Some(path_to_file_uri(&cache_path).as_str())
+        );
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    fn unique_temp_dir(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("stereodrome-{name}-{}-{nanos}", std::process::id()))
     }
 }
 
