@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   type KeyboardTypeOptions,
   Modal,
@@ -19,12 +19,17 @@ import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
-import type { AudioProcessingSettings, LibrarySyncStatus } from "@/types/music";
+import type {
+  AudioProcessingSettings,
+  LibrarySyncStatus,
+  ScanStatus,
+} from "@/types/music";
 
 const lufsPresets = [-18, -16, -14, -12, -10];
 const crossfadePresets = [1000, 3000, 5000, 8000, 12000];
 const cacheSizePresetsGb = [0.5, 1, 2, 5, 10, 20, 50];
 const librarySyncStatusQueryKey = ["library-sync-status"] as const;
+const scanStatusQueryKey = ["scan-status"] as const;
 const eqLabels = [
   "32",
   "64",
@@ -145,9 +150,15 @@ export function SettingsScreen({ category }: { category?: string }) {
   const [textEditError, setTextEditError] = useState<string | null>(null);
   const [textEditSaving, setTextEditSaving] = useState(false);
   const [textEditValue, setTextEditValue] = useState("");
+  const selectedCategory = parseSettingsCategory(category);
   const syncStatus = useQuery({
     queryKey: librarySyncStatusQueryKey,
     queryFn: stereodromeCore.getLibrarySyncStatus,
+  });
+  const scanStatus = useQuery({
+    queryKey: scanStatusQueryKey,
+    queryFn: stereodromeCore.getScanStatus,
+    enabled: selectedCategory === "sync" && stereodrome.status.connected,
   });
   const cacheStats = useQuery({
     queryKey: ["audio-cache-stats"],
@@ -164,7 +175,17 @@ export function SettingsScreen({ category }: { category?: string }) {
     setTextEditValue(config.value);
   }
 
-  const selectedCategory = parseSettingsCategory(category);
+  useEffect(() => {
+    if (selectedCategory !== "sync" || !scanStatus.data?.scanning) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      void queryClient.invalidateQueries({ queryKey: scanStatusQueryKey });
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [queryClient, scanStatus.data?.scanning, selectedCategory]);
+
   const settings = audioSettings.data;
   const options = [
     ...(selectedCategory
@@ -270,9 +291,7 @@ export function SettingsScreen({ category }: { category?: string }) {
         sublabel: syncStatus.data?.active_job
           ? syncStatus.data.active_job === "incremental"
             ? "Running incremental sync"
-            : syncStatus.data.active_job === "full"
-              ? "Running full sync"
-              : "Running full reconcile"
+            : "Running full sync"
           : "Idle",
         onSelect: () =>
           queryClient.invalidateQueries({
@@ -281,16 +300,18 @@ export function SettingsScreen({ category }: { category?: string }) {
       },
       {
         kind: "action",
-        label: "Full Sync",
+        label: "Start scan",
         sublabel:
-          busyAction === "full"
-            ? "Syncing..."
-            : `Last: ${formatTimestamp(syncStatus.data?.full.last_success_at)}`,
-        onSelect: () => runSync("full"),
+          busyAction === "scan"
+            ? "Starting..."
+            : scanStatus.data?.scanning
+              ? formatScanStatus(scanStatus.data)
+              : "Invoke Subsonic scan",
+        onSelect: () => runStartScan(),
       },
       {
         kind: "action",
-        label: "Incremental Sync",
+        label: "Incremental sync",
         sublabel:
           busyAction === "incremental"
             ? "Syncing..."
@@ -299,10 +320,10 @@ export function SettingsScreen({ category }: { category?: string }) {
       },
       {
         kind: "action",
-        label: "Full Reconcile",
+        label: "Full sync",
         sublabel:
           busyAction === "reconcile"
-            ? "Reconciling..."
+            ? "Syncing..."
             : `Last: ${formatTimestamp(syncStatus.data?.full_reconcile.last_success_at)}`,
         onSelect: () => runSync("reconcile"),
       },
@@ -319,24 +340,11 @@ export function SettingsScreen({ category }: { category?: string }) {
             },
           ]
         : []),
-      ...(syncStatus.data?.full.last_error
-        ? [
-            {
-              kind: "info" as const,
-              label: "Full Sync Error",
-              sublabel: syncStatus.data.full.last_error,
-              onSelect: () =>
-                queryClient.invalidateQueries({
-                  queryKey: librarySyncStatusQueryKey,
-                }),
-            },
-          ]
-        : []),
       ...(syncStatus.data?.full_reconcile.last_error
         ? [
             {
               kind: "info" as const,
-              label: "Reconcile Error",
+              label: "Full Sync Error",
               sublabel: syncStatus.data.full_reconcile.last_error,
               onSelect: () =>
                 queryClient.invalidateQueries({
@@ -456,21 +464,26 @@ export function SettingsScreen({ category }: { category?: string }) {
     }
   }
 
-  async function runSync(mode: "full" | "incremental" | "reconcile") {
+  async function runStartScan() {
+    await runBusy("scan", async () => {
+      const status = await stereodromeCore.startScan();
+      queryClient.setQueryData<ScanStatus>(scanStatusQueryKey, status);
+      setMessage(status.scanning ? "Scan started" : "Scan requested");
+    });
+  }
+
+  async function runSync(mode: "incremental" | "reconcile") {
     await runBusy(mode, async () => {
       queryClient.setQueryData<LibrarySyncStatus>(
         librarySyncStatusQueryKey,
         (status) => markSyncStatusRunning(status, mode)
       );
-      if (mode === "full") {
-        await stereodrome.sync();
-        setMessage("Full sync complete");
-      } else if (mode === "incremental") {
+      if (mode === "incremental") {
         await stereodrome.syncIncremental();
         setMessage("Incremental sync complete");
       } else {
         await stereodrome.reconcile();
-        setMessage("Full reconcile complete");
+        setMessage("Full sync complete");
       }
       await queryClient.invalidateQueries({
         queryKey: librarySyncStatusQueryKey,
@@ -898,7 +911,7 @@ function parseSettingsCategory(value: string | undefined) {
 
 function markSyncStatusRunning(
   status: LibrarySyncStatus | undefined,
-  mode: "full" | "incremental" | "reconcile"
+  mode: "incremental" | "reconcile"
 ) {
   if (!status) {
     return status;
@@ -917,8 +930,19 @@ function markSyncStatusRunning(
   };
 }
 
-function syncJobKey(mode: "full" | "incremental" | "reconcile") {
+function syncJobKey(mode: "incremental" | "reconcile") {
   return mode === "reconcile" ? "full_reconcile" : mode;
+}
+
+function formatScanStatus(status: ScanStatus) {
+  if (status.scanning) {
+    return status.count
+      ? `Scanning (${status.count.toLocaleString()} items)`
+      : "Scanning...";
+  }
+  return status.count
+    ? `Idle (${status.count.toLocaleString()} items)`
+    : "Idle";
 }
 
 function onOff(value: boolean) {

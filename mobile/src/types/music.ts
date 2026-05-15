@@ -127,6 +127,11 @@ export type SyncResult = {
   songs: number;
 };
 
+export type ScanStatus = {
+  scanning: boolean;
+  count: number | null;
+};
+
 export type SyncJobStatus = {
   enabled: boolean;
   interval_minutes: number;

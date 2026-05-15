@@ -169,6 +169,12 @@ pub struct SyncResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanStatus {
+    pub scanning: bool,
+    pub count: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResultSong {
     pub id: String,
     pub title: String,

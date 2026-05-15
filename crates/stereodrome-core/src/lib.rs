@@ -282,7 +282,19 @@ impl StereodromeCore {
 
     pub async fn reconcile_library(&self) -> CoreResult<SyncResult> {
         self.record_sync_attempt("library_reconcile", None)?;
-        match self.sync_library().await {
+
+        let result = match self.sync_library().await {
+            Ok(result) => {
+                let conn = Connection::open(&self.db_path)?;
+                let synced_at = sync_value(&conn, "library_last_success_at")?.ok_or_else(|| {
+                    CoreError::InvalidInput("library sync did not record a success time".to_string())
+                })?;
+                prune_stale_library_rows(&conn, &synced_at).map(|()| result)
+            }
+            Err(error) => Err(error),
+        };
+
+        match result {
             Ok(result) => {
                 self.record_sync_success("library_reconcile")?;
                 Ok(result)
@@ -292,6 +304,32 @@ impl StereodromeCore {
                 Err(error)
             }
         }
+    }
+
+    pub async fn get_scan_status(&self) -> CoreResult<ScanStatus> {
+        let client = self.connected_client().await?;
+        let status = client
+            .get_scan_status()
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+
+        Ok(ScanStatus {
+            scanning: status.scanning,
+            count: status.count,
+        })
+    }
+
+    pub async fn start_scan(&self) -> CoreResult<ScanStatus> {
+        let client = self.connected_client().await?;
+        let status = client
+            .start_scan()
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+
+        Ok(ScanStatus {
+            scanning: status.scanning,
+            count: status.count,
+        })
     }
 
     pub fn get_library_sync_status(&self) -> CoreResult<LibrarySyncStatus> {
@@ -1592,6 +1630,23 @@ fn write_sync_value(conn: &Connection, key: &str, value: &str) -> CoreResult<()>
     Ok(())
 }
 
+fn prune_stale_library_rows(conn: &Connection, synced_at: &str) -> CoreResult<()> {
+    conn.execute(
+        "DELETE FROM playlist_songs
+         WHERE song_id IN (SELECT id FROM songs WHERE synced_at <> ?1)",
+        [synced_at],
+    )?;
+    conn.execute(
+        "DELETE FROM normalization_data
+         WHERE song_id IN (SELECT id FROM songs WHERE synced_at <> ?1)",
+        [synced_at],
+    )?;
+    conn.execute("DELETE FROM songs WHERE synced_at <> ?1", [synced_at])?;
+    conn.execute("DELETE FROM albums WHERE synced_at <> ?1", [synced_at])?;
+    conn.execute("DELETE FROM artists WHERE synced_at <> ?1", [synced_at])?;
+    Ok(())
+}
+
 fn sanitize_file_component(value: &str) -> String {
     value
         .chars()
@@ -1622,7 +1677,7 @@ fn is_mobile_playback_cache_path(path: &Path) -> bool {
 mod tests {
     use super::{
         LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, StereodromeCore, path_to_file_uri,
-        should_prefetch_large_cover_art, write_sync_value,
+        prune_stale_library_rows, should_prefetch_large_cover_art, write_sync_value,
     };
     use rusqlite::Connection;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1742,6 +1797,66 @@ mod tests {
         std::fs::remove_dir_all(data_dir).ok();
     }
 
+    #[test]
+    fn prune_stale_library_rows_removes_missing_songs_and_dependents() {
+        let data_dir = unique_temp_dir("prune-stale-library");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let conn = Connection::open(&core.db_path).expect("open test db");
+
+        conn.execute(
+            "INSERT INTO artists (id, name, synced_at)
+             VALUES ('artist-stale', 'Stale Artist', 'old'), ('artist-keep', 'Keep Artist', 'now')",
+            [],
+        )
+        .expect("insert artists");
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, synced_at)
+             VALUES
+                ('album-stale', 'artist-stale', 'Stale Album', 'old'),
+                ('album-keep', 'artist-keep', 'Keep Album', 'now')",
+            [],
+        )
+        .expect("insert albums");
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, synced_at)
+             VALUES
+                ('song-stale', 'album-stale', 'artist-stale', 'Stale Song', 'old'),
+                ('song-keep', 'album-keep', 'artist-keep', 'Keep Song', 'now')",
+            [],
+        )
+        .expect("insert songs");
+        conn.execute(
+            "INSERT INTO playlists (id, name, created_at, changed_at, synced_at)
+             VALUES ('playlist-1', 'Playlist', 'now', 'now', 'now')",
+            [],
+        )
+        .expect("insert playlist");
+        conn.execute(
+            "INSERT INTO playlist_songs (playlist_id, song_id, position)
+             VALUES ('playlist-1', 'song-stale', 0)",
+            [],
+        )
+        .expect("insert playlist song");
+        conn.execute(
+            "INSERT INTO normalization_data
+             (song_id, track_loudness_lufs, track_peak, album_id, analyzed_at)
+             VALUES ('song-stale', -14.0, 0.9, 'album-stale', 'now')",
+            [],
+        )
+        .expect("insert normalization");
+
+        prune_stale_library_rows(&conn, "now").expect("prune stale rows");
+
+        assert_eq!(count_rows(&conn, "playlist_songs"), 0);
+        assert_eq!(count_rows(&conn, "normalization_data"), 0);
+        assert_eq!(count_rows(&conn, "songs WHERE id = 'song-stale'"), 0);
+        assert_eq!(count_rows(&conn, "songs WHERE id = 'song-keep'"), 1);
+        assert_eq!(count_rows(&conn, "albums WHERE id = 'album-stale'"), 0);
+        assert_eq!(count_rows(&conn, "artists WHERE id = 'artist-stale'"), 0);
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1774,6 +1889,13 @@ mod tests {
             [],
         )
         .expect("insert songs");
+    }
+
+    fn count_rows(conn: &Connection, table_or_filter: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table_or_filter}"), [], |row| {
+            row.get(0)
+        })
+        .expect("count rows")
     }
 }
 

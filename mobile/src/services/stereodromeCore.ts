@@ -16,6 +16,7 @@ import type {
   QueueItem,
   QueueState,
   RepeatMode,
+  ScanStatus,
   SearchResults,
   Song,
   SyncResult,
@@ -183,6 +184,12 @@ export const stereodromeCore = {
       emitCoreEvent("sync-status-changed", result);
       return result;
     });
+  },
+  getScanStatus(): Promise<ScanStatus> {
+    return invokeJson("getScanStatus");
+  },
+  startScan(): Promise<ScanStatus> {
+    return invokeJson("startScan");
   },
   getLibrarySyncStatus(): Promise<LibrarySyncStatus> {
     return invokeJson("getLibrarySyncStatus");

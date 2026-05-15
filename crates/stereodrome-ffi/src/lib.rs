@@ -149,6 +149,8 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         "reconcileLibrary" => {
             json_result(runtime.block_on(async { core.reconcile_library().await }))
         }
+        "getScanStatus" => json_result(runtime.block_on(async { core.get_scan_status().await })),
+        "startScan" => json_result(runtime.block_on(async { core.start_scan().await })),
         "getLibrarySyncStatus" => json_result(core.get_library_sync_status()),
         "getArtists" => json_result(core.get_artists()),
         "getAlbums" => {
