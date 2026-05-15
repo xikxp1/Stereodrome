@@ -24,6 +24,46 @@ const CLIENT_NAME: &str = "StereodromeMobile";
 const MOBILE_PLAYBACK_FORMAT: &str = "mp3";
 const LARGE_COVER_ART_SIZE: i32 = 512;
 
+struct LibrarySyncData {
+    artists: Vec<SyncArtistData>,
+    albums: Vec<SyncAlbumData>,
+    songs: Vec<SyncSongData>,
+}
+
+struct SyncArtistData {
+    id: String,
+    name: String,
+    album_count: i32,
+    cover_art: Option<String>,
+}
+
+struct SyncAlbumData {
+    id: String,
+    artist_id: String,
+    name: String,
+    year: Option<i32>,
+    song_count: i32,
+    duration: Option<i32>,
+    cover_art: Option<String>,
+}
+
+struct SyncSongData {
+    id: String,
+    album_id: String,
+    artist_id: String,
+    title: String,
+    track: Option<i32>,
+    disc_number: i32,
+    duration: Option<i32>,
+    bit_rate: Option<i32>,
+    size: Option<i64>,
+    suffix: Option<String>,
+    content_type: Option<String>,
+    path: Option<String>,
+    year: Option<i32>,
+    genre: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct StereodromeCore {
     data_dir: PathBuf,
@@ -178,88 +218,80 @@ impl StereodromeCore {
         info!("Starting full library sync");
         let client = self.connected_client().await?;
         self.record_sync_attempt("library_full", None)?;
-        let indexes = client
-            .get_artists(None::<String>)
-            .await
-            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
-        let artists = indexes
-            .into_iter()
-            .flat_map(|index| index.artist)
-            .collect::<Vec<_>>();
-        info!("Full library sync fetched {} artists", artists.len());
+        let sync_data = fetch_full_library_sync_data(&client).await?;
+        info!(
+            "Applying full library sync: artists={}, albums={}, songs={}",
+            sync_data.artists.len(),
+            sync_data.albums.len(),
+            sync_data.songs.len()
+        );
 
-        let mut result = SyncResult::default();
         let now = Utc::now().to_rfc3339();
         let mut conn = Connection::open(&self.db_path)?;
         let tx = conn.transaction()?;
 
-        for artist in artists {
-            tx.execute(
+        {
+            let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO artists
                  (id, name, album_count, cover_art_id, synced_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
+            )?;
+            for artist in &sync_data.artists {
+                stmt.execute(params![
                     artist.id,
                     artist.name,
                     artist.album_count,
                     artist.cover_art,
                     now
-                ],
+                ])?;
+            }
+        }
+
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO albums
+                 (id, artist_id, name, year, song_count, duration, cover_art_id, synced_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
-            result.artists += 1;
+            for album in &sync_data.albums {
+                stmt.execute(params![
+                    album.id,
+                    album.artist_id,
+                    album.name,
+                    album.year,
+                    album.song_count,
+                    album.duration,
+                    album.cover_art,
+                    now
+                ])?;
+            }
+        }
 
-            let artist_detail = client
-                .get_artist(&artist.id)
-                .await
-                .map_err(|e| CoreError::Subsonic(e.to_string()))?;
-            for album in artist_detail.album {
-                tx.execute(
-                    "INSERT OR REPLACE INTO albums
-                     (id, artist_id, name, year, song_count, duration, cover_art_id, synced_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    params![
-                        album.id,
-                        artist.id,
-                        album.name,
-                        album.year,
-                        album.song_count,
-                        album.duration,
-                        album.cover_art,
-                        now
-                    ],
-                )?;
-                result.albums += 1;
-
-                let album_detail = client
-                    .get_album(&album.id)
-                    .await
-                    .map_err(|e| CoreError::Subsonic(e.to_string()))?;
-                for song in album_detail.song {
-                    tx.execute(
-                        "INSERT OR REPLACE INTO songs
-                         (id, album_id, artist_id, title, track_number, disc_number, duration,
-                          bit_rate, size, suffix, content_type, path, year, genre, synced_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-                        params![
-                            song.id,
-                            album.id,
-                            artist.id,
-                            song.title,
-                            song.track,
-                            song.disc_number.unwrap_or(1),
-                            song.duration,
-                            song.bit_rate,
-                            song.size,
-                            song.suffix,
-                            song.content_type,
-                            song.path,
-                            song.year,
-                            song.genre,
-                            now
-                        ],
-                    )?;
-                    result.songs += 1;
-                }
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO songs
+                 (id, album_id, artist_id, title, track_number, disc_number, duration,
+                  bit_rate, size, suffix, content_type, path, year, genre, synced_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            )?;
+            for song in &sync_data.songs {
+                stmt.execute(params![
+                    song.id,
+                    song.album_id,
+                    song.artist_id,
+                    song.title,
+                    song.track,
+                    song.disc_number,
+                    song.duration,
+                    song.bit_rate,
+                    song.size,
+                    song.suffix,
+                    song.content_type,
+                    song.path,
+                    song.year,
+                    song.genre,
+                    now
+                ])?;
             }
         }
 
@@ -279,6 +311,11 @@ impl StereodromeCore {
             [&now],
         )?;
         tx.commit()?;
+        let result = SyncResult {
+            artists: sync_data.artists.len(),
+            albums: sync_data.albums.len(),
+            songs: sync_data.songs.len(),
+        };
         info!(
             "Full library sync complete: artists={}, albums={}, songs={}",
             result.artists, result.albums, result.songs
@@ -1589,6 +1626,78 @@ impl StereodromeCore {
         db::save_queue(&self.db_path, &state)?;
         Ok((result, state))
     }
+}
+
+async fn fetch_full_library_sync_data(client: &Client) -> CoreResult<LibrarySyncData> {
+    let indexes = client
+        .get_artists(None::<String>)
+        .await
+        .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+    let artists = indexes
+        .into_iter()
+        .flat_map(|index| index.artist)
+        .collect::<Vec<_>>();
+    info!("Full library sync fetched {} artists", artists.len());
+
+    let mut sync_data = LibrarySyncData {
+        artists: Vec::with_capacity(artists.len()),
+        albums: Vec::new(),
+        songs: Vec::new(),
+    };
+
+    for artist in artists {
+        let artist_id = artist.id;
+        let artist_detail = client
+            .get_artist(&artist_id)
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+
+        sync_data.artists.push(SyncArtistData {
+            id: artist_id.clone(),
+            name: artist.name,
+            album_count: artist.album_count,
+            cover_art: artist.cover_art,
+        });
+
+        for album in artist_detail.album {
+            let album_id = album.id;
+            let album_detail = client
+                .get_album(&album_id)
+                .await
+                .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+
+            sync_data.albums.push(SyncAlbumData {
+                id: album_id.clone(),
+                artist_id: artist_id.clone(),
+                name: album.name,
+                year: album.year,
+                song_count: album.song_count,
+                duration: Some(album.duration),
+                cover_art: album.cover_art,
+            });
+
+            for song in album_detail.song {
+                sync_data.songs.push(SyncSongData {
+                    id: song.id,
+                    album_id: album_id.clone(),
+                    artist_id: artist_id.clone(),
+                    title: song.title,
+                    track: song.track,
+                    disc_number: song.disc_number.unwrap_or(1),
+                    duration: song.duration,
+                    bit_rate: song.bit_rate,
+                    size: song.size,
+                    suffix: song.suffix,
+                    content_type: song.content_type,
+                    path: song.path,
+                    year: song.year,
+                    genre: song.genre,
+                });
+            }
+        }
+    }
+
+    Ok(sync_data)
 }
 
 fn build_client(url: &str, username: &str, password: &str) -> Client {
