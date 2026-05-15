@@ -21,6 +21,7 @@ pub use queue::{QueueItem as SharedQueueItem, QueueState as SharedQueueState};
 const API_VERSION: &str = "1.16.1";
 const CLIENT_NAME: &str = "StereodromeMobile";
 const MOBILE_PLAYBACK_FORMAT: &str = "mp3";
+const LARGE_COVER_ART_SIZE: i32 = 512;
 
 #[derive(Debug)]
 pub struct StereodromeCore {
@@ -604,6 +605,8 @@ impl StereodromeCore {
         size: Option<i32>,
     ) -> CoreResult<String> {
         let path = self.get_or_cache_cover_art(&cover_art_id, size).await?;
+        self.prefetch_large_cover_art_if_small(&cover_art_id, size)
+            .await;
         Ok(path_to_file_uri(&path))
     }
 
@@ -1227,6 +1230,14 @@ impl StereodromeCore {
         Ok(path)
     }
 
+    async fn prefetch_large_cover_art_if_small(&self, cover_art_id: &str, size: Option<i32>) {
+        if should_prefetch_large_cover_art(size) {
+            let _ = self
+                .get_or_cache_cover_art(cover_art_id, Some(LARGE_COVER_ART_SIZE))
+                .await;
+        }
+    }
+
     fn cached_song_path(&self, song_id: &str) -> CoreResult<Option<PathBuf>> {
         let mp3_path = self.audio_cache_path(song_id, MOBILE_PLAYBACK_FORMAT)?;
         if mp3_path.exists() {
@@ -1517,10 +1528,37 @@ fn path_to_file_uri(path: &Path) -> String {
         .unwrap_or_else(|_| format!("file://{}", path.to_string_lossy()))
 }
 
+fn should_prefetch_large_cover_art(size: Option<i32>) -> bool {
+    size.is_some_and(|size| size > 0 && size < LARGE_COVER_ART_SIZE)
+}
+
 fn is_mobile_playback_cache_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case(MOBILE_PLAYBACK_FORMAT))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LARGE_COVER_ART_SIZE, should_prefetch_large_cover_art};
+
+    #[test]
+    fn prefetches_large_cover_art_for_small_requests() {
+        assert!(should_prefetch_large_cover_art(Some(128)));
+        assert!(should_prefetch_large_cover_art(Some(
+            LARGE_COVER_ART_SIZE - 1
+        )));
+    }
+
+    #[test]
+    fn skips_prefetch_for_large_or_unsized_requests() {
+        assert!(!should_prefetch_large_cover_art(Some(LARGE_COVER_ART_SIZE)));
+        assert!(!should_prefetch_large_cover_art(Some(
+            LARGE_COVER_ART_SIZE + 1
+        )));
+        assert!(!should_prefetch_large_cover_art(Some(0)));
+        assert!(!should_prefetch_large_cover_art(None));
+    }
 }
 
 struct PlaybackMarkers {
