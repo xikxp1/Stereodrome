@@ -26,35 +26,12 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: init Rust cache
+      - name: Init Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
           prefix-key: v1-rust
           cache-bin: false
-
-      - name: Verify Rust toolchain
-        shell: bash
-        run: |
-          toolchain_cargo="$(rustup which cargo)"
-          if [ -x "$HOME/.cargo/bin/cargo" ] && "$HOME/.cargo/bin/cargo" --help 2>&1 | grep -q rustup-init; then
-            rm -f "$HOME/.cargo/bin/cargo"
-          fi
-          if command -v cygpath >/dev/null; then
-            toolchain_bin="$(dirname "$(cygpath -u "$toolchain_cargo")")"
-            echo "$(cygpath -w "$HOME/.cargo/bin")" >> "$GITHUB_PATH"
-            echo "$(cygpath -w "$toolchain_bin")" >> "$GITHUB_PATH"
-          else
-            toolchain_bin="$(dirname "$toolchain_cargo")"
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            echo "$toolchain_bin" >> "$GITHUB_PATH"
-          fi
-          export PATH="$toolchain_bin:$HOME/.cargo/bin:$PATH"
-          which rustc
-          rustc --version
-          which cargo
-          cargo --version
-          cargo metadata --format-version 1 --no-deps >/dev/null
 
       - name: Install dependencies (Ubuntu)
         run: |
@@ -107,29 +84,6 @@ jobs:
             src-tauri
           prefix-key: v1-rust
           cache-bin: false
-
-      - name: Verify Rust toolchain
-        shell: bash
-        run: |
-          toolchain_cargo="$(rustup which cargo)"
-          if [ -x "$HOME/.cargo/bin/cargo" ] && "$HOME/.cargo/bin/cargo" --help 2>&1 | grep -q rustup-init; then
-            rm -f "$HOME/.cargo/bin/cargo"
-          fi
-          if command -v cygpath >/dev/null; then
-            toolchain_bin="$(dirname "$(cygpath -u "$toolchain_cargo")")"
-            echo "$(cygpath -w "$HOME/.cargo/bin")" >> "$GITHUB_PATH"
-            echo "$(cygpath -w "$toolchain_bin")" >> "$GITHUB_PATH"
-          else
-            toolchain_bin="$(dirname "$toolchain_cargo")"
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            echo "$toolchain_bin" >> "$GITHUB_PATH"
-          fi
-          export PATH="$toolchain_bin:$HOME/.cargo/bin:$PATH"
-          which rustc
-          rustc --version
-          which cargo
-          cargo --version
-          cargo metadata --format-version 1 --no-deps >/dev/null
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
@@ -194,29 +148,6 @@ jobs:
             src-tauri
           prefix-key: v1-rust
           cache-bin: false
-
-      - name: Verify Rust toolchain
-        shell: bash
-        run: |
-          toolchain_cargo="$(rustup which cargo)"
-          if [ -x "$HOME/.cargo/bin/cargo" ] && "$HOME/.cargo/bin/cargo" --help 2>&1 | grep -q rustup-init; then
-            rm -f "$HOME/.cargo/bin/cargo"
-          fi
-          if command -v cygpath >/dev/null; then
-            toolchain_bin="$(dirname "$(cygpath -u "$toolchain_cargo")")"
-            echo "$(cygpath -w "$HOME/.cargo/bin")" >> "$GITHUB_PATH"
-            echo "$(cygpath -w "$toolchain_bin")" >> "$GITHUB_PATH"
-          else
-            toolchain_bin="$(dirname "$toolchain_cargo")"
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            echo "$toolchain_bin" >> "$GITHUB_PATH"
-          fi
-          export PATH="$toolchain_bin:$HOME/.cargo/bin:$PATH"
-          which rustc
-          rustc --version
-          which cargo
-          cargo --version
-          cargo metadata --format-version 1 --no-deps >/dev/null
 
       - name: Install mobile dependencies
         working-directory: mobile
