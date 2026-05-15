@@ -5261,6 +5261,7 @@ dependencies = [
 name = "stereodrome-ffi"
 version = "0.1.17"
 dependencies = [
+ "log",
  "serde",
  "serde_json",
  "stereodrome-audio",

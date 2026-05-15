@@ -8,8 +8,9 @@
 use std::ffi::{CStr, CString, c_char};
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
+use log::{Level, LevelFilter, Metadata, Record};
 use serde::Deserialize;
 use serde_json::Value;
 use stereodrome_audio::{
@@ -21,6 +22,38 @@ use stereodrome_core::{
     AudioProcessingSettings, ConnectParams, PlaybackProgress, ServerSettingsUpdate, StereodromeCore,
 };
 use url::Url;
+
+static MOBILE_LOGGER: MobileLogger = MobileLogger;
+static INIT_LOGGER: Once = Once::new();
+
+struct MobileLogger;
+
+impl log::Log for MobileLogger {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        metadata.level() <= Level::Debug
+    }
+
+    fn log(&self, record: &Record<'_>) {
+        if self.enabled(record.metadata()) {
+            eprintln!(
+                "[stereodrome-rust][{}][{}] {}",
+                record.level(),
+                record.target(),
+                record.args()
+            );
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+fn init_mobile_logging() {
+    INIT_LOGGER.call_once(|| {
+        if log::set_logger(&MOBILE_LOGGER).is_ok() {
+            log::set_max_level(LevelFilter::Debug);
+        }
+    });
+}
 
 pub struct MobileCore {
     core: StereodromeCore,
@@ -44,6 +77,8 @@ pub unsafe extern "C" fn stereodrome_core_free_string(value: *mut c_char) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCore {
+    init_mobile_logging();
+
     let Some(data_dir) = read_c_string(data_dir) else {
         return ptr::null_mut();
     };

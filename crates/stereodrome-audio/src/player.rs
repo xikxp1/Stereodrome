@@ -1,4 +1,4 @@
-use log::{error, warn};
+use log::{debug, error, info, warn};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 use std::io::Cursor;
@@ -631,10 +631,13 @@ fn run_audio_thread(
     shared_state: Arc<SharedState>,
     spectrum_producer: Arc<Mutex<HeapProd<f32>>>,
 ) {
+    info!("Rust audio playback thread starting");
+
     // Open the default audio output stream
     let stream = match DeviceSinkBuilder::open_default_sink() {
         Ok(mut s) => {
             s.log_on_drop(false);
+            info!("Rust audio output stream opened");
             s
         }
         Err(e) => {
@@ -662,9 +665,11 @@ fn run_audio_thread(
                 } => {
                     // Stop any existing playback including crossfade
                     if let Some(sink) = current_sink.take() {
+                        debug!("Stopping existing sink before starting new track");
                         sink.stop();
                     }
                     if let Some(cf_sink) = crossfade_sink.take() {
+                        debug!("Stopping active crossfade sink before starting new track");
                         cf_sink.stop();
                     }
                     crossfade_state = None;
@@ -673,6 +678,13 @@ fn run_audio_thread(
                         .store(false, Ordering::SeqCst);
 
                     // Decode and play with coarse seek enabled for better seeking
+                    info!(
+                        "Playback thread play: song_id={}, title={:?}, bytes={}, duration={:.3}s",
+                        metadata.id,
+                        metadata.title,
+                        audio_data.len(),
+                        duration_secs
+                    );
                     let byte_len = audio_data.len() as u64;
                     let cursor = Cursor::new(audio_data);
                     match Decoder::builder()
@@ -717,6 +729,7 @@ fn run_audio_thread(
                             shared_state.is_playing.store(true, Ordering::SeqCst);
 
                             current_sink = Some(sink);
+                            debug!("Playback thread started song");
                         }
                         Err(e) => {
                             error!("Failed to decode audio: {:?}", e);
@@ -748,6 +761,7 @@ fn run_audio_thread(
                         }
 
                         shared_state.is_playing.store(false, Ordering::SeqCst);
+                        debug!("Playback thread paused current sink");
                     }
                 }
                 AudioCommand::Resume => {
@@ -766,9 +780,11 @@ fn run_audio_thread(
                         }
 
                         shared_state.is_playing.store(true, Ordering::SeqCst);
+                        debug!("Playback thread resumed current sink");
                     }
                 }
                 AudioCommand::Stop => {
+                    info!("Playback thread stop");
                     if let Some(sink) = current_sink.take() {
                         sink.stop();
                     }
@@ -791,6 +807,7 @@ fn run_audio_thread(
                     }
                 }
                 AudioCommand::SetVolume(volume) => {
+                    debug!("Playback thread set volume: {:.3}", volume);
                     // During crossfade, let the idle loop handle proportional volumes
                     if crossfade_state.is_none()
                         && let Some(ref sink) = current_sink
@@ -799,8 +816,10 @@ fn run_audio_thread(
                     }
                 }
                 AudioCommand::Seek(position_secs) => {
+                    debug!("Playback thread seek requested: {:.3}s", position_secs);
                     // If crossfade is active, abort it and restore full volume
                     if crossfade_state.is_some() {
+                        debug!("Aborting crossfade before seek");
                         if let Some(cf_sink) = crossfade_sink.take() {
                             cf_sink.stop();
                         }
@@ -844,6 +863,10 @@ fn run_audio_thread(
                             let mut inner = shared_state.write_inner();
                             inner.paused_position = cumulative_pos;
                             inner.playback_start = Some(Instant::now());
+                            debug!(
+                                "Playback thread seek complete: segment={:.3}s cumulative={:.3}s",
+                                seek_pos, cumulative_pos
+                            );
                         }
                     }
                 }
@@ -856,6 +879,13 @@ fn run_audio_thread(
                     binaural_preset,
                     equalizer_settings,
                 } => {
+                    info!(
+                        "Playback thread append gapless: song_id={}, title={:?}, bytes={}, duration={:.3}s",
+                        metadata.id,
+                        metadata.title,
+                        audio_data.len(),
+                        duration_secs
+                    );
                     if let Some(ref sink) = current_sink {
                         let byte_len = audio_data.len() as u64;
                         let cursor = Cursor::new(audio_data);
@@ -893,11 +923,14 @@ fn run_audio_thread(
                                     });
                                     inner.duration = cumulative_start + duration_secs;
                                 }
+                                debug!("Playback thread appended gapless segment");
                             }
                             Err(e) => {
                                 error!("Failed to decode gapless audio: {:?}", e);
                             }
                         }
+                    } else {
+                        warn!("Ignoring gapless append because there is no active sink");
                     }
                 }
                 AudioCommand::CrossfadePlay {
@@ -910,8 +943,17 @@ fn run_audio_thread(
                     equalizer_settings,
                     crossfade_duration_ms,
                 } => {
+                    info!(
+                        "Playback thread crossfade: song_id={}, title={:?}, bytes={}, duration={:.3}s, fade={}ms",
+                        metadata.id,
+                        metadata.title,
+                        audio_data.len(),
+                        duration_secs,
+                        crossfade_duration_ms
+                    );
                     // Stop any previous crossfade that's still running
                     if let Some(old_cf_sink) = crossfade_sink.take() {
+                        debug!("Stopping previous crossfade sink");
                         old_cf_sink.stop();
                     }
                     // Move current sink to crossfade_sink (it keeps playing, fading out)
@@ -961,6 +1003,7 @@ fn run_audio_thread(
 
                             current_sink = Some(new_sink);
                             crossfade_state = Some(CrossfadeState::new(crossfade_duration_ms));
+                            debug!("Playback thread started crossfade");
                         }
                         Err(e) => {
                             error!("Failed to decode crossfade audio: {:?}", e);
@@ -970,6 +1013,7 @@ fn run_audio_thread(
                     }
                 }
                 AudioCommand::Shutdown => {
+                    info!("Rust audio playback thread shutting down");
                     if let Some(sink) = current_sink.take() {
                         sink.stop();
                     }
@@ -1027,11 +1071,15 @@ fn run_audio_thread(
                         inner.paused_position = inner.duration;
                     }
                     shared_state.is_playing.store(false, Ordering::SeqCst);
+                    info!("Playback thread reached end of current sink");
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                warn!("Audio command channel disconnected; playback thread exiting");
                 break;
             }
         }
     }
+
+    info!("Rust audio playback thread exited");
 }
