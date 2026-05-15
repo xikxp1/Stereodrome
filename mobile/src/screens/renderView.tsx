@@ -59,7 +59,7 @@ export function renderView(view: ViewInstance) {
     case "nowPlaying":
       return <NowPlayingScreen />;
     case "settings":
-      return <SettingsScreen />;
+      return <SettingsScreen category={view.params?.category} />;
     case "home":
     default:
       return <HomeScreen />;

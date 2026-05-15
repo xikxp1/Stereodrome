@@ -17,6 +17,7 @@ import {
 import { colors } from "@/components/theme";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { useStereodrome } from "@/context/StereodromeContext";
+import { useViewStack } from "@/context/ViewContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
 import type { AudioProcessingSettings } from "@/types/music";
 
@@ -47,6 +48,31 @@ type TextEditConfig = {
   keyboardType?: KeyboardTypeOptions;
   onSubmit(value: string): Promise<void>;
 };
+
+type SettingsCategory =
+  | "server"
+  | "sync"
+  | "interface"
+  | "playback"
+  | "normalization"
+  | "cache";
+
+const settingsCategories: Array<{
+  id: SettingsCategory;
+  label: string;
+  sublabel: string;
+}> = [
+  { id: "server", label: "Server", sublabel: "Connection and account" },
+  { id: "sync", label: "Library Sync", sublabel: "Sync status and actions" },
+  { id: "interface", label: "Interface", sublabel: "Mobile controls" },
+  { id: "playback", label: "Playback", sublabel: "Queue and audio effects" },
+  {
+    id: "normalization",
+    label: "Normalization",
+    sublabel: "Loudness and dynamics",
+  },
+  { id: "cache", label: "Audio Cache", sublabel: "Downloaded audio storage" },
+];
 
 type EqPresetId =
   | "flat"
@@ -107,9 +133,10 @@ const eqPresets: EqPreset[] = [
   },
 ];
 
-export function SettingsScreen() {
+export function SettingsScreen({ category }: { category?: string }) {
   const stereodrome = useStereodrome();
   const mobileSettings = useMobileSettings();
+  const view = useViewStack();
   const queryClient = useQueryClient();
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -136,205 +163,258 @@ export function SettingsScreen() {
     setTextEditValue(config.value);
   }
 
+  const selectedCategory = parseSettingsCategory(category);
   const settings = audioSettings.data;
-  const options: SelectableOption[] = [
-    {
-      kind: "editable",
-      label: "Server",
-      sublabel: stereodrome.status.server_url ?? "Not connected",
-      onSelect: () =>
-        openTextEdit({
-          title: "Server URL",
-          value: stereodrome.status.server_url ?? "",
-          keyboardType: "url",
-          onSubmit: async (value) => {
-            const url = value.trim();
-            if (!url) {
-              throw new Error("Server URL is required");
-            }
-            await stereodrome.updateServerSettings({ url });
-          },
-        }),
-    },
-    {
-      kind: "editable",
-      label: "Username",
-      sublabel: stereodrome.status.username ?? "-",
-      onSelect: () =>
-        openTextEdit({
-          title: "Username",
-          value: stereodrome.status.username ?? "",
-          onSubmit: async (value) => {
-            const username = value.trim();
-            if (!username) {
-              throw new Error("Username is required");
-            }
-            await stereodrome.updateServerSettings({ username });
-          },
-        }),
-    },
-    {
-      kind: "info",
-      label: "Server Version",
-      sublabel: stereodrome.status.server_version ?? "-",
-      onSelect: () => stereodrome.refreshStatus(),
-    },
-    ...(stereodrome.status.connected
-      ? [
-          {
-            kind: "action" as const,
-            label: "Disconnect",
-            sublabel: "Sign out of this server",
-            onSelect: async () => {
-              await runBusy("disconnect", async () => {
-                await stereodromeCore.disconnectServer();
-                await stereodrome.refreshStatus();
-                setMessage("Disconnected");
-              });
+  const options = [
+    ...(selectedCategory
+      ? categoryOptions(selectedCategory)
+      : settingsCategories.map((settingsCategory) => ({
+          kind: "action" as const,
+          label: settingsCategory.label,
+          sublabel: settingsCategory.sublabel,
+          onSelect: () =>
+            view.push({
+              name: "settings",
+              title: settingsCategory.label,
+              params: { category: settingsCategory.id },
+            }),
+        }))),
+    ...messageOptions(),
+  ];
+
+  function categoryOptions(categoryId: SettingsCategory): SelectableOption[] {
+    switch (categoryId) {
+      case "server":
+        return serverOptions();
+      case "sync":
+        return syncOptions();
+      case "interface":
+        return interfaceOptions();
+      case "playback":
+        return playbackOptions(settings, updateAudioSetting, openTextEdit);
+      case "normalization":
+        return normalizationOptions(settings, updateAudioSetting, openTextEdit);
+      case "cache":
+        return cacheOptions();
+    }
+  }
+
+  function serverOptions(): SelectableOption[] {
+    return [
+      {
+        kind: "editable",
+        label: "Server",
+        sublabel: stereodrome.status.server_url ?? "Not connected",
+        onSelect: () =>
+          openTextEdit({
+            title: "Server URL",
+            value: stereodrome.status.server_url ?? "",
+            keyboardType: "url",
+            onSubmit: async (value) => {
+              const url = value.trim();
+              if (!url) {
+                throw new Error("Server URL is required");
+              }
+              await stereodrome.updateServerSettings({ url });
             },
-          },
-        ]
-      : []),
-    {
-      kind: "info",
-      label: "Library Sync",
-      sublabel: syncStatus.data?.active_job
-        ? syncStatus.data.active_job === "incremental"
-          ? "Running incremental sync"
-          : syncStatus.data.active_job === "full"
-            ? "Running full sync"
-            : "Running full reconcile"
-        : "Idle",
-      onSelect: () =>
-        queryClient.invalidateQueries({ queryKey: ["library-sync-status"] }),
-    },
-    {
-      kind: "action",
-      label: "Full Sync",
-      sublabel:
-        busyAction === "full"
-          ? "Syncing..."
-          : `Last: ${formatTimestamp(syncStatus.data?.full.last_success_at)}`,
-      onSelect: () => runSync("full"),
-    },
-    {
-      kind: "action",
-      label: "Incremental Sync",
-      sublabel:
-        busyAction === "incremental"
-          ? "Syncing..."
-          : `Last: ${formatTimestamp(syncStatus.data?.incremental.last_success_at)}`,
-      onSelect: () => runSync("incremental"),
-    },
-    {
-      kind: "action",
-      label: "Full Reconcile",
-      sublabel:
-        busyAction === "reconcile"
-          ? "Reconciling..."
-          : `Last: ${formatTimestamp(syncStatus.data?.full_reconcile.last_success_at)}`,
-      onSelect: () => runSync("reconcile"),
-    },
-    ...(syncStatus.data?.incremental.last_error
-      ? [
-          {
-            kind: "info" as const,
-            label: "Incremental Error",
-            sublabel: syncStatus.data.incremental.last_error,
-            onSelect: () =>
-              queryClient.invalidateQueries({
-                queryKey: ["library-sync-status"],
-              }),
-          },
-        ]
-      : []),
-    ...(syncStatus.data?.full.last_error
-      ? [
-          {
-            kind: "info" as const,
-            label: "Full Sync Error",
-            sublabel: syncStatus.data.full.last_error,
-            onSelect: () =>
-              queryClient.invalidateQueries({
-                queryKey: ["library-sync-status"],
-              }),
-          },
-        ]
-      : []),
-    ...(syncStatus.data?.full_reconcile.last_error
-      ? [
-          {
-            kind: "info" as const,
-            label: "Reconcile Error",
-            sublabel: syncStatus.data.full_reconcile.last_error,
-            onSelect: () =>
-              queryClient.invalidateQueries({
-                queryKey: ["library-sync-status"],
-              }),
-          },
-        ]
-      : []),
-    {
-      kind: "editable",
-      label: "Button Layout",
-      sublabel:
-        mobileSettings.buttonHandedness === "right"
-          ? "Right handed"
-          : "Left handed",
-      onSelect: () => mobileSettings.toggleButtonHandedness(),
-    },
-    ...playbackOptions(settings, updateAudioSetting, openTextEdit),
-    ...normalizationOptions(settings, updateAudioSetting, openTextEdit),
-    {
-      kind: "info",
-      label: "Audio Cache",
-      sublabel: `${formatBytes(cacheStats.data?.total_size ?? 0)} used, ${
-        cacheStats.data?.file_count ?? 0
-      } files`,
-      onSelect: () =>
-        queryClient.invalidateQueries({ queryKey: ["audio-cache-stats"] }),
-    },
-    {
-      kind: "editable",
-      label: "Maximum Cache Size",
-      sublabel: formatBytes(cacheStats.data?.max_size ?? 0),
-      onSelect: () =>
-        openTextEdit({
-          title: "Maximum Cache Size (GB)",
-          value: formatInputNumber(
-            (cacheStats.data?.max_size ?? 0) / 1024 ** 3
-          ),
-          keyboardType: "decimal-pad",
-          onSubmit: async (value) => {
-            const gb = parseNumberInput(value, "Maximum cache size");
-            if (gb <= 0) {
-              throw new Error("Maximum cache size must be greater than 0");
-            }
-            await stereodromeCore.setMaxCacheSize(Math.round(gb * 1024 ** 3));
+          }),
+      },
+      {
+        kind: "editable",
+        label: "Username",
+        sublabel: stereodrome.status.username ?? "-",
+        onSelect: () =>
+          openTextEdit({
+            title: "Username",
+            value: stereodrome.status.username ?? "",
+            onSubmit: async (value) => {
+              const username = value.trim();
+              if (!username) {
+                throw new Error("Username is required");
+              }
+              await stereodrome.updateServerSettings({ username });
+            },
+          }),
+      },
+      {
+        kind: "info",
+        label: "Server Version",
+        sublabel: stereodrome.status.server_version ?? "-",
+        onSelect: () => stereodrome.refreshStatus(),
+      },
+      ...(stereodrome.status.connected
+        ? [
+            {
+              kind: "action" as const,
+              label: "Disconnect",
+              sublabel: "Sign out of this server",
+              onSelect: async () => {
+                await runBusy("disconnect", async () => {
+                  await stereodromeCore.disconnectServer();
+                  await stereodrome.refreshStatus();
+                  setMessage("Disconnected");
+                });
+              },
+            },
+          ]
+        : []),
+    ];
+  }
+
+  function syncOptions(): SelectableOption[] {
+    return [
+      {
+        kind: "info",
+        label: "Library Sync",
+        sublabel: syncStatus.data?.active_job
+          ? syncStatus.data.active_job === "incremental"
+            ? "Running incremental sync"
+            : syncStatus.data.active_job === "full"
+              ? "Running full sync"
+              : "Running full reconcile"
+          : "Idle",
+        onSelect: () =>
+          queryClient.invalidateQueries({ queryKey: ["library-sync-status"] }),
+      },
+      {
+        kind: "action",
+        label: "Full Sync",
+        sublabel:
+          busyAction === "full"
+            ? "Syncing..."
+            : `Last: ${formatTimestamp(syncStatus.data?.full.last_success_at)}`,
+        onSelect: () => runSync("full"),
+      },
+      {
+        kind: "action",
+        label: "Incremental Sync",
+        sublabel:
+          busyAction === "incremental"
+            ? "Syncing..."
+            : `Last: ${formatTimestamp(syncStatus.data?.incremental.last_success_at)}`,
+        onSelect: () => runSync("incremental"),
+      },
+      {
+        kind: "action",
+        label: "Full Reconcile",
+        sublabel:
+          busyAction === "reconcile"
+            ? "Reconciling..."
+            : `Last: ${formatTimestamp(syncStatus.data?.full_reconcile.last_success_at)}`,
+        onSelect: () => runSync("reconcile"),
+      },
+      ...(syncStatus.data?.incremental.last_error
+        ? [
+            {
+              kind: "info" as const,
+              label: "Incremental Error",
+              sublabel: syncStatus.data.incremental.last_error,
+              onSelect: () =>
+                queryClient.invalidateQueries({
+                  queryKey: ["library-sync-status"],
+                }),
+            },
+          ]
+        : []),
+      ...(syncStatus.data?.full.last_error
+        ? [
+            {
+              kind: "info" as const,
+              label: "Full Sync Error",
+              sublabel: syncStatus.data.full.last_error,
+              onSelect: () =>
+                queryClient.invalidateQueries({
+                  queryKey: ["library-sync-status"],
+                }),
+            },
+          ]
+        : []),
+      ...(syncStatus.data?.full_reconcile.last_error
+        ? [
+            {
+              kind: "info" as const,
+              label: "Reconcile Error",
+              sublabel: syncStatus.data.full_reconcile.last_error,
+              onSelect: () =>
+                queryClient.invalidateQueries({
+                  queryKey: ["library-sync-status"],
+                }),
+            },
+          ]
+        : []),
+    ];
+  }
+
+  function interfaceOptions(): SelectableOption[] {
+    return [
+      {
+        kind: "editable",
+        label: "Button Layout",
+        sublabel:
+          mobileSettings.buttonHandedness === "right"
+            ? "Right handed"
+            : "Left handed",
+        onSelect: () => mobileSettings.toggleButtonHandedness(),
+      },
+    ];
+  }
+
+  function cacheOptions(): SelectableOption[] {
+    return [
+      {
+        kind: "info",
+        label: "Audio Cache",
+        sublabel: `${formatBytes(cacheStats.data?.total_size ?? 0)} used, ${
+          cacheStats.data?.file_count ?? 0
+        } files`,
+        onSelect: () =>
+          queryClient.invalidateQueries({ queryKey: ["audio-cache-stats"] }),
+      },
+      {
+        kind: "editable",
+        label: "Maximum Cache Size",
+        sublabel: formatBytes(cacheStats.data?.max_size ?? 0),
+        onSelect: () =>
+          openTextEdit({
+            title: "Maximum Cache Size (GB)",
+            value: formatInputNumber(
+              (cacheStats.data?.max_size ?? 0) / 1024 ** 3
+            ),
+            keyboardType: "decimal-pad",
+            onSubmit: async (value) => {
+              const gb = parseNumberInput(value, "Maximum cache size");
+              if (gb <= 0) {
+                throw new Error("Maximum cache size must be greater than 0");
+              }
+              await stereodromeCore.setMaxCacheSize(Math.round(gb * 1024 ** 3));
+              await queryClient.invalidateQueries({
+                queryKey: ["audio-cache-stats"],
+              });
+              setMessage(`Cache limit set to ${formatCacheSizePreset(gb)}`);
+            },
+          }),
+        onLongSelect: () => cycleCacheSize(-1),
+      },
+      {
+        kind: "action",
+        label: "Clear Audio Cache",
+        sublabel:
+          busyAction === "clear-cache" ? "Clearing..." : "Remove cached audio",
+        onSelect: async () => {
+          await runBusy("clear-cache", async () => {
+            await stereodromeCore.clearAudioCache();
             await queryClient.invalidateQueries({
               queryKey: ["audio-cache-stats"],
             });
-            setMessage(`Cache limit set to ${formatCacheSizePreset(gb)}`);
-          },
-        }),
-      onLongSelect: () => cycleCacheSize(-1),
-    },
-    {
-      kind: "action",
-      label: "Clear Audio Cache",
-      sublabel:
-        busyAction === "clear-cache" ? "Clearing..." : "Remove cached audio",
-      onSelect: async () => {
-        await runBusy("clear-cache", async () => {
-          await stereodromeCore.clearAudioCache();
-          await queryClient.invalidateQueries({
-            queryKey: ["audio-cache-stats"],
+            setMessage("Cache cleared");
           });
-          setMessage("Cache cleared");
-        });
+        },
       },
-    },
-    ...(message
+    ];
+  }
+
+  function messageOptions(): SelectableOption[] {
+    return message
       ? [
           {
             kind: "info" as const,
@@ -343,8 +423,8 @@ export function SettingsScreen() {
             onSelect: () => setMessage(null),
           },
         ]
-      : []),
-  ];
+      : [];
+  }
 
   async function updateAudioSetting(patch: Partial<AudioProcessingSettings>) {
     if (!audioSettings.data) {
@@ -796,6 +876,12 @@ function formatTimestamp(value: string | null | undefined) {
     return "Invalid date";
   }
   return parsed.toLocaleString();
+}
+
+function parseSettingsCategory(value: string | undefined) {
+  return settingsCategories.some((category) => category.id === value)
+    ? (value as SettingsCategory)
+    : null;
 }
 
 function onOff(value: boolean) {
