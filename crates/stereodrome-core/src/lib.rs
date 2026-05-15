@@ -283,11 +283,13 @@ impl StereodromeCore {
 
     pub fn get_library_sync_status(&self) -> CoreResult<LibrarySyncStatus> {
         let conn = Connection::open(&self.db_path)?;
+        let full = self.sync_job_status(&conn, "library_full", false, 1440)?;
         let incremental = self.sync_job_status(&conn, "library_incremental", true, 60)?;
         let reconcile = self.sync_job_status(&conn, "library_reconcile", false, 1440)?;
 
         Ok(LibrarySyncStatus {
             active_job: None,
+            full,
             incremental,
             full_reconcile: reconcile,
         })
@@ -1607,7 +1609,7 @@ fn is_mobile_playback_cache_path(path: &Path) -> bool {
 mod tests {
     use super::{
         LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, StereodromeCore, path_to_file_uri,
-        should_prefetch_large_cover_art,
+        should_prefetch_large_cover_art, write_sync_value,
     };
     use rusqlite::Connection;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1679,6 +1681,49 @@ mod tests {
             !core
                 .songs_are_gapless_eligible("disc1-track2", "other-album-track1")
                 .expect("different album ineligible")
+        );
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn library_sync_status_includes_full_sync_state() {
+        let data_dir = unique_temp_dir("library-full-sync-status");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let conn = Connection::open(&core.db_path).expect("open test db");
+
+        write_sync_value(
+            &conn,
+            "library_full_last_attempt_at",
+            "2026-01-01T00:00:00Z",
+        )
+        .expect("write full attempt");
+        write_sync_value(
+            &conn,
+            "library_full_last_success_at",
+            "2026-01-01T00:01:00Z",
+        )
+        .expect("write full success");
+        write_sync_value(
+            &conn,
+            "library_incremental_last_success_at",
+            "2026-01-02T00:00:00Z",
+        )
+        .expect("write incremental success");
+
+        let status = core.get_library_sync_status().expect("read sync status");
+
+        assert_eq!(
+            status.full.last_attempt_at.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            status.full.last_success_at.as_deref(),
+            Some("2026-01-01T00:01:00Z")
+        );
+        assert_eq!(
+            status.incremental.last_success_at.as_deref(),
+            Some("2026-01-02T00:00:00Z")
         );
 
         std::fs::remove_dir_all(data_dir).ok();

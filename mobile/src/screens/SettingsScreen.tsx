@@ -146,10 +146,20 @@ export function SettingsScreen() {
       sublabel: syncStatus.data?.active_job
         ? syncStatus.data.active_job === "incremental"
           ? "Running incremental sync"
-          : "Running full reconcile"
+          : syncStatus.data.active_job === "full"
+            ? "Running full sync"
+            : "Running full reconcile"
         : "Idle",
       onSelect: () =>
         queryClient.invalidateQueries({ queryKey: ["library-sync-status"] }),
+    },
+    {
+      label: "Full Sync",
+      sublabel:
+        busyAction === "full"
+          ? "Syncing..."
+          : `Last: ${formatTimestamp(syncStatus.data?.full.last_success_at)}`,
+      onSelect: () => runSync("full"),
     },
     {
       label: "Incremental Sync",
@@ -172,6 +182,18 @@ export function SettingsScreen() {
           {
             label: "Incremental Error",
             sublabel: syncStatus.data.incremental.last_error,
+            onSelect: () =>
+              queryClient.invalidateQueries({
+                queryKey: ["library-sync-status"],
+              }),
+          },
+        ]
+      : []),
+    ...(syncStatus.data?.full.last_error
+      ? [
+          {
+            label: "Full Sync Error",
+            sublabel: syncStatus.data.full.last_error,
             onSelect: () =>
               queryClient.invalidateQueries({
                 queryKey: ["library-sync-status"],
@@ -267,9 +289,12 @@ export function SettingsScreen() {
     }
   }
 
-  async function runSync(mode: "incremental" | "reconcile") {
+  async function runSync(mode: "full" | "incremental" | "reconcile") {
     await runBusy(mode, async () => {
-      if (mode === "incremental") {
+      if (mode === "full") {
+        await stereodrome.sync();
+        setMessage("Full sync complete");
+      } else if (mode === "incremental") {
         await stereodrome.syncIncremental();
         setMessage("Incremental sync complete");
       } else {

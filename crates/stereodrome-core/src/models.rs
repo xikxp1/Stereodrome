@@ -208,6 +208,7 @@ pub struct SyncJobStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibrarySyncStatus {
     pub active_job: Option<String>,
+    pub full: SyncJobStatus,
     pub incremental: SyncJobStatus,
     pub full_reconcile: SyncJobStatus,
 }

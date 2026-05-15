@@ -139,6 +139,7 @@ export type SyncJobStatus = {
 
 export type LibrarySyncStatus = {
   active_job: string | null;
+  full: SyncJobStatus;
   incremental: SyncJobStatus;
   full_reconcile: SyncJobStatus;
 };
