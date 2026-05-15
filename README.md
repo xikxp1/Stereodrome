@@ -54,10 +54,10 @@ Download the latest build for your platform from [Releases](https://github.com/x
 
 ## Development
 
-`bun install` - Install dependencies (from root directory for desktop or from `mobile` for iOS/Android)
-`bun run tauri dev` - Tauri development server
-`bun run rust:os` or `bun run rust:android` from `mobile` directory - Cross-compile Rust dependencies for your platform
-`bun run ios` or `bun run android` - Build and run the mobile app
+- `bun install` - Install dependencies (from root directory for desktop or from `mobile` for iOS/Android)
+- `bun run tauri dev` - Tauri development server
+- `bun run rust:ios` or `bun run rust:android` from `mobile` directory - Cross-compile Rust dependencies for your platform
+- `bun run ios` or `bun run android` - Build and run the mobile app
 
 ## License
 

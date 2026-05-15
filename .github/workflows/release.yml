@@ -48,8 +48,60 @@ jobs:
           echo "release_version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "RELEASE_VERSION=$RELEASE_VERSION" >> "$GITHUB_ENV"
 
-  build:
+  release_notes:
+    name: Compose release notes
     needs: version
+    runs-on: ubuntu-latest
+    outputs:
+      release_body: ${{ steps.release_body.outputs.release_body }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install git-cliff
+        run: cargo install git-cliff
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          echo 'changelog<<EOF' >> $GITHUB_OUTPUT
+          git-cliff --latest --strip all --use-branch-tags >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+
+      - name: Compose release body
+        id: release_body
+        shell: bash
+        run: |
+          echo 'release_body<<EOF' >> $GITHUB_OUTPUT
+          echo "${{ steps.changelog.outputs.changelog }}" >> $GITHUB_OUTPUT
+          cat <<'MARKDOWN' >> $GITHUB_OUTPUT
+
+          ## Installation
+
+          | Platform | Download |
+          |----------|----------|
+          | macOS (Universal) | [DMG](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-macos-universal.dmg) |
+          | Windows | [MSI](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-windows-x64.msi) or [EXE](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-windows-x64-setup.exe) |
+          | Linux | [AppImage](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-linux-x64.AppImage) or [DEB](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-linux-amd64.deb) |
+          | Android | [APK](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-android.apk) or [AAB](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-android.aab) |
+          | iOS | [IPA](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome.ipa) or TestFlight |
+
+          ## Auto-Update
+
+          Existing installations will automatically receive this update.
+          MARKDOWN
+          echo 'EOF' >> $GITHUB_OUTPUT
+
+  build:
+    needs: [version, release_notes]
     strategy:
       fail-fast: false
       matrix:
@@ -143,44 +195,6 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
-      - name: Install git-cliff
-        if: matrix.platform == 'ubuntu-latest'
-        run: cargo install git-cliff
-
-      - name: Generate changelog
-        id: changelog
-        if: matrix.platform == 'ubuntu-latest'
-        shell: bash
-        run: |
-          echo 'changelog<<EOF' >> $GITHUB_OUTPUT
-          git-cliff --latest --strip all --use-branch-tags >> $GITHUB_OUTPUT
-          echo 'EOF' >> $GITHUB_OUTPUT
-
-      - name: Compose release body
-        id: release_body
-        if: matrix.platform == 'ubuntu-latest'
-        shell: bash
-        run: |
-          echo 'release_body<<EOF' >> $GITHUB_OUTPUT
-          echo "${{ steps.changelog.outputs.changelog }}" >> $GITHUB_OUTPUT
-          cat <<'MARKDOWN' >> $GITHUB_OUTPUT
-
-          ## Installation
-
-          | Platform | Download |
-          |----------|----------|
-          | macOS (Universal) | [DMG](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-macos-universal.dmg) |
-          | Windows | [MSI](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-windows-x64.msi) or [EXE](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-windows-x64-setup.exe) |
-          | Linux | [AppImage](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-linux-x64.AppImage) or [DEB](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-linux-amd64.deb) |
-          | Android | [APK](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-android.apk) or [AAB](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome-android.aab) |
-          | iOS | [IPA](https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.release_version }}/Stereodrome.ipa) or TestFlight |
-
-          ## Auto-Update
-
-          Existing installations will automatically receive this update.
-          MARKDOWN
-          echo 'EOF' >> $GITHUB_OUTPUT
-
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -193,7 +207,7 @@ jobs:
         with:
           tagName: v${{ needs.version.outputs.release_version }}
           releaseName: "Stereodrome v${{ needs.version.outputs.release_version }}"
-          releaseBody: ${{ steps.release_body.outputs.release_body }}
+          releaseBody: ${{ needs.release_notes.outputs.release_body }}
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
