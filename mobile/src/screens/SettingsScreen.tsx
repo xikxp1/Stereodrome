@@ -139,16 +139,39 @@ export function SettingsScreen() {
   const settings = audioSettings.data;
   const options: SelectableOption[] = [
     {
-      kind: "info",
+      kind: "editable",
       label: "Server",
       sublabel: stereodrome.status.server_url ?? "Not connected",
-      onSelect: () => stereodrome.refreshStatus(),
+      onSelect: () =>
+        openTextEdit({
+          title: "Server URL",
+          value: stereodrome.status.server_url ?? "",
+          keyboardType: "url",
+          onSubmit: async (value) => {
+            const url = value.trim();
+            if (!url) {
+              throw new Error("Server URL is required");
+            }
+            await stereodrome.updateServerSettings({ url });
+          },
+        }),
     },
     {
-      kind: "info",
+      kind: "editable",
       label: "Username",
       sublabel: stereodrome.status.username ?? "-",
-      onSelect: () => stereodrome.refreshStatus(),
+      onSelect: () =>
+        openTextEdit({
+          title: "Username",
+          value: stereodrome.status.username ?? "",
+          onSubmit: async (value) => {
+            const username = value.trim();
+            if (!username) {
+              throw new Error("Username is required");
+            }
+            await stereodrome.updateServerSettings({ username });
+          },
+        }),
     },
     {
       kind: "info",

@@ -154,6 +154,12 @@ export const stereodromeCore = {
   }): Promise<ConnectionStatus> {
     return invokeJson("connectServer", params);
   },
+  updateServerSettings(params: {
+    url?: string;
+    username?: string;
+  }): Promise<ConnectionStatus> {
+    return invokeJson("updateServerSettings", params);
+  },
   restoreSession(): Promise<ConnectionStatus> {
     return invokeJson("restoreSession");
   },

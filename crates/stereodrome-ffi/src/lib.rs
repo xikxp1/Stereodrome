@@ -17,7 +17,9 @@ use stereodrome_audio::{
     SongMetadata,
 };
 use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
-use stereodrome_core::{AudioProcessingSettings, ConnectParams, PlaybackProgress, StereodromeCore};
+use stereodrome_core::{
+    AudioProcessingSettings, ConnectParams, PlaybackProgress, ServerSettingsUpdate, StereodromeCore,
+};
 use url::Url;
 
 pub struct MobileCore {
@@ -130,6 +132,10 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         "connectServer" => {
             let params = parse_payload::<ConnectParams>(payload)?;
             json_result(runtime.block_on(async { core.connect_server(params).await }))
+        }
+        "updateServerSettings" => {
+            let update = parse_payload::<ServerSettingsUpdate>(payload)?;
+            json_result(runtime.block_on(async { core.update_server_settings(update).await }))
         }
         "restoreSession" => json_result(runtime.block_on(async { core.restore_session().await })),
         "disconnectServer" => {

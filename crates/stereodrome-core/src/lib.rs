@@ -84,6 +84,19 @@ impl StereodromeCore {
         })
     }
 
+    pub async fn update_server_settings(
+        &self,
+        update: ServerSettingsUpdate,
+    ) -> CoreResult<ConnectionStatus> {
+        let current = self.current_config()?;
+        self.connect_server(ConnectParams {
+            url: update.url.unwrap_or(current.url),
+            username: update.username.unwrap_or(current.username),
+            password: current.password,
+        })
+        .await
+    }
+
     pub async fn restore_session(&self) -> CoreResult<ConnectionStatus> {
         let config = {
             self.server_config

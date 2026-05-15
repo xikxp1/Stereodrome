@@ -16,6 +16,12 @@ pub struct ConnectParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerSettingsUpdate {
+    pub url: Option<String>,
+    pub username: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionStatus {
     pub connected: bool,
     pub server_url: Option<String>,

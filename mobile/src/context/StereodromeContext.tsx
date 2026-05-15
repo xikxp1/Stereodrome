@@ -13,6 +13,10 @@ type StereodromeContextValue = {
     username: string;
     password: string;
   }): Promise<void>;
+  updateServerSettings(params: {
+    url?: string;
+    username?: string;
+  }): Promise<void>;
   sync(): Promise<void>;
   syncIncremental(): Promise<void>;
   reconcile(): Promise<void>;
@@ -57,6 +61,15 @@ export function StereodromeProvider({
     setError(null);
   }
 
+  async function updateServerSettings(params: {
+    url?: string;
+    username?: string;
+  }) {
+    const next = await stereodromeCore.updateServerSettings(params);
+    setStatus(next);
+    setError(null);
+  }
+
   async function sync() {
     await stereodromeCore.syncLibrary();
   }
@@ -96,6 +109,7 @@ export function StereodromeProvider({
       error,
       refreshStatus,
       connect,
+      updateServerSettings,
       sync,
       syncIncremental,
       reconcile,
