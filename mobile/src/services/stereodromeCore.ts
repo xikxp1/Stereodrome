@@ -1,6 +1,10 @@
 import { Directory, Paths } from "expo-file-system";
 import NativeStereodromeCore from "../../modules/stereodrome-core/src";
 import type {
+  NativeNowPlayingInfo,
+  NativeNowPlayingProgress,
+} from "../../modules/stereodrome-core/src";
+import type {
   ConnectionStatus,
   Artist,
   Album,
@@ -313,6 +317,26 @@ export const stereodromeCore = {
   },
   audioGetStatus(): Promise<AudioPlaybackStatus> {
     return invokeJson("audioGetStatus");
+  },
+  async setNowPlayingInfo(payload: NativeNowPlayingInfo): Promise<void> {
+    await NativeStereodromeCore.setNowPlayingInfo?.(payload);
+  },
+  async updateNowPlayingProgress(
+    payload: NativeNowPlayingProgress
+  ): Promise<void> {
+    await NativeStereodromeCore.updateNowPlayingProgress?.(payload);
+  },
+  async clearNowPlayingInfo(): Promise<void> {
+    await NativeStereodromeCore.clearNowPlayingInfo?.();
+  },
+  addNativePlaybackInvalidatedListener(listener: () => void): () => void {
+    const subscription = NativeStereodromeCore.addListener?.(
+      "native-playback-invalidated",
+      listener
+    );
+    return () => {
+      subscription?.remove();
+    };
   },
   getAudioProcessingSettings(): Promise<AudioProcessingSettings> {
     return invokeJson("getAudioProcessingSettings");

@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { stereodromeCore } from "@/services/stereodromeCore";
+import { nativeMediaControls } from "@/services/nativeMediaControls";
 import type {
   AudioPlaybackStatus,
   AudioProcessingSettings,
@@ -183,12 +184,21 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       } else {
         expectedAudioSongIdRef.current = null;
         await stereodromeCore.audioStop();
+        await nativeMediaControls.clear();
         setIsPlaying(false);
       }
     } finally {
       handlingEndedRef.current = false;
     }
   }, [applyQueueState, playCurrentQueueItem]);
+
+  const refreshFromNativePlayback = useCallback(async () => {
+    const state = await stereodromeCore.getQueue();
+    const songs = state.items.map(playableFromQueueItem);
+    await applyQueueState(state);
+    const status = await stereodromeCore.audioGetStatus();
+    updateAudioStatus(status, songs);
+  }, [applyQueueState, updateAudioStatus]);
 
   useEffect(() => {
     let mounted = true;
@@ -242,6 +252,14 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       unsubscribeAudioSettings();
     };
   }, [applyAudioProcessingSettings, applyQueueState]);
+
+  useEffect(() => {
+    return nativeMediaControls.addInvalidatedListener(() => {
+      void refreshFromNativePlayback().catch((playbackError) => {
+        setError(errorMessage(playbackError));
+      });
+    });
+  }, [refreshFromNativePlayback]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -466,6 +484,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       expectedAudioSongIdRef.current = null;
       await stereodromeCore.audioStop();
       await applyQueueState(state);
+      await nativeMediaControls.clear();
       setPosition(0);
       setDuration(0);
       setIsPlaying(false);
@@ -485,6 +504,21 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           ? 0
           : null;
   const nextSong = nextIndex === null ? null : (queue[nextIndex] ?? null);
+
+  useEffect(() => {
+    void nativeMediaControls
+      .sync({
+        currentSong,
+        currentIndex,
+        duration,
+        isPlaying,
+        nextSong,
+        position,
+        queue,
+      })
+      .catch(() => {});
+  }, [currentSong, currentIndex, duration, isPlaying, nextSong, position, queue]);
+
   const value = useMemo(
     () => ({
       currentSong,
