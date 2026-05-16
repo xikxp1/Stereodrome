@@ -203,6 +203,10 @@ export async function getAudioCacheStats(): Promise<CacheStats> {
   return invoke<CacheStats>("get_audio_cache_stats");
 }
 
+export async function getOfflineSongIds(): Promise<string[]> {
+  return invoke<string[]>("get_offline_song_ids");
+}
+
 export async function clearAudioCache(): Promise<void> {
   return invoke("clear_audio_cache");
 }

@@ -116,10 +116,6 @@ pub async fn play_song_with_queue(
     song_id: String,
     song_ids: Vec<String>,
 ) -> AppResult<()> {
-    if !state.client.is_connected() {
-        return Err(AppError::NotConnected);
-    }
-
     if song_ids.is_empty() {
         return Err(AppError::Audio(
             "Cannot play from an empty queue".to_string(),

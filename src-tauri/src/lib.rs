@@ -179,6 +179,7 @@ pub fn run() {
             commands::get_cover_art_path,
             commands::get_song_cover_art,
             commands::get_audio_cache_stats,
+            commands::get_offline_song_ids,
             commands::clear_audio_cache,
             commands::set_max_cache_size,
             commands::get_scan_status,

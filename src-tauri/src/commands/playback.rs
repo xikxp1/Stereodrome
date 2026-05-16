@@ -290,10 +290,6 @@ pub async fn play_song(
     state: State<'_, AppState>,
     song_id: String,
 ) -> AppResult<()> {
-    if !state.client.is_connected() {
-        return Err(AppError::NotConnected);
-    }
-
     play_song_by_id(&app_handle, &state, &song_id).await
 }
 

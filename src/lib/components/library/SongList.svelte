@@ -3,7 +3,7 @@
   import { playlistStore } from "$lib/stores/playlist.svelte";
   import { queue } from "$lib/stores/queue.svelte";
   import { createVirtualizer } from "@tanstack/svelte-virtual";
-  import { CircleAlert, Music, Volume2 } from "lucide-svelte";
+  import { CircleAlert, Download, Music, Volume2 } from "lucide-svelte";
   import { showSongContextMenu } from "$lib/services/contextMenu";
 
   interface Props {
@@ -14,6 +14,7 @@
     playingSongId?: string | null;
     scrollToSongId?: string | null;
     playlistId?: string | null;
+    downloadedSongIds?: ReadonlySet<string>;
     onSelect?: (song: Song) => void;
     onPlay?: (song: Song) => void;
     onNavigateToArtist?: (song: Song) => void;
@@ -28,6 +29,7 @@
     playingSongId = null,
     scrollToSongId = null,
     playlistId = null,
+    downloadedSongIds = new Set(),
     onSelect,
     onPlay,
     onNavigateToArtist,
@@ -381,6 +383,9 @@
       <!-- Fixed header -->
       <div class="song-grid-header">
         <div class="cell-track">#</div>
+        <div class="cell-download" title="Downloaded">
+          <Download class="h-3 w-3" />
+        </div>
         <div class="cell-name">Name</div>
         <div class="cell-time">Time</div>
         <div class="cell-artist">Artist</div>
@@ -409,6 +414,16 @@
             >
               <div class="cell-track dimmed">
                 {song.track_number || index + 1}
+              </div>
+              <div class="cell-download">
+                {#if downloadedSongIds.has(song.id)}
+                  <span class="downloaded-icon">
+                    <Download class="h-3 w-3" />
+                  </span>
+                  <span class="sr-only">Downloaded</span>
+                {:else}
+                  <span class="not-downloaded" title="Not downloaded">-</span>
+                {/if}
               </div>
               <div class="cell-name font-medium">
                 {#if playingSongId === song.id}
@@ -485,7 +500,7 @@
   .song-grid-row {
     display: grid;
     grid-template-columns:
-      40px minmax(120px, 1fr) 52px minmax(100px, 0.6fr)
+      40px 28px minmax(120px, 1fr) 52px minmax(100px, 0.6fr)
       minmax(100px, 0.8fr) 56px 96px;
     align-items: center;
     font-size: 0.75rem;
@@ -496,7 +511,7 @@
     .song-grid-header,
     .song-grid-row {
       grid-template-columns:
-        40px minmax(120px, 1fr) 52px minmax(100px, 0.6fr)
+        40px 28px minmax(120px, 1fr) 52px minmax(100px, 0.6fr)
         minmax(100px, 0.8fr) 56px;
     }
 
@@ -510,7 +525,7 @@
     .song-grid-header,
     .song-grid-row {
       grid-template-columns:
-        40px minmax(120px, 1fr) 52px minmax(80px, 0.6fr)
+        40px 28px minmax(120px, 1fr) 52px minmax(80px, 0.6fr)
         minmax(80px, 0.8fr);
     }
 
@@ -611,6 +626,27 @@
 
   .cell-time {
     text-align: right;
+  }
+
+  .cell-download {
+    display: flex;
+    justify-content: center;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  .downloaded-icon {
+    color: oklch(58% 0.16 150);
+  }
+
+  .not-downloaded {
+    color: oklch(65% 0.01 250);
+    font-size: 0.6875rem;
+  }
+
+  .song-grid-row.selected .downloaded-icon,
+  .song-grid-row.selected .not-downloaded {
+    color: currentColor;
   }
 
   .cell-year,

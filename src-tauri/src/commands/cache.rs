@@ -1,16 +1,45 @@
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 
 use crate::cache::{
     AudioCache, CacheStats, KEY_MAX_CACHE_SIZE, MAX_CACHE_SIZE, MIN_CACHE_SIZE, STORE_FILE,
 };
-use crate::error::AppResult;
+use crate::error::{AppResult, MutexExt};
+use crate::state::AppState;
 
 /// Get statistics about the audio cache
 #[tauri::command]
 pub async fn get_audio_cache_stats(app_handle: AppHandle) -> AppResult<CacheStats> {
     let cache = AudioCache::new(&app_handle)?;
     cache.get_stats()
+}
+
+/// Get locally cached song IDs that can be played without a server connection.
+#[tauri::command]
+pub fn get_offline_song_ids(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<String>> {
+    let cache = AudioCache::new(&app_handle)?;
+    let db = state.db.lock_recover();
+    let mut stmt = db.prepare("SELECT id, suffix FROM songs")?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        ))
+    })?;
+
+    let mut song_ids = Vec::new();
+    for row in rows {
+        let (song_id, suffix) = row?;
+        if cache.is_cached(&song_id, &suffix) {
+            song_ids.push(song_id);
+        }
+    }
+
+    Ok(song_ids)
 }
 
 /// Clear all cached audio files

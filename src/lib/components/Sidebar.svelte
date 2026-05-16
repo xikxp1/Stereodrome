@@ -37,10 +37,10 @@
   let renamingPlaylistId = $state<string | null>(null);
   let renameValue = $state("");
 
-  // Load playlists when component mounts
+  // Load cached playlists for configured sessions, including offline restores.
   $effect(() => {
-    if (connection.status.connected) {
-      playlistStore.loadPlaylists();
+    if (connection.status.server_url) {
+      void playlistStore.loadPlaylists();
     }
   });
 

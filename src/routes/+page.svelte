@@ -24,6 +24,7 @@
     seekPlayback,
     getCoverArt,
     getMiniPlayerPosition,
+    getOfflineSongIds,
     openMiniPlayer,
   } from "$lib/api/commands";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -85,10 +86,20 @@
     connection.isInitializing || !connection.hasInitialized
   );
   const hasConfiguredServer = $derived(Boolean(connection.status.server_url));
+  const isOfflineConfiguredSession = $derived(
+    hasConfiguredServer && !connection.status.connected
+  );
+  const configuredAccountKey = $derived.by(() => {
+    const serverUrl = connection.status.server_url;
+    if (!serverUrl) return null;
+    return `${serverUrl}::${connection.status.username ?? ""}`;
+  });
 
   // Cover art state
   let coverArtUrl = $state<string | null>(null);
   let lastCoverArtId = $state<string | null>(null);
+  let loadedLibraryAccountKey = $state<string | null>(null);
+  let offlineSongIds = $state<Set<string>>(new Set());
 
   const MINI_PLAYER_WIDTH = 320;
   const MINI_PLAYER_HEIGHT = 72;
@@ -146,12 +157,13 @@
 
   $effect(() => {
     const handler = () => {
-      if (!connection.status.connected) return;
+      if (!connection.status.server_url) return;
       void loadLibraryData();
       if (
-        activeView === "recently_added" ||
-        activeView === "recently_played" ||
-        activeView === "most_played"
+        connection.status.connected &&
+        (activeView === "recently_added" ||
+          activeView === "recently_played" ||
+          activeView === "most_played")
       ) {
         albumListStore.loadView(activeView);
       }
@@ -161,19 +173,39 @@
     return () => window.removeEventListener(LIBRARY_REFRESHED_EVENT, handler);
   });
 
-  // Load data when connected
+  // Load local library data for configured sessions, including offline restores.
   $effect(() => {
-    if (connection.status.connected) {
-      loadLibraryData();
+    const accountKey = configuredAccountKey;
+
+    if (!accountKey) {
+      loadedLibraryAccountKey = null;
+      artists = [];
+      albums = [];
+      songs = [];
+      offlineSongIds = new Set();
+      selectedGenre = null;
+      selectedArtist = null;
+      selectedAlbum = null;
+      selectedSong = null;
+      detailView = null;
+      loadError = null;
+      isLoading = false;
+      return;
+    }
+
+    if (loadedLibraryAccountKey !== accountKey) {
+      loadedLibraryAccountKey = accountKey;
+      void loadLibraryData();
     }
   });
 
   // Fetch album list data when switching to album list views
   $effect(() => {
     if (
-      activeView === "recently_added" ||
-      activeView === "recently_played" ||
-      activeView === "most_played"
+      connection.status.connected &&
+      (activeView === "recently_added" ||
+        activeView === "recently_played" ||
+        activeView === "most_played")
     ) {
       albumListStore.loadView(activeView);
     }
@@ -183,14 +215,17 @@
     isLoading = true;
     loadError = null;
     try {
-      const [artistsData, albumsData, songsData] = await Promise.all([
-        getArtists(),
-        getAlbums(),
-        getSongs(),
-      ]);
+      const [artistsData, albumsData, songsData, offlineSongIdData] =
+        await Promise.all([
+          getArtists(),
+          getAlbums(),
+          getSongs(),
+          getOfflineSongIds(),
+        ]);
       artists = artistsData;
       albums = albumsData;
       songs = songsData;
+      offlineSongIds = new Set(offlineSongIdData);
     } catch (e) {
       loadError = e instanceof Error ? e : new Error(String(e));
     } finally {
@@ -276,6 +311,12 @@
     return getDefaultMiniPlayerPosition(fallbackBounds);
   }
 
+  const offlineVisibleSongs = $derived.by(() =>
+    isOfflineConfiguredSession
+      ? songs.filter((song) => offlineSongIds.has(song.id))
+      : songs
+  );
+
   // Compute filtered data - all columns derived from shown songs
   const filterResult = $derived.by(() => {
     const hasSearch = searchStore.hasActiveQuery;
@@ -293,7 +334,7 @@
     const matchedAlbumIds = new Set<string>();
     const matchedSongs: Song[] = [];
 
-    for (const s of songs) {
+    for (const s of offlineVisibleSongs) {
       // Apply all filters
       if (hasSearch && !searchSongIds.has(s.id)) continue;
       if (genre && s.genre !== genre) continue;
@@ -326,16 +367,32 @@
   const filteredSongs = $derived(filterResult.songs);
 
   // Filtered data for grid views (uses searchStore directly)
-  const gridFilteredArtists = $derived(
-    searchStore.hasActiveQuery
-      ? artists.filter((a) => searchStore.matchedArtistIds.has(a.id))
-      : artists
-  );
-  const gridFilteredAlbums = $derived(
-    searchStore.hasActiveQuery
-      ? albums.filter((a) => searchStore.matchedAlbumIds.has(a.id))
-      : albums
-  );
+  const gridFilteredArtists = $derived.by(() => {
+    const visibleArtistIds = new Set(
+      offlineVisibleSongs.map((song) => song.artist_id)
+    );
+    const baseArtists = isOfflineConfiguredSession
+      ? artists.filter((artist) => visibleArtistIds.has(artist.id))
+      : artists;
+
+    return searchStore.hasActiveQuery
+      ? baseArtists.filter((artist) =>
+          searchStore.matchedArtistIds.has(artist.id)
+        )
+      : baseArtists;
+  });
+  const gridFilteredAlbums = $derived.by(() => {
+    const visibleAlbumIds = new Set(
+      offlineVisibleSongs.map((song) => song.album_id)
+    );
+    const baseAlbums = isOfflineConfiguredSession
+      ? albums.filter((album) => visibleAlbumIds.has(album.id))
+      : albums;
+
+    return searchStore.hasActiveQuery
+      ? baseAlbums.filter((album) => searchStore.matchedAlbumIds.has(album.id))
+      : baseAlbums;
+  });
 
   // Songs for detail view
   const detailSongs = $derived.by(() => {
@@ -343,11 +400,11 @@
     if (!detail) return [];
     if (detail.type === "artist" && detail.artist) {
       const artistId = detail.artist.id;
-      return songs.filter((s) => s.artist_id === artistId);
+      return offlineVisibleSongs.filter((s) => s.artist_id === artistId);
     }
     if (detail.type === "album" && detail.album) {
       const albumId = detail.album.id;
-      return songs.filter((s) => s.album_id === albumId);
+      return offlineVisibleSongs.filter((s) => s.album_id === albumId);
     }
     return [];
   });
@@ -369,10 +426,17 @@
 
   // Playlist view stats
   const playlistSongs = $derived(playlistStore.currentPlaylistSongs as Song[]);
+  const offlineVisiblePlaylistSongs = $derived.by(() =>
+    isOfflineConfiguredSession
+      ? playlistSongs.filter((song) => offlineSongIds.has(song.id))
+      : playlistSongs
+  );
   const filteredPlaylistSongs = $derived(
     searchStore.hasActiveQuery
-      ? playlistSongs.filter((s) => searchStore.matchedSongIds.has(s.id))
-      : playlistSongs
+      ? offlineVisiblePlaylistSongs.filter((s) =>
+          searchStore.matchedSongIds.has(s.id)
+        )
+      : offlineVisiblePlaylistSongs
   );
   const playlistTotalDuration = $derived(
     filteredPlaylistSongs.reduce((acc, s) => acc + (s.duration || 0), 0)
@@ -903,6 +967,7 @@
               playingSongId={playback.currentTrack?.id ?? null}
               {scrollToSongId}
               playlistId={selectedPlaylist?.id}
+              downloadedSongIds={offlineSongIds}
               onSelect={handleSongSelect}
               onPlay={handlePlaylistSongPlay}
               onNavigateToArtist={handleSongNavigateToArtist}
@@ -938,6 +1003,7 @@
               selectedSongId={selectedSong?.id}
               playingSongId={playback.currentTrack?.id ?? null}
               {scrollToSongId}
+              downloadedSongIds={offlineSongIds}
               onSelect={handleSongSelect}
               onPlay={handleSongPlay}
               onNavigateToArtist={handleSongNavigateToArtist}
@@ -971,6 +1037,7 @@
                 selectedSongId={selectedSong?.id}
                 playingSongId={playback.currentTrack?.id ?? null}
                 {scrollToSongId}
+                downloadedSongIds={offlineSongIds}
                 onSelect={handleSongSelect}
                 onPlay={handleDetailSongPlay}
                 onNavigateToArtist={handleSongNavigateToArtist}
@@ -1017,6 +1084,7 @@
                 selectedSongId={selectedSong?.id}
                 playingSongId={playback.currentTrack?.id ?? null}
                 {scrollToSongId}
+                downloadedSongIds={offlineSongIds}
                 onSelect={handleSongSelect}
                 onPlay={handleDetailSongPlay}
                 onNavigateToArtist={handleSongNavigateToArtist}
@@ -1064,6 +1132,7 @@
                 selectedSongId={selectedSong?.id}
                 playingSongId={playback.currentTrack?.id ?? null}
                 {scrollToSongId}
+                downloadedSongIds={offlineSongIds}
                 onSelect={handleSongSelect}
                 onPlay={handleDetailSongPlay}
                 onNavigateToArtist={handleSongNavigateToArtist}

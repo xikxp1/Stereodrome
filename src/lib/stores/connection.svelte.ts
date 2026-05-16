@@ -22,6 +22,7 @@ class ConnectionStore {
   error = $state<string | null>(null);
 
   private initializePromise: Promise<boolean> | null = null;
+  private checkStatusPromise: Promise<void> | null = null;
 
   private applyStatus(nextStatus: ConnectionStatus): void {
     const nextServerVersion =
@@ -74,11 +75,24 @@ class ConnectionStore {
   }
 
   async checkStatus(): Promise<void> {
-    try {
-      this.applyStatus(await getConnectionStatus());
-    } catch (e) {
-      this.error = e instanceof Error ? e.message : String(e);
+    if (this.checkStatusPromise) {
+      return this.checkStatusPromise;
     }
+
+    this.checkStatusPromise = (async () => {
+      try {
+        const currentStatus = await getConnectionStatus();
+        this.applyStatus(
+          currentStatus.server_url ? await restoreSession() : currentStatus
+        );
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+      } finally {
+        this.checkStatusPromise = null;
+      }
+    })();
+
+    return this.checkStatusPromise;
   }
 
   async initialize(): Promise<boolean> {
