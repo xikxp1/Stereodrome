@@ -7,6 +7,7 @@ import {
   TextStyle,
   View,
   ViewStyle,
+  AppState,
 } from "react-native";
 
 type MarqueeMember = {
@@ -38,6 +39,7 @@ const pauseDuration = 2000;
 const restartDelay = 50;
 const groupStates = new Map<string, MarqueeGroup>();
 const restartTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+let marqueeAnimationsPaused = AppState.currentState !== "active";
 
 function getGroup(groupId: string) {
   let group = groupStates.get(groupId);
@@ -85,7 +87,7 @@ function setMemberOffsets(group: MarqueeGroup, offset: number) {
 
 function startGroupAnimation(groupId: string) {
   const group = groupStates.get(groupId);
-  if (!group || group.members.size === 0) return;
+  if (!group || group.members.size === 0 || marqueeAnimationsPaused) return;
 
   const initialMaxOffset = getGroupMaxOffset(group);
   if (initialMaxOffset <= 0) return;
@@ -150,6 +152,7 @@ function startGroupAnimation(groupId: string) {
   }
 
   group.pauseTimeout = setTimeout(() => {
+    if (marqueeAnimationsPaused) return;
     group.animationId = requestAnimationFrame(animate);
   }, pauseDuration);
 }
@@ -177,6 +180,17 @@ function restartGroupAnimation(groupId: string) {
     }, restartDelay)
   );
 }
+
+AppState.addEventListener("change", (nextState) => {
+  marqueeAnimationsPaused = nextState !== "active";
+  groupStates.forEach((_, groupId) => {
+    if (marqueeAnimationsPaused) {
+      stopGroupAnimation(groupId);
+    } else {
+      restartGroupAnimation(groupId);
+    }
+  });
+});
 
 export function SyncedMarqueeText({
   align = "center",

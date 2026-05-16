@@ -77,7 +77,10 @@ pub struct StereodromeCore {
 impl StereodromeCore {
     pub fn new(data_dir: impl AsRef<Path>) -> CoreResult<Self> {
         let data_dir = data_dir.as_ref();
-        info!("Initializing Stereodrome Rust core at {}", data_dir.display());
+        info!(
+            "Initializing Stereodrome Rust core at {}",
+            data_dir.display()
+        );
         std::fs::create_dir_all(data_dir)?;
         std::fs::create_dir_all(data_dir.join("cover_art"))?;
         std::fs::create_dir_all(data_dir.join("cover_cache"))?;
@@ -351,7 +354,9 @@ impl StereodromeCore {
             Ok(result) => {
                 let conn = Connection::open(&self.db_path)?;
                 let synced_at = sync_value(&conn, "library_last_success_at")?.ok_or_else(|| {
-                    CoreError::InvalidInput("library sync did not record a success time".to_string())
+                    CoreError::InvalidInput(
+                        "library sync did not record a success time".to_string(),
+                    )
                 })?;
                 info!("Pruning library rows not refreshed at {synced_at}");
                 prune_stale_library_rows(&conn, &synced_at).map(|()| result)
@@ -2043,9 +2048,11 @@ mod tests {
     }
 
     fn count_rows(conn: &Connection, table_or_filter: &str) -> i64 {
-        conn.query_row(&format!("SELECT COUNT(*) FROM {table_or_filter}"), [], |row| {
-            row.get(0)
-        })
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM {table_or_filter}"),
+            [],
+            |row| row.get(0),
+        )
         .expect("count rows")
     }
 }

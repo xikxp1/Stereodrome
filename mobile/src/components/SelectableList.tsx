@@ -316,8 +316,8 @@ export function SelectableList({
       }}
       removeClippedSubviews
       renderItem={renderItem}
-      scrollEventThrottle={16}
-      updateCellsBatchingPeriod={16}
+      scrollEventThrottle={64}
+      updateCellsBatchingPeriod={50}
       windowSize={5}
     />
   );

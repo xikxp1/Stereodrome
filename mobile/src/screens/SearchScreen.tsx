@@ -11,18 +11,26 @@ import { stereodromeCore } from "@/services/stereodromeCore";
 export function SearchScreen() {
   const inputRef = useRef<TextInput>(null);
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const playback = usePlayback();
   const view = useViewStack();
   const results = useQuery({
-    queryKey: ["search", query],
-    queryFn: () => stereodromeCore.searchLibrary(query, 20),
-    enabled: query.trim().length > 1,
+    queryKey: ["search", debouncedQuery],
+    queryFn: () => stereodromeCore.searchLibrary(debouncedQuery, 20),
+    enabled: debouncedQuery.trim().length > 1,
   });
 
   useEffect(() => {
     const focusTimeout = setTimeout(() => inputRef.current?.focus(), 120);
     return () => clearTimeout(focusTimeout);
   }, []);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      setDebouncedQuery(query.trim());
+    }, 300);
+    return () => clearTimeout(timeout);
+  }, [query]);
 
   async function playAlbum(albumId: string) {
     const songs = await stereodromeCore.getSongs(albumId);

@@ -15,6 +15,7 @@ class NativeMediaControlsSync {
   private artworkCache = new Map<string, string | null>();
   private lastInfoKey: string | null = null;
   private lastProgressKey: string | null = null;
+  private lastProgressPosition: number | null = null;
   private isCleared = false;
   private syncGeneration = 0;
 
@@ -74,6 +75,7 @@ class NativeMediaControlsSync {
       });
       this.lastInfoKey = infoKey;
       this.lastProgressKey = null;
+      this.lastProgressPosition = null;
       this.isCleared = false;
     }
 
@@ -81,11 +83,14 @@ class NativeMediaControlsSync {
     const progressKey = JSON.stringify({
       song_id: currentSong.id,
       duration,
-      position: roundedPosition,
       isPlaying: snapshot.isPlaying,
     });
+    const progressMovedEnough =
+      this.lastProgressPosition === null ||
+      Math.abs(roundedPosition - this.lastProgressPosition) >=
+        (snapshot.isPlaying ? 5 : 0.01);
 
-    if (progressKey !== this.lastProgressKey) {
+    if (progressKey !== this.lastProgressKey || progressMovedEnough) {
       await stereodromeCore.updateNowPlayingProgress({
         song_id: currentSong.id,
         duration_seconds: duration,
@@ -93,6 +98,7 @@ class NativeMediaControlsSync {
         is_playing: snapshot.isPlaying,
       });
       this.lastProgressKey = progressKey;
+      this.lastProgressPosition = roundedPosition;
     }
   }
 
@@ -103,6 +109,7 @@ class NativeMediaControlsSync {
     }
     this.lastInfoKey = null;
     this.lastProgressKey = null;
+    this.lastProgressPosition = null;
     this.isCleared = true;
     await stereodromeCore.clearNowPlayingInfo();
   }

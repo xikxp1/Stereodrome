@@ -3,7 +3,7 @@
     "name": "Stereodrome",
     "slug": "stereodrome",
     "scheme": "stereodrome",
-    "version": "0.1.18",
+    "version": "0.1.19",
     "orientation": "portrait",
     "icon": "../src-tauri/icons/icon.png",
     "userInterfaceStyle": "automatic",
@@ -12,6 +12,7 @@
       "bundleIdentifier": "dev.xikxp1.stereodrome.mobile",
       "supportsTablet": true,
       "infoPlist": {
+        "CADisableMinimumFrameDurationOnPhone": false,
         "UIBackgroundModes": ["audio"],
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": false,

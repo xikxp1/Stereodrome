@@ -69,7 +69,14 @@ public class StereodromeCoreModule: Module {
     }
 
     AsyncFunction("call") { (_ method: String, _ payload: String) -> String in
-      return self.callSync(method: method, payload: payload)
+      if method == "audioPlayCurrent" || method == "audioResume" {
+        self.setAudioSessionActive(true)
+      }
+      let result = self.callSync(method: method, payload: payload)
+      if method == "audioPause" || method == "audioStop" {
+        self.setAudioSessionActive(false)
+      }
+      return result
     }
 
     AsyncFunction("getConnectionStatus") { () -> String in
@@ -126,10 +133,22 @@ public class StereodromeCoreModule: Module {
     let session = AVAudioSession.sharedInstance()
     do {
       try session.setCategory(.playback, mode: .default)
-      try session.setActive(true)
     } catch {
       // Rust returns playback errors through the FFI call path; session setup
       // failure should not prevent core initialization in development builds.
+    }
+  }
+
+  private func setAudioSessionActive(_ active: Bool) {
+    let session = AVAudioSession.sharedInstance()
+    do {
+      if active {
+        try session.setCategory(.playback, mode: .default)
+      }
+      let options: AVAudioSession.SetActiveOptions = active ? [] : [.notifyOthersOnDeactivation]
+      try session.setActive(active, options: options)
+    } catch {
+      // Keep command handling best-effort; playback errors still flow through Rust.
     }
   }
 
@@ -233,6 +252,7 @@ public class StereodromeCoreModule: Module {
   private func performRemoteCommand(_ action: RemoteCommandAction) -> MPRemoteCommandHandlerStatus {
     switch action {
     case .play:
+      setAudioSessionActive(true)
       let status = parseOkValue(callSync(method: "audioGetStatus", payload: "null"))
       if stringValue(status?["current_song_id"]) == nil {
         _ = callSync(method: "audioPlayCurrent", payload: "null")
@@ -241,23 +261,30 @@ public class StereodromeCoreModule: Module {
       }
     case .pause:
       _ = callSync(method: "audioPause", payload: "null")
+      setAudioSessionActive(false)
     case .toggle:
       let status = parseOkValue(callSync(method: "audioGetStatus", payload: "null"))
       if boolValue(status?["is_playing"]) {
         _ = callSync(method: "audioPause", payload: "null")
+        setAudioSessionActive(false)
       } else if stringValue(status?["current_song_id"]) == nil {
+        setAudioSessionActive(true)
         _ = callSync(method: "audioPlayCurrent", payload: "null")
       } else {
+        setAudioSessionActive(true)
         _ = callSync(method: "audioResume", payload: "null")
       }
     case .next:
+      setAudioSessionActive(true)
       _ = callSync(method: "playNext", payload: "true")
       _ = callSync(method: "audioPlayCurrent", payload: "null")
     case .previous:
+      setAudioSessionActive(true)
       _ = callSync(method: "playPrevious", payload: "null")
       _ = callSync(method: "audioPlayCurrent", payload: "null")
     case .stop:
       _ = callSync(method: "audioStop", payload: "null")
+      setAudioSessionActive(false)
     }
 
     DispatchQueue.main.async {

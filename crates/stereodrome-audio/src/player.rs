@@ -245,6 +245,7 @@ pub struct AudioPlayer {
     command_tx: Sender<AudioCommand>,
     shared_state: Arc<SharedState>,
     spectrum_consumer: Arc<Mutex<HeapCons<f32>>>,
+    spectrum_enabled: Arc<AtomicBool>,
     _audio_thread: JoinHandle<()>,
 }
 
@@ -292,9 +293,14 @@ unsafe impl Sync for AudioPlayer {}
 
 impl AudioPlayer {
     pub fn new() -> AudioResult<Self> {
+        Self::new_with_spectrum(true)
+    }
+
+    pub fn new_with_spectrum(spectrum_enabled: bool) -> AudioResult<Self> {
         let (command_tx, command_rx) = mpsc::channel::<AudioCommand>();
         let shared_state = Arc::new(SharedState::new());
         let state_clone = Arc::clone(&shared_state);
+        let spectrum_enabled = Arc::new(AtomicBool::new(spectrum_enabled));
 
         // Create ring buffer for spectrum analysis
         let ring_buffer = HeapRb::<f32>::new(SPECTRUM_BUFFER_SIZE);
@@ -303,14 +309,21 @@ impl AudioPlayer {
         let spectrum_consumer = Arc::new(Mutex::new(consumer));
 
         let producer_clone = Arc::clone(&spectrum_producer);
+        let spectrum_enabled_clone = Arc::clone(&spectrum_enabled);
         let audio_thread = thread::spawn(move || {
-            run_audio_thread(command_rx, state_clone, producer_clone);
+            run_audio_thread(
+                command_rx,
+                state_clone,
+                producer_clone,
+                spectrum_enabled_clone,
+            );
         });
 
         Ok(Self {
             command_tx,
             shared_state,
             spectrum_consumer,
+            spectrum_enabled,
             _audio_thread: audio_thread,
         })
     }
@@ -491,6 +504,10 @@ impl AudioPlayer {
         Arc::clone(&self.spectrum_consumer)
     }
 
+    pub fn set_spectrum_enabled(&self, enabled: bool) {
+        self.spectrum_enabled.store(enabled, Ordering::SeqCst);
+    }
+
     #[allow(dead_code)]
     /// Get the is_playing flag for the spectrum analyzer
     pub fn get_is_playing_flag(&self) -> Arc<AtomicBool> {
@@ -625,11 +642,52 @@ fn append_processed_source<S>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn append_output_source<S>(
+    sink: &Player,
+    source: S,
+    spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
+    spectrum_enabled: &Arc<AtomicBool>,
+    normalization_gain: Option<f32>,
+    dynamics_preset: Option<&DynamicsPreset>,
+    binaural_preset: Option<&BinauralPreset>,
+    equalizer_settings: Option<&EqualizerSettings>,
+) where
+    S: Source<Item = f32> + Send + 'static,
+{
+    if spectrum_enabled.load(Ordering::SeqCst) {
+        append_processed_source(
+            sink,
+            AnalyzingSource::new(source, Arc::clone(spectrum_producer)),
+            normalization_gain,
+            dynamics_preset,
+            binaural_preset,
+            equalizer_settings,
+        );
+    } else {
+        append_processed_source(
+            sink,
+            source,
+            normalization_gain,
+            dynamics_preset,
+            binaural_preset,
+            equalizer_settings,
+        );
+    }
+}
+
+enum AudioThreadEvent {
+    Command(AudioCommand),
+    Timeout,
+    Disconnected,
+}
+
 /// Main audio thread function
 fn run_audio_thread(
     command_rx: Receiver<AudioCommand>,
     shared_state: Arc<SharedState>,
     spectrum_producer: Arc<Mutex<HeapProd<f32>>>,
+    spectrum_enabled: Arc<AtomicBool>,
 ) {
     info!("Rust audio playback thread starting");
 
@@ -651,9 +709,21 @@ fn run_audio_thread(
     let mut crossfade_state: Option<CrossfadeState> = None;
 
     loop {
-        // Use recv_timeout to allow periodic checks
-        match command_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(command) => match command {
+        let event = if crossfade_state.is_some() || shared_state.is_playing.load(Ordering::SeqCst) {
+            match command_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(command) => AudioThreadEvent::Command(command),
+                Err(mpsc::RecvTimeoutError::Timeout) => AudioThreadEvent::Timeout,
+                Err(mpsc::RecvTimeoutError::Disconnected) => AudioThreadEvent::Disconnected,
+            }
+        } else {
+            match command_rx.recv() {
+                Ok(command) => AudioThreadEvent::Command(command),
+                Err(_) => AudioThreadEvent::Disconnected,
+            }
+        };
+
+        match event {
+            AudioThreadEvent::Command(command) => match command {
                 AudioCommand::Play {
                     audio_data,
                     metadata,
@@ -694,18 +764,15 @@ fn run_audio_thread(
                         .build()
                     {
                         Ok(source) => {
-                            // Wrap source with analyzer for spectrum analysis
-                            // Rodio 0.21+ uses f32 samples natively
-                            let analyzing_source =
-                                AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
-
                             let sink = Player::connect_new(stream.mixer());
                             let volume = shared_state.read_inner().volume;
                             sink.set_volume(volume);
 
-                            append_processed_source(
+                            append_output_source(
                                 &sink,
-                                analyzing_source,
+                                source,
+                                &spectrum_producer,
+                                &spectrum_enabled,
                                 normalization_gain,
                                 dynamics_preset.as_ref(),
                                 binaural_preset.as_ref(),
@@ -896,12 +963,11 @@ fn run_audio_thread(
                             .build()
                         {
                             Ok(source) => {
-                                let analyzing_source =
-                                    AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
-
-                                append_processed_source(
+                                append_output_source(
                                     sink,
-                                    analyzing_source,
+                                    source,
+                                    &spectrum_producer,
+                                    &spectrum_enabled,
                                     normalization_gain,
                                     dynamics_preset.as_ref(),
                                     binaural_preset.as_ref(),
@@ -968,15 +1034,14 @@ fn run_audio_thread(
                         .build()
                     {
                         Ok(source) => {
-                            let analyzing_source =
-                                AnalyzingSource::new(source, Arc::clone(&spectrum_producer));
-
                             let new_sink = Player::connect_new(stream.mixer());
                             new_sink.set_volume(0.0); // Start silent, will ramp up
 
-                            append_processed_source(
+                            append_output_source(
                                 &new_sink,
-                                analyzing_source,
+                                source,
+                                &spectrum_producer,
+                                &spectrum_enabled,
                                 normalization_gain,
                                 dynamics_preset.as_ref(),
                                 binaural_preset.as_ref(),
@@ -1023,7 +1088,7 @@ fn run_audio_thread(
                     break;
                 }
             },
-            Err(mpsc::RecvTimeoutError::Timeout) => {
+            AudioThreadEvent::Timeout => {
                 // Crossfade volume ramping (~20Hz with 50ms timeout)
                 if let Some(ref cf_state) = crossfade_state {
                     let progress = cf_state.progress();
@@ -1074,7 +1139,7 @@ fn run_audio_thread(
                     info!("Playback thread reached end of current sink");
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            AudioThreadEvent::Disconnected => {
                 warn!("Audio command channel disconnected; playback thread exiting");
                 break;
             }

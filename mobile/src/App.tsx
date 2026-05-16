@@ -13,7 +13,21 @@ import { StereodromeProvider } from "@/context/StereodromeContext";
 import { ViewProvider } from "@/context/ViewContext";
 
 export default function App() {
-  const queryClient = useMemo(() => new QueryClient(), []);
+  const queryClient = useMemo(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            gcTime: 10 * 60 * 1000,
+            refetchOnMount: false,
+            refetchOnReconnect: false,
+            refetchOnWindowFocus: false,
+            staleTime: 60 * 1000,
+          },
+        },
+      }),
+    []
+  );
 
   return (
     <GestureHandlerRootView style={styles.root}>

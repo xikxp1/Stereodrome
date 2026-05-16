@@ -100,6 +100,7 @@ pub extern "C" fn stereodrome_core_set_log_callback(callback: Option<MobileLogCa
 pub struct MobileCore {
     core: StereodromeCore,
     audio: AudioPlayer,
+    runtime: tokio::runtime::Runtime,
     data_dir: PathBuf,
     sync_state: Arc<Mutex<MobileSyncState>>,
 }
@@ -158,15 +159,19 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
         };
 
         let data_dir = PathBuf::from(data_dir);
-        match (StereodromeCore::new(&data_dir), AudioPlayer::new()) {
-            (Ok(core), Ok(audio)) => Box::into_raw(Box::new(MobileCore {
+        match (
+            StereodromeCore::new(&data_dir),
+            AudioPlayer::new_with_spectrum(false),
+            tokio::runtime::Runtime::new(),
+        ) {
+            (Ok(core), Ok(audio), Ok(runtime)) => Box::into_raw(Box::new(MobileCore {
                 core,
                 audio,
+                runtime,
                 data_dir,
                 sync_state: Arc::new(Mutex::new(MobileSyncState::default())),
             })),
-            (Err(_), _) => ptr::null_mut(),
-            (_, Err(_)) => ptr::null_mut(),
+            _ => ptr::null_mut(),
         }
     })) {
         Ok(core) => core,
@@ -272,7 +277,7 @@ fn stereodrome_core_call_inner(
 }
 
 fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String, String> {
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    let runtime = &mobile.runtime;
     let core = &mobile.core;
 
     match method {
@@ -290,9 +295,7 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         }
         "getConnectionStatus" => json_result(core.get_connection_status()),
         "syncLibrary" => json_result(start_sync_job(mobile, MobileSyncJob::Full)),
-        "syncLibraryIncremental" => {
-            json_result(start_sync_job(mobile, MobileSyncJob::Incremental))
-        }
+        "syncLibraryIncremental" => json_result(start_sync_job(mobile, MobileSyncJob::Incremental)),
         "getScanStatus" => json_result(runtime.block_on(async { core.get_scan_status().await })),
         "startScan" => json_result(runtime.block_on(async { core.start_scan().await })),
         "getLibrarySyncStatus" => json_result(get_mobile_library_sync_status(mobile)),
@@ -566,10 +569,7 @@ fn start_sync_job(mobile: &MobileCore, job: MobileSyncJob) -> Result<(), String>
             .lock()
             .map_err(|_| "sync state lock is poisoned".to_string())?;
         if let Some(active_job) = state.active_job {
-            return Err(format!(
-                "{} is already running",
-                active_job.display_name()
-            ));
+            return Err(format!("{} is already running", active_job.display_name()));
         }
         state.active_job = Some(job);
     }

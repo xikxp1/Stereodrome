@@ -23,7 +23,9 @@ object StereodromeMediaSessionState {
 
   fun setNowPlayingInfo(context: Context, info: NowPlayingInfo) = synchronized(lock) {
     nowPlayingInfo = info
-    startService(context, foreground = info.isPlaying)
+    if (info.isPlaying) {
+      startService(context, foreground = true)
+    }
     player?.setNowPlayingInfo(info)
   }
 
@@ -38,6 +40,9 @@ object StereodromeMediaSessionState {
     }
     if (progress.isPlaying && !serviceStarted) {
       startService(context, foreground = true)
+    } else if (!progress.isPlaying && serviceStarted) {
+      context.stopService(Intent(context, StereodromeMediaSessionService::class.java))
+      serviceStarted = false
     }
     player?.updateProgress(progress)
   }

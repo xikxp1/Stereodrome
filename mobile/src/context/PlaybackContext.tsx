@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 
 import { stereodromeCore } from "@/services/stereodromeCore";
 import { nativeMediaControls } from "@/services/nativeMediaControls";
@@ -73,6 +74,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     useState<QueueState["repeat_mode"]>("Off");
   const [shuffleEnabled, setShuffleEnabled] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isAppActive, setIsAppActive] = useState(
+    AppState.currentState === "active"
+  );
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const currentIndexRef = useRef<number | null>(null);
@@ -87,6 +91,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const audioProcessingSettingsRef = useRef<AudioProcessingSettings | null>(
     null
   );
+  const lastProgressReportRef = useRef<{
+    at: number;
+    isPlaying: boolean;
+    position: number;
+    songId: string;
+  } | null>(null);
 
   const updateAudioStatus = useCallback(
     (status: AudioPlaybackStatus, songs = queueRef.current) => {
@@ -262,10 +272,34 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   }, [refreshFromNativePlayback]);
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    function handleAppStateChange(nextState: AppStateStatus) {
+      setIsAppActive(nextState === "active");
+      if (nextState === "active") {
+        void refreshFromNativePlayback().catch((playbackError) => {
+          setError(errorMessage(playbackError));
+        });
+      }
+    }
+
+    const subscription = AppState.addEventListener(
+      "change",
+      handleAppStateChange
+    );
+    return () => subscription.remove();
+  }, [refreshFromNativePlayback]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = () => {
       void stereodromeCore
         .audioGetStatus()
         .then(async (status) => {
+          if (cancelled) {
+            return;
+          }
+
           const queueSongId = currentSongRef.current?.id ?? null;
           const audioMovedToQueuedSong =
             status.current_song_id !== null &&
@@ -286,12 +320,31 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           }
 
           if (status.current_song_id) {
-            await stereodromeCore.reportPlaybackProgress({
-              song_id: status.current_song_id,
-              position_seconds: status.position,
-              duration_seconds: status.duration,
-              is_playing: status.is_playing,
-            });
+            const now = Date.now();
+            const previousReport = lastProgressReportRef.current;
+            const shouldReport =
+              !previousReport ||
+              previousReport.songId !== status.current_song_id ||
+              previousReport.isPlaying !== status.is_playing ||
+              Math.abs(previousReport.position - status.position) >= 15 ||
+              now - previousReport.at >= 15_000;
+
+            if (shouldReport) {
+              lastProgressReportRef.current = {
+                at: now,
+                isPlaying: status.is_playing,
+                position: status.position,
+                songId: status.current_song_id,
+              };
+              await stereodromeCore.reportPlaybackProgress({
+                song_id: status.current_song_id,
+                position_seconds: status.position,
+                duration_seconds: status.duration,
+                is_playing: status.is_playing,
+              });
+            }
+          } else {
+            lastProgressReportRef.current = null;
           }
 
           const settings = audioProcessingSettingsRef.current;
@@ -330,16 +383,37 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           }
         })
         .catch((playbackError) => {
-          setError(errorMessage(playbackError));
+          if (!cancelled) {
+            setError(errorMessage(playbackError));
+          }
+        })
+        .finally(() => {
+          if (cancelled) {
+            return;
+          }
+          const delay = isPlayingRef.current
+            ? isAppActive
+              ? 1_000
+              : 5_000
+            : currentSongRef.current
+              ? 5_000
+              : 15_000;
+          timeout = setTimeout(poll, delay);
         });
-    }, 1_000);
+    };
+
+    poll();
 
     return () => {
-      clearInterval(interval);
+      cancelled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
     };
   }, [
     applyQueueState,
     handlePlaybackEnded,
+    isAppActive,
     prepareNextPlayback,
     updateAudioStatus,
   ]);

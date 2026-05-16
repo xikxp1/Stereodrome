@@ -154,6 +154,7 @@ export function SettingsScreen({ category }: { category?: string }) {
   const syncStatus = useQuery({
     queryKey: librarySyncStatusQueryKey,
     queryFn: stereodromeCore.getLibrarySyncStatus,
+    enabled: selectedCategory === "sync",
     refetchInterval: (query) => (query.state.data?.active_job ? 2000 : false),
   });
   const scanStatus = useQuery({
@@ -164,10 +165,13 @@ export function SettingsScreen({ category }: { category?: string }) {
   const cacheStats = useQuery({
     queryKey: ["audio-cache-stats"],
     queryFn: stereodromeCore.getAudioCacheStats,
+    enabled: selectedCategory === "cache",
   });
   const audioSettings = useQuery({
     queryKey: ["audio-processing-settings"],
     queryFn: stereodromeCore.getAudioProcessingSettings,
+    enabled:
+      selectedCategory === "playback" || selectedCategory === "normalization",
   });
 
   function openTextEdit(config: TextEditConfig) {
