@@ -251,6 +251,9 @@ export const stereodromeCore = {
   getAudioCacheStats(): Promise<CacheStats> {
     return invokeJson("getAudioCacheStats");
   },
+  getOfflineSongIds(): Promise<string[]> {
+    return invokeJson("getOfflineSongIds");
+  },
   setMaxCacheSize(maxSize: number): Promise<CacheStats> {
     return invokeJson("setMaxCacheSize", maxSize);
   },

@@ -2,7 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
 import { usePlayback } from "@/context/PlaybackContext";
+import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
+import { visibleAlbums, visibleSongs } from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function ArtistScreen({
@@ -13,24 +15,48 @@ export function ArtistScreen({
 }) {
   const view = useViewStack();
   const playback = usePlayback();
+  const stereodrome = useStereodrome();
   const albums = useQuery({
     queryKey: ["artist-albums", artistId],
     queryFn: () => stereodromeCore.getAlbums(artistId),
     enabled: !!artistId,
   });
+  const songs = useQuery({
+    queryKey: ["artist-songs", artistId],
+    queryFn: () => stereodromeCore.getSongs(undefined, artistId),
+    enabled: !!artistId && stereodrome.offlineMode,
+  });
+  const shownAlbums = visibleAlbums(
+    albums.data ?? [],
+    songs.data ?? [],
+    stereodrome.offlineMode,
+    stereodrome.offlineSongIds
+  );
+  const isLoading =
+    albums.isLoading || (stereodrome.offlineMode && songs.isLoading);
 
   async function playAlbum(albumId: string) {
-    const songs = await stereodromeCore.getSongs(albumId);
-    if (songs.length > 0) {
-      await playback.playSong(songs[0], songs);
+    const albumSongs = visibleSongs(
+      await stereodromeCore.getSongs(albumId),
+      stereodrome.offlineMode,
+      stereodrome.offlineSongIds
+    );
+    if (albumSongs.length > 0) {
+      await playback.playSong(albumSongs[0], albumSongs);
       view.showNowPlaying();
     }
   }
 
   return (
     <SelectableList
-      empty={albums.isLoading ? "Loading albums" : "No albums"}
-      options={(albums.data ?? []).map((album) => ({
+      empty={
+        isLoading
+          ? "Loading albums"
+          : stereodrome.offlineMode
+            ? "No offline albums"
+            : "No albums"
+      }
+      options={shownAlbums.map((album) => ({
         label: album.name,
         sublabel: album.year ? String(album.year) : undefined,
         onSelect: () =>

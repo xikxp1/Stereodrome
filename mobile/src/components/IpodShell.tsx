@@ -29,7 +29,7 @@ export function IpodShell() {
   const playback = usePlayback();
   const stereodrome = useStereodrome();
   const insets = useSafeAreaInsets();
-  const current = stereodrome.status.connected
+  const current = stereodrome.hasConfiguredServer
     ? view.current
     : { name: "connect" as const, title: "Connect" };
   const navigationOffset = view.transitionDirection === "back" ? -24 : 24;

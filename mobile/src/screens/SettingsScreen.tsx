@@ -289,6 +289,47 @@ export function SettingsScreen({ category }: { category?: string }) {
   }
 
   function syncOptions(): SelectableOption[] {
+    const syncActions = stereodrome.status.connected
+      ? [
+          {
+            kind: "action" as const,
+            label: "Start scan",
+            sublabel:
+              busyAction === "scan"
+                ? "Starting..."
+                : scanStatus.data?.scanning
+                  ? formatScanStatus(scanStatus.data)
+                  : "Invoke Subsonic scan",
+            onSelect: () => runStartScan(),
+          },
+          {
+            kind: "action" as const,
+            label: "Incremental sync",
+            sublabel:
+              busyAction === "incremental"
+                ? "Syncing..."
+                : `Last: ${formatTimestamp(syncStatus.data?.incremental.last_success_at)}`,
+            onSelect: () => runSync("incremental"),
+          },
+          {
+            kind: "action" as const,
+            label: "Full sync",
+            sublabel:
+              busyAction === "full"
+                ? "Syncing..."
+                : `Last: ${formatTimestamp(syncStatus.data?.full_reconcile.last_success_at)}`,
+            onSelect: () => runSync("full"),
+          },
+        ]
+      : [
+          {
+            kind: "info" as const,
+            label: "Offline Mode",
+            sublabel: "Reconnect to sync library",
+            onSelect: () => stereodrome.refreshStatus(),
+          },
+        ];
+
     return [
       {
         kind: "info",
@@ -303,35 +344,7 @@ export function SettingsScreen({ category }: { category?: string }) {
             queryKey: librarySyncStatusQueryKey,
           }),
       },
-      {
-        kind: "action",
-        label: "Start scan",
-        sublabel:
-          busyAction === "scan"
-            ? "Starting..."
-            : scanStatus.data?.scanning
-              ? formatScanStatus(scanStatus.data)
-              : "Invoke Subsonic scan",
-        onSelect: () => runStartScan(),
-      },
-      {
-        kind: "action",
-        label: "Incremental sync",
-        sublabel:
-          busyAction === "incremental"
-            ? "Syncing..."
-            : `Last: ${formatTimestamp(syncStatus.data?.incremental.last_success_at)}`,
-        onSelect: () => runSync("incremental"),
-      },
-      {
-        kind: "action",
-        label: "Full sync",
-        sublabel:
-          busyAction === "full"
-            ? "Syncing..."
-            : `Last: ${formatTimestamp(syncStatus.data?.full_reconcile.last_success_at)}`,
-        onSelect: () => runSync("full"),
-      },
+      ...syncActions,
       ...(syncStatus.data?.incremental.last_error
         ? [
             {
@@ -422,6 +435,7 @@ export function SettingsScreen({ category }: { category?: string }) {
             await queryClient.invalidateQueries({
               queryKey: ["audio-cache-stats"],
             });
+            await stereodrome.refreshOfflineSongIds();
             setMessage("Cache cleared");
           });
         },

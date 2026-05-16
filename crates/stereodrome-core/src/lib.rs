@@ -780,6 +780,24 @@ impl StereodromeCore {
         })
     }
 
+    pub fn get_offline_song_ids(&self) -> CoreResult<Vec<String>> {
+        let conn = Connection::open(&self.db_path)?;
+        let mut stmt = conn.prepare("SELECT id FROM songs ORDER BY title COLLATE NOCASE")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let library_song_ids = rows.collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
+
+        let mut song_ids = Vec::new();
+        for song_id in library_song_ids {
+            if self.cached_song_path(&song_id)?.is_some() {
+                song_ids.push(song_id);
+            }
+        }
+
+        Ok(song_ids)
+    }
+
     pub fn set_max_cache_size(&self, max_size: u64) -> CoreResult<CacheStats> {
         let max_size = max_size.clamp(500 * 1024 * 1024, 50 * 1024 * 1024 * 1024);
         self.set_setting("max_cache_size", &max_size.to_string())?;
@@ -1879,6 +1897,43 @@ mod tests {
             Some(path_to_file_uri(&cache_path).as_str())
         );
 
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn offline_song_ids_include_only_cached_library_songs() {
+        let data_dir = unique_temp_dir("offline-song-ids");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let conn = Connection::open(&core.db_path).expect("open test db");
+        conn.execute(
+            "INSERT INTO artists (id, name, synced_at) VALUES ('artist', 'Artist', 'now')",
+            [],
+        )
+        .expect("insert artist");
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, synced_at)
+             VALUES ('album', 'artist', 'Album', 'now')",
+            [],
+        )
+        .expect("insert album");
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, synced_at)
+             VALUES
+                ('cached-song', 'album', 'artist', 'Cached Song', 'now'),
+                ('uncached-song', 'album', 'artist', 'Uncached Song', 'now')",
+            [],
+        )
+        .expect("insert songs");
+        let cache_path = core
+            .audio_cache_path("cached-song", MOBILE_PLAYBACK_FORMAT)
+            .expect("cache path");
+        std::fs::write(cache_path, b"cached audio").expect("write cache file");
+
+        let song_ids = core
+            .get_offline_song_ids()
+            .expect("offline song ids load");
+
+        assert_eq!(song_ids, vec!["cached-song"]);
         std::fs::remove_dir_all(data_dir).ok();
     }
 

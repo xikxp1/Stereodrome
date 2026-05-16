@@ -1,9 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
+import { useStereodrome } from "@/context/StereodromeContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function DownloadsScreen() {
+  const stereodrome = useStereodrome();
   const queryClient = useQueryClient();
   const cacheStats = useQuery({
     queryKey: ["audio-cache-stats"],
@@ -12,6 +14,7 @@ export function DownloadsScreen() {
 
   async function refreshCache() {
     await queryClient.invalidateQueries({ queryKey: ["audio-cache-stats"] });
+    await stereodrome.refreshOfflineSongIds();
   }
 
   return (
@@ -25,14 +28,18 @@ export function DownloadsScreen() {
           )}`,
           onSelect: refreshCache,
         },
-        {
-          label: "Prefetch Next",
-          sublabel: "Download upcoming queue item",
-          onSelect: async () => {
-            await stereodromeCore.prefetchNext();
-            await refreshCache();
-          },
-        },
+        ...(stereodrome.offlineMode
+          ? []
+          : [
+              {
+                label: "Prefetch Next",
+                sublabel: "Download upcoming queue item",
+                onSelect: async () => {
+                  await stereodromeCore.prefetchNext();
+                  await refreshCache();
+                },
+              },
+            ]),
         {
           label: "Clear Audio Cache",
           sublabel: `${cacheStats.data?.file_count ?? 0} cached files`,

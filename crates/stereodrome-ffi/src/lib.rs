@@ -371,6 +371,7 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(core.get_stream_uri(song_id))
         }
         "getAudioCacheStats" => json_result(core.get_audio_cache_stats()),
+        "getOfflineSongIds" => json_result(core.get_offline_song_ids()),
         "setMaxCacheSize" => {
             let max_size = parse_payload::<u64>(payload)?;
             json_result(core.set_max_cache_size(max_size))

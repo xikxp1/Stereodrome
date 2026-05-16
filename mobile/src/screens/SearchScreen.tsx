@@ -5,7 +5,9 @@ import { useQuery } from "@tanstack/react-query";
 import { SelectableList } from "@/components/SelectableList";
 import { colors } from "@/components/theme";
 import { usePlayback } from "@/context/PlaybackContext";
+import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
+import { visibleSearchResults, visibleSongs } from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function SearchScreen() {
@@ -13,11 +15,17 @@ export function SearchScreen() {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const playback = usePlayback();
+  const stereodrome = useStereodrome();
   const view = useViewStack();
   const results = useQuery({
     queryKey: ["search", debouncedQuery],
     queryFn: () => stereodromeCore.searchLibrary(debouncedQuery, 20),
     enabled: debouncedQuery.trim().length > 1,
+  });
+  const songs = useQuery({
+    queryKey: ["songs"],
+    queryFn: () => stereodromeCore.getSongs(),
+    enabled: stereodrome.offlineMode,
   });
 
   useEffect(() => {
@@ -33,22 +41,35 @@ export function SearchScreen() {
   }, [query]);
 
   async function playAlbum(albumId: string) {
-    const songs = await stereodromeCore.getSongs(albumId);
-    if (songs.length > 0) {
-      await playback.playSong(songs[0], songs);
+    const albumSongs = visibleSongs(
+      await stereodromeCore.getSongs(albumId),
+      stereodrome.offlineMode,
+      stereodrome.offlineSongIds
+    );
+    if (albumSongs.length > 0) {
+      await playback.playSong(albumSongs[0], albumSongs);
       view.showNowPlaying();
     }
   }
 
   async function playArtist(artistId: string) {
-    const songs = await stereodromeCore.getSongs(undefined, artistId);
-    if (songs.length > 0) {
-      await playback.playSong(songs[0], songs);
+    const artistSongs = visibleSongs(
+      await stereodromeCore.getSongs(undefined, artistId),
+      stereodrome.offlineMode,
+      stereodrome.offlineSongIds
+    );
+    if (artistSongs.length > 0) {
+      await playback.playSong(artistSongs[0], artistSongs);
       view.showNowPlaying();
     }
   }
 
-  const data = results.data;
+  const data = visibleSearchResults(
+    results.data,
+    songs.data ?? [],
+    stereodrome.offlineMode,
+    stereodrome.offlineSongIds
+  );
   const options = [
     ...(data?.songs ?? []).map((song) => ({
       label: song.title,
@@ -99,7 +120,11 @@ export function SearchScreen() {
         </Pressable>
       </View>
       <SelectableList
-        empty={results.isLoading ? "Searching" : "Type to search"}
+        empty={
+          results.isLoading || (stereodrome.offlineMode && songs.isLoading)
+            ? "Searching"
+            : "Type to search"
+        }
         options={options}
       />
     </View>

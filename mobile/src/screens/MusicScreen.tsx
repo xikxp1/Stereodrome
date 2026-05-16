@@ -1,7 +1,9 @@
 import { SelectableList } from "@/components/SelectableList";
+import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 
 export function MusicScreen() {
+  const stereodrome = useStereodrome();
   const view = useViewStack();
 
   return (
@@ -19,10 +21,15 @@ export function MusicScreen() {
           label: "Songs",
           onSelect: () => view.push({ name: "songs", title: "Songs" }),
         },
-        {
-          label: "Playlists",
-          onSelect: () => view.push({ name: "playlists", title: "Playlists" }),
-        },
+        ...(stereodrome.offlineMode
+          ? []
+          : [
+              {
+                label: "Playlists",
+                onSelect: () =>
+                  view.push({ name: "playlists", title: "Playlists" }),
+              },
+            ]),
       ]}
     />
   );
