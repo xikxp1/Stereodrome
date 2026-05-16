@@ -28,7 +28,7 @@
     openMiniPlayer,
   } from "$lib/api/commands";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { emit } from "@tauri-apps/api/event";
+  import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
   import {
     availableMonitors,
     currentMonitor,
@@ -100,10 +100,16 @@
   let lastCoverArtId = $state<string | null>(null);
   let loadedLibraryAccountKey = $state<string | null>(null);
   let offlineSongIds = $state<Set<string>>(new Set());
+  let offlineSongIdsRefreshTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const MINI_PLAYER_WIDTH = 320;
   const MINI_PLAYER_HEIGHT = 72;
   const MINI_PLAYER_MARGIN = 8;
+  const OFFLINE_SONG_IDS_REFRESH_DEBOUNCE_MS = 200;
+
+  interface AudioCacheChangedEvent {
+    reason: "updated" | "cleared" | "evicted";
+  }
 
   interface LogicalMonitorBounds {
     x: number;
@@ -153,6 +159,34 @@
     };
     window.addEventListener("open-settings", handler);
     return () => window.removeEventListener("open-settings", handler);
+  });
+
+  $effect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+
+    listen<AudioCacheChangedEvent>("audio-cache-changed", () => {
+      scheduleOfflineSongIdsRefresh();
+    })
+      .then((listener) => {
+        if (disposed) {
+          listener();
+          return;
+        }
+        unlisten = listener;
+      })
+      .catch((e) => {
+        error(`Failed to listen for audio cache changes: ${e}`);
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+      if (offlineSongIdsRefreshTimeout) {
+        clearTimeout(offlineSongIdsRefreshTimeout);
+        offlineSongIdsRefreshTimeout = null;
+      }
+    };
   });
 
   $effect(() => {
@@ -230,6 +264,36 @@
       loadError = e instanceof Error ? e : new Error(String(e));
     } finally {
       isLoading = false;
+    }
+  }
+
+  function scheduleOfflineSongIdsRefresh() {
+    if (!connection.status.server_url) return;
+
+    if (offlineSongIdsRefreshTimeout) {
+      clearTimeout(offlineSongIdsRefreshTimeout);
+    }
+
+    offlineSongIdsRefreshTimeout = setTimeout(() => {
+      offlineSongIdsRefreshTimeout = null;
+      void refreshOfflineSongIds();
+    }, OFFLINE_SONG_IDS_REFRESH_DEBOUNCE_MS);
+  }
+
+  async function refreshOfflineSongIds() {
+    const accountKey = configuredAccountKey;
+    if (!accountKey) {
+      offlineSongIds = new Set();
+      return;
+    }
+
+    try {
+      const offlineSongIdData = await getOfflineSongIds();
+      if (configuredAccountKey === accountKey) {
+        offlineSongIds = new Set(offlineSongIdData);
+      }
+    } catch (e) {
+      error(`Failed to refresh offline song IDs: ${e}`);
     }
   }
 

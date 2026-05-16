@@ -62,7 +62,10 @@ pub async fn set_max_cache_size(app_handle: AppHandle, size: u64) -> AppResult<C
 
     // Enforce new limit (AudioCache::new reads the size we just saved to the store)
     let cache = AudioCache::new(&app_handle)?;
-    cache.enforce_size_limit()?;
+    let evicted = cache.enforce_size_limit()?;
+    if evicted {
+        cache.emit_changed("evicted");
+    }
 
     // Return updated stats
     cache.get_stats()

@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use filetime::FileTime;
 use log::{debug, warn};
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -23,6 +23,12 @@ pub const MIN_CACHE_SIZE: u64 = 500 * 1024 * 1024;
 pub const MAX_CACHE_SIZE: u64 = 50 * 1024 * 1024 * 1024;
 pub const STORE_FILE: &str = "settings.json";
 pub const KEY_MAX_CACHE_SIZE: &str = "max_cache_size";
+pub const AUDIO_CACHE_CHANGED_EVENT: &str = "audio-cache-changed";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioCacheChangedEvent {
+    pub reason: &'static str,
+}
 
 /// Read the configured max cache size from settings store
 fn read_max_cache_size(app_handle: &AppHandle) -> u64 {
@@ -53,6 +59,7 @@ static PREFETCH_IN_PROGRESS: std::sync::LazyLock<
 
 /// Audio file cache with LRU eviction
 pub struct AudioCache {
+    app_handle: AppHandle,
     cache_dir: PathBuf,
     max_size: u64,
 }
@@ -68,9 +75,16 @@ impl AudioCache {
         let cache_dir = data_dir.join("audio_cache");
         fs::create_dir_all(&cache_dir)?;
         Ok(Self {
+            app_handle: app_handle.clone(),
             cache_dir,
             max_size,
         })
+    }
+
+    pub(crate) fn emit_changed(&self, reason: &'static str) {
+        let _ = self
+            .app_handle
+            .emit(AUDIO_CACHE_CHANGED_EVENT, AudioCacheChangedEvent { reason });
     }
 
     /// Get the cache file path for a song
@@ -128,6 +142,7 @@ impl AudioCache {
             if let Err(e) = self.enforce_size_limit() {
                 warn!("Failed to enforce cache size limit: {}", e);
             }
+            self.emit_changed("updated");
         }
 
         Ok(bytes)
@@ -142,14 +157,14 @@ impl AudioCache {
     }
 
     /// Enforce the maximum cache size by removing least recently accessed files
-    pub fn enforce_size_limit(&self) -> AppResult<()> {
+    pub fn enforce_size_limit(&self) -> AppResult<bool> {
         let mut entries = self.get_cache_entries()?;
 
         // Calculate total size
         let total_size: u64 = entries.iter().map(|e| e.size).sum();
 
         if total_size <= self.max_size {
-            return Ok(());
+            return Ok(false);
         }
 
         // Sort by access time (oldest first)
@@ -157,6 +172,7 @@ impl AudioCache {
 
         // Remove files until under the limit
         let mut current_size = total_size;
+        let mut removed_any = false;
         for entry in entries {
             if current_size <= self.max_size {
                 break;
@@ -166,10 +182,11 @@ impl AudioCache {
                 warn!("Failed to remove cached file {:?}: {}", entry.path, e);
             } else {
                 current_size = current_size.saturating_sub(entry.size);
+                removed_any = true;
             }
         }
 
-        Ok(())
+        Ok(removed_any)
     }
 
     /// Get statistics about the cache
@@ -188,10 +205,16 @@ impl AudioCache {
     /// Clear all cached audio files
     pub fn clear(&self) -> AppResult<()> {
         let entries = self.get_cache_entries()?;
+        let mut removed_any = false;
         for entry in entries {
             if let Err(e) = fs::remove_file(&entry.path) {
                 warn!("Failed to remove cached file {:?}: {}", entry.path, e);
+            } else {
+                removed_any = true;
             }
+        }
+        if removed_any {
+            self.emit_changed("cleared");
         }
         Ok(())
     }
