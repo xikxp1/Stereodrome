@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use log::warn;
 use ringbuf::HeapCons;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -268,20 +269,42 @@ impl AudioPlayer {
                 if playback_finished {
                     state_handle.clear_finished_state();
 
-                    if let Some(media_controls) = app_handle.try_state::<MediaControlsManager>() {
-                        media_controls.clear();
-                    }
-
-                    if let Some(tray_manager) = app_handle.try_state::<TrayManager>() {
-                        tray_manager.update_song_info("", "");
-                        tray_manager.update_playback_state(false);
-                    }
-
                     last_song_id = None;
                     last_is_playing = false;
                     last_segment_idx = 0;
 
-                    let _ = app_handle.emit("playback-ended", ());
+                    let app = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match crate::commands::playback::handle_playback_finished(&app).await {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                if let Some(media_controls) =
+                                    app.try_state::<MediaControlsManager>()
+                                {
+                                    media_controls.clear();
+                                }
+
+                                if let Some(tray_manager) = app.try_state::<TrayManager>() {
+                                    tray_manager.update_song_info("", "");
+                                    tray_manager.update_playback_state(false);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to advance playback after track ended: {e}");
+                                if let Some(media_controls) =
+                                    app.try_state::<MediaControlsManager>()
+                                {
+                                    media_controls.clear();
+                                }
+
+                                if let Some(tray_manager) = app.try_state::<TrayManager>() {
+                                    tray_manager.update_song_info("", "");
+                                    tray_manager.update_playback_state(false);
+                                }
+                                let _ = app.emit("playback-ended", ());
+                            }
+                        }
+                    });
                     continue;
                 }
 

@@ -1,6 +1,7 @@
 use log::{info, warn};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use std::sync::atomic::Ordering;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::audio::binaural::BinauralPreset;
 use crate::audio::compressor::DynamicsPreset;
@@ -282,6 +283,44 @@ pub(crate) async fn play_song_by_id(
     let _ = state.client.scrobble(song_id, None, Some(false)).await;
 
     Ok(())
+}
+
+/// Advance playback after the audio thread reports that the current track finished.
+/// Gapless segment changes and crossfade handoffs advance earlier in their own paths;
+/// this handles the normal sink-ended case in the backend so queue progression does not
+/// depend on a frontend window being alive.
+pub async fn handle_playback_finished(app_handle: &AppHandle) -> AppResult<bool> {
+    let state: State<'_, AppState> = app_handle.state();
+
+    if state
+        .navigating
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(true);
+    }
+
+    let result = async {
+        let next_song = {
+            let mut queue = state.queue.lock_recover();
+            queue.next(false).map(|item| item.song_id.clone())
+        };
+
+        persist_and_emit(&state, app_handle);
+
+        if let Some(song_id) = next_song {
+            play_song_by_id(app_handle, &state, &song_id).await?;
+            Ok(true)
+        } else {
+            let _ = app_handle.emit("queue-ended", ());
+            let _ = app_handle.emit("playback-ended", ());
+            Ok(false)
+        }
+    }
+    .await;
+
+    state.navigating.store(false, Ordering::SeqCst);
+    result
 }
 
 #[tauri::command]
