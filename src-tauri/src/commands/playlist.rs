@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -201,7 +203,7 @@ pub async fn create_playlist(
     name: String,
     song_ids: Option<Vec<String>>,
 ) -> AppResult<Playlist> {
-    let ids = song_ids.unwrap_or_default();
+    let ids = playlist_song_ids_to_add(song_ids.unwrap_or_default(), &HashSet::new());
     let detail = state.client.create_playlist(&name, ids).await?;
     let info = &detail.info;
 
@@ -300,19 +302,13 @@ pub async fn add_songs_to_playlist(
     playlist_id: String,
     song_ids: Vec<String>,
 ) -> AppResult<()> {
-    // Filter out songs already in the playlist
-    let new_song_ids: Vec<String> = {
-        let db = state.db.lock_recover();
-        let mut stmt = db.prepare("SELECT song_id FROM playlist_songs WHERE playlist_id = ?1")?;
-        let existing: std::collections::HashSet<String> = stmt
-            .query_map([&playlist_id], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        song_ids
-            .into_iter()
-            .filter(|id| !existing.contains(id))
-            .collect()
-    };
+    let playlist = state.client.get_playlist(&playlist_id).await?;
+    let existing_song_ids: HashSet<String> = playlist
+        .entries
+        .iter()
+        .map(|entry| entry.id.clone())
+        .collect();
+    let new_song_ids = playlist_song_ids_to_add(song_ids, &existing_song_ids);
 
     if new_song_ids.is_empty() {
         return Ok(());
@@ -328,6 +324,22 @@ pub async fn add_songs_to_playlist(
     refresh_playlist_cache(&state, &playlist_id).await?;
 
     Ok(())
+}
+
+fn playlist_song_ids_to_add(
+    song_ids: Vec<String>,
+    existing_song_ids: &HashSet<String>,
+) -> Vec<String> {
+    let mut seen_song_ids = existing_song_ids.clone();
+
+    song_ids
+        .into_iter()
+        .fold(Vec::new(), |mut output, song_id| {
+            if !song_id.trim().is_empty() && seen_song_ids.insert(song_id.clone()) {
+                output.push(song_id);
+            }
+            output
+        })
 }
 
 /// Remove a song from a playlist by position on server and refresh local cache
@@ -425,4 +437,53 @@ async fn refresh_playlist_cache(state: &State<'_, AppState>, playlist_id: &str) 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::playlist_song_ids_to_add;
+    use std::collections::HashSet;
+
+    #[test]
+    fn playlist_song_ids_to_add_skips_duplicate_entries() {
+        let song_ids = playlist_song_ids_to_add(
+            vec![
+                "song-a".to_string(),
+                "song-b".to_string(),
+                "song-a".to_string(),
+            ],
+            &HashSet::new(),
+        );
+
+        assert_eq!(song_ids, ["song-a", "song-b"]);
+    }
+
+    #[test]
+    fn playlist_song_ids_to_add_ignores_empty_entries() {
+        let song_ids = playlist_song_ids_to_add(
+            vec![
+                "song-a".to_string(),
+                "".to_string(),
+                "  ".to_string(),
+                "song-b".to_string(),
+            ],
+            &HashSet::new(),
+        );
+
+        assert_eq!(song_ids, ["song-a", "song-b"]);
+    }
+
+    #[test]
+    fn playlist_song_ids_to_add_skips_existing_playlist_entries() {
+        let song_ids = playlist_song_ids_to_add(
+            vec![
+                "song-a".to_string(),
+                "song-b".to_string(),
+                "song-c".to_string(),
+            ],
+            &HashSet::from(["song-a".to_string(), "song-c".to_string()]),
+        );
+
+        assert_eq!(song_ids, ["song-b"]);
+    }
 }

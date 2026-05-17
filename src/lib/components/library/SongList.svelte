@@ -6,6 +6,9 @@
   import { CircleAlert, Download, Music, Volume2 } from "lucide-svelte";
   import { showSongContextMenu } from "$lib/services/contextMenu";
 
+  type SongRowKey = string;
+  type PlaylistSong = Song & { position?: number };
+
   interface Props {
     songs?: Song[];
     isLoading?: boolean;
@@ -53,24 +56,27 @@
   const virtualItems = $derived($virtualizer.getVirtualItems());
   const totalSize = $derived($virtualizer.getTotalSize());
 
-  let selectedSongIds = $state<string[]>([]);
-  let orderedSelectedSongIds = $state<string[]>([]);
-  let selectionAnchorId = $state<string | null>(null);
+  let selectedSongKeys = $state<SongRowKey[]>([]);
+  let orderedSelectedSongKeys = $state<SongRowKey[]>([]);
+  let selectionAnchorKey = $state<SongRowKey | null>(null);
   let pendingInternalSelectedSongId = $state<string | null>(null);
   let lastObservedSelectedSongId = $state<string | null | undefined>(undefined);
 
-  const songById = $derived.by(
-    () => new Map(songs.map((song) => [song.id, song] as const))
+  const songByKey = $derived.by(
+    () =>
+      new Map(
+        songs.map((song, index) => [getSongRowKey(song, index), song] as const)
+      )
   );
   const selectedSongLookup = $derived.by(
     () =>
       Object.fromEntries(
-        selectedSongIds.map((songId) => [songId, true] as const)
-      ) as Record<string, boolean>
+        selectedSongKeys.map((songKey) => [songKey, true] as const)
+      ) as Record<SongRowKey, boolean>
   );
   const selectedSongs = $derived.by(() =>
-    orderedSelectedSongIds
-      .map((songId) => songById.get(songId))
+    orderedSelectedSongKeys
+      .map((songKey) => songByKey.get(songKey))
       .filter((song): song is Song => song !== undefined)
   );
 
@@ -110,14 +116,33 @@
     );
   }
 
+  function getSongRowKey(song: Song, index: number): SongRowKey {
+    const position = (song as PlaylistSong).position;
+
+    if (playlistId && typeof position === "number") {
+      return `playlist-position:${position}`;
+    }
+
+    if (playlistId) {
+      return `playlist-row:${index}:${song.id}`;
+    }
+
+    return song.id;
+  }
+
+  function getFirstSongRowKeyById(songId: string): SongRowKey | null {
+    const index = songs.findIndex((song) => song.id === songId);
+    return index >= 0 ? getSongRowKey(songs[index], index) : null;
+  }
+
   function replaceSelection(
-    nextSelectedSongIds: string[],
-    nextOrderedSongIds: string[],
-    nextAnchorId: string | null
+    nextSelectedSongKeys: SongRowKey[],
+    nextOrderedSongKeys: SongRowKey[],
+    nextAnchorKey: SongRowKey | null
   ) {
-    selectedSongIds = nextSelectedSongIds;
-    orderedSelectedSongIds = nextOrderedSongIds;
-    selectionAnchorId = nextAnchorId;
+    selectedSongKeys = nextSelectedSongKeys;
+    orderedSelectedSongKeys = nextOrderedSongKeys;
+    selectionAnchorKey = nextAnchorKey;
   }
 
   function focusSong(song: Song) {
@@ -129,78 +154,97 @@
     onSelect(song);
   }
 
-  function getSelectedIdsInListOrder(songIds: string[]) {
+  function getSelectedKeysInListOrder(songKeys: SongRowKey[]) {
     return songs
-      .filter((song) => songIds.includes(song.id))
-      .map((song) => song.id);
+      .map((song, index) => getSongRowKey(song, index))
+      .filter((songKey) => songKeys.includes(songKey));
   }
 
-  function selectOnlySong(song: Song) {
-    replaceSelection([song.id], [song.id], song.id);
+  function selectOnlySong(song: Song, index: number) {
+    const songKey = getSongRowKey(song, index);
+    replaceSelection([songKey], [songKey], songKey);
   }
 
-  function toggleSongSelection(song: Song) {
-    if (selectedSongIds.includes(song.id)) {
+  function toggleSongSelection(song: Song, index: number) {
+    const songKey = getSongRowKey(song, index);
+
+    if (selectedSongKeys.includes(songKey)) {
       replaceSelection(
-        selectedSongIds.filter((songId) => songId !== song.id),
-        orderedSelectedSongIds.filter((songId) => songId !== song.id),
-        song.id
+        selectedSongKeys.filter((selectedKey) => selectedKey !== songKey),
+        orderedSelectedSongKeys.filter(
+          (selectedKey) => selectedKey !== songKey
+        ),
+        songKey
       );
       return;
     }
 
     replaceSelection(
-      getSelectedIdsInListOrder([...selectedSongIds, song.id]),
+      getSelectedKeysInListOrder([...selectedSongKeys, songKey]),
       [
-        ...orderedSelectedSongIds.filter((songId) => songId !== song.id),
-        song.id,
+        ...orderedSelectedSongKeys.filter(
+          (selectedKey) => selectedKey !== songKey
+        ),
+        songKey,
       ],
-      song.id
+      songKey
     );
   }
 
-  function getRangeSongIds(anchorId: string, targetId: string) {
-    const anchorIndex = songs.findIndex((song) => song.id === anchorId);
-    const targetIndex = songs.findIndex((song) => song.id === targetId);
+  function getRangeSongKeys(anchorKey: SongRowKey, targetKey: SongRowKey) {
+    const anchorIndex = songs.findIndex(
+      (song, index) => getSongRowKey(song, index) === anchorKey
+    );
+    const targetIndex = songs.findIndex(
+      (song, index) => getSongRowKey(song, index) === targetKey
+    );
 
     if (anchorIndex < 0 || targetIndex < 0) {
-      return [targetId];
+      return [targetKey];
     }
 
     const start = Math.min(anchorIndex, targetIndex);
     const end = Math.max(anchorIndex, targetIndex);
-    return songs.slice(start, end + 1).map((song) => song.id);
+    return songs
+      .slice(start, end + 1)
+      .map((song, offset) => getSongRowKey(song, start + offset));
   }
 
-  function selectSongRange(song: Song) {
-    const anchorId = selectionAnchorId ?? selectedSongId ?? song.id;
-    const rangeSongIds = getRangeSongIds(anchorId, song.id);
-    const nextOrderedSongIds = [
-      ...orderedSelectedSongIds.filter((songId) =>
-        rangeSongIds.includes(songId)
+  function selectSongRange(song: Song, index: number) {
+    const songKey = getSongRowKey(song, index);
+    const anchorKey =
+      selectionAnchorKey ??
+      (selectedSongId ? getFirstSongRowKeyById(selectedSongId) : null) ??
+      songKey;
+    const rangeSongKeys = getRangeSongKeys(anchorKey, songKey);
+    const nextOrderedSongKeys = [
+      ...orderedSelectedSongKeys.filter((selectedKey) =>
+        rangeSongKeys.includes(selectedKey)
       ),
-      ...rangeSongIds.filter((songId) => !selectedSongIds.includes(songId)),
+      ...rangeSongKeys.filter((songKey) => !selectedSongKeys.includes(songKey)),
     ];
 
-    replaceSelection(rangeSongIds, nextOrderedSongIds, anchorId);
+    replaceSelection(rangeSongKeys, nextOrderedSongKeys, anchorKey);
   }
 
   function collapseSelectionToSongId(songId: string | null) {
-    if (!songId || !songById.has(songId)) {
+    const songKey = songId ? getFirstSongRowKeyById(songId) : null;
+
+    if (!songKey) {
       replaceSelection([], [], null);
       return;
     }
 
-    replaceSelection([songId], [songId], songId);
+    replaceSelection([songKey], [songKey], songKey);
   }
 
-  function handleRowClick(event: MouseEvent, song: Song) {
+  function handleRowClick(event: MouseEvent, song: Song, index: number) {
     if (event.shiftKey) {
-      selectSongRange(song);
+      selectSongRange(song, index);
     } else if (event.metaKey || event.ctrlKey) {
-      toggleSongSelection(song);
+      toggleSongSelection(song, index);
     } else {
-      selectOnlySong(song);
+      selectOnlySong(song, index);
     }
 
     focusSong(song);
@@ -221,18 +265,22 @@
 
   function getPlaylistPositions(songsToRemove: Song[]) {
     return songsToRemove
-      .map((song) =>
-        typeof (song as Song & { position?: number }).position === "number"
-          ? (song as Song & { position: number }).position
-          : null
-      )
+      .map((song) => {
+        const position = (song as PlaylistSong).position;
+        return typeof position === "number" ? position : null;
+      })
       .filter((position): position is number => position !== null);
   }
 
-  async function handleRowContextMenu(e: MouseEvent, song: Song) {
+  async function handleRowContextMenu(
+    e: MouseEvent,
+    song: Song,
+    index: number
+  ) {
     e.preventDefault();
 
-    const isExistingSelection = !!selectedSongLookup[song.id];
+    const songKey = getSongRowKey(song, index);
+    const isExistingSelection = !!selectedSongLookup[songKey];
     const contextSelectedSongs = isExistingSelection
       ? selectedSongs.length > 0
         ? selectedSongs
@@ -240,7 +288,7 @@
       : [song];
 
     if (!isExistingSelection) {
-      selectOnlySong(song);
+      selectOnlySong(song, index);
     }
 
     focusSong(song);
@@ -301,26 +349,28 @@
   }
 
   $effect(() => {
-    const availableSongIds = new Set(songs.map((song) => song.id));
-    const nextSelectedSongIds = selectedSongIds.filter((songId) =>
-      availableSongIds.has(songId)
+    const availableSongKeys = new Set(
+      songs.map((song, index) => getSongRowKey(song, index))
     );
-    const nextOrderedSongIds = orderedSelectedSongIds.filter((songId) =>
-      availableSongIds.has(songId)
+    const nextSelectedSongKeys = selectedSongKeys.filter((songKey) =>
+      availableSongKeys.has(songKey)
     );
-    const nextAnchorId =
-      selectionAnchorId && availableSongIds.has(selectionAnchorId)
-        ? selectionAnchorId
+    const nextOrderedSongKeys = orderedSelectedSongKeys.filter((songKey) =>
+      availableSongKeys.has(songKey)
+    );
+    const nextAnchorKey =
+      selectionAnchorKey && availableSongKeys.has(selectionAnchorKey)
+        ? selectionAnchorKey
         : null;
 
-    if (!arraysEqual(selectedSongIds, nextSelectedSongIds)) {
-      selectedSongIds = nextSelectedSongIds;
+    if (!arraysEqual(selectedSongKeys, nextSelectedSongKeys)) {
+      selectedSongKeys = nextSelectedSongKeys;
     }
-    if (!arraysEqual(orderedSelectedSongIds, nextOrderedSongIds)) {
-      orderedSelectedSongIds = nextOrderedSongIds;
+    if (!arraysEqual(orderedSelectedSongKeys, nextOrderedSongKeys)) {
+      orderedSelectedSongKeys = nextOrderedSongKeys;
     }
-    if (selectionAnchorId !== nextAnchorId) {
-      selectionAnchorId = nextAnchorId;
+    if (selectionAnchorKey !== nextAnchorKey) {
+      selectionAnchorKey = nextAnchorKey;
     }
   });
 
@@ -404,12 +454,12 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="song-grid-row"
-              class:selected={!!selectedSongLookup[song.id]}
+              class:selected={!!selectedSongLookup[getSongRowKey(song, index)]}
               class:playing={playingSongId === song.id}
               class:even={index % 2 === 1}
-              onclick={(event) => handleRowClick(event, song)}
+              onclick={(event) => handleRowClick(event, song, index)}
               ondblclick={() => handleRowDoubleClick(song)}
-              oncontextmenu={(e) => handleRowContextMenu(e, song)}
+              oncontextmenu={(e) => handleRowContextMenu(e, song, index)}
               style="position: absolute; top: 0; left: 0; width: 100%; height: {row.size}px; transform: translateY({row.start}px);"
             >
               <div class="cell-track dimmed">

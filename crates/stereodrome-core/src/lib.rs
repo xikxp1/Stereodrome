@@ -4,7 +4,7 @@ mod models;
 pub mod queue;
 mod subsonic;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -637,6 +637,7 @@ impl StereodromeCore {
         song_ids: Vec<String>,
     ) -> CoreResult<Playlist> {
         let client = self.connected_client().await?;
+        let song_ids = playlist_song_ids_to_add(song_ids, &HashSet::new());
         let playlist = client
             .create_playlist(name, song_ids)
             .await
@@ -689,6 +690,18 @@ impl StereodromeCore {
         song_ids: Vec<String>,
     ) -> CoreResult<()> {
         let client = self.connected_client().await?;
+        let playlist = client
+            .get_playlist(&playlist_id)
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+        let existing_song_ids: HashSet<String> =
+            playlist.entry.iter().map(|song| song.id.clone()).collect();
+        let song_ids = playlist_song_ids_to_add(song_ids, &existing_song_ids);
+
+        if song_ids.is_empty() {
+            return Ok(());
+        }
+
         client
             .update_playlist(
                 playlist_id,
@@ -1785,6 +1798,20 @@ fn playlist_from_subsonic(playlist: submarine::data::Playlist) -> Playlist {
     }
 }
 
+fn playlist_song_ids_to_add(
+    song_ids: Vec<String>,
+    existing_song_ids: &HashSet<String>,
+) -> Vec<String> {
+    let mut seen_song_ids = existing_song_ids.clone();
+
+    song_ids.into_iter().fold(Vec::new(), |mut output, song_id| {
+        if !song_id.trim().is_empty() && seen_song_ids.insert(song_id.clone()) {
+            output.push(song_id);
+        }
+        output
+    })
+}
+
 fn sync_value(conn: &Connection, key: &str) -> CoreResult<Option<String>> {
     conn.query_row(
         "SELECT value FROM sync_state WHERE key = ?1",
@@ -1851,9 +1878,11 @@ fn is_mobile_playback_cache_path(path: &Path) -> bool {
 mod tests {
     use super::{
         LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, StereodromeCore, path_to_file_uri,
-        prune_stale_library_rows, should_prefetch_large_cover_art, write_sync_value,
+        playlist_song_ids_to_add, prune_stale_library_rows, should_prefetch_large_cover_art,
+        write_sync_value,
     };
     use rusqlite::Connection;
+    use std::collections::HashSet;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1872,6 +1901,34 @@ mod tests {
         )));
         assert!(!should_prefetch_large_cover_art(Some(0)));
         assert!(!should_prefetch_large_cover_art(None));
+    }
+
+    #[test]
+    fn playlist_song_ids_to_add_skips_duplicate_entries() {
+        let song_ids = playlist_song_ids_to_add(
+            vec![
+                "song-a".to_string(),
+                "song-b".to_string(),
+                "song-a".to_string(),
+            ],
+            &HashSet::new(),
+        );
+
+        assert_eq!(song_ids, ["song-a", "song-b"]);
+    }
+
+    #[test]
+    fn playlist_song_ids_to_add_skips_existing_playlist_entries() {
+        let song_ids = playlist_song_ids_to_add(
+            vec![
+                "song-a".to_string(),
+                "song-b".to_string(),
+                "song-c".to_string(),
+            ],
+            &HashSet::from(["song-a".to_string(), "song-c".to_string()]),
+        );
+
+        assert_eq!(song_ids, ["song-b"]);
     }
 
     #[tokio::test]
