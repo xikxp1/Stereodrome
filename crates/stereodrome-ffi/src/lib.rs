@@ -9,8 +9,10 @@ use std::ffi::{CStr, CString, c_char};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use log::{Level, LevelFilter, Metadata, Record};
 use serde::Deserialize;
@@ -98,11 +100,12 @@ pub extern "C" fn stereodrome_core_set_log_callback(callback: Option<MobileLogCa
 }
 
 pub struct MobileCore {
-    core: StereodromeCore,
-    audio: AudioPlayer,
+    core: Arc<StereodromeCore>,
+    audio: Arc<AudioPlayer>,
     runtime: tokio::runtime::Runtime,
     data_dir: PathBuf,
     sync_state: Arc<Mutex<MobileSyncState>>,
+    monitor_running: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,13 +167,25 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
             AudioPlayer::new_with_spectrum(false),
             tokio::runtime::Runtime::new(),
         ) {
-            (Ok(core), Ok(audio), Ok(runtime)) => Box::into_raw(Box::new(MobileCore {
-                core,
-                audio,
-                runtime,
-                data_dir,
-                sync_state: Arc::new(Mutex::new(MobileSyncState::default())),
-            })),
+            (Ok(core), Ok(audio), Ok(runtime)) => {
+                let core = Arc::new(core);
+                let audio = Arc::new(audio);
+                let monitor_running = Arc::new(AtomicBool::new(true));
+                start_mobile_playback_monitor(
+                    Arc::clone(&core),
+                    Arc::clone(&audio),
+                    Arc::clone(&monitor_running),
+                );
+
+                Box::into_raw(Box::new(MobileCore {
+                    core,
+                    audio,
+                    runtime,
+                    data_dir,
+                    sync_state: Arc::new(Mutex::new(MobileSyncState::default())),
+                    monitor_running,
+                }))
+            }
             _ => ptr::null_mut(),
         }
     })) {
@@ -198,7 +213,8 @@ pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
         }
 
         unsafe {
-            let _ = Box::from_raw(core);
+            let mobile = Box::from_raw(core);
+            mobile.monitor_running.store(false, Ordering::SeqCst);
         }
     }));
 }
@@ -684,14 +700,209 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     "non-string panic payload".to_string()
 }
 
+fn start_mobile_playback_monitor(
+    core: Arc<StereodromeCore>,
+    audio: Arc<AudioPlayer>,
+    running: Arc<AtomicBool>,
+) {
+    thread::spawn(move || {
+        let runtime = match tokio::runtime::Runtime::new() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                log::warn!(
+                    target: "stereodrome_ffi",
+                    "Failed to start mobile playback monitor runtime: {error}"
+                );
+                return;
+            }
+        };
+
+        let state_handle = audio.state_handle();
+        let mut last_segment_idx = 0usize;
+        let mut last_report: Option<MobileProgressReport> = None;
+
+        while running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(100));
+
+            let (state, segment_idx) = state_handle.get_gapless_state();
+            let Some(song) = state.song.clone() else {
+                last_segment_idx = 0;
+                last_report = None;
+                continue;
+            };
+
+            if segment_idx < last_segment_idx {
+                last_segment_idx = 0;
+            }
+
+            if segment_idx > last_segment_idx {
+                last_segment_idx = segment_idx;
+                match core.play_next(Some(false)) {
+                    Ok(Some(next)) => {
+                        let progress = PlaybackProgress {
+                            song_id: next.song_id.clone(),
+                            position_seconds: 0.0,
+                            duration_seconds: next.duration as f64,
+                            is_playing: true,
+                        };
+                        let _ = runtime
+                            .block_on(async { core.report_playback_progress(progress).await });
+                        let _ = runtime
+                            .block_on(async { prepare_next_transition_from(&core, &audio).await });
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        log::warn!(
+                            target: "stereodrome_ffi",
+                            "Failed to advance queue after gapless transition: {error}"
+                        );
+                    }
+                }
+            }
+
+            report_mobile_progress(&runtime, &core, &mut last_report, &song.id, &state);
+
+            if state.is_playing
+                && state_handle.is_last_gapless_segment(segment_idx)
+                && !state_handle.is_crossfade_initiated()
+            {
+                match core.get_audio_processing_settings() {
+                    Ok(settings) if settings.crossfade_enabled => {
+                        let crossfade_window_seconds =
+                            settings.crossfade_duration_ms as f64 / 1000.0;
+                        let remaining = state.duration - state.position;
+                        if remaining <= crossfade_window_seconds && remaining > 0.5 {
+                            state_handle.set_crossfade_initiated(true);
+                            match runtime
+                                .block_on(async { crossfade_next_from(&core, &audio).await })
+                            {
+                                Ok(Some(_)) => {
+                                    let _ = runtime.block_on(async {
+                                        prepare_next_transition_from(&core, &audio).await
+                                    });
+                                }
+                                Ok(None) => state_handle.set_crossfade_initiated(false),
+                                Err(error) => {
+                                    state_handle.set_crossfade_initiated(false);
+                                    log::warn!(
+                                        target: "stereodrome_ffi",
+                                        "Failed to start mobile crossfade: {error}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        log::warn!(
+                            target: "stereodrome_ffi",
+                            "Failed to read mobile crossfade settings: {error}"
+                        );
+                    }
+                }
+            }
+
+            let playback_finished = state.duration > 0.0
+                && state.position >= state.duration - 0.2
+                && !state.is_playing
+                && !state_handle.is_crossfade_initiated();
+
+            if playback_finished {
+                state_handle.clear_finished_state();
+                last_segment_idx = 0;
+                last_report = None;
+
+                match core.play_next(Some(false)) {
+                    Ok(Some(_)) => {
+                        if let Err(error) = runtime.block_on(async {
+                            play_current_queue_item_from(&core, &audio, None).await
+                        }) {
+                            log::warn!(
+                                target: "stereodrome_ffi",
+                                "Failed to advance mobile playback after track ended: {error}"
+                            );
+                        }
+                        let _ = runtime
+                            .block_on(async { prepare_next_transition_from(&core, &audio).await });
+                    }
+                    Ok(None) => {
+                        let _ = core.save_playback_position(PlaybackProgress {
+                            song_id: song.id,
+                            position_seconds: 0.0,
+                            duration_seconds: state.duration,
+                            is_playing: false,
+                        });
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            target: "stereodrome_ffi",
+                            "Failed to advance mobile queue after track ended: {error}"
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
+struct MobileProgressReport {
+    at: Instant,
+    is_playing: bool,
+    position: f64,
+    song_id: String,
+}
+
+fn report_mobile_progress(
+    runtime: &tokio::runtime::Runtime,
+    core: &StereodromeCore,
+    last_report: &mut Option<MobileProgressReport>,
+    song_id: &str,
+    state: &stereodrome_audio::PlaybackState,
+) {
+    let now = Instant::now();
+    let should_report = last_report.as_ref().is_none_or(|previous| {
+        previous.song_id != song_id
+            || previous.is_playing != state.is_playing
+            || (previous.position - state.position).abs() >= 15.0
+            || now.duration_since(previous.at) >= Duration::from_secs(15)
+    });
+
+    if !should_report {
+        return;
+    }
+
+    *last_report = Some(MobileProgressReport {
+        at: now,
+        is_playing: state.is_playing,
+        position: state.position,
+        song_id: song_id.to_string(),
+    });
+
+    let progress = PlaybackProgress {
+        song_id: song_id.to_string(),
+        position_seconds: state.position,
+        duration_seconds: state.duration,
+        is_playing: state.is_playing,
+    };
+    let _ = runtime.block_on(async { core.report_playback_progress(progress).await });
+}
+
 async fn play_current_queue_item(
     mobile: &MobileCore,
     seek_position: Option<f64>,
 ) -> Result<stereodrome_audio::PlaybackStatus, String> {
-    let queue = mobile.core.get_queue().map_err(|e| e.to_string())?;
+    play_current_queue_item_from(&mobile.core, &mobile.audio, seek_position).await
+}
+
+async fn play_current_queue_item_from(
+    core: &StereodromeCore,
+    audio: &AudioPlayer,
+    seek_position: Option<f64>,
+) -> Result<stereodrome_audio::PlaybackStatus, String> {
+    let queue = core.get_queue().map_err(|e| e.to_string())?;
     let Some(index) = queue.current_index else {
-        mobile.audio.stop().map_err(|e| e.to_string())?;
-        return Ok(mobile.audio.get_status());
+        audio.stop().map_err(|e| e.to_string())?;
+        return Ok(audio.get_status());
     };
     let item = queue
         .items
@@ -699,10 +910,9 @@ async fn play_current_queue_item(
         .cloned()
         .ok_or_else(|| "current queue index is out of range".to_string())?;
 
-    let prepared = prepare_queue_item_audio(mobile, item).await?;
+    let prepared = prepare_queue_item_audio_from(core, item).await?;
 
-    mobile
-        .audio
+    audio
         .play(
             prepared.audio_data,
             prepared.metadata,
@@ -715,25 +925,31 @@ async fn play_current_queue_item(
         .map_err(|e| e.to_string())?;
 
     if let Some(position) = seek_position {
-        mobile.audio.seek(position).map_err(|e| e.to_string())?;
+        audio.seek(position).map_err(|e| e.to_string())?;
     }
 
-    Ok(mobile.audio.get_status())
+    Ok(audio.get_status())
 }
 
 async fn prepare_next_transition(mobile: &MobileCore) -> Result<(), String> {
-    let settings = mobile
-        .core
+    prepare_next_transition_from(&mobile.core, &mobile.audio).await
+}
+
+async fn prepare_next_transition_from(
+    core: &StereodromeCore,
+    audio: &AudioPlayer,
+) -> Result<(), String> {
+    let settings = core
         .get_audio_processing_settings()
         .map_err(|e| e.to_string())?;
     if !settings.gapless_enabled {
         return Ok(());
     }
-    if mobile.audio.get_status().current_song_id.is_none() {
+    if audio.get_status().current_song_id.is_none() {
         return Ok(());
     }
 
-    let queue = mobile.core.get_queue().map_err(|e| e.to_string())?;
+    let queue = core.get_queue().map_err(|e| e.to_string())?;
     if queue.repeat_mode == RepeatMode::One {
         return Ok(());
     }
@@ -743,25 +959,19 @@ async fn prepare_next_transition(mobile: &MobileCore) -> Result<(), String> {
     let Some(current) = queue.items.get(current_index) else {
         return Ok(());
     };
-    let Some(next) = mobile
-        .core
-        .peek_next_queue_item()
-        .map_err(|e| e.to_string())?
-    else {
+    let Some(next) = core.peek_next_queue_item().map_err(|e| e.to_string())? else {
         return Ok(());
     };
     if current.song_id == next.song_id
-        || !mobile
-            .core
+        || !core
             .songs_are_gapless_eligible(&current.song_id, &next.song_id)
             .map_err(|e| e.to_string())?
     {
         return Ok(());
     }
 
-    let prepared = prepare_queue_item_audio(mobile, next).await?;
-    mobile
-        .audio
+    let prepared = prepare_queue_item_audio_from(core, next).await?;
+    audio
         .append_gapless(
             prepared.audio_data,
             prepared.metadata,
@@ -775,18 +985,24 @@ async fn prepare_next_transition(mobile: &MobileCore) -> Result<(), String> {
 }
 
 async fn crossfade_next(mobile: &MobileCore) -> Result<Option<QueueState>, String> {
-    let settings = mobile
-        .core
+    if mobile.audio.is_crossfade_initiated() {
+        return Ok(None);
+    }
+    crossfade_next_from(&mobile.core, &mobile.audio).await
+}
+
+async fn crossfade_next_from(
+    core: &StereodromeCore,
+    audio: &AudioPlayer,
+) -> Result<Option<QueueState>, String> {
+    let settings = core
         .get_audio_processing_settings()
         .map_err(|e| e.to_string())?;
-    if !settings.crossfade_enabled
-        || mobile.audio.is_crossfade_initiated()
-        || !mobile.audio.get_status().is_playing
-    {
+    if !settings.crossfade_enabled || !audio.get_status().is_playing {
         return Ok(None);
     }
 
-    let queue = mobile.core.get_queue().map_err(|e| e.to_string())?;
+    let queue = core.get_queue().map_err(|e| e.to_string())?;
     if queue.repeat_mode == RepeatMode::One {
         return Ok(None);
     }
@@ -796,26 +1012,20 @@ async fn crossfade_next(mobile: &MobileCore) -> Result<Option<QueueState>, Strin
     let Some(current) = queue.items.get(current_index) else {
         return Ok(None);
     };
-    let Some(next) = mobile
-        .core
-        .peek_next_queue_item()
-        .map_err(|e| e.to_string())?
-    else {
+    let Some(next) = core.peek_next_queue_item().map_err(|e| e.to_string())? else {
         return Ok(None);
     };
 
     if settings.gapless_enabled
-        && mobile
-            .core
+        && core
             .songs_are_gapless_eligible(&current.song_id, &next.song_id)
             .map_err(|e| e.to_string())?
     {
         return Ok(None);
     }
 
-    let prepared = prepare_queue_item_audio(mobile, next).await?;
-    mobile
-        .audio
+    let prepared = prepare_queue_item_audio_from(core, next).await?;
+    audio
         .crossfade_play(CrossfadePlayRequest {
             audio_data: prepared.audio_data,
             metadata: prepared.metadata,
@@ -828,11 +1038,8 @@ async fn crossfade_next(mobile: &MobileCore) -> Result<Option<QueueState>, Strin
         })
         .map_err(|e| e.to_string())?;
 
-    mobile
-        .core
-        .play_next(Some(false))
-        .map_err(|e| e.to_string())?;
-    Ok(Some(mobile.core.get_queue().map_err(|e| e.to_string())?))
+    core.play_next(Some(false)).map_err(|e| e.to_string())?;
+    Ok(Some(core.get_queue().map_err(|e| e.to_string())?))
 }
 
 async fn apply_audio_settings(
@@ -844,7 +1051,8 @@ async fn apply_audio_settings(
     };
     let was_playing = status.is_playing;
     let position = status.position;
-    let next_status = play_current_queue_item(mobile, Some(position)).await?;
+    let next_status =
+        play_current_queue_item_from(&mobile.core, &mobile.audio, Some(position)).await?;
     if !was_playing {
         mobile.audio.pause().map_err(|e| e.to_string())?;
     }
@@ -865,12 +1073,11 @@ struct PreparedAudioItem {
     processing: AudioProcessing,
 }
 
-async fn prepare_queue_item_audio(
-    mobile: &MobileCore,
+async fn prepare_queue_item_audio_from(
+    core: &StereodromeCore,
     item: QueueItem,
 ) -> Result<PreparedAudioItem, String> {
-    let status = mobile
-        .core
+    let status = core
         .download_song(item.song_id.clone())
         .await
         .map_err(|e| e.to_string())?;
@@ -880,8 +1087,7 @@ async fn prepare_queue_item_audio(
         .ok_or_else(|| format!("song {} did not produce a cached audio path", item.song_id))?;
     let audio_path = file_uri_to_path(path)?;
     let audio_data = std::fs::read(&audio_path).map_err(|e| e.to_string())?;
-    let settings = mobile
-        .core
+    let settings = core
         .get_audio_processing_settings()
         .map_err(|e| e.to_string())?;
     let processing = audio_processing_from_settings(&settings)?;
