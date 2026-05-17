@@ -14,6 +14,7 @@ import { nativeMediaControls } from "@/services/nativeMediaControls";
 import type {
   AudioPlaybackStatus,
   AudioProcessingSettings,
+  PlaybackStateSnapshot,
   PlayableSong,
   QueueItem,
   QueueState,
@@ -84,6 +85,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const currentSongRef = useRef<PlayableSong | null>(null);
   const queueRef = useRef<PlayableSong[]>([]);
   const isPlayingRef = useRef(false);
+  const positionRef = useRef(0);
+  const durationRef = useRef(0);
+  const restoredStartPositionRef = useRef<number | null>(null);
   const handlingEndedRef = useRef(false);
   const crossfadeInProgressRef = useRef(false);
   const crossfadeAttemptedSongIdRef = useRef<string | null>(null);
@@ -115,16 +119,22 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
       isPlayingRef.current = status.is_playing;
       setIsPlaying(status.is_playing);
-      setPosition(status.position);
-      setDuration(status.duration);
 
       if (status.current_song_id) {
+        positionRef.current = status.position;
+        durationRef.current = status.duration;
+        setPosition(status.position);
+        setDuration(status.duration);
         const song =
           songs.find((candidate) => candidate.id === status.current_song_id) ??
           currentSongRef.current;
         currentSongRef.current = song;
         setCurrentSong(song);
       } else if (currentIndexRef.current === null) {
+        positionRef.current = 0;
+        durationRef.current = 0;
+        setPosition(0);
+        setDuration(0);
         currentSongRef.current = null;
         setCurrentSong(null);
       }
@@ -161,13 +171,89 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     await stereodromeCore.audioPrepareNextTransition();
   }, []);
 
-  const playCurrentQueueItem = useCallback(async () => {
-    expectedAudioSongIdRef.current = currentSongRef.current?.id ?? null;
-    crossfadeAttemptedSongIdRef.current = null;
-    const status = await stereodromeCore.audioPlayCurrent();
-    updateAudioStatus(status);
-    void prepareNextPlayback().catch(() => {});
-  }, [prepareNextPlayback, updateAudioStatus]);
+  const playCurrentQueueItem = useCallback(
+    async (startPositionSeconds?: number) => {
+      expectedAudioSongIdRef.current = currentSongRef.current?.id ?? null;
+      crossfadeAttemptedSongIdRef.current = null;
+      let status = await stereodromeCore.audioPlayCurrent();
+
+      if (
+        startPositionSeconds !== undefined &&
+        Number.isFinite(startPositionSeconds) &&
+        startPositionSeconds > 0
+      ) {
+        const seekPosition =
+          status.duration > 0
+            ? Math.min(startPositionSeconds, status.duration)
+            : startPositionSeconds;
+        await stereodromeCore.audioSeek(Math.max(0, seekPosition));
+        status = await stereodromeCore.audioGetStatus();
+      }
+
+      restoredStartPositionRef.current = null;
+      updateAudioStatus(status);
+      void prepareNextPlayback().catch(() => {});
+    },
+    [prepareNextPlayback, updateAudioStatus]
+  );
+
+  const persistPlaybackPosition = useCallback(async (isPlaying: boolean) => {
+    const song = currentSongRef.current;
+    if (!song) {
+      return;
+    }
+
+    await stereodromeCore.savePlaybackPosition({
+      song_id: song.id,
+      position_seconds: positionRef.current,
+      duration_seconds: durationRef.current || song.duration || 0,
+      is_playing: isPlaying,
+    });
+  }, []);
+
+  const restorePlaybackState = useCallback(
+    async (queueState: QueueState, snapshot: PlaybackStateSnapshot) => {
+      const restoredSongId = snapshot.current_song_id;
+      if (!restoredSongId) {
+        restoredStartPositionRef.current = null;
+        return queueState;
+      }
+
+      const restoredIndex = queueState.items.findIndex(
+        (item) => item.song_id === restoredSongId
+      );
+      if (restoredIndex === -1) {
+        restoredStartPositionRef.current = null;
+        return queueState;
+      }
+
+      let nextQueueState = queueState;
+      if (queueState.current_index !== restoredIndex) {
+        nextQueueState = await stereodromeCore.playQueueItem(restoredIndex);
+        await applyQueueState(nextQueueState);
+      }
+
+      const restoredPosition = Math.max(0, snapshot.position_seconds);
+      const restoredDuration =
+        snapshot.duration_seconds ||
+        nextQueueState.items[restoredIndex]?.duration ||
+        0;
+      positionRef.current = restoredPosition;
+      durationRef.current = restoredDuration;
+      restoredStartPositionRef.current = restoredPosition;
+      isPlayingRef.current = false;
+      setPosition(restoredPosition);
+      setDuration(restoredDuration);
+      setIsPlaying(false);
+
+      if (snapshot.was_playing) {
+        await playCurrentQueueItem(restoredPosition);
+      }
+
+      return nextQueueState;
+    },
+    [applyQueueState, playCurrentQueueItem]
+  );
 
   const applyAudioProcessingSettings = useCallback(
     async (settings: AudioProcessingSettings) => {
@@ -212,18 +298,29 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let mounted = true;
-    ensurePlayerReady()
-      .then(() => stereodromeCore.getQueue())
-      .then((state) => {
-        if (mounted) {
-          void applyQueueState(state);
-        }
-      })
-      .catch((setupError) => {
-        if (mounted) {
-          setError(errorMessage(setupError));
-        }
-      });
+
+    async function initializePlayback() {
+      await ensurePlayerReady();
+      const [queueState, playbackState, audioSettings] = await Promise.all([
+        stereodromeCore.getQueue(),
+        stereodromeCore.getPlaybackState(),
+        stereodromeCore.getAudioProcessingSettings(),
+      ]);
+
+      if (!mounted) {
+        return;
+      }
+
+      await applyQueueState(queueState);
+      await applyAudioProcessingSettings(audioSettings);
+      await restorePlaybackState(queueState, playbackState);
+    }
+
+    void initializePlayback().catch((setupError) => {
+      if (mounted) {
+        setError(errorMessage(setupError));
+      }
+    });
 
     const unsubscribeQueue = stereodromeCore.addEventListener<QueueState>(
       "queue-changed",
@@ -243,25 +340,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         }
       );
 
-    stereodromeCore
-      .getAudioProcessingSettings()
-      .then((settings) => {
-        if (mounted) {
-          void applyAudioProcessingSettings(settings);
-        }
-      })
-      .catch((playbackError) => {
-        if (mounted) {
-          setError(errorMessage(playbackError));
-        }
-      });
-
     return () => {
       mounted = false;
       unsubscribeQueue();
       unsubscribeAudioSettings();
     };
-  }, [applyAudioProcessingSettings, applyQueueState]);
+  }, [applyAudioProcessingSettings, applyQueueState, restorePlaybackState]);
 
   useEffect(() => {
     return nativeMediaControls.addInvalidatedListener(() => {
@@ -273,11 +357,18 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     function handleAppStateChange(nextState: AppStateStatus) {
-      setIsAppActive(nextState === "active");
-      if (nextState === "active") {
+      const active = nextState === "active";
+      setIsAppActive(active);
+      if (active) {
         void refreshFromNativePlayback().catch((playbackError) => {
           setError(errorMessage(playbackError));
         });
+      } else {
+        void persistPlaybackPosition(isPlayingRef.current).catch(
+          (playbackError) => {
+            setError(errorMessage(playbackError));
+          }
+        );
       }
     }
 
@@ -286,7 +377,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       handleAppStateChange
     );
     return () => subscription.remove();
-  }, [refreshFromNativePlayback]);
+  }, [persistPlaybackPosition, refreshFromNativePlayback]);
 
   useEffect(() => {
     let cancelled = false;
@@ -444,19 +535,24 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       await ensurePlayerReady();
       if (isPlayingRef.current) {
         await stereodromeCore.audioPause();
-        isPlayingRef.current = false;
-        setIsPlaying(false);
-      } else if (currentSongRef.current) {
-        await stereodromeCore.audioResume();
-        isPlayingRef.current = true;
-        setIsPlaying(true);
+        const status = await stereodromeCore.audioGetStatus();
+        updateAudioStatus(status);
+        await persistPlaybackPosition(false);
       } else if (currentIndexRef.current !== null) {
-        await playCurrentQueueItem();
+        const status = await stereodromeCore.audioGetStatus();
+        if (status.current_song_id) {
+          await stereodromeCore.audioResume();
+          updateAudioStatus(await stereodromeCore.audioGetStatus());
+        } else {
+          await playCurrentQueueItem(
+            restoredStartPositionRef.current ?? positionRef.current
+          );
+        }
       }
     } catch (playbackError) {
       setError(errorMessage(playbackError));
     }
-  }, [playCurrentQueueItem]);
+  }, [persistPlaybackPosition, playCurrentQueueItem, updateAudioStatus]);
 
   const toggleRepeat = useCallback(async () => {
     try {
@@ -488,22 +584,37 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     }
   }, [applyQueueState]);
 
-  const seekBy = useCallback(async (seconds: number) => {
-    try {
-      await ensurePlayerReady();
-      const status = await stereodromeCore.audioGetStatus();
-      const nextPosition = Math.max(
-        0,
-        status.duration > 0
-          ? Math.min(status.duration, status.position + seconds)
-          : status.position + seconds
-      );
-      await stereodromeCore.audioSeek(nextPosition);
-      setPosition(nextPosition);
-    } catch (playbackError) {
-      setError(errorMessage(playbackError));
-    }
-  }, []);
+  const seekBy = useCallback(
+    async (seconds: number) => {
+      try {
+        await ensurePlayerReady();
+        const status = await stereodromeCore.audioGetStatus();
+        const basePosition = status.current_song_id
+          ? status.position
+          : positionRef.current;
+        const baseDuration = status.current_song_id
+          ? status.duration
+          : durationRef.current;
+        const nextPosition = Math.max(
+          0,
+          baseDuration > 0
+            ? Math.min(baseDuration, basePosition + seconds)
+            : basePosition + seconds
+        );
+        if (status.current_song_id) {
+          await stereodromeCore.audioSeek(nextPosition);
+        } else {
+          restoredStartPositionRef.current = nextPosition;
+        }
+        positionRef.current = nextPosition;
+        setPosition(nextPosition);
+        await persistPlaybackPosition(isPlayingRef.current);
+      } catch (playbackError) {
+        setError(errorMessage(playbackError));
+      }
+    },
+    [persistPlaybackPosition]
+  );
 
   const next = useCallback(async () => {
     try {
@@ -556,9 +667,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     try {
       const state = await stereodromeCore.clearQueue();
       expectedAudioSongIdRef.current = null;
+      restoredStartPositionRef.current = null;
       await stereodromeCore.audioStop();
       await applyQueueState(state);
       await nativeMediaControls.clear();
+      positionRef.current = 0;
+      durationRef.current = 0;
       setPosition(0);
       setDuration(0);
       setIsPlaying(false);
