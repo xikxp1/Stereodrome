@@ -269,7 +269,7 @@ export function SettingsScreen({ category }: { category?: string }) {
         sublabel: stereodrome.status.server_version ?? "-",
         onSelect: () => stereodrome.refreshStatus(),
       },
-      ...(stereodrome.status.connected
+      ...(stereodrome.hasConfiguredServer
         ? [
             {
               kind: "action" as const,
