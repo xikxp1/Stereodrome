@@ -1051,12 +1051,11 @@ async fn apply_audio_settings(
     };
     let was_playing = status.is_playing;
     let position = status.position;
-    let next_status =
-        play_current_queue_item_from(&mobile.core, &mobile.audio, Some(position)).await?;
+    play_current_queue_item_from(&mobile.core, &mobile.audio, Some(position)).await?;
     if !was_playing {
         mobile.audio.pause().map_err(|e| e.to_string())?;
     }
-    Ok(next_status)
+    Ok(mobile.audio.get_status())
 }
 
 struct AudioProcessing {
