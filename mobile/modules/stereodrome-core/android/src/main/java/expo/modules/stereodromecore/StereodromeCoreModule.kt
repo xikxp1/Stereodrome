@@ -27,7 +27,7 @@ class StereodromeCoreModule : Module() {
       if (method == "audioPlayCurrent" || method == "audioResume") {
         requestAudioFocus()
       }
-      if (method == "audioPause" || method == "audioStop") {
+      if (method == "audioStop") {
         abandonAudioFocus()
       }
       callCore(method, payload)

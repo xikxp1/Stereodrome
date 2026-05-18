@@ -73,7 +73,7 @@ public class StereodromeCoreModule: Module {
         self.setAudioSessionActive(true)
       }
       let result = self.callSync(method: method, payload: payload)
-      if method == "audioPause" || method == "audioStop" {
+      if method == "audioStop" {
         self.setAudioSessionActive(false)
       }
       return result
@@ -261,12 +261,10 @@ public class StereodromeCoreModule: Module {
       }
     case .pause:
       _ = callSync(method: "audioPause", payload: "null")
-      setAudioSessionActive(false)
     case .toggle:
       let status = parseOkValue(callSync(method: "audioGetStatus", payload: "null"))
       if boolValue(status?["is_playing"]) {
         _ = callSync(method: "audioPause", payload: "null")
-        setAudioSessionActive(false)
       } else if stringValue(status?["current_song_id"]) == nil {
         setAudioSessionActive(true)
         _ = callSync(method: "audioPlayCurrent", payload: "null")
