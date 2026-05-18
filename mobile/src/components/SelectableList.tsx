@@ -72,6 +72,7 @@ const SelectableRow = memo(
     );
   },
   (previous, next) =>
+    previous.disabled === next.disabled &&
     previous.index === next.index &&
     previous.item.label === next.item.label &&
     previous.item.kind === next.item.kind &&

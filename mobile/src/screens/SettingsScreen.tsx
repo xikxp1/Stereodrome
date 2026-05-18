@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type KeyboardTypeOptions,
   Modal,
@@ -144,6 +144,8 @@ export function SettingsScreen({ category }: { category?: string }) {
   const mobileSettings = useMobileSettings();
   const view = useViewStack();
   const queryClient = useQueryClient();
+  const busyActionRef = useRef<string | null>(null);
+  const textEditSavingRef = useRef(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [textEdit, setTextEdit] = useState<TextEditConfig | null>(null);
@@ -468,10 +470,11 @@ export function SettingsScreen({ category }: { category?: string }) {
   }
 
   async function runBusy(label: string, action: () => Promise<void>) {
-    if (busyAction) {
+    if (busyActionRef.current) {
       return;
     }
 
+    busyActionRef.current = label;
     setBusyAction(label);
     setMessage(null);
     try {
@@ -479,6 +482,7 @@ export function SettingsScreen({ category }: { category?: string }) {
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
     } finally {
+      busyActionRef.current = null;
       setBusyAction(null);
     }
   }
@@ -523,10 +527,11 @@ export function SettingsScreen({ category }: { category?: string }) {
   }
 
   async function submitTextEdit() {
-    if (!textEdit || textEditSaving) {
+    if (!textEdit || textEditSavingRef.current) {
       return;
     }
 
+    textEditSavingRef.current = true;
     setTextEditSaving(true);
     setMessage(null);
     setTextEditError(null);
@@ -536,6 +541,7 @@ export function SettingsScreen({ category }: { category?: string }) {
     } catch (e) {
       setTextEditError(e instanceof Error ? e.message : String(e));
     } finally {
+      textEditSavingRef.current = false;
       setTextEditSaving(false);
     }
   }
@@ -543,7 +549,7 @@ export function SettingsScreen({ category }: { category?: string }) {
   return (
     <View style={styles.container}>
       <SelectableList
-        disabled={textEdit !== null}
+        disabled={textEdit !== null || busyAction !== null}
         empty="Settings unavailable"
         options={options}
         preserveSelectionOnChange
