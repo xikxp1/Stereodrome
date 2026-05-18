@@ -507,9 +507,6 @@ export function SettingsScreen({ category }: { category?: string }) {
       await queryClient.invalidateQueries({
         queryKey: librarySyncStatusQueryKey,
       });
-      await queryClient.invalidateQueries({ queryKey: ["artists"] });
-      await queryClient.invalidateQueries({ queryKey: ["albums"] });
-      await queryClient.invalidateQueries({ queryKey: ["songs"] });
     });
   }
 

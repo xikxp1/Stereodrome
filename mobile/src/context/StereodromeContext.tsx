@@ -1,7 +1,15 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { stereodromeCore } from "@/services/stereodromeCore";
-import type { ConnectionStatus } from "@/types/music";
+import type { ConnectionStatus, LibrarySyncStatus } from "@/types/music";
 
 type StereodromeContextValue = {
   ready: boolean;
@@ -32,6 +40,19 @@ const disconnected: ConnectionStatus = {
   server_version: null,
 };
 
+const librarySyncStatusQueryKey = ["library-sync-status"] as const;
+const libraryQueryKeys = [
+  ["artists"],
+  ["albums"],
+  ["songs"],
+  ["artist-albums"],
+  ["artist-songs"],
+  ["album-songs"],
+  ["search"],
+  ["playlists"],
+  ["playlist-songs"],
+] as const;
+
 const StereodromeContext = createContext<StereodromeContextValue | null>(null);
 
 export function StereodromeProvider({
@@ -39,10 +60,12 @@ export function StereodromeProvider({
 }: {
   children: React.ReactNode;
 }) {
+  const queryClient = useQueryClient();
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState(disconnected);
   const [offlineSongIds, setOfflineSongIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const syncWasActive = useRef(false);
   const hasConfiguredServer = Boolean(status.server_url);
   const offlineMode = hasConfiguredServer && !status.connected;
 
@@ -95,12 +118,31 @@ export function StereodromeProvider({
   }
 
   async function sync() {
-    await stereodromeCore.syncLibrary();
-    await refreshOfflineSongIds();
+    syncWasActive.current = true;
+    try {
+      await stereodromeCore.syncLibrary();
+    } catch (e) {
+      syncWasActive.current = false;
+      throw e;
+    }
   }
 
   async function syncIncremental() {
-    await stereodromeCore.syncLibraryIncremental();
+    syncWasActive.current = true;
+    try {
+      await stereodromeCore.syncLibraryIncremental();
+    } catch (e) {
+      syncWasActive.current = false;
+      throw e;
+    }
+  }
+
+  async function refreshLibraryAfterSync() {
+    await Promise.all(
+      libraryQueryKeys.map((queryKey) =>
+        queryClient.invalidateQueries({ queryKey })
+      )
+    );
     await refreshOfflineSongIds();
   }
 
@@ -123,6 +165,23 @@ export function StereodromeProvider({
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    return stereodromeCore.addEventListener<LibrarySyncStatus>(
+      "sync-status-changed",
+      (syncStatus) => {
+        queryClient.setQueryData(librarySyncStatusQueryKey, syncStatus);
+
+        const wasActive = syncWasActive.current;
+        const isActive = Boolean(syncStatus.active_job);
+        syncWasActive.current = isActive;
+
+        if (wasActive && !isActive) {
+          void refreshLibraryAfterSync();
+        }
+      }
+    );
+  }, [queryClient]);
 
   const value = useMemo(
     () => ({

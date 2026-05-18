@@ -36,8 +36,11 @@ type CoreEventHandler<T = unknown> = (payload: T) => void;
 
 const unavailable =
   "Stereodrome native core is not available in this development build";
+const syncStatusPollIntervalMs = 2000;
 
 let initializePromise: Promise<boolean> | null = null;
+let syncStatusPoll: ReturnType<typeof setInterval> | null = null;
+let syncStatusPollInFlight = false;
 const listeners = new Map<CoreEventName, Set<CoreEventHandler>>();
 
 function fileUriToPath(uri: string): string {
@@ -72,6 +75,44 @@ async function invokeJson<T>(
 
 function emitCoreEvent<T>(name: CoreEventName, payload: T) {
   listeners.get(name)?.forEach((listener) => listener(payload));
+}
+
+function stopSyncStatusPolling() {
+  if (!syncStatusPoll) {
+    return;
+  }
+  clearInterval(syncStatusPoll);
+  syncStatusPoll = null;
+}
+
+async function pollLibrarySyncStatus() {
+  if (syncStatusPollInFlight) {
+    return;
+  }
+
+  syncStatusPollInFlight = true;
+  try {
+    const status = await invokeJson<LibrarySyncStatus>("getLibrarySyncStatus");
+    emitCoreEvent("sync-status-changed", status);
+    if (!status.active_job) {
+      stopSyncStatusPolling();
+    }
+  } catch (error) {
+    stopSyncStatusPolling();
+    emitCoreEvent("error", error);
+  } finally {
+    syncStatusPollInFlight = false;
+  }
+}
+
+function startSyncStatusPolling() {
+  void pollLibrarySyncStatus();
+  if (!syncStatusPoll) {
+    syncStatusPoll = setInterval(
+      () => void pollLibrarySyncStatus(),
+      syncStatusPollIntervalMs
+    );
+  }
 }
 
 function queueItemFromSong(song: {
@@ -172,11 +213,11 @@ export const stereodromeCore = {
   },
   async syncLibrary(): Promise<void> {
     await invokeJson<void>("syncLibrary");
-    emitCoreEvent("sync-status-changed", null);
+    startSyncStatusPolling();
   },
   async syncLibraryIncremental(): Promise<void> {
     await invokeJson<void>("syncLibraryIncremental");
-    emitCoreEvent("sync-status-changed", null);
+    startSyncStatusPolling();
   },
   getScanStatus(): Promise<ScanStatus> {
     return invokeJson("getScanStatus");
@@ -185,7 +226,14 @@ export const stereodromeCore = {
     return invokeJson("startScan");
   },
   getLibrarySyncStatus(): Promise<LibrarySyncStatus> {
-    return invokeJson("getLibrarySyncStatus");
+    return invokeJson<LibrarySyncStatus>("getLibrarySyncStatus").then(
+      (status) => {
+        if (status.active_job) {
+          startSyncStatusPolling();
+        }
+        return status;
+      }
+    );
   },
   getArtists(): Promise<Artist[]> {
     return invokeJson("getArtists");
