@@ -6,6 +6,7 @@ import { ArtistsScreen } from "@/screens/ArtistsScreen";
 import { ConnectScreen } from "@/screens/ConnectScreen";
 import { DownloadsScreen } from "@/screens/DownloadsScreen";
 import { HomeScreen } from "@/screens/HomeScreen";
+import { LoadingScreen } from "@/screens/LoadingScreen";
 import { MusicScreen } from "@/screens/MusicScreen";
 import { NowPlayingScreen } from "@/screens/NowPlayingScreen";
 import { PlaylistScreen } from "@/screens/PlaylistScreen";
@@ -17,6 +18,8 @@ import { SongsScreen } from "@/screens/SongsScreen";
 
 export function renderView(view: ViewInstance) {
   switch (view.name) {
+    case "loading":
+      return <LoadingScreen />;
     case "connect":
       return <ConnectScreen />;
     case "music":

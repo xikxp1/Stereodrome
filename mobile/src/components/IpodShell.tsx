@@ -10,7 +10,12 @@ import { useInputBus } from "@/context/InputContext";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { usePlayback } from "@/context/PlaybackContext";
 import { useStereodrome } from "@/context/StereodromeContext";
-import { useViewStack } from "@/context/ViewContext";
+import {
+  connectView,
+  homeView,
+  loadingView,
+  useViewStack,
+} from "@/context/ViewContext";
 import { renderView } from "@/screens/renderView";
 
 function formatPlaybackTime(seconds: number) {
@@ -29,9 +34,7 @@ export function IpodShell() {
   const playback = usePlayback();
   const stereodrome = useStereodrome();
   const insets = useSafeAreaInsets();
-  const current = stereodrome.hasConfiguredServer
-    ? view.current
-    : { name: "connect" as const, title: "Connect" };
+  const current = view.current;
   const navigationOffset = view.transitionDirection === "back" ? -24 : 24;
   const leftHandedButtons = buttonHandedness === "left";
   const playbackDuration =
@@ -89,9 +92,40 @@ export function IpodShell() {
     }).start();
   }, [navigationProgress, view.transitionKey]);
 
+  useEffect(() => {
+    if (!stereodrome.ready) {
+      if (view.current.name !== loadingView.name) {
+        view.reset(loadingView);
+      }
+      return;
+    }
+
+    if (!stereodrome.hasConfiguredServer) {
+      if (view.current.name !== connectView.name) {
+        view.reset(connectView);
+      }
+      return;
+    }
+
+    if (
+      view.current.name === loadingView.name ||
+      view.current.name === connectView.name
+    ) {
+      view.reset(homeView);
+    }
+  }, [
+    stereodrome.hasConfiguredServer,
+    stereodrome.ready,
+    view.current.name,
+    view.reset,
+  ]);
+
   useEffect(
     () =>
       subscribe((input) => {
+        if (!stereodrome.ready) {
+          return;
+        }
         if (input === "menu") view.pop();
         if (input === "menu_long" && playback.currentSong) {
           view.showNowPlaying();
@@ -106,7 +140,7 @@ export function IpodShell() {
           void playback.seekBy(-5);
         }
       }),
-    [current.name, playback, subscribe, view]
+    [current.name, playback, stereodrome.ready, subscribe, view]
   );
 
   return (

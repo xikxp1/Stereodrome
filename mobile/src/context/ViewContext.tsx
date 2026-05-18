@@ -7,6 +7,7 @@ import {
 } from "react";
 
 export type ViewName =
+  | "loading"
   | "connect"
   | "home"
   | "music"
@@ -44,7 +45,12 @@ type ViewContextValue = {
 
 const ViewContext = createContext<ViewContextValue | null>(null);
 
-const home: ViewInstance = { name: "home", title: "Stereodrome" };
+export const loadingView: ViewInstance = {
+  name: "loading",
+  title: "Stereodrome",
+};
+export const connectView: ViewInstance = { name: "connect", title: "Connect" };
+export const homeView: ViewInstance = { name: "home", title: "Stereodrome" };
 const nowPlaying: ViewInstance = { name: "nowPlaying", title: "Now Playing" };
 
 type ViewState = {
@@ -102,12 +108,12 @@ function viewReducer(state: ViewState, action: ViewAction): ViewState {
 
 export function ViewProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(viewReducer, {
-    stack: [home],
+    stack: [loadingView],
     transitionDirection: "replace",
     transitionKey: 0,
   });
   const { stack, transitionDirection, transitionKey } = state;
-  const current = stack[stack.length - 1] ?? home;
+  const current = stack[stack.length - 1] ?? loadingView;
 
   const push = useCallback((view: ViewInstance) => {
     dispatch({ type: "push", view });
