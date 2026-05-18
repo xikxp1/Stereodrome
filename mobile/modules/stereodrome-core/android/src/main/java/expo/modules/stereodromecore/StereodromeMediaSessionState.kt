@@ -40,9 +40,6 @@ object StereodromeMediaSessionState {
     }
     if (progress.isPlaying && !serviceStarted) {
       startService(context, foreground = true)
-    } else if (!progress.isPlaying && serviceStarted) {
-      context.stopService(Intent(context, StereodromeMediaSessionService::class.java))
-      serviceStarted = false
     }
     player?.updateProgress(progress)
   }
