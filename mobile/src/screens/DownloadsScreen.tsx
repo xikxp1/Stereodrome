@@ -17,10 +17,9 @@ export function DownloadsScreen() {
     await stereodrome.refreshOfflineSongIds();
   }
 
-  return (
-    <SelectableList
-      empty={cacheStats.isLoading ? "Loading downloads" : "No download actions"}
-      options={[
+  const options = cacheStats.isLoading
+    ? []
+    : [
         {
           label: "Cache Usage",
           sublabel: `${formatBytes(cacheStats.data?.total_size ?? 0)} / ${formatBytes(
@@ -48,7 +47,12 @@ export function DownloadsScreen() {
             await refreshCache();
           },
         },
-      ]}
+      ];
+
+  return (
+    <SelectableList
+      empty={cacheStats.isLoading ? "Loading downloads" : "No download actions"}
+      options={options}
     />
   );
 }
