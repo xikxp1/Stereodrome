@@ -63,6 +63,52 @@ function playableFromQueueItem(item: QueueItem): PlayableSong {
   };
 }
 
+type NextSongInput = {
+  currentIndex: number | null;
+  pendingNavigationIndex: number | null;
+  preparedNextSong: PlayableSong | null;
+  queue: PlayableSong[];
+  repeatMode: QueueState["repeat_mode"];
+};
+
+function getNextSong({
+  currentIndex,
+  pendingNavigationIndex,
+  preparedNextSong,
+  queue,
+  repeatMode,
+}: NextSongInput): PlayableSong | null {
+  if (queue.length === 0) {
+    return null;
+  }
+
+  if (preparedNextSong) {
+    return preparedNextSong;
+  }
+
+  if (repeatMode === "One" && currentIndex !== null) {
+    return queue[currentIndex] ?? null;
+  }
+
+  if (currentIndex === null) {
+    if (pendingNavigationIndex === null) {
+      return queue[0] ?? null;
+    }
+
+    return queue[Math.min(pendingNavigationIndex, queue.length - 1)] ?? null;
+  }
+
+  if (currentIndex + 1 < queue.length) {
+    return queue[currentIndex + 1] ?? null;
+  }
+
+  if (repeatMode === "All") {
+    return queue[0] ?? null;
+  }
+
+  return null;
+}
+
 export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [currentSong, setCurrentSong] = useState<PlayableSong | null>(null);
@@ -70,6 +116,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [pendingNavigationIndex, setPendingNavigationIndex] = useState<
     number | null
   >(null);
+  const [preparedNextSong, setPreparedNextSong] = useState<PlayableSong | null>(
+    null
+  );
   const [queue, setQueue] = useState<PlayableSong[]>([]);
   const [repeatMode, setRepeatMode] =
     useState<QueueState["repeat_mode"]>("Off");
@@ -132,6 +181,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
   const applyQueueState = useCallback(async (state: QueueState) => {
     const songs = state.items.map(playableFromQueueItem);
+    const preparedSong = state.prepared_next_item
+      ? playableFromQueueItem(state.prepared_next_item)
+      : null;
     const index = state.current_index;
     const pendingIndex = state.pending_navigation_index;
     const removedCurrentIsStillPlaying =
@@ -143,6 +195,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     setQueue(songs);
     setCurrentIndex(index);
     setPendingNavigationIndex(pendingIndex);
+    setPreparedNextSong(preparedSong);
     if (removedCurrentIsStillPlaying) {
       setCurrentSong(currentSongRef.current);
     } else {
@@ -565,17 +618,13 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     }
   }, [applyQueueState]);
 
-  const nextIndex =
-    currentIndex === null
-      ? pendingNavigationIndex === null
-        ? null
-        : Math.min(pendingNavigationIndex, queue.length - 1)
-      : currentIndex + 1 < queue.length
-        ? currentIndex + 1
-        : repeatMode === "All"
-          ? 0
-          : null;
-  const nextSong = nextIndex === null ? null : (queue[nextIndex] ?? null);
+  const nextSong = getNextSong({
+    currentIndex,
+    pendingNavigationIndex,
+    preparedNextSong,
+    queue,
+    repeatMode,
+  });
 
   useEffect(() => {
     void nativeMediaControls
