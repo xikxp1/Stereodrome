@@ -194,6 +194,12 @@ export interface NotificationSettings {
   notify_when_miniplayer_open: boolean;
 }
 
+export interface SendNowPlayingNotificationParams {
+  title: string;
+  body: string;
+  cover_art_path?: string | null;
+}
+
 export interface SyncSettings {
   incremental_enabled: boolean;
   incremental_interval_minutes: number;

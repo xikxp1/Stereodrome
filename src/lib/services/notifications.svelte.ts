@@ -1,6 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { invoke } from "@tauri-apps/api/core";
 import {
   isPermissionGranted,
   requestPermission,
@@ -8,7 +7,11 @@ import {
 } from "@tauri-apps/plugin-notification";
 import { error } from "@tauri-apps/plugin-log";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { getNotificationSettings } from "$lib/api/commands";
+import {
+  getCoverArtPath,
+  getNotificationSettings,
+  sendNowPlayingNotification,
+} from "$lib/api/commands";
 import type { NotificationSettings } from "$lib/types";
 
 const MINI_PLAYER_LABEL = "mini-player";
@@ -92,19 +95,29 @@ class NotificationService {
 
     const body = artist ? `${artist} - ${title}` : title;
 
-    // Try to get cover art path for attachment
-    let attachments: { id: string; url: string }[] | undefined;
+    let coverArtPath: string | null = null;
     if (coverArtId) {
       try {
-        const path = await invoke<string>("get_cover_art_path", {
-          coverArtId,
-          size: 128,
-        });
-        attachments = [{ id: "cover", url: `file://${path}` }];
+        coverArtPath = await getCoverArtPath(coverArtId, 128);
       } catch {
-        // Cover art not available, send without attachment
+        // Cover art not available, send without artwork
       }
     }
+
+    try {
+      const handled = await sendNowPlayingNotification({
+        title: "Now Playing",
+        body,
+        cover_art_path: coverArtPath,
+      });
+      if (handled) return;
+    } catch (e) {
+      error(`Failed to send native now playing notification: ${e}`);
+    }
+
+    const attachments = coverArtPath
+      ? [{ id: "cover", url: `file://${coverArtPath}` }]
+      : undefined;
 
     sendNotification({
       title: "Now Playing",
