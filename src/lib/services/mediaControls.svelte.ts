@@ -1,11 +1,19 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { error } from "@tauri-apps/plugin-log";
+import { seekPlayback } from "$lib/api/commands";
 import { playback } from "$lib/stores/playback.svelte";
 import { queue } from "$lib/stores/queue.svelte";
 
-interface MediaControlEvent {
-  action: string;
-}
+type MediaControlEvent =
+  | { action: "play" }
+  | { action: "pause" }
+  | { action: "play_pause" }
+  | { action: "next" }
+  | { action: "previous" }
+  | { action: "stop" }
+  | { action: "seek"; position: number }
+  | { action: "seek_by"; delta: number };
 
 class MediaControlsService {
   private unlisten: UnlistenFn | null = null;
@@ -21,28 +29,49 @@ class MediaControlsService {
     this.unlisten = await listen<MediaControlEvent>(
       "media-control",
       (event) => {
-        switch (event.payload.action) {
-          case "play":
-            playback.resume();
-            break;
-          case "pause":
-            playback.pause();
-            break;
-          case "play_pause":
-            playback.togglePlayPause();
-            break;
-          case "next":
-            queue.playNext();
-            break;
-          case "previous":
-            queue.playPrevious();
-            break;
-          case "stop":
-            playback.stop();
-            break;
-        }
+        void this.handleEvent(event.payload);
       }
     );
+  }
+
+  private async handleEvent(event: MediaControlEvent) {
+    switch (event.action) {
+      case "play":
+        await playback.resume();
+        break;
+      case "pause":
+        await playback.pause();
+        break;
+      case "play_pause":
+        await playback.togglePlayPause();
+        break;
+      case "next":
+        await queue.playNext();
+        break;
+      case "previous":
+        await queue.playPrevious();
+        break;
+      case "stop":
+        await playback.stop();
+        break;
+      case "seek":
+        await this.seekTo(event.position);
+        break;
+      case "seek_by":
+        await this.seekTo(playback.position + event.delta);
+        break;
+    }
+  }
+
+  private async seekTo(position: number) {
+    const upperBound = playback.duration > 0 ? playback.duration : position;
+    const clampedPosition = Math.max(0, Math.min(upperBound, position));
+
+    try {
+      await seekPlayback(clampedPosition);
+    } catch (e) {
+      error(`Failed to seek from media controls: ${e}`);
+    }
   }
 
   destroy() {

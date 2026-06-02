@@ -2,9 +2,10 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
 
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
+    SeekDirection,
 };
 use tauri::{AppHandle, Emitter};
 
@@ -33,16 +34,33 @@ pub struct MediaControlsManager {
 
 impl MediaControlsManager {
     pub fn new(app_handle: AppHandle) -> Option<Self> {
+        #[cfg(target_os = "windows")]
+        let hwnd = media_controls_hwnd(&app_handle)?;
+        #[cfg(not(target_os = "windows"))]
+        let hwnd = None;
+
         let (command_tx, command_rx) = mpsc::channel::<MediaCommand>();
+        let (init_tx, init_rx) = mpsc::sync_channel::<Result<(), String>>(1);
 
         let thread = thread::spawn(move || {
-            run_media_controls_thread(command_rx, app_handle);
+            run_media_controls_thread(command_rx, app_handle, hwnd, init_tx);
         });
 
-        Some(Self {
-            command_tx,
-            _thread: thread,
-        })
+        match init_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => Some(Self {
+                command_tx,
+                _thread: thread,
+            }),
+            Ok(Err(e)) => {
+                error!("Media controls initialization failed: {e}");
+                let _ = thread.join();
+                None
+            }
+            Err(e) => {
+                error!("Media controls initialization did not complete: {e}");
+                None
+            }
+        }
     }
 
     pub fn update_metadata(
@@ -51,22 +69,28 @@ impl MediaControlsManager {
         duration_secs: f64,
         cover_art_path: Option<String>,
     ) {
-        let _ = self.command_tx.send(MediaCommand::UpdateMetadata {
+        if let Err(e) = self.command_tx.send(MediaCommand::UpdateMetadata {
             song: song.clone(),
             duration_secs,
             cover_art_path,
-        });
+        }) {
+            warn!("Failed to send media metadata update: {e}");
+        }
     }
 
     pub fn set_playback_status(&self, is_playing: bool, position_secs: f64) {
-        let _ = self.command_tx.send(MediaCommand::SetPlaybackStatus {
+        if let Err(e) = self.command_tx.send(MediaCommand::SetPlaybackStatus {
             is_playing,
             position_secs,
-        });
+        }) {
+            warn!("Failed to send media playback status update: {e}");
+        }
     }
 
     pub fn clear(&self) {
-        let _ = self.command_tx.send(MediaCommand::Clear);
+        if let Err(e) = self.command_tx.send(MediaCommand::Clear) {
+            warn!("Failed to send media controls clear command: {e}");
+        }
     }
 }
 
@@ -76,17 +100,41 @@ impl Drop for MediaControlsManager {
     }
 }
 
-fn run_media_controls_thread(command_rx: mpsc::Receiver<MediaCommand>, app_handle: AppHandle) {
+#[cfg(target_os = "windows")]
+fn media_controls_hwnd(app_handle: &AppHandle) -> Option<usize> {
+    use tauri::Manager as _;
+
+    let Some(window) = app_handle.get_webview_window("main") else {
+        error!("Failed to initialize media controls: main window not found");
+        return None;
+    };
+
+    match window.hwnd() {
+        Ok(hwnd) => Some(hwnd.0 as usize),
+        Err(e) => {
+            error!("Failed to initialize media controls: could not get main window HWND: {e}");
+            None
+        }
+    }
+}
+
+fn run_media_controls_thread(
+    command_rx: mpsc::Receiver<MediaCommand>,
+    app_handle: AppHandle,
+    hwnd: Option<usize>,
+    init_tx: mpsc::SyncSender<Result<(), String>>,
+) {
     let config = PlatformConfig {
         dbus_name: "stereodrome",
         display_name: "Stereodrome",
-        hwnd: None,
+        hwnd: hwnd.map(|value| value as *mut std::ffi::c_void),
     };
 
     let mut controls = match MediaControls::new(config) {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to create media controls: {:?}", e);
+            let _ = init_tx.send(Err(format!("failed to create media controls: {e:?}")));
             return;
         }
     };
@@ -96,9 +144,12 @@ fn run_media_controls_thread(command_rx: mpsc::Receiver<MediaCommand>, app_handl
         handle_media_event(&event_app_handle, event);
     }) {
         error!("Failed to attach media event handler: {:?}", e);
+        let _ = init_tx.send(Err(format!("failed to attach media event handler: {e:?}")));
+        return;
     }
 
     info!("Media controls initialized");
+    let _ = init_tx.send(Ok(()));
 
     loop {
         match command_rx.recv_timeout(Duration::from_millis(100)) {
@@ -113,8 +164,7 @@ fn run_media_controls_thread(command_rx: mpsc::Receiver<MediaCommand>, app_handl
                         song.artist, song.title, cover_art_path
                     );
 
-                    let cover_url =
-                        cover_art_path.map(|p| format!("file://{}", p.replace(' ', "%20")));
+                    let cover_url = cover_art_path.as_deref().map(cover_art_file_url);
 
                     let metadata = MediaMetadata {
                         title: Some(&song.title),
@@ -163,16 +213,45 @@ fn run_media_controls_thread(command_rx: mpsc::Receiver<MediaCommand>, app_handl
 }
 
 fn handle_media_event(app_handle: &AppHandle, event: MediaControlEvent) {
-    let action = match event {
-        MediaControlEvent::Play => "play",
-        MediaControlEvent::Pause => "pause",
-        MediaControlEvent::Toggle => "play_pause",
-        MediaControlEvent::Next => "next",
-        MediaControlEvent::Previous => "previous",
-        MediaControlEvent::Stop => "stop",
+    let payload = match event {
+        MediaControlEvent::Play => serde_json::json!({ "action": "play" }),
+        MediaControlEvent::Pause => serde_json::json!({ "action": "pause" }),
+        MediaControlEvent::Toggle => serde_json::json!({ "action": "play_pause" }),
+        MediaControlEvent::Next => serde_json::json!({ "action": "next" }),
+        MediaControlEvent::Previous => serde_json::json!({ "action": "previous" }),
+        MediaControlEvent::Stop => serde_json::json!({ "action": "stop" }),
+        MediaControlEvent::Seek(direction) => {
+            serde_json::json!({ "action": "seek_by", "delta": seek_delta_secs(direction, Duration::from_secs(10)) })
+        }
+        MediaControlEvent::SeekBy(direction, duration) => {
+            serde_json::json!({ "action": "seek_by", "delta": seek_delta_secs(direction, duration) })
+        }
+        MediaControlEvent::SetPosition(MediaPosition(position)) => {
+            serde_json::json!({ "action": "seek", "position": position.as_secs_f64() })
+        }
         _ => return,
     };
 
-    debug!("Media control event: {}", action);
-    let _ = app_handle.emit("media-control", serde_json::json!({ "action": action }));
+    debug!("Media control event: {}", payload["action"]);
+    let _ = app_handle.emit("media-control", payload);
+}
+
+fn seek_delta_secs(direction: SeekDirection, duration: Duration) -> f64 {
+    let seconds = duration.as_secs_f64();
+    match direction {
+        SeekDirection::Forward => seconds,
+        SeekDirection::Backward => -seconds,
+    }
+}
+
+fn cover_art_file_url(path: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        format!("file://{path}")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        format!("file://{}", path.replace(' ', "%20"))
+    }
 }
