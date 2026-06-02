@@ -15,6 +15,7 @@ import type {
   AnalysisProgress,
   PlaybackSettings,
   NotificationSettings,
+  SendNowPlayingNotificationParams,
   SyncSettings,
   LibrarySyncStatus,
   SystemTimePreferences,
@@ -156,6 +157,13 @@ export async function getSongCoverArt(
   return invoke<string | null>("get_song_cover_art", { songId, size });
 }
 
+export async function getCoverArtPath(
+  coverArtId: string,
+  size?: number
+): Promise<string> {
+  return invoke<string>("get_cover_art_path", { coverArtId, size });
+}
+
 export async function openMiniPlayer(
   position: MiniPlayerPosition
 ): Promise<void> {
@@ -276,6 +284,16 @@ export async function setNotificationSettings(
   settings: NotificationSettings
 ): Promise<void> {
   return invoke("set_notification_settings", { settings });
+}
+
+export async function sendNowPlayingNotification(
+  params: SendNowPlayingNotificationParams
+): Promise<boolean> {
+  return invoke<boolean>("send_now_playing_notification", {
+    title: params.title,
+    body: params.body,
+    coverArtPath: params.cover_art_path ?? null,
+  });
 }
 
 // Library sync settings commands

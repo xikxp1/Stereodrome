@@ -198,6 +198,7 @@ pub fn run() {
             commands::set_mini_player_position,
             commands::get_notification_settings,
             commands::set_notification_settings,
+            commands::send_now_playing_notification,
             commands::get_sync_settings,
             commands::set_sync_settings,
             commands::get_system_time_preferences,
