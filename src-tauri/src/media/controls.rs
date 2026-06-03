@@ -35,7 +35,7 @@ pub struct MediaControlsManager {
 impl MediaControlsManager {
     pub fn new(app_handle: AppHandle) -> Option<Self> {
         #[cfg(target_os = "windows")]
-        let hwnd = media_controls_hwnd(&app_handle)?;
+        let hwnd = Some(media_controls_hwnd(&app_handle)?);
         #[cfg(not(target_os = "windows"))]
         let hwnd = None;
 
