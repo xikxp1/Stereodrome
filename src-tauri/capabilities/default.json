@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "cover-art-viewer", "mini-player"],
+  "windows": ["main", "cover-art-viewer", "mini-player", "taskbar-widget"],
   "permissions": [
     "core:default",
     "core:window:allow-create",

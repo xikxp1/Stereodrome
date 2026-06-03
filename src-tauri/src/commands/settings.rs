@@ -13,6 +13,7 @@ const KEY_NORMALIZATION: &str = "normalization";
 const KEY_PLAYBACK: &str = "playback";
 const KEY_NOTIFICATION: &str = "notification";
 const KEY_SYNC: &str = "sync";
+const KEY_TASKBAR_WIDGET: &str = "taskbar_widget";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -107,6 +108,8 @@ pub struct NotificationSettings {
     pub notify_when_focused: bool,
     #[serde(default = "default_notify_when_miniplayer_open")]
     pub notify_when_miniplayer_open: bool,
+    #[serde(default = "default_notify_when_taskbar_widget_enabled")]
+    pub notify_when_taskbar_widget_enabled: bool,
 }
 
 fn default_notifications_enabled() -> bool {
@@ -117,12 +120,17 @@ fn default_notify_when_miniplayer_open() -> bool {
     true
 }
 
+fn default_notify_when_taskbar_widget_enabled() -> bool {
+    true
+}
+
 impl Default for NotificationSettings {
     fn default() -> Self {
         Self {
             enabled: true,
             notify_when_focused: false,
             notify_when_miniplayer_open: true,
+            notify_when_taskbar_widget_enabled: true,
         }
     }
 }
@@ -157,6 +165,53 @@ pub fn set_notification_settings(
     settings: NotificationSettings,
 ) -> AppResult<()> {
     write_notification_settings(&app_handle, &settings);
+    Ok(())
+}
+
+// --- Taskbar Widget Settings ---
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TaskbarWidgetSettings {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+pub fn read_taskbar_widget_settings(app_handle: &AppHandle) -> TaskbarWidgetSettings {
+    if let Ok(store) = app_handle.store(STORE_FILE)
+        && let Some(value) = store.get(KEY_TASKBAR_WIDGET)
+        && let Ok(settings) = serde_json::from_value(value.clone())
+    {
+        return settings;
+    }
+    TaskbarWidgetSettings::default()
+}
+
+fn write_taskbar_widget_settings(app_handle: &AppHandle, settings: &TaskbarWidgetSettings) {
+    if let Ok(store) = app_handle.store(STORE_FILE)
+        && let Ok(value) = serde_json::to_value(settings)
+    {
+        store.set(KEY_TASKBAR_WIDGET, value);
+        let _ = store.save();
+    }
+}
+
+#[tauri::command]
+pub fn is_taskbar_widget_supported() -> bool {
+    cfg!(target_os = "windows")
+}
+
+#[tauri::command]
+pub fn get_taskbar_widget_settings(app_handle: AppHandle) -> TaskbarWidgetSettings {
+    read_taskbar_widget_settings(&app_handle)
+}
+
+#[tauri::command]
+pub fn set_taskbar_widget_settings(
+    app_handle: AppHandle,
+    settings: TaskbarWidgetSettings,
+) -> AppResult<()> {
+    write_taskbar_widget_settings(&app_handle, &settings);
+    let _ = app_handle.emit("taskbar-widget-settings-changed", &settings);
     Ok(())
 }
 

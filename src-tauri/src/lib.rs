@@ -8,6 +8,7 @@ mod error;
 mod media;
 mod search;
 mod state;
+mod taskbar_widget;
 mod tray;
 
 use std::sync::Arc;
@@ -199,6 +200,9 @@ pub fn run() {
             commands::get_notification_settings,
             commands::set_notification_settings,
             commands::send_now_playing_notification,
+            commands::is_taskbar_widget_supported,
+            commands::get_taskbar_widget_settings,
+            commands::set_taskbar_widget_settings,
             commands::get_sync_settings,
             commands::set_sync_settings,
             commands::get_system_time_preferences,
@@ -206,6 +210,9 @@ pub fn run() {
             commands::set_mini_player_mode,
             commands::close_mini_player,
             commands::restore_main_window,
+            commands::open_taskbar_widget,
+            commands::close_taskbar_widget,
+            commands::reposition_taskbar_widget,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

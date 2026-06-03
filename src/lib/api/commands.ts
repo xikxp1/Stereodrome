@@ -21,6 +21,7 @@ import type {
   SystemTimePreferences,
   MiniPlayerMode,
   MiniPlayerPosition,
+  TaskbarWidgetSettings,
 } from "$lib/types";
 
 // Auth commands
@@ -294,6 +295,33 @@ export async function sendNowPlayingNotification(
     body: params.body,
     coverArtPath: params.cover_art_path ?? null,
   });
+}
+
+// Taskbar widget commands
+export async function isTaskbarWidgetSupported(): Promise<boolean> {
+  return invoke<boolean>("is_taskbar_widget_supported");
+}
+
+export async function getTaskbarWidgetSettings(): Promise<TaskbarWidgetSettings> {
+  return invoke<TaskbarWidgetSettings>("get_taskbar_widget_settings");
+}
+
+export async function setTaskbarWidgetSettings(
+  settings: TaskbarWidgetSettings
+): Promise<void> {
+  return invoke("set_taskbar_widget_settings", { settings });
+}
+
+export async function openTaskbarWidget(): Promise<void> {
+  return invoke("open_taskbar_widget");
+}
+
+export async function closeTaskbarWidget(): Promise<void> {
+  return invoke("close_taskbar_widget");
+}
+
+export async function repositionTaskbarWidget(): Promise<void> {
+  return invoke("reposition_taskbar_widget");
 }
 
 // Library sync settings commands

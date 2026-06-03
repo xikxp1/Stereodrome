@@ -192,6 +192,7 @@ export interface NotificationSettings {
   enabled: boolean;
   notify_when_focused: boolean;
   notify_when_miniplayer_open: boolean;
+  notify_when_taskbar_widget_enabled: boolean;
 }
 
 export interface SendNowPlayingNotificationParams {
@@ -247,6 +248,10 @@ export type MiniPlayerMode = "mini" | "nano";
 
 export interface MiniPlayerHoverState {
   hovered: boolean;
+}
+
+export interface TaskbarWidgetSettings {
+  enabled: boolean;
 }
 
 // Now Playing types

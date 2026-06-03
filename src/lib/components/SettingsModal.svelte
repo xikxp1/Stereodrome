@@ -32,6 +32,9 @@
     setPlaybackSettings,
     getNotificationSettings,
     setNotificationSettings,
+    getTaskbarWidgetSettings,
+    isTaskbarWidgetSupported,
+    setTaskbarWidgetSettings,
     getSyncSettings,
     setSyncSettings,
     getLibrarySyncStatus,
@@ -56,6 +59,7 @@
     DynamicsPreset,
     PlaybackSettings,
     NotificationSettings,
+    TaskbarWidgetSettings,
     SyncSettings,
     LibrarySyncStatus,
     SyncJobKind,
@@ -215,6 +219,10 @@
   let notificationSettings = $state<NotificationSettings | null>(null);
   let loadingNotifications = $state(false);
   let savingNotifications = $state(false);
+  let taskbarWidgetSupported = $state(false);
+  let taskbarWidgetSettings = $state<TaskbarWidgetSettings | null>(null);
+  let loadingTaskbarWidget = $state(false);
+  let savingTaskbarWidget = $state(false);
 
   // Normalization state
   let normSettings = $state<NormalizationSettings | null>(null);
@@ -265,6 +273,7 @@
       loadNormalization();
       loadPlaybackSettings();
       loadNotificationSettings();
+      loadTaskbarWidgetSettings();
       loadSyncSettings();
       loadSyncStatus();
       setupSyncStatusListener();
@@ -287,6 +296,8 @@
       // Reset stale state so reopening shows fresh data
       playbackSettings = null;
       notificationSettings = null;
+      taskbarWidgetSettings = null;
+      taskbarWidgetSupported = false;
       normSettings = null;
       normStats = null;
       analyzing = false;
@@ -459,6 +470,38 @@
       error(`Failed to save notification settings: ${e}`);
     } finally {
       savingNotifications = false;
+    }
+  }
+
+  async function loadTaskbarWidgetSettings() {
+    loadingTaskbarWidget = true;
+    try {
+      taskbarWidgetSupported = await isTaskbarWidgetSupported();
+      taskbarWidgetSettings = taskbarWidgetSupported
+        ? await getTaskbarWidgetSettings()
+        : null;
+    } catch (e) {
+      error(`Failed to load taskbar widget settings: ${e}`);
+      taskbarWidgetSupported = false;
+      taskbarWidgetSettings = null;
+    } finally {
+      loadingTaskbarWidget = false;
+    }
+  }
+
+  async function handleTaskbarWidgetSettingChange(
+    update: Partial<TaskbarWidgetSettings>
+  ) {
+    if (!taskbarWidgetSettings) return;
+    savingTaskbarWidget = true;
+    try {
+      const updated = { ...taskbarWidgetSettings, ...update };
+      await setTaskbarWidgetSettings(updated);
+      taskbarWidgetSettings = updated;
+    } catch (e) {
+      error(`Failed to save taskbar widget settings: ${e}`);
+    } finally {
+      savingTaskbarWidget = false;
     }
   }
 
@@ -1102,6 +1145,28 @@
                 Album.
               </p>
             {/if}
+
+            {#if taskbarWidgetSupported && taskbarWidgetSettings}
+              <div class="border-t border-base-300 pt-3"></div>
+
+              <label class="flex cursor-pointer items-center justify-between">
+                <span class="text-sm">Windows taskbar widget</span>
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-sm checkbox-primary"
+                  checked={taskbarWidgetSettings.enabled}
+                  onchange={(e) =>
+                    handleTaskbarWidgetSettingChange({
+                      enabled: e.currentTarget.checked,
+                    })}
+                  disabled={savingTaskbarWidget || loadingTaskbarWidget}
+                />
+              </label>
+              <p class="text-xs text-base-content/50">
+                Show cover art, track info, and playback buttons directly on the
+                Windows taskbar.
+              </p>
+            {/if}
           </div>
         </div>
 
@@ -1169,6 +1234,31 @@
                 <p class="text-xs text-base-content/50">
                   Show notifications while the mini player window is visible.
                 </p>
+
+                {#if taskbarWidgetSupported}
+                  <label
+                    class="flex cursor-pointer items-center justify-between"
+                  >
+                    <span class="text-sm"
+                      >Notify when taskbar widget is enabled</span
+                    >
+                    <input
+                      type="checkbox"
+                      class="checkbox checkbox-sm checkbox-primary"
+                      checked={notificationSettings.notify_when_taskbar_widget_enabled}
+                      onchange={(e) =>
+                        handleNotificationSettingChange({
+                          notify_when_taskbar_widget_enabled:
+                            e.currentTarget.checked,
+                        })}
+                      disabled={savingNotifications}
+                    />
+                  </label>
+                  <p class="text-xs text-base-content/50">
+                    Turn this off to use the taskbar widget instead of
+                    song-change notifications.
+                  </p>
+                {/if}
               {/if}
             </div>
           {:else}

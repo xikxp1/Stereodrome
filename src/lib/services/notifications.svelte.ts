@@ -10,6 +10,8 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   getCoverArtPath,
   getNotificationSettings,
+  getTaskbarWidgetSettings,
+  isTaskbarWidgetSupported,
   sendNowPlayingNotification,
 } from "$lib/api/commands";
 import type { NotificationSettings } from "$lib/types";
@@ -63,6 +65,21 @@ class NotificationService {
     }
   }
 
+  private async shouldSuppressForTaskbarWidget(
+    settings: NotificationSettings
+  ): Promise<boolean> {
+    if (settings.notify_when_taskbar_widget_enabled) return false;
+
+    try {
+      if (!(await isTaskbarWidgetSupported())) return false;
+      const taskbarWidgetSettings = await getTaskbarWidgetSettings();
+      return taskbarWidgetSettings.enabled;
+    } catch (e) {
+      error(`Failed to read taskbar widget notification state: ${e}`);
+      return false;
+    }
+  }
+
   async notifySongChange(
     title: string,
     artist: string,
@@ -87,6 +104,9 @@ class NotificationService {
       !settings.notify_when_miniplayer_open &&
       (await this.isMiniPlayerVisible())
     ) {
+      return;
+    }
+    if (await this.shouldSuppressForTaskbarWidget(settings)) {
       return;
     }
     if (!(await this.ensurePermissionGranted())) {

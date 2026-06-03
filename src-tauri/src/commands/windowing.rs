@@ -318,3 +318,18 @@ pub fn close_mini_player(app_handle: AppHandle) -> AppResult<()> {
 pub fn restore_main_window(app_handle: AppHandle) -> AppResult<()> {
     restore_main_window_impl(&app_handle)
 }
+
+#[tauri::command]
+pub fn open_taskbar_widget(app_handle: AppHandle) -> AppResult<()> {
+    crate::taskbar_widget::open(&app_handle)
+}
+
+#[tauri::command]
+pub fn close_taskbar_widget(app_handle: AppHandle) -> AppResult<()> {
+    crate::taskbar_widget::close(&app_handle)
+}
+
+#[tauri::command]
+pub fn reposition_taskbar_widget(app_handle: AppHandle) -> AppResult<()> {
+    crate::taskbar_widget::reposition(&app_handle)
+}
