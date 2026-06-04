@@ -5361,6 +5361,7 @@ dependencies = [
  "log",
  "md5 0.8.0",
  "rand 0.10.1",
+ "reqwest 0.13.4",
  "rusqlite",
  "serde",
  "serde_json",

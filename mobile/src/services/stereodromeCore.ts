@@ -14,6 +14,9 @@ import type {
   CacheStats,
   DownloadStatus,
   LibrarySyncStatus,
+  LastfmAuthStart,
+  LastfmQueueItem,
+  LastfmStatus,
   PlaybackProgress,
   PlaybackStateSnapshot,
   Playlist,
@@ -338,6 +341,24 @@ export const stereodromeCore = {
     progress: PlaybackProgress
   ): Promise<PlaybackStateSnapshot> {
     return invokeJson("reportPlaybackProgress", progress);
+  },
+  getLastfmStatus(): Promise<LastfmStatus> {
+    return invokeJson("getLastfmStatus");
+  },
+  beginLastfmAuth(): Promise<LastfmAuthStart> {
+    return invokeJson("beginLastfmAuth");
+  },
+  completeLastfmAuth(): Promise<LastfmStatus> {
+    return invokeJson("completeLastfmAuth");
+  },
+  disconnectLastfm(): Promise<LastfmStatus> {
+    return invokeJson("disconnectLastfm");
+  },
+  getLastfmQueue(): Promise<LastfmQueueItem[]> {
+    return invokeJson("getLastfmQueue");
+  },
+  retryLastfmQueue(): Promise<number> {
+    return invokeJson("retryLastfmQueue");
   },
   audioPlayCurrent(): Promise<AudioPlaybackStatus> {
     return invokeJson("audioPlayCurrent");

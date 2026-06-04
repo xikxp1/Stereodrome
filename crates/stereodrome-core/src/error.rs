@@ -18,4 +18,6 @@ pub enum CoreError {
     Serde(#[from] serde_json::Error),
     #[error("Subsonic error: {0}")]
     Subsonic(String),
+    #[error("Last.fm error: {0}")]
+    Lastfm(String),
 }

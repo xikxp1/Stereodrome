@@ -178,6 +178,35 @@ export type PlaybackProgress = {
   is_playing: boolean;
 };
 
+export type LastfmStatus = {
+  available: boolean;
+  authenticated: boolean;
+  enabled: boolean;
+  username: string | null;
+  pending_auth: boolean;
+  queue_count: number;
+  last_error: string | null;
+};
+
+export type LastfmAuthStart = {
+  auth_url: string;
+};
+
+export type LastfmQueueItem = {
+  id: number;
+  song_id: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  duration: number | null;
+  played_at: number;
+  attempts: number;
+  next_retry_at: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type AudioPlaybackStatus = {
   is_playing: boolean;
   current_song_id: string | null;

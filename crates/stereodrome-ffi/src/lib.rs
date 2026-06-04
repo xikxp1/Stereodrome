@@ -423,6 +423,18 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             let progress = parse_payload::<PlaybackProgress>(payload)?;
             json_result(runtime.block_on(async { core.report_playback_progress(progress).await }))
         }
+        "getLastfmStatus" => json_result(Ok::<_, String>(core.get_lastfm_status())),
+        "beginLastfmAuth" => {
+            json_result(runtime.block_on(async { core.begin_lastfm_auth().await }))
+        }
+        "completeLastfmAuth" => {
+            json_result(runtime.block_on(async { core.complete_lastfm_auth().await }))
+        }
+        "disconnectLastfm" => json_result(core.disconnect_lastfm()),
+        "getLastfmQueue" => json_result(core.get_lastfm_queue()),
+        "retryLastfmQueue" => {
+            json_result(runtime.block_on(async { core.retry_lastfm_queue().await }))
+        }
         "getAudioProcessingSettings" => json_result(core.get_audio_processing_settings()),
         "setAudioProcessingSettings" => {
             let settings = parse_payload::<AudioProcessingSettings>(payload)?;

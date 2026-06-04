@@ -1,5 +1,6 @@
 mod db;
 mod error;
+mod lastfm;
 mod models;
 pub mod queue;
 mod subsonic;
@@ -16,6 +17,7 @@ use submarine::{Client, api::get_album_list::Order, auth::AuthBuilder};
 use tokio::sync::Mutex as AsyncMutex;
 
 pub use error::{CoreError, CoreResult};
+pub use lastfm::{LastfmAuthStart, LastfmQueueItem, LastfmStatus};
 pub use models::*;
 pub use queue::{QueueItem as SharedQueueItem, QueueState as SharedQueueState};
 
@@ -1031,6 +1033,7 @@ impl StereodromeCore {
         progress: PlaybackProgress,
     ) -> CoreResult<PlaybackState> {
         let previous = self.playback_markers()?;
+        let lastfm_track = lastfm::track_for_song(&self.db_path, &progress.song_id)?;
         let now_playing_song_id =
             if previous.now_playing_song_id.as_deref() == Some(&progress.song_id) {
                 previous.now_playing_song_id.clone()
@@ -1040,12 +1043,27 @@ impl StereodromeCore {
                         .scrobble(vec![(progress.song_id.clone(), None)], Some(false))
                         .await;
                 }
+                if let Some(track) = &lastfm_track {
+                    let _ = lastfm::report_now_playing(&self.db_path, track).await;
+                }
                 Some(progress.song_id.clone())
             };
 
         let should_submit = progress.duration_seconds > 0.0
             && progress.position_seconds / progress.duration_seconds >= 0.5
             && previous.scrobbled_song_id.as_deref() != Some(&progress.song_id);
+        if let Some(track) = lastfm_track.clone() {
+            let inserted = lastfm::maybe_enqueue_from_progress(
+                &self.db_path,
+                track,
+                progress.position_seconds,
+                progress.duration_seconds,
+            )?;
+            if inserted {
+                let _ = lastfm::retry_queue(&self.db_path, false).await;
+            }
+        }
+
         let scrobbled_song_id = if should_submit {
             if let Ok(client) = self.connected_client().await {
                 let timestamp = chrono::Utc::now().timestamp_millis().max(0) as usize;
@@ -1085,6 +1103,30 @@ impl StereodromeCore {
             now_playing_song_id: previous.now_playing_song_id,
             scrobbled_song_id: previous.scrobbled_song_id,
         })
+    }
+
+    pub fn get_lastfm_status(&self) -> LastfmStatus {
+        lastfm::status(&self.db_path)
+    }
+
+    pub async fn begin_lastfm_auth(&self) -> CoreResult<LastfmAuthStart> {
+        lastfm::begin_auth(&self.db_path).await
+    }
+
+    pub async fn complete_lastfm_auth(&self) -> CoreResult<LastfmStatus> {
+        lastfm::complete_auth(&self.db_path).await
+    }
+
+    pub fn disconnect_lastfm(&self) -> CoreResult<LastfmStatus> {
+        lastfm::disconnect(&self.db_path)
+    }
+
+    pub fn get_lastfm_queue(&self) -> CoreResult<Vec<LastfmQueueItem>> {
+        lastfm::list_queue(&self.db_path)
+    }
+
+    pub async fn retry_lastfm_queue(&self) -> CoreResult<usize> {
+        lastfm::retry_queue(&self.db_path, true).await
     }
 
     pub fn get_audio_processing_settings(&self) -> CoreResult<AudioProcessingSettings> {

@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import {
   type KeyboardTypeOptions,
+  Linking,
   Modal,
   Pressable,
   StyleSheet,
@@ -21,6 +22,7 @@ import { useViewStack } from "@/context/ViewContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
 import type {
   AudioProcessingSettings,
+  LastfmQueueItem,
   LibrarySyncStatus,
   ScanStatus,
 } from "@/types/music";
@@ -30,6 +32,8 @@ const crossfadePresets = [1000, 3000, 5000, 8000, 12000];
 const cacheSizePresetsGb = [0.5, 1, 2, 5, 10, 20, 50];
 const librarySyncStatusQueryKey = ["library-sync-status"] as const;
 const scanStatusQueryKey = ["scan-status"] as const;
+const lastfmStatusQueryKey = ["lastfm-status"] as const;
+const lastfmQueueQueryKey = ["lastfm-queue"] as const;
 const eqLabels = [
   "32",
   "64",
@@ -58,6 +62,7 @@ type TextEditConfig = {
 type SettingsCategory =
   | "server"
   | "sync"
+  | "lastfm"
   | "interface"
   | "playback"
   | "normalization"
@@ -70,6 +75,7 @@ const settingsCategories: Array<{
 }> = [
   { id: "server", label: "Server", sublabel: "Connection and account" },
   { id: "sync", label: "Library Sync", sublabel: "Sync status and actions" },
+  { id: "lastfm", label: "Last.fm", sublabel: "Scrobbling and offline queue" },
   { id: "interface", label: "Interface", sublabel: "Mobile controls" },
   { id: "playback", label: "Playback", sublabel: "Queue and audio effects" },
   {
@@ -169,6 +175,16 @@ export function SettingsScreen({ category }: { category?: string }) {
     queryFn: stereodromeCore.getAudioCacheStats,
     enabled: selectedCategory === "cache",
   });
+  const lastfmStatus = useQuery({
+    queryKey: lastfmStatusQueryKey,
+    queryFn: stereodromeCore.getLastfmStatus,
+    enabled: selectedCategory === "lastfm",
+  });
+  const lastfmQueue = useQuery({
+    queryKey: lastfmQueueQueryKey,
+    queryFn: stereodromeCore.getLastfmQueue,
+    enabled: selectedCategory === "lastfm",
+  });
   const audioSettings = useQuery({
     queryKey: ["audio-processing-settings"],
     queryFn: stereodromeCore.getAudioProcessingSettings,
@@ -217,6 +233,8 @@ export function SettingsScreen({ category }: { category?: string }) {
         return serverOptions();
       case "sync":
         return syncOptions();
+      case "lastfm":
+        return lastfmOptions();
       case "interface":
         return interfaceOptions();
       case "playback":
@@ -376,6 +394,112 @@ export function SettingsScreen({ category }: { category?: string }) {
     ];
   }
 
+  function lastfmOptions(): SelectableOption[] {
+    const status = lastfmStatus.data;
+    const queue = lastfmQueue.data ?? [];
+    if (!status) {
+      return [
+        {
+          kind: "info",
+          label: "Last.fm",
+          sublabel: "Loading...",
+          onSelect: () =>
+            queryClient.invalidateQueries({ queryKey: lastfmStatusQueryKey }),
+        },
+      ];
+    }
+
+    return [
+      {
+        kind: "info",
+        label: "Status",
+        sublabel: !status.available
+          ? "Not configured"
+          : status.authenticated
+            ? `Connected${status.username ? ` as ${status.username}` : ""}`
+            : status.pending_auth
+              ? "Authorization pending"
+              : "Disconnected",
+        onSelect: refreshLastfm,
+      },
+      {
+        kind: "info",
+        label: "Queued Scrobbles",
+        sublabel: `${status.queue_count.toLocaleString()} pending`,
+        onSelect: refreshLastfm,
+      },
+      ...(status.last_error
+        ? [
+            {
+              kind: "info" as const,
+              label: "Last.fm Error",
+              sublabel: status.last_error,
+              onSelect: refreshLastfm,
+            },
+          ]
+        : []),
+      ...lastfmQueueOptions(queue),
+      ...lastfmActionOptions(status),
+    ];
+  }
+
+  function lastfmQueueOptions(queue: LastfmQueueItem[]): SelectableOption[] {
+    return queue.slice(0, 6).map((item) => ({
+      kind: "info" as const,
+      label: item.title,
+      sublabel: `${item.artist}${item.album ? ` — ${item.album}` : ""}`,
+      onSelect: refreshLastfm,
+    }));
+  }
+
+  function lastfmActionOptions(
+    status: NonNullable<typeof lastfmStatus.data>
+  ): SelectableOption[] {
+    const options: SelectableOption[] = [];
+    if (status.available && !status.authenticated) {
+      options.push({
+        kind: "action",
+        label: "Connect",
+        sublabel:
+          busyAction === "lastfm-connect"
+            ? "Opening..."
+            : "Authorize in browser",
+        onSelect: () => runBeginLastfmAuth(),
+      });
+    }
+    if (status.pending_auth) {
+      options.push({
+        kind: "action",
+        label: "Complete Authorization",
+        sublabel:
+          busyAction === "lastfm-complete"
+            ? "Completing..."
+            : "Return after approving Last.fm",
+        onSelect: () => runCompleteLastfmAuth(),
+      });
+    }
+    if (status.authenticated) {
+      options.push(
+        {
+          kind: "action",
+          label: "Retry Queue",
+          sublabel:
+            busyAction === "lastfm-retry"
+              ? "Retrying..."
+              : "Submit pending scrobbles",
+          onSelect: () => runRetryLastfmQueue(),
+        },
+        {
+          kind: "action",
+          label: "Disconnect",
+          sublabel: "Remove Last.fm session",
+          onSelect: () => runDisconnectLastfm(),
+        }
+      );
+    }
+    return options;
+  }
+
   function interfaceOptions(): SelectableOption[] {
     return [
       {
@@ -511,6 +635,46 @@ export function SettingsScreen({ category }: { category?: string }) {
       await queryClient.invalidateQueries({
         queryKey: librarySyncStatusQueryKey,
       });
+    });
+  }
+
+  async function refreshLastfm() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: lastfmStatusQueryKey }),
+      queryClient.invalidateQueries({ queryKey: lastfmQueueQueryKey }),
+    ]);
+  }
+
+  async function runBeginLastfmAuth() {
+    await runBusy("lastfm-connect", async () => {
+      const auth = await stereodromeCore.beginLastfmAuth();
+      await Linking.openURL(auth.auth_url);
+      await refreshLastfm();
+      setMessage("Approve Last.fm, then choose Complete Authorization");
+    });
+  }
+
+  async function runCompleteLastfmAuth() {
+    await runBusy("lastfm-complete", async () => {
+      await stereodromeCore.completeLastfmAuth();
+      await refreshLastfm();
+      setMessage("Last.fm connected");
+    });
+  }
+
+  async function runRetryLastfmQueue() {
+    await runBusy("lastfm-retry", async () => {
+      const submitted = await stereodromeCore.retryLastfmQueue();
+      await refreshLastfm();
+      setMessage(`Submitted ${submitted.toLocaleString()} scrobbles`);
+    });
+  }
+
+  async function runDisconnectLastfm() {
+    await runBusy("lastfm-disconnect", async () => {
+      await stereodromeCore.disconnectLastfm();
+      await refreshLastfm();
+      setMessage("Last.fm disconnected");
     });
   }
 
