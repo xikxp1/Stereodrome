@@ -1,6 +1,6 @@
 [package]
 name = "stereodrome"
-version = "0.1.21"
+version = "0.1.22"
 description = "Desktop music player for Subsonic-compatible music servers"
 authors = ["Ivan Kachalkin<xikxp1@gmail.com>"]
 edition = "2024"
@@ -27,7 +27,9 @@ filetime = "0.2.27"
 fundsp = "0.23.0"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
 log = "0.4.29"
+md5 = "0.8.0"
 rand = "0.10.1"
+reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls", "system-proxy"] }
 ringbuf = "0.4.8"
 rodio = { version = "0.22.2", features = ["symphonia-all"] }
 rusqlite = { version = "0.39.0", features = ["bundled"] }

@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod cache;
 pub mod coverart;
+pub mod lastfm;
 pub mod library;
 pub mod normalization;
 pub mod notifications;
@@ -17,6 +18,7 @@ pub mod windowing;
 pub use auth::*;
 pub use cache::*;
 pub use coverart::*;
+pub use lastfm::*;
 pub use library::*;
 pub use normalization::*;
 pub use notifications::*;

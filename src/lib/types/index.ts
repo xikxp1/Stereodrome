@@ -238,6 +238,35 @@ export interface SystemTimePreferences {
   locale: string | null;
 }
 
+export interface LastfmStatus {
+  available: boolean;
+  authenticated: boolean;
+  enabled: boolean;
+  username: string | null;
+  pending_auth: boolean;
+  queue_count: number;
+  last_error: string | null;
+}
+
+export interface LastfmAuthStart {
+  auth_url: string;
+}
+
+export interface LastfmQueueItem {
+  id: number;
+  song_id: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  duration: number | null;
+  played_at: number;
+  attempts: number;
+  next_retry_at: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface MiniPlayerPosition {
   x: number;
   y: number;

@@ -138,7 +138,24 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
             now_playing_song_id TEXT,
             scrobbled_song_id TEXT,
             updated_at TEXT NOT NULL
-        );",
+        );
+        CREATE TABLE IF NOT EXISTS lastfm_scrobble_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            song_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            album TEXT,
+            duration INTEGER,
+            played_at INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_retry_at INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(song_id, played_at)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lastfm_scrobble_queue_retry
+            ON lastfm_scrobble_queue(next_retry_at, attempts);",
     )?;
     conn.execute_batch(QUERY_INDEX_MIGRATIONS)?;
 

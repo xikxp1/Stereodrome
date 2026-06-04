@@ -24,6 +24,8 @@ env:
   APPLE_ID: ${{ secrets.APPLE_ID }}
   APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+  LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+  LASTFM_SHARED_SECRET: ${{ secrets.LASTFM_SHARED_SECRET }}
 
 jobs:
   version:

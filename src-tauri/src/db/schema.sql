@@ -138,6 +138,24 @@ CREATE TABLE IF NOT EXISTS normalization_data (
 
 CREATE INDEX IF NOT EXISTS idx_normalization_album ON normalization_data(album_id);
 
+CREATE TABLE IF NOT EXISTS lastfm_scrobble_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    song_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    artist TEXT NOT NULL,
+    album TEXT,
+    duration INTEGER,
+    played_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_retry_at INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(song_id, played_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lastfm_scrobble_queue_retry ON lastfm_scrobble_queue(next_retry_at, attempts);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name);
 CREATE INDEX IF NOT EXISTS idx_albums_artist_id ON albums(artist_id);

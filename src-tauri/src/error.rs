@@ -54,6 +54,9 @@ pub enum AppError {
 
     #[error("Window error: {0}")]
     Window(String),
+
+    #[error("Last.fm error: {0}")]
+    Lastfm(String),
 }
 
 impl From<ClientError> for AppError {

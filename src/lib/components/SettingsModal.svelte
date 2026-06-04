@@ -14,6 +14,9 @@
     Disc3,
     SlidersHorizontal,
     Clock3,
+    Radio,
+    ExternalLink,
+    ListMusic,
   } from "lucide-svelte";
   import {
     getAudioCacheStats,
@@ -37,11 +40,18 @@
     getLibrarySyncStatus,
     reconcileLibraryState,
     getSystemTimePreferences,
+    getLastfmStatus,
+    beginLastfmAuth,
+    completeLastfmAuth,
+    disconnectLastfm,
+    getLastfmQueue,
+    retryLastfmQueue,
     type CacheStats,
   } from "$lib/api/commands";
   import { marked } from "marked";
   import { error } from "@tauri-apps/plugin-log";
   import { ask } from "@tauri-apps/plugin-dialog";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { connection } from "$lib/stores/connection.svelte";
   import { updater } from "$lib/stores/updater.svelte";
@@ -59,6 +69,8 @@
     SyncSettings,
     LibrarySyncStatus,
     SyncJobKind,
+    LastfmQueueItem,
+    LastfmStatus,
   } from "$lib/types";
 
   const dynamicsPresets: DynamicsPreset[] = ["light", "medium", "heavy"];
@@ -216,6 +228,15 @@
   let loadingNotifications = $state(false);
   let savingNotifications = $state(false);
 
+  // Last.fm state
+  let lastfmStatus = $state<LastfmStatus | null>(null);
+  let lastfmQueue = $state<LastfmQueueItem[]>([]);
+  let loadingLastfm = $state(false);
+  let startingLastfmAuth = $state(false);
+  let completingLastfmAuth = $state(false);
+  let disconnectingLastfm = $state(false);
+  let retryingLastfmQueue = $state(false);
+
   // Normalization state
   let normSettings = $state<NormalizationSettings | null>(null);
   let normStats = $state<NormalizationStats | null>(null);
@@ -265,6 +286,7 @@
       loadNormalization();
       loadPlaybackSettings();
       loadNotificationSettings();
+      loadLastfm();
       loadSyncSettings();
       loadSyncStatus();
       setupSyncStatusListener();
@@ -287,6 +309,8 @@
       // Reset stale state so reopening shows fresh data
       playbackSettings = null;
       notificationSettings = null;
+      lastfmStatus = null;
+      lastfmQueue = [];
       normSettings = null;
       normStats = null;
       analyzing = false;
@@ -462,6 +486,71 @@
     }
   }
 
+  async function loadLastfm() {
+    loadingLastfm = true;
+    try {
+      const [status, queue] = await Promise.all([
+        getLastfmStatus(),
+        getLastfmQueue(),
+      ]);
+      lastfmStatus = status;
+      lastfmQueue = queue;
+    } catch (e) {
+      error(`Failed to load Last.fm status: ${e}`);
+    } finally {
+      loadingLastfm = false;
+    }
+  }
+
+  async function handleBeginLastfmAuth() {
+    startingLastfmAuth = true;
+    try {
+      const auth = await beginLastfmAuth();
+      await openUrl(auth.auth_url);
+      await loadLastfm();
+    } catch (e) {
+      error(`Failed to start Last.fm authorization: ${e}`);
+    } finally {
+      startingLastfmAuth = false;
+    }
+  }
+
+  async function handleCompleteLastfmAuth() {
+    completingLastfmAuth = true;
+    try {
+      lastfmStatus = await completeLastfmAuth();
+      lastfmQueue = await getLastfmQueue();
+    } catch (e) {
+      error(`Failed to complete Last.fm authorization: ${e}`);
+    } finally {
+      completingLastfmAuth = false;
+    }
+  }
+
+  async function handleDisconnectLastfm() {
+    disconnectingLastfm = true;
+    try {
+      lastfmStatus = await disconnectLastfm();
+    } catch (e) {
+      error(`Failed to disconnect Last.fm: ${e}`);
+    } finally {
+      disconnectingLastfm = false;
+    }
+  }
+
+  async function handleRetryLastfmQueue() {
+    retryingLastfmQueue = true;
+    try {
+      await retryLastfmQueue();
+      await loadLastfm();
+    } catch (e) {
+      error(`Failed to retry Last.fm queue: ${e}`);
+      await loadLastfm();
+    } finally {
+      retryingLastfmQueue = false;
+    }
+  }
+
   async function setupSyncStatusListener() {
     if (syncStatusUnlisten) return;
     try {
@@ -537,6 +626,11 @@
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) return "Invalid date";
     return syncDateTimeFormatter.format(parsed);
+  }
+
+  function formatUnixTimestamp(value: number | null | undefined): string {
+    if (!value || value <= 0) return "Now";
+    return syncDateTimeFormatter.format(new Date(value * 1000));
   }
 
   function syncJobLabel(job: SyncJobKind | null | undefined): string {
@@ -1174,6 +1268,181 @@
           {:else}
             <div class="text-sm text-base-content/60">
               Unable to load notification settings
+            </div>
+          {/if}
+        </div>
+
+        <!-- Last.fm Section -->
+        <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
+          <div class="mb-3 flex items-center gap-2">
+            <Radio class="h-4 w-4 text-base-content/60" />
+            <h3 class="font-medium">Last.fm</h3>
+          </div>
+
+          {#if loadingLastfm && !lastfmStatus}
+            <div class="flex items-center gap-2 text-sm text-base-content/60">
+              <RefreshCw class="h-4 w-4 animate-spin" />
+              Loading...
+            </div>
+          {:else if lastfmStatus}
+            <div class="space-y-3">
+              <div class="space-y-2">
+                <div class="flex justify-between gap-4 text-sm">
+                  <span class="text-base-content/60">Status</span>
+                  <span
+                    class={lastfmStatus.available && lastfmStatus.authenticated
+                      ? "font-medium text-success"
+                      : lastfmStatus.pending_auth
+                        ? "font-medium text-warning"
+                        : "font-medium text-base-content/70"}
+                  >
+                    {#if !lastfmStatus.available}
+                      Not configured
+                    {:else if lastfmStatus.authenticated}
+                      Connected
+                    {:else if lastfmStatus.pending_auth}
+                      Authorization pending
+                    {:else}
+                      Disconnected
+                    {/if}
+                  </span>
+                </div>
+
+                {#if lastfmStatus.username}
+                  <div class="flex justify-between gap-4 text-sm">
+                    <span class="text-base-content/60">Account</span>
+                    <span class="max-w-48 truncate font-medium">
+                      {lastfmStatus.username}
+                    </span>
+                  </div>
+                {/if}
+
+                <div class="flex justify-between gap-4 text-sm">
+                  <span class="text-base-content/60">Queued scrobbles</span>
+                  <span class="font-medium">
+                    {lastfmStatus.queue_count.toLocaleString()}
+                  </span>
+                </div>
+
+                {#if lastfmStatus.last_error}
+                  <div
+                    class="rounded border border-error/30 bg-error/10 p-2 text-xs text-error"
+                  >
+                    {lastfmStatus.last_error}
+                  </div>
+                {/if}
+              </div>
+
+              {#if lastfmQueue.length > 0}
+                <div class="border-t border-base-300 pt-3">
+                  <div class="mb-2 flex items-center gap-2 text-sm">
+                    <ListMusic class="h-3.5 w-3.5 text-base-content/60" />
+                    <span class="text-base-content/60">Pending queue</span>
+                  </div>
+                  <div class="max-h-40 space-y-2 overflow-y-auto pr-1">
+                    {#each lastfmQueue.slice(0, 6) as item (item.id)}
+                      <div
+                        class="rounded border border-base-300 bg-base-100/60 px-3 py-2"
+                      >
+                        <div class="truncate text-sm font-medium">
+                          {item.title}
+                        </div>
+                        <div class="truncate text-xs text-base-content/60">
+                          {item.artist}{item.album ? ` — ${item.album}` : ""}
+                        </div>
+                        <div
+                          class="mt-1 flex justify-between gap-3 text-[0.68rem] text-base-content/45"
+                        >
+                          <span>{formatUnixTimestamp(item.played_at)}</span>
+                          <span>
+                            {item.attempts > 0
+                              ? `${item.attempts} attempts`
+                              : "Not retried"}
+                          </span>
+                        </div>
+                        {#if item.last_error}
+                          <div
+                            class="mt-1 line-clamp-2 text-[0.68rem] text-error"
+                          >
+                            {item.last_error}
+                          </div>
+                        {:else if item.next_retry_at > 0}
+                          <div class="mt-1 text-[0.68rem] text-base-content/45">
+                            Next retry: {formatUnixTimestamp(
+                              item.next_retry_at
+                            )}
+                          </div>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+
+              <div
+                class="mt-4 flex flex-wrap gap-2 border-t border-base-300 pt-4"
+              >
+                {#if lastfmStatus.available && !lastfmStatus.authenticated}
+                  <button
+                    class="btn btn-sm btn-primary gap-1"
+                    onclick={handleBeginLastfmAuth}
+                    disabled={startingLastfmAuth}
+                  >
+                    {#if startingLastfmAuth}
+                      <RefreshCw class="h-3.5 w-3.5 animate-spin" />
+                      Opening...
+                    {:else}
+                      <ExternalLink class="h-3.5 w-3.5" />
+                      Connect
+                    {/if}
+                  </button>
+                {/if}
+
+                {#if lastfmStatus.pending_auth}
+                  <button
+                    class="btn btn-sm btn-ghost gap-1"
+                    onclick={handleCompleteLastfmAuth}
+                    disabled={completingLastfmAuth}
+                  >
+                    {#if completingLastfmAuth}
+                      <RefreshCw class="h-3.5 w-3.5 animate-spin" />
+                      Completing...
+                    {:else}
+                      <RefreshCw class="h-3.5 w-3.5" />
+                      Complete
+                    {/if}
+                  </button>
+                {/if}
+
+                {#if lastfmStatus.authenticated}
+                  <button
+                    class="btn btn-sm btn-ghost gap-1"
+                    onclick={handleRetryLastfmQueue}
+                    disabled={retryingLastfmQueue ||
+                      lastfmStatus.queue_count === 0}
+                  >
+                    {#if retryingLastfmQueue}
+                      <RefreshCw class="h-3.5 w-3.5 animate-spin" />
+                      Retrying...
+                    {:else}
+                      <RefreshCw class="h-3.5 w-3.5" />
+                      Retry Now
+                    {/if}
+                  </button>
+                  <button
+                    class="btn btn-sm btn-error btn-outline gap-1"
+                    onclick={handleDisconnectLastfm}
+                    disabled={disconnectingLastfm}
+                  >
+                    <LogOut class="h-3.5 w-3.5" />
+                    {disconnectingLastfm ? "Disconnecting..." : "Disconnect"}
+                  </button>
+                {/if}
+              </div>
+            </div>
+          {:else}
+            <div class="text-sm text-base-content/60">
+              Unable to load Last.fm status
             </div>
           {/if}
         </div>

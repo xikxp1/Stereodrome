@@ -363,6 +363,20 @@ impl AudioPlayer {
                     media_controls.set_playback_status(state.is_playing, state.position);
                 }
 
+                if position_update_counter == 0
+                    && state.is_playing
+                    && let Some(song) = &state.song
+                {
+                    let app_state: tauri::State<'_, crate::state::AppState> = app_handle.state();
+                    crate::lastfm::handle_playback_progress(
+                        &app_handle,
+                        &app_state,
+                        song,
+                        state.position,
+                        state.duration,
+                    );
+                }
+
                 let _ = app_handle.emit("playback-state", &state);
             }
         });

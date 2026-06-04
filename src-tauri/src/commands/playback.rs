@@ -248,6 +248,8 @@ pub(crate) async fn play_song_by_id(
     song_id: &str,
 ) -> AppResult<()> {
     let data = fetch_song_data(app_handle, state, song_id).await?;
+    let lastfm_metadata = data.metadata.clone();
+    let lastfm_duration = data.duration;
 
     // Play the audio
     {
@@ -281,6 +283,14 @@ pub(crate) async fn play_song_by_id(
     // Report "now playing" to Subsonic server
     // Fire and forget - don't fail playback if scrobble fails
     let _ = state.client.scrobble(song_id, None, Some(false)).await;
+    let app = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) =
+            crate::lastfm::report_now_playing(app, lastfm_metadata, lastfm_duration).await
+        {
+            warn!("Failed to report Last.fm now playing: {e}");
+        }
+    });
 
     Ok(())
 }
@@ -340,6 +350,8 @@ pub async fn crossfade_play_by_id(
     crossfade_duration_ms: u32,
 ) -> AppResult<()> {
     let data = fetch_song_data(app_handle, state, song_id).await?;
+    let lastfm_metadata = data.metadata.clone();
+    let lastfm_duration = data.duration;
 
     {
         let audio_player = state.audio_player.lock_recover();
@@ -367,6 +379,14 @@ pub async fn crossfade_play_by_id(
     check_and_queue_gapless(app_handle, state);
 
     let _ = state.client.scrobble(song_id, None, Some(false)).await;
+    let app = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) =
+            crate::lastfm::report_now_playing(app, lastfm_metadata, lastfm_duration).await
+        {
+            warn!("Failed to report Last.fm now playing: {e}");
+        }
+    });
 
     Ok(())
 }
@@ -417,6 +437,8 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
             return;
         }
     };
+    let lastfm_metadata = data.metadata.clone();
+    let lastfm_duration = data.duration;
 
     // Send CrossfadePlay command
     {
@@ -448,6 +470,14 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
         .client
         .scrobble(&next_song_id, None, Some(false))
         .await;
+    let app = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) =
+            crate::lastfm::report_now_playing(app, lastfm_metadata, lastfm_duration).await
+        {
+            warn!("Failed to report Last.fm now playing: {e}");
+        }
+    });
 
     // Prefetch next-next and check gapless eligibility
     prefetch_next_song(app_handle, &state);
@@ -667,6 +697,39 @@ pub async fn after_gapless_transition(app_handle: &AppHandle, next_song_id: Opti
 
         // Scrobble the new song
         let _ = state.client.scrobble(song_id, None, Some(false)).await;
+
+        let lastfm_song = {
+            let conn = state.db.lock_recover();
+            conn.query_row(
+                "SELECT s.title, a.name, al.name, al.cover_art_id, s.duration
+                 FROM songs s
+                 LEFT JOIN artists a ON s.artist_id = a.id
+                 LEFT JOIN albums al ON s.album_id = al.id
+                 WHERE s.id = ?",
+                [song_id],
+                |row| {
+                    Ok((
+                        SongMetadata {
+                            id: song_id.clone(),
+                            title: row.get::<_, String>(0)?,
+                            artist: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                            album: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                            cover_art_id: row.get::<_, Option<String>>(3)?,
+                        },
+                        row.get::<_, Option<i64>>(4)?.unwrap_or(0) as f64,
+                    ))
+                },
+            )
+            .ok()
+        };
+        if let Some((song, duration)) = lastfm_song {
+            let app = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = crate::lastfm::report_now_playing(app, song, duration).await {
+                    warn!("Failed to report Last.fm now playing: {e}");
+                }
+            });
+        }
     }
 
     // Prefetch the next-next song and check if it's also gapless-eligible

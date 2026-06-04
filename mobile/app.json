@@ -3,7 +3,7 @@
     "name": "Stereodrome",
     "slug": "stereodrome",
     "scheme": "stereodrome",
-    "version": "0.1.21",
+    "version": "0.1.22",
     "orientation": "portrait",
     "icon": "../src-tauri/icons/icon.png",
     "userInterfaceStyle": "automatic",

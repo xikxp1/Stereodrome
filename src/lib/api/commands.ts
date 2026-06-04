@@ -19,6 +19,9 @@ import type {
   SyncSettings,
   LibrarySyncStatus,
   SystemTimePreferences,
+  LastfmAuthStart,
+  LastfmQueueItem,
+  LastfmStatus,
   MiniPlayerMode,
   MiniPlayerPosition,
 } from "$lib/types";
@@ -307,6 +310,31 @@ export async function setSyncSettings(settings: SyncSettings): Promise<void> {
 
 export async function getSystemTimePreferences(): Promise<SystemTimePreferences> {
   return invoke<SystemTimePreferences>("get_system_time_preferences");
+}
+
+// Last.fm commands
+export async function getLastfmStatus(): Promise<LastfmStatus> {
+  return invoke<LastfmStatus>("get_lastfm_status");
+}
+
+export async function beginLastfmAuth(): Promise<LastfmAuthStart> {
+  return invoke<LastfmAuthStart>("begin_lastfm_auth");
+}
+
+export async function completeLastfmAuth(): Promise<LastfmStatus> {
+  return invoke<LastfmStatus>("complete_lastfm_auth");
+}
+
+export async function disconnectLastfm(): Promise<LastfmStatus> {
+  return invoke<LastfmStatus>("disconnect_lastfm");
+}
+
+export async function getLastfmQueue(): Promise<LastfmQueueItem[]> {
+  return invoke<LastfmQueueItem[]>("get_lastfm_queue");
+}
+
+export async function retryLastfmQueue(): Promise<number> {
+  return invoke<number>("retry_lastfm_queue");
 }
 
 // Tray commands

@@ -5,6 +5,7 @@ mod commands;
 mod credentials;
 mod db;
 mod error;
+mod lastfm;
 mod media;
 mod search;
 mod state;
@@ -108,6 +109,7 @@ pub fn run() {
             app.manage(app_state);
 
             commands::library::start_library_sync_scheduler(app.handle().clone());
+            lastfm::start_lastfm_retry_scheduler(app.handle().clone());
 
             // Initialize media controls for OS integration (Control Center, media keys)
             if let Some(media_controls) = MediaControlsManager::new(app.handle().clone()) {
@@ -202,6 +204,12 @@ pub fn run() {
             commands::get_sync_settings,
             commands::set_sync_settings,
             commands::get_system_time_preferences,
+            commands::get_lastfm_status,
+            commands::begin_lastfm_auth,
+            commands::complete_lastfm_auth,
+            commands::disconnect_lastfm,
+            commands::get_lastfm_queue,
+            commands::retry_lastfm_queue,
             commands::open_mini_player,
             commands::set_mini_player_mode,
             commands::close_mini_player,

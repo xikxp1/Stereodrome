@@ -10,6 +10,7 @@ use crate::client::SubsonicClientHandle;
 use crate::commands::normalization::AnalysisProgress;
 use crate::db::queue::{load_queue_items, load_queue_state};
 use crate::error::AppResult;
+use crate::lastfm::LastfmPlaybackTracker;
 use crate::search::IndexManager;
 
 // Re-export ServerConfig from client module for backward compatibility
@@ -25,6 +26,8 @@ pub struct AppState {
     pub emitter_running: Arc<AtomicBool>,
     /// Prevents race conditions when rapidly clicking next/previous
     pub navigating: AtomicBool,
+    pub lastfm_retry_running: AtomicBool,
+    pub lastfm_tracker: Mutex<LastfmPlaybackTracker>,
     /// Current analysis progress (set by analyze_all_songs, cleared on completion)
     pub analysis_progress: Arc<Mutex<Option<AnalysisProgress>>>,
 }
@@ -71,6 +74,8 @@ impl AppState {
             index_path,
             emitter_running: Arc::new(AtomicBool::new(true)),
             navigating: AtomicBool::new(false),
+            lastfm_retry_running: AtomicBool::new(false),
+            lastfm_tracker: Mutex::new(LastfmPlaybackTracker::default()),
             analysis_progress: Arc::new(Mutex::new(None)),
         })
     }
