@@ -4,6 +4,7 @@ import { SelectableList } from "@/components/SelectableList";
 import { usePlayback } from "@/context/PlaybackContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
+import { visibleSongs } from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function PlaylistScreen({
@@ -18,29 +19,39 @@ export function PlaylistScreen({
   const songs = useQuery({
     queryKey: ["playlist-songs", playlistId],
     queryFn: () => stereodromeCore.getPlaylistSongs(playlistId),
-    enabled: !!playlistId && !stereodrome.offlineMode,
+    enabled: !!playlistId,
   });
+  const shownSongs = visibleSongs(
+    songs.data ?? [],
+    stereodrome.offlineMode,
+    stereodrome.offlineSongIds
+  );
 
   return (
     <SelectableList
       empty={
-        stereodrome.offlineMode
-          ? "Playlists unavailable offline"
-          : songs.isLoading
-            ? "Loading playlist"
+        songs.isLoading
+          ? "Loading playlist"
+          : stereodrome.offlineMode
+            ? "No offline playlist songs"
             : "No songs"
       }
-      options={(songs.data ?? []).map((song) => ({
+      options={shownSongs.map((song) => ({
         label: song.title,
         sublabel: song.artist ?? undefined,
         onSelect: async () => {
-          await playback.playSong(song, songs.data ?? [song]);
+          await playback.playSong(
+            song,
+            shownSongs.length ? shownSongs : [song]
+          );
           view.showNowPlaying();
         },
-        onLongSelect: async () => {
-          await stereodromeCore.downloadPlaylist(playlistId);
-          await stereodrome.refreshOfflineSongIds();
-        },
+        onLongSelect: stereodrome.offlineMode
+          ? undefined
+          : async () => {
+              await stereodromeCore.downloadPlaylist(playlistId);
+              await stereodrome.refreshOfflineSongIds();
+            },
       }))}
     />
   );

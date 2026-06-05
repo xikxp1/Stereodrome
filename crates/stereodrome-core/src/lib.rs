@@ -602,35 +602,40 @@ impl StereodromeCore {
     }
 
     pub async fn get_playlist_songs(&self, playlist_id: String) -> CoreResult<Vec<Song>> {
-        let client = self.connected_client().await?;
-        let playlist = client
-            .get_playlist(&playlist_id)
-            .await
-            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
-        let now = Utc::now().to_rfc3339();
-        Ok(playlist
-            .entry
-            .into_iter()
-            .map(|song| Song {
-                id: song.id,
-                album_id: song.album_id.unwrap_or_default(),
-                artist_id: song.artist_id.unwrap_or_default(),
-                title: song.title,
-                track_number: song.track,
-                disc_number: song.disc_number.unwrap_or(1),
-                duration: song.duration,
-                bit_rate: song.bit_rate,
-                size: song.size,
-                suffix: song.suffix,
-                content_type: song.content_type,
-                path: song.path,
-                year: song.year,
-                genre: song.genre,
-                synced_at: now.clone(),
-                artist: song.artist,
-                album: song.album,
-            })
-            .collect())
+        if let Ok(client) = self.connected_client().await {
+            let playlist = client
+                .get_playlist(&playlist_id)
+                .await
+                .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+            let now = Utc::now().to_rfc3339();
+            let songs = playlist
+                .entry
+                .into_iter()
+                .map(|song| Song {
+                    id: song.id,
+                    album_id: song.album_id.unwrap_or_default(),
+                    artist_id: song.artist_id.unwrap_or_default(),
+                    title: song.title,
+                    track_number: song.track,
+                    disc_number: song.disc_number.unwrap_or(1),
+                    duration: song.duration,
+                    bit_rate: song.bit_rate,
+                    size: song.size,
+                    suffix: song.suffix,
+                    content_type: song.content_type,
+                    path: song.path,
+                    year: song.year,
+                    genre: song.genre,
+                    synced_at: now.clone(),
+                    artist: song.artist,
+                    album: song.album,
+                })
+                .collect::<Vec<_>>();
+            self.save_playlist_songs(&playlist_id, &songs)?;
+            return Ok(songs);
+        }
+
+        self.get_local_playlist_songs(&playlist_id)
     }
 
     pub async fn create_playlist(
@@ -1292,8 +1297,18 @@ impl StereodromeCore {
     fn get_local_playlists(&self) -> CoreResult<Vec<Playlist>> {
         let conn = Connection::open(&self.db_path)?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, song_count, duration, owner, cover_art_id, created_at, changed_at
-             FROM playlists ORDER BY name COLLATE NOCASE",
+            "SELECT p.id, p.name, p.song_count, p.duration, p.owner, p.cover_art_id,
+                    p.created_at, p.changed_at
+             FROM playlists p
+             WHERE EXISTS (
+                SELECT 1
+                FROM playlist_songs ps
+                JOIN download_items di ON di.song_id = ps.song_id
+                WHERE ps.playlist_id = p.id
+                  AND di.status = 'downloaded'
+                  AND di.path IS NOT NULL
+             )
+             ORDER BY p.name COLLATE NOCASE",
         )?;
         rows_collect(stmt.query_map([], |row| {
             Ok(Playlist {
@@ -1307,6 +1322,22 @@ impl StereodromeCore {
                 changed_at: row.get(7)?,
             })
         })?)
+    }
+
+    fn get_local_playlist_songs(&self, playlist_id: &str) -> CoreResult<Vec<Song>> {
+        let conn = Connection::open(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.album_id, s.artist_id, s.title, s.track_number, s.disc_number,
+                    s.duration, s.bit_rate, s.size, s.suffix, s.content_type, s.path,
+                    s.year, s.genre, s.synced_at, ar.name, al.name
+             FROM playlist_songs ps
+             JOIN songs s ON ps.song_id = s.id
+             LEFT JOIN artists ar ON s.artist_id = ar.id
+             LEFT JOIN albums al ON s.album_id = al.id
+             WHERE ps.playlist_id = ?1
+             ORDER BY ps.position",
+        )?;
+        rows_collect(stmt.query_map([playlist_id], Song::from_row)?)
     }
 
     fn save_playlists(&self, playlists: &[Playlist]) -> CoreResult<()> {
@@ -1331,6 +1362,53 @@ impl StereodromeCore {
                     playlist.changed_at,
                     now
                 ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn save_playlist_songs(&self, playlist_id: &str, songs: &[Song]) -> CoreResult<()> {
+        let mut conn = Connection::open(&self.db_path)?;
+        let tx = conn.transaction()?;
+        {
+            let mut song_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO songs
+                 (id, album_id, artist_id, title, track_number, disc_number, duration,
+                  bit_rate, size, suffix, content_type, path, year, genre, synced_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            )?;
+            for song in songs {
+                song_stmt.execute(params![
+                    song.id,
+                    song.album_id,
+                    song.artist_id,
+                    song.title,
+                    song.track_number,
+                    song.disc_number,
+                    song.duration,
+                    song.bit_rate,
+                    song.size,
+                    song.suffix,
+                    song.content_type,
+                    song.path,
+                    song.year,
+                    song.genre,
+                    song.synced_at
+                ])?;
+            }
+        }
+        tx.execute(
+            "DELETE FROM playlist_songs WHERE playlist_id = ?1",
+            [playlist_id],
+        )?;
+        {
+            let mut playlist_song_stmt = tx.prepare(
+                "INSERT INTO playlist_songs (playlist_id, song_id, position)
+                 VALUES (?1, ?2, ?3)",
+            )?;
+            for (position, song) in songs.iter().enumerate() {
+                playlist_song_stmt.execute(params![playlist_id, song.id, position as i64])?;
             }
         }
         tx.commit()?;
@@ -1971,6 +2049,122 @@ mod tests {
         );
 
         assert_eq!(song_ids, ["song-b"]);
+    }
+
+    #[tokio::test]
+    async fn get_playlist_songs_reads_local_cache_without_connection() {
+        let data_dir = unique_temp_dir("local-playlist-songs");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let conn = Connection::open(&core.db_path).expect("open test db");
+
+        conn.execute(
+            "INSERT INTO artists (id, name, synced_at)
+             VALUES ('artist-1', 'Artist One', 'now')",
+            [],
+        )
+        .expect("insert artist");
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, synced_at)
+             VALUES ('album-1', 'artist-1', 'Album One', 'now')",
+            [],
+        )
+        .expect("insert album");
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, disc_number, synced_at)
+             VALUES
+                ('song-1', 'album-1', 'artist-1', 'First Song', 1, 'now'),
+                ('song-2', 'album-1', 'artist-1', 'Second Song', 1, 'now')",
+            [],
+        )
+        .expect("insert songs");
+        conn.execute(
+            "INSERT INTO playlists (id, name, song_count, duration, created_at, changed_at, synced_at)
+             VALUES ('playlist-1', 'Offline Mix', 2, 0, 'now', 'now', 'now')",
+            [],
+        )
+        .expect("insert playlist");
+        conn.execute(
+            "INSERT INTO playlist_songs (playlist_id, song_id, position)
+             VALUES
+                ('playlist-1', 'song-2', 0),
+                ('playlist-1', 'song-1', 1)",
+            [],
+        )
+        .expect("insert playlist songs");
+
+        let songs = core
+            .get_playlist_songs("playlist-1".to_string())
+            .await
+            .expect("read local playlist songs");
+
+        assert_eq!(songs.len(), 2);
+        assert_eq!(songs[0].id, "song-2");
+        assert_eq!(songs[0].artist.as_deref(), Some("Artist One"));
+        assert_eq!(songs[0].album.as_deref(), Some("Album One"));
+        assert_eq!(songs[1].id, "song-1");
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn get_playlists_lists_only_downloaded_local_playlists_without_connection() {
+        let data_dir = unique_temp_dir("local-playlists");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let conn = Connection::open(&core.db_path).expect("open test db");
+
+        conn.execute(
+            "INSERT INTO artists (id, name, synced_at)
+             VALUES ('artist-1', 'Artist One', 'now')",
+            [],
+        )
+        .expect("insert artist");
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, synced_at)
+             VALUES ('album-1', 'artist-1', 'Album One', 'now')",
+            [],
+        )
+        .expect("insert album");
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, disc_number, synced_at)
+             VALUES
+                ('song-downloaded', 'album-1', 'artist-1', 'Downloaded Song', 1, 'now'),
+                ('song-streaming', 'album-1', 'artist-1', 'Streaming Song', 1, 'now')",
+            [],
+        )
+        .expect("insert songs");
+        conn.execute(
+            "INSERT INTO playlists (id, name, song_count, duration, created_at, changed_at, synced_at)
+             VALUES
+                ('playlist-downloaded', 'Downloaded Mix', 1, 0, 'now', 'now', 'now'),
+                ('playlist-streaming', 'Streaming Mix', 1, 0, 'now', 'now', 'now')",
+            [],
+        )
+        .expect("insert playlists");
+        conn.execute(
+            "INSERT INTO playlist_songs (playlist_id, song_id, position)
+             VALUES
+                ('playlist-downloaded', 'song-downloaded', 0),
+                ('playlist-streaming', 'song-streaming', 0)",
+            [],
+        )
+        .expect("insert playlist songs");
+        conn.execute(
+            "INSERT INTO download_items
+             (entity_type, entity_id, song_id, status, path, bytes, updated_at)
+             VALUES ('song', 'song-downloaded', 'song-downloaded', 'downloaded', '/tmp/song.mp3', 1, 'now')",
+            [],
+        )
+        .expect("insert download item");
+
+        let playlists = core
+            .get_playlists()
+            .await
+            .expect("read local playlists");
+
+        assert_eq!(playlists.len(), 1);
+        assert_eq!(playlists[0].id, "playlist-downloaded");
+
+        std::fs::remove_dir_all(data_dir).ok();
     }
 
     #[tokio::test]

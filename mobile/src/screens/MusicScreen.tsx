@@ -51,12 +51,11 @@ export function MusicScreen() {
                     params: { kind: "mostPlayed" },
                   }),
               },
-              {
-                label: "Playlists",
-                onSelect: () =>
-                  view.push({ name: "playlists", title: "Playlists" }),
-              },
             ]),
+        {
+          label: "Playlists",
+          onSelect: () => view.push({ name: "playlists", title: "Playlists" }),
+        },
       ]}
     />
   );
