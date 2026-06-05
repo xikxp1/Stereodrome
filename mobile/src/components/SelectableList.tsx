@@ -103,12 +103,18 @@ export function SelectableList({
   disabled = false,
   options,
   empty = "Nothing here",
+  loadingMore = false,
+  loadingMoreText = "Loading more",
+  onEndReached,
   preserveSelectionOnChange = false,
   resetSelectionKey,
 }: {
   options: SelectableOption[];
   disabled?: boolean;
   empty?: string;
+  loadingMore?: boolean;
+  loadingMoreText?: string;
+  onEndReached?: () => void;
   preserveSelectionOnChange?: boolean;
   resetSelectionKey?: string | number | null;
 }) {
@@ -280,6 +286,15 @@ export function SelectableList({
     ),
     [activeIndex, handleRowLongPress, handleRowPress]
   );
+  const footer = useMemo(
+    () =>
+      loadingMore ? (
+        <View style={styles.footer}>
+          <Text style={styles.footerText}>{loadingMoreText}</Text>
+        </View>
+      ) : null,
+    [loadingMore, loadingMoreText]
+  );
 
   if (options.length === 0) {
     return (
@@ -301,7 +316,10 @@ export function SelectableList({
       })}
       initialNumToRender={14}
       keyExtractor={(item, index) => `${item.label}-${index}`}
+      ListFooterComponent={footer}
       maxToRenderPerBatch={8}
+      onEndReached={onEndReached}
+      onEndReachedThreshold={0.4}
       onLayout={(event) => {
         listHeightRef.current = event.nativeEvent.layout.height;
         scrollSelectedIntoView(activeIndexRef.current);
@@ -359,6 +377,16 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     color: colors.muted,
+    fontWeight: "700",
+  },
+  footer: {
+    alignItems: "center",
+    minHeight: rowHeight,
+    justifyContent: "center",
+  },
+  footerText: {
+    color: colors.muted,
+    fontSize: 12,
     fontWeight: "700",
   },
 });

@@ -14,6 +14,7 @@ export type ViewName =
   | "artists"
   | "artist"
   | "albums"
+  | "albumList"
   | "album"
   | "songs"
   | "playlists"

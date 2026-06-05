@@ -48,6 +48,7 @@ const libraryQueryKeys = [
   ["artist-albums"],
   ["artist-songs"],
   ["album-songs"],
+  ["album-list"],
   ["search"],
   ["playlists"],
   ["playlist-songs"],

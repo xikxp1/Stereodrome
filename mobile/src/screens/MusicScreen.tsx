@@ -25,6 +25,33 @@ export function MusicScreen() {
           ? []
           : [
               {
+                label: "Recently Added",
+                onSelect: () =>
+                  view.push({
+                    name: "albumList",
+                    title: "Recently Added",
+                    params: { kind: "recentlyAdded" },
+                  }),
+              },
+              {
+                label: "Recently Played",
+                onSelect: () =>
+                  view.push({
+                    name: "albumList",
+                    title: "Recently Played",
+                    params: { kind: "recentlyPlayed" },
+                  }),
+              },
+              {
+                label: "Most Played",
+                onSelect: () =>
+                  view.push({
+                    name: "albumList",
+                    title: "Most Played",
+                    params: { kind: "mostPlayed" },
+                  }),
+              },
+              {
                 label: "Playlists",
                 onSelect: () =>
                   view.push({ name: "playlists", title: "Playlists" }),

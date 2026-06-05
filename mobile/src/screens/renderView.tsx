@@ -1,4 +1,8 @@
 import type { ViewInstance } from "@/context/ViewContext";
+import {
+  AlbumListScreen,
+  isRankedAlbumListKind,
+} from "@/screens/AlbumListScreen";
 import { AlbumScreen } from "@/screens/AlbumScreen";
 import { AlbumsScreen } from "@/screens/AlbumsScreen";
 import { ArtistScreen } from "@/screens/ArtistScreen";
@@ -35,6 +39,14 @@ export function renderView(view: ViewInstance) {
       );
     case "albums":
       return <AlbumsScreen />;
+    case "albumList": {
+      const kind = view.params?.kind;
+      return isRankedAlbumListKind(kind) ? (
+        <AlbumListScreen kind={kind} />
+      ) : (
+        <AlbumsScreen />
+      );
+    }
     case "album":
       return (
         <AlbumScreen
