@@ -127,6 +127,13 @@ export type SyncResult = {
   songs: number;
 };
 
+export type SyncSettings = {
+  incremental_enabled: boolean;
+  incremental_interval_minutes: number;
+  full_reconcile_enabled: boolean;
+  full_reconcile_interval_hours: number;
+};
+
 export type ScanStatus = {
   scanning: boolean;
   count: number | null;

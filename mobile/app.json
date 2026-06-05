@@ -13,7 +13,10 @@
       "supportsTablet": true,
       "infoPlist": {
         "CADisableMinimumFrameDurationOnPhone": false,
-        "UIBackgroundModes": ["audio"],
+        "UIBackgroundModes": ["audio", "processing"],
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "com.expo.modules.backgroundtask.processing"
+        ],
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": false,
           "NSAllowsArbitraryLoadsForMedia": true,

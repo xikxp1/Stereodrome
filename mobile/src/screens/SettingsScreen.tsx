@@ -19,18 +19,23 @@ import { colors } from "@/components/theme";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
+import { configureLibrarySyncBackgroundTask } from "@/services/librarySyncScheduler";
 import { stereodromeCore } from "@/services/stereodromeCore";
 import type {
   AudioProcessingSettings,
   LastfmQueueItem,
   LibrarySyncStatus,
   ScanStatus,
+  SyncSettings,
 } from "@/types/music";
 
 const lufsPresets = [-18, -16, -14, -12, -10];
 const crossfadePresets = [1000, 3000, 5000, 8000, 12000];
 const cacheSizePresetsGb = [0.5, 1, 2, 5, 10, 20, 50];
+const incrementalSyncIntervals = [5, 15, 30, 60, 120, 360, 720];
+const fullReconcileIntervals = [1, 6, 12, 24, 48, 72, 168];
 const librarySyncStatusQueryKey = ["library-sync-status"] as const;
+const syncSettingsQueryKey = ["sync-settings"] as const;
 const scanStatusQueryKey = ["scan-status"] as const;
 const lastfmStatusQueryKey = ["lastfm-status"] as const;
 const lastfmQueueQueryKey = ["lastfm-queue"] as const;
@@ -164,6 +169,11 @@ export function SettingsScreen({ category }: { category?: string }) {
     queryFn: stereodromeCore.getLibrarySyncStatus,
     enabled: selectedCategory === "sync",
     refetchInterval: (query) => (query.state.data?.active_job ? 2000 : false),
+  });
+  const syncSettings = useQuery({
+    queryKey: syncSettingsQueryKey,
+    queryFn: stereodromeCore.getSyncSettings,
+    enabled: selectedCategory === "sync",
   });
   const scanStatus = useQuery({
     queryKey: scanStatusQueryKey,
@@ -364,6 +374,11 @@ export function SettingsScreen({ category }: { category?: string }) {
             queryKey: librarySyncStatusQueryKey,
           }),
       },
+      ...syncScheduleOptions(
+        syncSettings.data,
+        updateSyncSettings,
+        openTextEdit
+      ),
       ...syncActions,
       ...(syncStatus.data?.incremental.last_error
         ? [
@@ -593,6 +608,20 @@ export function SettingsScreen({ category }: { category?: string }) {
     queryClient.setQueryData(["audio-processing-settings"], next);
   }
 
+  async function updateSyncSettings(patch: Partial<SyncSettings>) {
+    const current =
+      syncSettings.data ?? (await stereodromeCore.getSyncSettings());
+    const next = await stereodromeCore.setSyncSettings({
+      ...current,
+      ...patch,
+    });
+    queryClient.setQueryData(syncSettingsQueryKey, next);
+    await configureLibrarySyncBackgroundTask(next);
+    await queryClient.invalidateQueries({
+      queryKey: librarySyncStatusQueryKey,
+    });
+  }
+
   async function runBusy(label: string, action: () => Promise<void>) {
     if (busyActionRef.current) {
       return;
@@ -765,6 +794,114 @@ export function SettingsScreen({ category }: { category?: string }) {
       </Modal>
     </View>
   );
+}
+
+function syncScheduleOptions(
+  settings: SyncSettings | undefined,
+  updateSyncSettings: (patch: Partial<SyncSettings>) => Promise<void>,
+  openTextEdit: (config: TextEditConfig) => void
+): SelectableOption[] {
+  if (!settings) {
+    return [
+      {
+        kind: "info",
+        label: "Scheduled Sync",
+        sublabel: "Loading...",
+        onSelect: () => {},
+      },
+    ];
+  }
+
+  return [
+    {
+      kind: "editable",
+      label: "Periodic incremental sync",
+      sublabel: onOff(settings.incremental_enabled),
+      onSelect: () =>
+        updateSyncSettings({
+          incremental_enabled: !settings.incremental_enabled,
+        }),
+    },
+    ...(settings.incremental_enabled
+      ? [
+          {
+            kind: "editable" as const,
+            label: "Partial sync interval",
+            sublabel: formatMinutes(settings.incremental_interval_minutes),
+            onSelect: () =>
+              openTextEdit({
+                title: "Partial Sync Interval (minutes)",
+                value: formatInputNumber(settings.incremental_interval_minutes),
+                keyboardType: "number-pad",
+                onSubmit: async (value) => {
+                  const minutes = parseNumberInput(
+                    value,
+                    "Partial sync interval"
+                  );
+                  await updateSyncSettings({
+                    incremental_interval_minutes: Math.round(
+                      clamp(minutes, 5, 720)
+                    ),
+                  });
+                },
+              }),
+            onLongSelect: () =>
+              updateSyncSettings({
+                incremental_interval_minutes: cycleNumber(
+                  incrementalSyncIntervals,
+                  settings.incremental_interval_minutes,
+                  1
+                ),
+              }),
+          },
+        ]
+      : []),
+    {
+      kind: "editable",
+      label: "Periodic full reconcile",
+      sublabel: onOff(settings.full_reconcile_enabled),
+      onSelect: () =>
+        updateSyncSettings({
+          full_reconcile_enabled: !settings.full_reconcile_enabled,
+        }),
+    },
+    ...(settings.full_reconcile_enabled
+      ? [
+          {
+            kind: "editable" as const,
+            label: "Full reconcile interval",
+            sublabel: formatHours(settings.full_reconcile_interval_hours),
+            onSelect: () =>
+              openTextEdit({
+                title: "Full Reconcile Interval (hours)",
+                value: formatInputNumber(
+                  settings.full_reconcile_interval_hours
+                ),
+                keyboardType: "number-pad",
+                onSubmit: async (value) => {
+                  const hours = parseNumberInput(
+                    value,
+                    "Full reconcile interval"
+                  );
+                  await updateSyncSettings({
+                    full_reconcile_interval_hours: Math.round(
+                      clamp(hours, 1, 168)
+                    ),
+                  });
+                },
+              }),
+            onLongSelect: () =>
+              updateSyncSettings({
+                full_reconcile_interval_hours: cycleNumber(
+                  fullReconcileIntervals,
+                  settings.full_reconcile_interval_hours,
+                  1
+                ),
+              }),
+          },
+        ]
+      : []),
+  ];
 }
 
 function playbackOptions(
@@ -1088,6 +1225,16 @@ function formatTimestamp(value: string | null | undefined) {
     return "Invalid date";
   }
   return parsed.toLocaleString();
+}
+
+function formatMinutes(minutes: number) {
+  return minutes >= 60 && minutes % 60 === 0
+    ? `${minutes / 60}h`
+    : `${minutes}m`;
+}
+
+function formatHours(hours: number) {
+  return `${hours}h`;
 }
 
 function parseSettingsCategory(value: string | undefined) {

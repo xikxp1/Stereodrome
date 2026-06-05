@@ -26,6 +26,7 @@ import type {
   ScanStatus,
   SearchResults,
   Song,
+  SyncSettings,
 } from "@/types/music";
 
 type Envelope<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -221,6 +222,15 @@ export const stereodromeCore = {
   async syncLibraryIncremental(): Promise<void> {
     await invokeJson<void>("syncLibraryIncremental");
     startSyncStatusPolling();
+  },
+  getSyncSettings(): Promise<SyncSettings> {
+    return invokeJson("getSyncSettings");
+  },
+  setSyncSettings(settings: SyncSettings): Promise<SyncSettings> {
+    return invokeJson("setSyncSettings", settings);
+  },
+  runDueLibrarySync(): Promise<string | null> {
+    return invokeJson("runDueLibrarySync");
   },
   getScanStatus(): Promise<ScanStatus> {
     return invokeJson("getScanStatus");

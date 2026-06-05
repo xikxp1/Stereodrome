@@ -9,12 +9,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use chrono::Utc;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use log::{debug, info, warn};
 use queue::{PlayQueue, QueueItem, QueueState, RepeatMode};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use submarine::{Client, api::get_album_list::Order, auth::AuthBuilder};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::task::JoinSet;
 
 pub use error::{CoreError, CoreResult};
 pub use lastfm::{LastfmAuthStart, LastfmQueueItem, LastfmStatus};
@@ -25,6 +26,17 @@ const API_VERSION: &str = "1.16.1";
 const CLIENT_NAME: &str = "StereodromeMobile";
 const MOBILE_PLAYBACK_FORMAT: &str = "mp3";
 const LARGE_COVER_ART_SIZE: i32 = 512;
+const NEWEST_HEAD_ALBUM_KEY: &str = "library_newest_head_album_id";
+const NEWEST_ALBUMS_PAGE_SIZE: usize = 200;
+const SETTINGS_SYNC_KEY: &str = "settings_sync";
+const FULL_LAST_ATTEMPT_AT_KEY: &str = "library_reconcile_last_attempt_at";
+const FULL_LAST_SUCCESS_AT_KEY: &str = "library_reconcile_last_success_at";
+const FULL_LAST_ERROR_KEY: &str = "library_reconcile_last_error";
+const INCREMENTAL_LAST_ATTEMPT_AT_KEY: &str = "library_incremental_last_attempt_at";
+const INCREMENTAL_LAST_SUCCESS_AT_KEY: &str = "library_incremental_last_success_at";
+const INCREMENTAL_LAST_ERROR_KEY: &str = "library_incremental_last_error";
+const ARTIST_FETCH_CONCURRENCY: usize = 8;
+const ALBUM_FETCH_CONCURRENCY: usize = 12;
 
 struct LibrarySyncData {
     artists: Vec<SyncArtistData>,
@@ -64,6 +76,84 @@ struct SyncSongData {
     path: Option<String>,
     year: Option<i32>,
     genre: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RemoteAlbumSummary {
+    id: String,
+    name: String,
+    year: Option<i32>,
+    song_count: i32,
+    duration: i32,
+    cover_art: Option<String>,
+}
+
+#[derive(Debug)]
+struct AlbumFetchRequest {
+    album_id: String,
+    artist_id: String,
+    album_year: Option<i32>,
+}
+
+#[derive(Debug)]
+struct RemoteSong {
+    id: String,
+    title: String,
+    track: Option<i32>,
+    disc_number: i32,
+    duration: Option<i32>,
+    bit_rate: Option<i32>,
+    size: Option<i64>,
+    suffix: Option<String>,
+    content_type: Option<String>,
+    path: Option<String>,
+    year: Option<i32>,
+    genre: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalArtistRow {
+    name: String,
+    cover_art_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NewestAlbumCandidate {
+    album_id: String,
+    artist_id: String,
+    artist_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct NewestAlbumPageEntry {
+    id: String,
+    artist_id: Option<String>,
+    artist_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewestScanStopReason {
+    ReachedPreviousHead,
+    ExhaustedNewestFeed,
+}
+
+#[derive(Debug)]
+struct NewestScanResult {
+    head_album_id: Option<String>,
+    candidates: Vec<NewestAlbumCandidate>,
+    stop_reason: NewestScanStopReason,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NewestPageScanResult {
+    candidates: Vec<NewestAlbumCandidate>,
+    reached_previous_head: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DueSyncJob {
+    Incremental,
+    FullReconcile,
 }
 
 #[derive(Debug)]
@@ -231,6 +321,7 @@ impl StereodromeCore {
             sync_data.songs.len()
         );
 
+        let newest_head_album_id = fetch_newest_head_album_id(&client).await?;
         let now = Utc::now().to_rfc3339();
         let mut conn = Connection::open(&self.db_path)?;
         let tx = conn.transaction()?;
@@ -315,6 +406,13 @@ impl StereodromeCore {
              VALUES ('library_full_last_error', '', ?1)",
             [&now],
         )?;
+        if let Some(head_album_id) = newest_head_album_id {
+            tx.execute(
+                "INSERT OR REPLACE INTO sync_state (key, value, updated_at)
+                 VALUES (?1, ?2, ?3)",
+                params![NEWEST_HEAD_ALBUM_KEY, head_album_id, &now],
+            )?;
+        }
         tx.commit()?;
         let result = SyncResult {
             artists: sync_data.artists.len(),
@@ -330,10 +428,17 @@ impl StereodromeCore {
 
     pub async fn sync_library_incremental(&self) -> CoreResult<SyncResult> {
         info!("Starting incremental library sync");
-        self.record_sync_attempt("library_incremental", None)?;
-        match self.sync_library().await {
+        self.record_sync_attempt_keyed(
+            INCREMENTAL_LAST_ATTEMPT_AT_KEY,
+            INCREMENTAL_LAST_ERROR_KEY,
+            None,
+        )?;
+        match self.run_incremental_library_sync().await {
             Ok(result) => {
-                self.record_sync_success("library_incremental")?;
+                self.record_sync_success_keyed(
+                    INCREMENTAL_LAST_SUCCESS_AT_KEY,
+                    INCREMENTAL_LAST_ERROR_KEY,
+                )?;
                 info!(
                     "Incremental library sync complete: artists={}, albums={}, songs={}",
                     result.artists, result.albums, result.songs
@@ -342,7 +447,11 @@ impl StereodromeCore {
             }
             Err(error) => {
                 warn!("Incremental library sync failed: {error}");
-                self.record_sync_attempt("library_incremental", Some(error.to_string()))?;
+                self.record_sync_attempt_keyed(
+                    INCREMENTAL_LAST_ATTEMPT_AT_KEY,
+                    INCREMENTAL_LAST_ERROR_KEY,
+                    Some(error.to_string()),
+                )?;
                 Err(error)
             }
         }
@@ -350,7 +459,7 @@ impl StereodromeCore {
 
     pub async fn reconcile_library(&self) -> CoreResult<SyncResult> {
         info!("Starting full library sync with reconciliation");
-        self.record_sync_attempt("library_reconcile", None)?;
+        self.record_sync_attempt_keyed(FULL_LAST_ATTEMPT_AT_KEY, FULL_LAST_ERROR_KEY, None)?;
 
         let result = match self.sync_library().await {
             Ok(result) => {
@@ -368,7 +477,7 @@ impl StereodromeCore {
 
         match result {
             Ok(result) => {
-                self.record_sync_success("library_reconcile")?;
+                self.record_sync_success_keyed(FULL_LAST_SUCCESS_AT_KEY, FULL_LAST_ERROR_KEY)?;
                 info!(
                     "Full library sync with reconciliation complete: artists={}, albums={}, songs={}",
                     result.artists, result.albums, result.songs
@@ -377,10 +486,51 @@ impl StereodromeCore {
             }
             Err(error) => {
                 warn!("Full library sync with reconciliation failed: {error}");
-                self.record_sync_attempt("library_reconcile", Some(error.to_string()))?;
+                self.record_sync_attempt_keyed(
+                    FULL_LAST_ATTEMPT_AT_KEY,
+                    FULL_LAST_ERROR_KEY,
+                    Some(error.to_string()),
+                )?;
                 Err(error)
             }
         }
+    }
+
+    pub fn get_sync_settings(&self) -> CoreResult<SyncSettings> {
+        let conn = Connection::open(&self.db_path)?;
+        let Some(json) = sync_value(&conn, SETTINGS_SYNC_KEY)? else {
+            return Ok(SyncSettings::default());
+        };
+        let settings = serde_json::from_str::<SyncSettings>(&json)
+            .unwrap_or_else(|_| SyncSettings::default())
+            .clamped();
+        Ok(settings)
+    }
+
+    pub fn set_sync_settings(&self, settings: SyncSettings) -> CoreResult<SyncSettings> {
+        let settings = settings.clamped();
+        let conn = Connection::open(&self.db_path)?;
+        write_sync_value(&conn, SETTINGS_SYNC_KEY, &serde_json::to_string(&settings)?)?;
+        Ok(settings)
+    }
+
+    pub async fn run_due_library_sync(&self) -> CoreResult<Option<String>> {
+        match self.next_due_library_sync_job()? {
+            Some(DueSyncJob::FullReconcile) => {
+                self.reconcile_library().await?;
+                Ok(Some("full_reconcile".to_string()))
+            }
+            Some(DueSyncJob::Incremental) => {
+                self.sync_library_incremental().await?;
+                Ok(Some("incremental".to_string()))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn next_due_library_sync_job(&self) -> CoreResult<Option<DueSyncJob>> {
+        let settings = self.get_sync_settings()?;
+        self.next_due_sync_job(&settings)
     }
 
     pub async fn get_scan_status(&self) -> CoreResult<ScanStatus> {
@@ -420,9 +570,20 @@ impl StereodromeCore {
 
     pub fn get_library_sync_status(&self) -> CoreResult<LibrarySyncStatus> {
         let conn = Connection::open(&self.db_path)?;
+        let settings = self.get_sync_settings()?;
         let full = self.sync_job_status(&conn, "library_full", false, 1440)?;
-        let incremental = self.sync_job_status(&conn, "library_incremental", true, 60)?;
-        let reconcile = self.sync_job_status(&conn, "library_reconcile", false, 1440)?;
+        let incremental = self.sync_job_status(
+            &conn,
+            "library_incremental",
+            settings.incremental_enabled,
+            settings.incremental_interval_minutes,
+        )?;
+        let reconcile = self.sync_job_status(
+            &conn,
+            "library_reconcile",
+            settings.full_reconcile_enabled,
+            settings.full_reconcile_interval_hours.saturating_mul(60),
+        )?;
 
         Ok(LibrarySyncStatus {
             active_job: None,
@@ -1426,12 +1587,12 @@ impl StereodromeCore {
         let last_success_at = sync_value(conn, &format!("{prefix}_last_success_at"))?;
         let last_error =
             sync_value(conn, &format!("{prefix}_last_error"))?.filter(|e| !e.is_empty());
-        let next_run_at = last_success_at.as_deref().and_then(|value| {
-            chrono::DateTime::parse_from_rfc3339(value)
-                .ok()
-                .map(|date| date + chrono::Duration::minutes(interval_minutes as i64))
-                .map(|date| date.to_rfc3339())
-        });
+        let next_run_at = compute_next_run_at(
+            enabled,
+            interval_minutes,
+            last_attempt_at.as_deref(),
+            Utc::now(),
+        );
 
         Ok(SyncJobStatus {
             enabled,
@@ -1454,12 +1615,242 @@ impl StereodromeCore {
         Ok(())
     }
 
-    fn record_sync_success(&self, prefix: &str) -> CoreResult<()> {
+    fn record_sync_attempt_keyed(
+        &self,
+        attempt_key: &str,
+        error_key: &str,
+        error: Option<String>,
+    ) -> CoreResult<()> {
         let conn = Connection::open(&self.db_path)?;
         let now = Utc::now().to_rfc3339();
-        write_sync_value(&conn, &format!("{prefix}_last_success_at"), &now)?;
-        write_sync_value(&conn, &format!("{prefix}_last_error"), "")?;
+        write_sync_value(&conn, attempt_key, &now)?;
+        match error {
+            Some(error) => write_sync_value(&conn, error_key, &error)?,
+            None => write_sync_value(&conn, error_key, "")?,
+        }
         Ok(())
+    }
+
+    fn record_sync_success_keyed(&self, success_key: &str, error_key: &str) -> CoreResult<()> {
+        let conn = Connection::open(&self.db_path)?;
+        let now = Utc::now().to_rfc3339();
+        write_sync_value(&conn, success_key, &now)?;
+        write_sync_value(&conn, error_key, "")?;
+        Ok(())
+    }
+
+    fn next_due_sync_job(&self, settings: &SyncSettings) -> CoreResult<Option<DueSyncJob>> {
+        let now = Utc::now();
+        let conn = Connection::open(&self.db_path)?;
+        let full_last_attempt = sync_value(&conn, FULL_LAST_ATTEMPT_AT_KEY)?;
+        let incremental_last_attempt = sync_value(&conn, INCREMENTAL_LAST_ATTEMPT_AT_KEY)?;
+
+        if is_job_due(
+            settings.full_reconcile_enabled,
+            settings.full_reconcile_interval_hours.saturating_mul(60),
+            full_last_attempt.as_deref(),
+            now,
+        ) {
+            return Ok(Some(DueSyncJob::FullReconcile));
+        }
+
+        if is_job_due(
+            settings.incremental_enabled,
+            settings.incremental_interval_minutes,
+            incremental_last_attempt.as_deref(),
+            now,
+        ) {
+            return Ok(Some(DueSyncJob::Incremental));
+        }
+
+        Ok(None)
+    }
+
+    async fn run_incremental_library_sync(&self) -> CoreResult<SyncResult> {
+        let client = self.connected_client().await?;
+        let (previous_head_album_id, local_artists, local_album_ids) = {
+            let conn = Connection::open(&self.db_path)?;
+            (
+                sync_value(&conn, NEWEST_HEAD_ALBUM_KEY)?,
+                load_local_artists(&conn)?,
+                load_local_album_ids(&conn)?,
+            )
+        };
+
+        let newest_scan = fetch_newest_album_candidates(
+            &client,
+            previous_head_album_id.as_deref(),
+            &local_album_ids,
+        )
+        .await?;
+
+        if newest_scan.candidates.is_empty() {
+            if let Some(head_album_id) = newest_scan.head_album_id.as_deref()
+                && previous_head_album_id.as_deref() != Some(head_album_id)
+            {
+                let conn = Connection::open(&self.db_path)?;
+                write_sync_value(&conn, NEWEST_HEAD_ALBUM_KEY, head_album_id)?;
+            }
+
+            match previous_head_album_id.as_deref() {
+                Some(previous_head_album_id)
+                    if newest_scan.stop_reason == NewestScanStopReason::ReachedPreviousHead =>
+                {
+                    info!(
+                        "Incremental sync skipped: no albums found before previous newest head ({previous_head_album_id})"
+                    );
+                }
+                Some(previous_head_album_id) => {
+                    info!(
+                        "Incremental sync skipped: newest-album feed exhausted before previous newest head ({previous_head_album_id})"
+                    );
+                }
+                None => {
+                    info!(
+                        "Incremental sync skipped: no previous newest head recorded and newest feed contained no unknown albums"
+                    );
+                }
+            }
+
+            return Ok(SyncResult::default());
+        }
+
+        let candidate_album_ids: HashSet<String> = newest_scan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.album_id.clone())
+            .collect();
+        let mut artist_names_by_id: HashMap<String, String> = HashMap::new();
+        let mut artists_to_refresh: HashSet<String> = HashSet::new();
+
+        for candidate in &newest_scan.candidates {
+            artists_to_refresh.insert(candidate.artist_id.clone());
+            if let Some(name) = &candidate.artist_name {
+                artist_names_by_id
+                    .entry(candidate.artist_id.clone())
+                    .or_insert(name.clone());
+            }
+        }
+
+        let mut artist_ids: Vec<String> = artists_to_refresh.into_iter().collect();
+        artist_ids.sort();
+        let mut artist_fetches =
+            fetch_artist_albums_bounded(client.clone(), artist_ids, ARTIST_FETCH_CONCURRENCY).await;
+        artist_fetches.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let mut artists_data = Vec::new();
+        let mut albums_data = Vec::new();
+        let mut album_fetch_requests = Vec::new();
+
+        for (artist_id, artist_result) in artist_fetches {
+            let artist_albums = match artist_result {
+                Ok(albums) => albums,
+                Err(error) => {
+                    warn!("Error fetching artist {artist_id}: {error}");
+                    continue;
+                }
+            };
+
+            let artist_name = artist_names_by_id
+                .get(&artist_id)
+                .cloned()
+                .or_else(|| {
+                    local_artists
+                        .get(&artist_id)
+                        .map(|artist| artist.name.clone())
+                })
+                .unwrap_or_else(|| "Unknown Artist".to_string());
+            let cover_art = local_artists
+                .get(&artist_id)
+                .and_then(|artist| artist.cover_art_id.clone());
+
+            artists_data.push(SyncArtistData {
+                id: artist_id.clone(),
+                name: artist_name,
+                album_count: artist_albums.len() as i32,
+                cover_art,
+            });
+
+            for album in artist_albums {
+                if !candidate_album_ids.contains(&album.id) {
+                    continue;
+                }
+
+                albums_data.push(SyncAlbumData {
+                    id: album.id.clone(),
+                    artist_id: artist_id.clone(),
+                    name: album.name,
+                    year: album.year,
+                    song_count: album.song_count,
+                    duration: Some(album.duration),
+                    cover_art: album.cover_art,
+                });
+                album_fetch_requests.push(AlbumFetchRequest {
+                    album_id: album.id,
+                    artist_id: artist_id.clone(),
+                    album_year: album.year,
+                });
+            }
+        }
+
+        let mut album_fetches =
+            fetch_album_songs_bounded(client, album_fetch_requests, ALBUM_FETCH_CONCURRENCY).await;
+        album_fetches.sort_by(|left, right| left.0.album_id.cmp(&right.0.album_id));
+        let mut songs_data = Vec::new();
+
+        for (request, album_result) in album_fetches {
+            match album_result {
+                Ok(songs) => {
+                    for song in songs {
+                        songs_data.push(SyncSongData {
+                            id: song.id,
+                            album_id: request.album_id.clone(),
+                            artist_id: request.artist_id.clone(),
+                            title: song.title,
+                            track: song.track,
+                            disc_number: song.disc_number,
+                            duration: song.duration,
+                            bit_rate: song.bit_rate,
+                            size: song.size,
+                            suffix: song.suffix,
+                            content_type: song.content_type,
+                            path: song.path,
+                            year: song.year.or(request.album_year),
+                            genre: song.genre,
+                        });
+                    }
+                }
+                Err(error) => warn!("Error fetching album {}: {error}", request.album_id),
+            }
+        }
+
+        info!(
+            "Applying newest-album incremental sync: importing {} newest albums via {} artists (upserts: {} artists, {} albums, {} songs)",
+            candidate_album_ids.len(),
+            artists_data.len(),
+            artists_data.len(),
+            albums_data.len(),
+            songs_data.len()
+        );
+
+        let now = Utc::now().to_rfc3339();
+        let mut conn = Connection::open(&self.db_path)?;
+        let tx = conn.transaction()?;
+        apply_library_sync_data(&tx, &artists_data, &albums_data, &songs_data, &now)?;
+        if let Some(head_album_id) = newest_scan.head_album_id.as_deref() {
+            tx.execute(
+                "INSERT OR REPLACE INTO sync_state (key, value, updated_at)
+                 VALUES (?1, ?2, ?3)",
+                params![NEWEST_HEAD_ALBUM_KEY, head_album_id, &now],
+            )?;
+        }
+        tx.commit()?;
+
+        Ok(SyncResult {
+            artists: artists_data.len(),
+            albums: albums_data.len(),
+            songs: songs_data.len(),
+        })
     }
 
     fn load_queue_items_for_song_ids(&self, song_ids: &[String]) -> CoreResult<Vec<QueueItem>> {
@@ -1856,6 +2247,343 @@ async fn fetch_full_library_sync_data(client: &Client) -> CoreResult<LibrarySync
     Ok(sync_data)
 }
 
+fn apply_library_sync_data(
+    tx: &rusqlite::Transaction<'_>,
+    artists: &[SyncArtistData],
+    albums: &[SyncAlbumData],
+    songs: &[SyncSongData],
+    synced_at: &str,
+) -> CoreResult<()> {
+    {
+        let mut stmt = tx.prepare(
+            "INSERT OR REPLACE INTO artists
+             (id, name, album_count, cover_art_id, synced_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for artist in artists {
+            stmt.execute(params![
+                artist.id,
+                artist.name,
+                artist.album_count,
+                artist.cover_art,
+                synced_at
+            ])?;
+        }
+    }
+
+    {
+        let mut stmt = tx.prepare(
+            "INSERT OR REPLACE INTO albums
+             (id, artist_id, name, year, song_count, duration, cover_art_id, synced_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        for album in albums {
+            stmt.execute(params![
+                album.id,
+                album.artist_id,
+                album.name,
+                album.year,
+                album.song_count,
+                album.duration,
+                album.cover_art,
+                synced_at
+            ])?;
+        }
+    }
+
+    {
+        let mut stmt = tx.prepare(
+            "INSERT OR REPLACE INTO songs
+             (id, album_id, artist_id, title, track_number, disc_number, duration,
+              bit_rate, size, suffix, content_type, path, year, genre, synced_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        )?;
+        for song in songs {
+            stmt.execute(params![
+                song.id,
+                song.album_id,
+                song.artist_id,
+                song.title,
+                song.track,
+                song.disc_number,
+                song.duration,
+                song.bit_rate,
+                song.size,
+                song.suffix,
+                song.content_type,
+                song.path,
+                song.year,
+                song.genre,
+                synced_at
+            ])?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn fetch_newest_head_album_id(client: &Client) -> CoreResult<Option<String>> {
+    let newest = client
+        .get_album_list2(Order::Newest, Some(1), Some(0), None::<String>)
+        .await
+        .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+    Ok(newest.first().map(|album| album.id.clone()))
+}
+
+async fn fetch_newest_album_candidates(
+    client: &Client,
+    previous_head_album_id: Option<&str>,
+    known_album_ids: &HashSet<String>,
+) -> CoreResult<NewestScanResult> {
+    let mut head_album_id = None;
+    let mut candidates = Vec::new();
+    let mut offset = 0usize;
+    let mut stop_reason = NewestScanStopReason::ExhaustedNewestFeed;
+
+    loop {
+        let page = client
+            .get_album_list2(
+                Order::Newest,
+                Some(NEWEST_ALBUMS_PAGE_SIZE),
+                Some(offset),
+                None::<String>,
+            )
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?
+            .into_iter()
+            .map(|album| NewestAlbumPageEntry {
+                id: album.id,
+                artist_id: album.artist_id,
+                artist_name: album.artist,
+            })
+            .collect::<Vec<_>>();
+
+        if page.is_empty() {
+            break;
+        }
+
+        if head_album_id.is_none() {
+            head_album_id = Some(page[0].id.clone());
+        }
+
+        let page_len = page.len();
+        let page_scan = scan_newest_album_page(&page, previous_head_album_id, known_album_ids);
+        candidates.extend(page_scan.candidates);
+
+        if page_scan.reached_previous_head {
+            stop_reason = NewestScanStopReason::ReachedPreviousHead;
+            break;
+        }
+
+        if page_len < NEWEST_ALBUMS_PAGE_SIZE {
+            break;
+        }
+
+        offset += page_len;
+    }
+
+    Ok(NewestScanResult {
+        head_album_id,
+        candidates,
+        stop_reason,
+    })
+}
+
+fn scan_newest_album_page(
+    page: &[NewestAlbumPageEntry],
+    previous_head_album_id: Option<&str>,
+    known_album_ids: &HashSet<String>,
+) -> NewestPageScanResult {
+    let mut candidates = Vec::new();
+
+    for album in page {
+        if previous_head_album_id == Some(album.id.as_str()) {
+            return NewestPageScanResult {
+                candidates,
+                reached_previous_head: true,
+            };
+        }
+
+        if known_album_ids.contains(&album.id) {
+            continue;
+        }
+
+        let Some(artist_id) = album.artist_id.clone() else {
+            warn!(
+                "Skipping newest album {} because server did not provide artist_id",
+                album.id
+            );
+            continue;
+        };
+
+        candidates.push(NewestAlbumCandidate {
+            album_id: album.id.clone(),
+            artist_id,
+            artist_name: album.artist_name.clone(),
+        });
+    }
+
+    NewestPageScanResult {
+        candidates,
+        reached_previous_head: false,
+    }
+}
+
+async fn fetch_artist_albums_bounded(
+    client: Client,
+    artist_ids: Vec<String>,
+    concurrency: usize,
+) -> Vec<(String, Result<Vec<RemoteAlbumSummary>, String>)> {
+    let mut join_set = JoinSet::new();
+    let mut pending_artist_ids = artist_ids.into_iter();
+    let mut results = Vec::new();
+    let concurrency = concurrency.max(1);
+
+    for _ in 0..concurrency {
+        let Some(artist_id) = pending_artist_ids.next() else {
+            break;
+        };
+        spawn_artist_fetch(&mut join_set, client.clone(), artist_id);
+    }
+
+    while let Some(join_result) = join_set.join_next().await {
+        match join_result {
+            Ok(result) => results.push(result),
+            Err(error) => warn!("Artist fetch task failed: {error}"),
+        }
+
+        if let Some(artist_id) = pending_artist_ids.next() {
+            spawn_artist_fetch(&mut join_set, client.clone(), artist_id);
+        }
+    }
+
+    results
+}
+
+fn spawn_artist_fetch(
+    join_set: &mut JoinSet<(String, Result<Vec<RemoteAlbumSummary>, String>)>,
+    client: Client,
+    artist_id: String,
+) {
+    join_set.spawn(async move {
+        let result = client
+            .get_artist(&artist_id)
+            .await
+            .map(|artist_detail| {
+                artist_detail
+                    .album
+                    .into_iter()
+                    .map(|album| RemoteAlbumSummary {
+                        id: album.id,
+                        name: album.name,
+                        year: album.year,
+                        song_count: album.song_count,
+                        duration: album.duration,
+                        cover_art: album.cover_art,
+                    })
+                    .collect()
+            })
+            .map_err(|e| e.to_string());
+        (artist_id, result)
+    });
+}
+
+async fn fetch_album_songs_bounded(
+    client: Client,
+    requests: Vec<AlbumFetchRequest>,
+    concurrency: usize,
+) -> Vec<(AlbumFetchRequest, Result<Vec<RemoteSong>, String>)> {
+    let mut join_set = JoinSet::new();
+    let mut pending_requests = requests.into_iter();
+    let mut results = Vec::new();
+    let concurrency = concurrency.max(1);
+
+    for _ in 0..concurrency {
+        let Some(request) = pending_requests.next() else {
+            break;
+        };
+        spawn_album_fetch(&mut join_set, client.clone(), request);
+    }
+
+    while let Some(join_result) = join_set.join_next().await {
+        match join_result {
+            Ok(result) => results.push(result),
+            Err(error) => warn!("Album fetch task failed: {error}"),
+        }
+
+        if let Some(request) = pending_requests.next() {
+            spawn_album_fetch(&mut join_set, client.clone(), request);
+        }
+    }
+
+    results
+}
+
+fn spawn_album_fetch(
+    join_set: &mut JoinSet<(AlbumFetchRequest, Result<Vec<RemoteSong>, String>)>,
+    client: Client,
+    request: AlbumFetchRequest,
+) {
+    join_set.spawn(async move {
+        let result = client
+            .get_album(&request.album_id)
+            .await
+            .map(|album_detail| {
+                album_detail
+                    .song
+                    .into_iter()
+                    .map(|song| RemoteSong {
+                        id: song.id,
+                        title: song.title,
+                        track: song.track,
+                        disc_number: song.disc_number.unwrap_or(1),
+                        duration: song.duration,
+                        bit_rate: song.bit_rate,
+                        size: song.size,
+                        suffix: song.suffix,
+                        content_type: song.content_type,
+                        path: song.path,
+                        year: song.year,
+                        genre: song.genre,
+                    })
+                    .collect()
+            })
+            .map_err(|e| e.to_string());
+        (request, result)
+    });
+}
+
+fn load_local_artists(conn: &Connection) -> CoreResult<HashMap<String, LocalArtistRow>> {
+    let mut stmt = conn.prepare("SELECT id, name, cover_art_id FROM artists")?;
+    let mut artists = HashMap::new();
+
+    for row in stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            LocalArtistRow {
+                name: row.get(1)?,
+                cover_art_id: row.get(2)?,
+            },
+        ))
+    })? {
+        let (artist_id, artist) = row?;
+        artists.insert(artist_id, artist);
+    }
+
+    Ok(artists)
+}
+
+fn load_local_album_ids(conn: &Connection) -> CoreResult<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM albums")?;
+    let mut album_ids = HashSet::new();
+
+    for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
+        album_ids.insert(row?);
+    }
+
+    Ok(album_ids)
+}
+
 fn build_client(url: &str, username: &str, password: &str) -> Client {
     let auth = AuthBuilder::new(username, API_VERSION)
         .client_name(CLIENT_NAME)
@@ -1924,12 +2652,14 @@ fn playlist_song_ids_to_add(
 ) -> Vec<String> {
     let mut seen_song_ids = existing_song_ids.clone();
 
-    song_ids.into_iter().fold(Vec::new(), |mut output, song_id| {
-        if !song_id.trim().is_empty() && seen_song_ids.insert(song_id.clone()) {
-            output.push(song_id);
-        }
-        output
-    })
+    song_ids
+        .into_iter()
+        .fold(Vec::new(), |mut output, song_id| {
+            if !song_id.trim().is_empty() && seen_song_ids.insert(song_id.clone()) {
+                output.push(song_id);
+            }
+            output
+        })
 }
 
 fn sync_value(conn: &Connection, key: &str) -> CoreResult<Option<String>> {
@@ -1949,6 +2679,54 @@ fn write_sync_value(conn: &Connection, key: &str, value: &str) -> CoreResult<()>
         params![key, value, Utc::now().to_rfc3339()],
     )?;
     Ok(())
+}
+
+fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|date| date.with_timezone(&Utc))
+}
+
+fn is_job_due(
+    enabled: bool,
+    interval_minutes: u32,
+    last_attempt_at: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
+    if !enabled {
+        return false;
+    }
+
+    let Some(last_attempt_at) = last_attempt_at else {
+        return true;
+    };
+
+    let Some(last_attempt) = parse_rfc3339_utc(last_attempt_at) else {
+        return true;
+    };
+
+    now.signed_duration_since(last_attempt) >= ChronoDuration::minutes(interval_minutes as i64)
+}
+
+fn compute_next_run_at(
+    enabled: bool,
+    interval_minutes: u32,
+    last_attempt_at: Option<&str>,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+
+    let Some(last_attempt) = last_attempt_at.and_then(parse_rfc3339_utc) else {
+        return Some(now.to_rfc3339());
+    };
+
+    Some(
+        (last_attempt + ChronoDuration::minutes(interval_minutes as i64))
+            .with_timezone(&Utc)
+            .to_rfc3339(),
+    )
 }
 
 fn prune_stale_library_rows(conn: &Connection, synced_at: &str) -> CoreResult<()> {
@@ -1997,10 +2775,13 @@ fn is_mobile_playback_cache_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, StereodromeCore, path_to_file_uri,
-        playlist_song_ids_to_add, prune_stale_library_rows, should_prefetch_large_cover_art,
+        DueSyncJob, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate,
+        NewestAlbumPageEntry, NewestPageScanResult, StereodromeCore, SyncSettings,
+        compute_next_run_at, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
+        prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
         write_sync_value,
     };
+    use chrono::{Duration as ChronoDuration, Utc};
     use rusqlite::Connection;
     use std::collections::HashSet;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2049,6 +2830,123 @@ mod tests {
         );
 
         assert_eq!(song_ids, ["song-b"]);
+    }
+
+    #[test]
+    fn sync_settings_clamp_matches_mobile_scheduler_bounds() {
+        let settings = SyncSettings {
+            incremental_enabled: true,
+            incremental_interval_minutes: 1,
+            full_reconcile_enabled: true,
+            full_reconcile_interval_hours: 999,
+        }
+        .clamped();
+
+        assert_eq!(settings.incremental_interval_minutes, 5);
+        assert_eq!(settings.full_reconcile_interval_hours, 168);
+    }
+
+    #[test]
+    fn disabled_sync_job_is_never_due_and_has_no_next_run() {
+        let now = Utc::now();
+
+        assert!(!is_job_due(false, 15, None, now));
+        assert_eq!(compute_next_run_at(false, 15, None, now), None);
+    }
+
+    #[test]
+    fn invalid_or_missing_last_attempt_is_due_now() {
+        let now = Utc::now();
+
+        assert!(is_job_due(true, 15, None, now));
+        assert!(is_job_due(true, 15, Some("not-a-date"), now));
+        assert_eq!(
+            compute_next_run_at(true, 15, Some("not-a-date"), now),
+            Some(now.to_rfc3339())
+        );
+    }
+
+    #[test]
+    fn sync_job_due_uses_attempt_interval() {
+        let now = Utc::now();
+        let recent = (now - ChronoDuration::minutes(14)).to_rfc3339();
+        let stale = (now - ChronoDuration::minutes(15)).to_rfc3339();
+
+        assert!(!is_job_due(true, 15, Some(&recent), now));
+        assert!(is_job_due(true, 15, Some(&stale), now));
+        assert_eq!(
+            compute_next_run_at(true, 15, Some(&recent), now),
+            Some((now + ChronoDuration::minutes(1)).to_rfc3339())
+        );
+    }
+
+    #[test]
+    fn due_sync_job_prefers_full_reconcile() {
+        let data_dir = unique_temp_dir("due-sync-priority");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+
+        core.set_sync_settings(SyncSettings {
+            incremental_enabled: true,
+            incremental_interval_minutes: 15,
+            full_reconcile_enabled: true,
+            full_reconcile_interval_hours: 24,
+        })
+        .expect("save sync settings");
+
+        assert_eq!(
+            core.next_due_library_sync_job().expect("read due job"),
+            Some(DueSyncJob::FullReconcile)
+        );
+    }
+
+    #[test]
+    fn newest_album_page_scan_stops_at_previous_head() {
+        let known_album_ids = HashSet::new();
+        let result = scan_newest_album_page(
+            &[
+                newest_album("album-new", Some("artist-1"), Some("Artist One")),
+                newest_album("album-old", Some("artist-2"), Some("Artist Two")),
+                newest_album("album-older", Some("artist-3"), Some("Artist Three")),
+            ],
+            Some("album-old"),
+            &known_album_ids,
+        );
+
+        assert_eq!(
+            result,
+            NewestPageScanResult {
+                candidates: vec![NewestAlbumCandidate {
+                    album_id: "album-new".to_string(),
+                    artist_id: "artist-1".to_string(),
+                    artist_name: Some("Artist One".to_string()),
+                }],
+                reached_previous_head: true,
+            }
+        );
+    }
+
+    #[test]
+    fn newest_album_page_scan_skips_known_and_artistless_albums() {
+        let known_album_ids = HashSet::from(["album-known".to_string()]);
+        let result = scan_newest_album_page(
+            &[
+                newest_album("album-known", Some("artist-1"), Some("Artist One")),
+                newest_album("album-missing-artist", None, None),
+                newest_album("album-new", Some("artist-2"), None),
+            ],
+            None,
+            &known_album_ids,
+        );
+
+        assert_eq!(
+            result.candidates,
+            vec![NewestAlbumCandidate {
+                album_id: "album-new".to_string(),
+                artist_id: "artist-2".to_string(),
+                artist_name: None,
+            }]
+        );
+        assert!(!result.reached_previous_head);
     }
 
     #[tokio::test]
@@ -2156,10 +3054,7 @@ mod tests {
         )
         .expect("insert download item");
 
-        let playlists = core
-            .get_playlists()
-            .await
-            .expect("read local playlists");
+        let playlists = core.get_playlists().await.expect("read local playlists");
 
         assert_eq!(playlists.len(), 1);
         assert_eq!(playlists[0].id, "playlist-downloaded");
@@ -2222,9 +3117,7 @@ mod tests {
             .expect("cache path");
         std::fs::write(cache_path, b"cached audio").expect("write cache file");
 
-        let song_ids = core
-            .get_offline_song_ids()
-            .expect("offline song ids load");
+        let song_ids = core.get_offline_song_ids().expect("offline song ids load");
 
         assert_eq!(song_ids, vec!["cached-song"]);
         std::fs::remove_dir_all(data_dir).ok();
@@ -2367,6 +3260,18 @@ mod tests {
             .expect("clock is after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("stereodrome-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    fn newest_album(
+        id: &str,
+        artist_id: Option<&str>,
+        artist_name: Option<&str>,
+    ) -> NewestAlbumPageEntry {
+        NewestAlbumPageEntry {
+            id: id.to_string(),
+            artist_id: artist_id.map(str::to_string),
+            artist_name: artist_name.map(str::to_string),
+        }
     }
 
     fn seed_gapless_songs(core: &StereodromeCore) {

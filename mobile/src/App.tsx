@@ -11,6 +11,7 @@ import { MobileSettingsProvider } from "@/context/MobileSettingsContext";
 import { PlaybackProvider } from "@/context/PlaybackContext";
 import { StereodromeProvider } from "@/context/StereodromeContext";
 import { ViewProvider } from "@/context/ViewContext";
+import "@/services/librarySyncScheduler";
 
 export default function App() {
   const queryClient = useMemo(

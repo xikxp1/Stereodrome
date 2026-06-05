@@ -118,7 +118,9 @@ pub fn track_for_song(db_path: &Path, song_id: &str) -> CoreResult<Option<Lastfm
                     song_id: song_id.to_string(),
                     title: row.get::<_, String>(0)?,
                     artist: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                    album: row.get::<_, Option<String>>(2)?.filter(|value| !value.is_empty()),
+                    album: row
+                        .get::<_, Option<String>>(2)?
+                        .filter(|value| !value.is_empty()),
                     duration: row.get::<_, Option<i64>>(3)?,
                 })
             },
@@ -180,8 +182,8 @@ pub fn maybe_enqueue_from_progress(
         &position_seconds.to_string(),
     )?;
 
-    let already_scrobbled =
-        sync_value(db_path, KEY_PLAYBACK_SCROBBLED_SONG_ID)?.as_deref() == Some(track.song_id.as_str());
+    let already_scrobbled = sync_value(db_path, KEY_PLAYBACK_SCROBBLED_SONG_ID)?.as_deref()
+        == Some(track.song_id.as_str());
     if already_scrobbled || !should_scrobble(position_seconds, duration_seconds) {
         return Ok(false);
     }
@@ -347,9 +349,11 @@ fn load_session(db_path: &Path) -> CoreResult<Option<LastfmSession>> {
 fn sync_value(db_path: &Path, key: &str) -> CoreResult<Option<String>> {
     let conn = Connection::open(db_path)?;
     let value = conn
-        .query_row("SELECT value FROM sync_state WHERE key = ?1", [key], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT value FROM sync_state WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        )
         .optional()?;
     Ok(value.filter(|value: &String| !value.is_empty()))
 }
@@ -553,7 +557,10 @@ fn submit_params(
     params
 }
 
-async fn submit_scrobble_batch(items: &[LastfmQueueItem], session: &LastfmSession) -> CoreResult<()> {
+async fn submit_scrobble_batch(
+    items: &[LastfmQueueItem],
+    session: &LastfmSession,
+) -> CoreResult<()> {
     let (api_key, secret) = credentials()?;
     post_lastfm(signed_params(
         submit_params(items, &api_key, &session.session_key),
@@ -595,9 +602,11 @@ fn retry_delay_secs(attempts: i64) -> i64 {
 
 fn queue_count(db_path: &Path) -> CoreResult<i64> {
     let conn = Connection::open(db_path)?;
-    Ok(conn.query_row("SELECT COUNT(*) FROM lastfm_scrobble_queue", [], |row| {
-        row.get(0)
-    })?)
+    Ok(
+        conn.query_row("SELECT COUNT(*) FROM lastfm_scrobble_queue", [], |row| {
+            row.get(0)
+        })?,
+    )
 }
 
 fn latest_queue_error(db_path: &Path) -> CoreResult<Option<String>> {

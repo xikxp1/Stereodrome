@@ -23,8 +23,8 @@ use stereodrome_audio::{
 };
 use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
-    AudioProcessingSettings, ConnectParams, LibrarySyncStatus, PlaybackProgress,
-    ServerSettingsUpdate, StereodromeCore,
+    AudioProcessingSettings, ConnectParams, DueSyncJob, LibrarySyncStatus, PlaybackProgress,
+    ServerSettingsUpdate, StereodromeCore, SyncSettings,
 };
 use url::Url;
 
@@ -126,6 +126,15 @@ impl MobileSyncJob {
         match self {
             Self::Full => "full library sync",
             Self::Incremental => "incremental library sync",
+        }
+    }
+}
+
+impl From<DueSyncJob> for MobileSyncJob {
+    fn from(job: DueSyncJob) -> Self {
+        match job {
+            DueSyncJob::FullReconcile => Self::Full,
+            DueSyncJob::Incremental => Self::Incremental,
         }
     }
 }
@@ -312,6 +321,12 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         "getConnectionStatus" => json_result(core.get_connection_status()),
         "syncLibrary" => json_result(start_sync_job(mobile, MobileSyncJob::Full)),
         "syncLibraryIncremental" => json_result(start_sync_job(mobile, MobileSyncJob::Incremental)),
+        "getSyncSettings" => json_result(core.get_sync_settings()),
+        "setSyncSettings" => {
+            let settings = parse_payload::<SyncSettings>(payload)?;
+            json_result(core.set_sync_settings(settings))
+        }
+        "runDueLibrarySync" => json_result(run_due_sync_job(mobile)),
         "getScanStatus" => json_result(runtime.block_on(async { core.get_scan_status().await })),
         "startScan" => json_result(runtime.block_on(async { core.start_scan().await })),
         "getLibrarySyncStatus" => json_result(get_mobile_library_sync_status(mobile)),
@@ -664,6 +679,46 @@ fn run_sync_job(data_dir: PathBuf, job: MobileSyncJob) -> Result<(), String> {
             .map(|_| ())
             .map_err(|error| error.to_string()),
     }
+}
+
+fn run_due_sync_job(mobile: &MobileCore) -> Result<Option<String>, String> {
+    mobile
+        .runtime
+        .block_on(async { mobile.core.restore_session().await })
+        .map_err(|error| error.to_string())?;
+
+    let Some(due_job) = mobile
+        .core
+        .next_due_library_sync_job()
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let mobile_job = MobileSyncJob::from(due_job);
+
+    {
+        let mut state = mobile
+            .sync_state
+            .lock()
+            .map_err(|_| "sync state lock is poisoned".to_string())?;
+        if let Some(active_job) = state.active_job {
+            return Err(format!("{} is already running", active_job.display_name()));
+        }
+        state.active_job = Some(mobile_job);
+    }
+
+    let result = mobile
+        .runtime
+        .block_on(async { mobile.core.run_due_library_sync().await })
+        .map_err(|error| error.to_string());
+
+    if let Ok(mut state) = mobile.sync_state.lock()
+        && state.active_job == Some(mobile_job)
+    {
+        state.active_job = None;
+    }
+
+    result
 }
 
 fn get_mobile_library_sync_status(mobile: &MobileCore) -> Result<LibrarySyncStatus, String> {

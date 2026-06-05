@@ -168,6 +168,53 @@ pub struct SyncResult {
     pub songs: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncSettings {
+    #[serde(default = "default_true")]
+    pub incremental_enabled: bool,
+    #[serde(default = "default_incremental_interval_minutes")]
+    pub incremental_interval_minutes: u32,
+    #[serde(default = "default_true")]
+    pub full_reconcile_enabled: bool,
+    #[serde(default = "default_full_reconcile_interval_hours")]
+    pub full_reconcile_interval_hours: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_incremental_interval_minutes() -> u32 {
+    15
+}
+
+fn default_full_reconcile_interval_hours() -> u32 {
+    24
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            incremental_enabled: true,
+            incremental_interval_minutes: default_incremental_interval_minutes(),
+            full_reconcile_enabled: true,
+            full_reconcile_interval_hours: default_full_reconcile_interval_hours(),
+        }
+    }
+}
+
+impl SyncSettings {
+    pub fn clamp(&mut self) {
+        self.incremental_interval_minutes = self.incremental_interval_minutes.clamp(5, 720);
+        self.full_reconcile_interval_hours = self.full_reconcile_interval_hours.clamp(1, 168);
+    }
+
+    pub fn clamped(mut self) -> Self {
+        self.clamp();
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanStatus {
     pub scanning: bool,
