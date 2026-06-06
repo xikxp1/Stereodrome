@@ -25,6 +25,7 @@ import type {
   RepeatMode,
   ScanStatus,
   SearchResults,
+  SavedPlaylistOfflineResult,
   Song,
   SyncSettings,
 } from "@/types/music";
@@ -335,6 +336,18 @@ export const stereodromeCore = {
   },
   downloadPlaylist(playlistId: string): Promise<DownloadStatus[]> {
     return invokeJson("downloadPlaylist", playlistId);
+  },
+  setPlaylistSavedOffline(
+    playlistId: string,
+    savedOffline: boolean
+  ): Promise<SavedPlaylistOfflineResult> {
+    return invokeJson("setPlaylistSavedOffline", {
+      playlist_id: playlistId,
+      saved_offline: savedOffline,
+    });
+  },
+  reconcileSavedPlaylistsOffline(): Promise<SavedPlaylistOfflineResult[]> {
+    return invokeJson("reconcileSavedPlaylistsOffline");
   },
   prefetchNext(): Promise<DownloadStatus | null> {
     return invokeJson("prefetchNext");

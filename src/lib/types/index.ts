@@ -77,6 +77,16 @@ export interface Playlist {
   cover_art_id: string | null;
   created_at: string;
   changed_at: string;
+  saved_offline: boolean;
+  offline_saved_at: string | null;
+}
+
+export interface SavedPlaylistOfflineResult {
+  playlist_id: string;
+  saved_offline: boolean;
+  downloaded_count: number;
+  removed_count: number;
+  skipped_protected_count: number;
 }
 
 // Playback types

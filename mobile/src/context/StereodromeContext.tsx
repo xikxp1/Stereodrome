@@ -90,6 +90,12 @@ export function StereodromeProvider({
       setError(null);
       if (next.server_url) {
         await refreshOfflineSongIds();
+        if (next.connected) {
+          void stereodromeCore
+            .reconcileSavedPlaylistsOffline()
+            .then(refreshOfflineSongIds)
+            .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+        }
       } else {
         setOfflineSongIds(new Set());
       }
@@ -108,6 +114,7 @@ export function StereodromeProvider({
     const next = await stereodromeCore.connectServer(params);
     setStatus(next);
     setError(null);
+    await stereodromeCore.reconcileSavedPlaylistsOffline();
     await refreshOfflineSongIds();
   }
 
@@ -118,6 +125,9 @@ export function StereodromeProvider({
     const next = await stereodromeCore.updateServerSettings(params);
     setStatus(next);
     setError(null);
+    if (next.connected) {
+      await stereodromeCore.reconcileSavedPlaylistsOffline();
+    }
     await refreshOfflineSongIds();
   }
 
@@ -147,6 +157,9 @@ export function StereodromeProvider({
         queryClient.invalidateQueries({ queryKey })
       )
     );
+    if (status.connected) {
+      await stereodromeCore.reconcileSavedPlaylistsOffline();
+    }
     await refreshOfflineSongIds();
   }
 

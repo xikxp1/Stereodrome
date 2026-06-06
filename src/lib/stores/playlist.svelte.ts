@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { error } from "@tauri-apps/plugin-log";
-import { removeSongsFromPlaylist as removeSongsFromPlaylistCommand } from "$lib/api/commands";
+import {
+  reconcileSavedPlaylistsOffline,
+  removeSongsFromPlaylist as removeSongsFromPlaylistCommand,
+  setPlaylistSavedOffline,
+} from "$lib/api/commands";
 import type { Playlist, Song } from "$lib/types";
 
 export interface PlaylistSong extends Song {
@@ -139,6 +143,39 @@ class PlaylistStore {
       }
     } catch (e) {
       error(`Failed to remove song from playlist: ${e}`);
+    }
+  }
+
+  async setPlaylistSavedOffline(
+    playlistId: string,
+    savedOffline: boolean
+  ): Promise<boolean> {
+    try {
+      await setPlaylistSavedOffline(playlistId, savedOffline);
+      await this.loadPlaylists();
+
+      if (this.currentPlaylist?.id === playlistId) {
+        this.currentPlaylist =
+          this.playlists.find((p) => p.id === playlistId) ??
+          this.currentPlaylist;
+        await this.loadPlaylistSongs(playlistId);
+      }
+      return true;
+    } catch (e) {
+      error(`Failed to update saved playlist offline state: ${e}`);
+      return false;
+    }
+  }
+
+  async reconcileSavedPlaylistsOffline() {
+    try {
+      await reconcileSavedPlaylistsOffline();
+      await this.loadPlaylists();
+      if (this.currentPlaylist) {
+        await this.loadPlaylistSongs(this.currentPlaylist.id);
+      }
+    } catch (e) {
+      error(`Failed to reconcile saved playlists for offline listening: ${e}`);
     }
   }
 }

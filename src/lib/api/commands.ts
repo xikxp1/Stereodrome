@@ -22,6 +22,7 @@ import type {
   LastfmAuthStart,
   LastfmQueueItem,
   LastfmStatus,
+  SavedPlaylistOfflineResult,
   MiniPlayerMode,
   MiniPlayerPosition,
 } from "$lib/types";
@@ -90,6 +91,24 @@ export async function removeSongsFromPlaylist(
   positions: number[]
 ): Promise<void> {
   return invoke("remove_songs_from_playlist", { playlistId, positions });
+}
+
+export async function setPlaylistSavedOffline(
+  playlistId: string,
+  savedOffline: boolean
+): Promise<SavedPlaylistOfflineResult> {
+  return invoke<SavedPlaylistOfflineResult>("set_playlist_saved_offline", {
+    playlistId,
+    savedOffline,
+  });
+}
+
+export async function reconcileSavedPlaylistsOffline(): Promise<
+  SavedPlaylistOfflineResult[]
+> {
+  return invoke<SavedPlaylistOfflineResult[]>(
+    "reconcile_saved_playlists_offline"
+  );
 }
 
 // Playback commands

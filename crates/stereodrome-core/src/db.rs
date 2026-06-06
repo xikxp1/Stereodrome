@@ -39,6 +39,21 @@ pub const SONG_SELECT_ALL: &str = "
 pub fn init(path: &Path) -> CoreResult<()> {
     let conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
+    run_migrations(&conn)?;
+    Ok(())
+}
+
+fn run_migrations(conn: &Connection) -> CoreResult<()> {
+    let playlist_columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(playlists)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|row| row.ok())
+        .collect();
+
+    if !playlist_columns.contains(&"offline_saved_at".to_string()) {
+        conn.execute("ALTER TABLE playlists ADD COLUMN offline_saved_at TEXT", [])?;
+    }
+
     Ok(())
 }
 

@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS playlists (
     cover_art_id TEXT,
     created_at TEXT NOT NULL,
     changed_at TEXT NOT NULL,
+    offline_saved_at TEXT,
     synced_at TEXT NOT NULL
 );
 

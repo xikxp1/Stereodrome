@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { ComponentType } from "svelte";
   import LazyImage from "$lib/components/LazyImage.svelte";
   import { ArrowLeft } from "lucide-svelte";
 
@@ -7,9 +8,24 @@
     subtitle?: string;
     coverArtId?: string | null;
     onBack?: () => void;
+    actionLabel?: string;
+    actionTitle?: string;
+    actionDisabled?: boolean;
+    actionIcon?: ComponentType;
+    onAction?: () => void;
   }
 
-  let { title, subtitle, coverArtId, onBack }: Props = $props();
+  let {
+    title,
+    subtitle,
+    coverArtId,
+    onBack,
+    actionLabel,
+    actionTitle,
+    actionDisabled = false,
+    actionIcon: ActionIcon,
+    onAction,
+  }: Props = $props();
 </script>
 
 <div
@@ -33,4 +49,18 @@
       <p class="text-sm opacity-60 truncate">{subtitle}</p>
     {/if}
   </div>
+
+  {#if onAction && actionLabel}
+    <button
+      class="btn btn-sm"
+      disabled={actionDisabled}
+      onclick={() => onAction?.()}
+      title={actionTitle ?? actionLabel}
+    >
+      {#if ActionIcon}
+        <ActionIcon class="size-4" />
+      {/if}
+      <span>{actionLabel}</span>
+    </button>
+  {/if}
 </div>

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -159,6 +160,7 @@ impl AudioCache {
     /// Enforce the maximum cache size by removing least recently accessed files
     pub fn enforce_size_limit(&self) -> AppResult<bool> {
         let mut entries = self.get_cache_entries()?;
+        let protected_paths = self.protected_cache_paths()?;
 
         // Calculate total size
         let total_size: u64 = entries.iter().map(|e| e.size).sum();
@@ -176,6 +178,9 @@ impl AudioCache {
         for entry in entries {
             if current_size <= self.max_size {
                 break;
+            }
+            if protected_paths.contains(&entry.path) {
+                continue;
             }
 
             if let Err(e) = fs::remove_file(&entry.path) {
@@ -205,8 +210,12 @@ impl AudioCache {
     /// Clear all cached audio files
     pub fn clear(&self) -> AppResult<()> {
         let entries = self.get_cache_entries()?;
+        let protected_paths = self.protected_cache_paths()?;
         let mut removed_any = false;
         for entry in entries {
+            if protected_paths.contains(&entry.path) {
+                continue;
+            }
             if let Err(e) = fs::remove_file(&entry.path) {
                 warn!("Failed to remove cached file {:?}: {}", entry.path, e);
             } else {
@@ -217,6 +226,21 @@ impl AudioCache {
             self.emit_changed("cleared");
         }
         Ok(())
+    }
+
+    pub fn remove_if_unprotected(&self, song_id: &str, suffix: &str) -> AppResult<bool> {
+        let path = self.get_cache_path(song_id, suffix);
+        if self.protected_cache_paths()?.contains(&path) {
+            return Ok(false);
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                self.emit_changed("removed");
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Get all cache entries with metadata
@@ -245,6 +269,28 @@ impl AudioCache {
         }
 
         Ok(entries)
+    }
+
+    fn protected_cache_paths(&self) -> AppResult<HashSet<PathBuf>> {
+        let db_path = db::get_db_path(&self.app_handle)?;
+        let conn = rusqlite::Connection::open(db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT s.id, COALESCE(s.suffix, '')
+             FROM playlist_songs ps
+             JOIN playlists p ON p.id = ps.playlist_id
+             JOIN songs s ON s.id = ps.song_id
+             WHERE p.offline_saved_at IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut paths = HashSet::new();
+        for row in rows {
+            let (song_id, suffix) = row?;
+            paths.insert(self.get_cache_path(&song_id, &suffix));
+        }
+        Ok(paths)
     }
 
     /// Prefetch a song to cache in the background.

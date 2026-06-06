@@ -12,6 +12,7 @@
     Sparkles,
     Clock,
     TrendingUp,
+    CircleCheck,
   } from "lucide-svelte";
   import { showPlaylistContextMenu } from "$lib/services/contextMenu";
 
@@ -72,6 +73,13 @@
   function handlePlaylistContextMenu(e: MouseEvent, playlist: Playlist) {
     e.preventDefault();
     showPlaylistContextMenu({
+      savedOffline: playlist.saved_offline,
+      onToggleSavedOffline: async () => {
+        await playlistStore.setPlaylistSavedOffline(
+          playlist.id,
+          !playlist.saved_offline
+        );
+      },
       onRename: () => {
         renamingPlaylistId = playlist.id;
         renameValue = playlist.name;
@@ -240,6 +248,9 @@
           >
             <ListMusic class="size-4" />
             <span class="truncate flex-1">{playlist.name}</span>
+            {#if playlist.saved_offline}
+              <CircleCheck class="size-3 text-success" />
+            {/if}
             <span class="text-xs opacity-50">{playlist.song_count}</span>
           </button>
         {/if}

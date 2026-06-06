@@ -29,6 +29,10 @@ export function PlaylistsScreen() {
     }
   }
 
+  const shownPlaylists = (playlists.data ?? []).filter(
+    (playlist) => !stereodrome.offlineMode || playlist.saved_offline
+  );
+
   return (
     <SelectableList
       empty={
@@ -38,9 +42,11 @@ export function PlaylistsScreen() {
             ? "No offline playlists"
             : "No playlists"
       }
-      options={(playlists.data ?? []).map((playlist) => ({
+      options={shownPlaylists.map((playlist) => ({
         label: playlist.name,
-        sublabel: `${playlist.song_count} songs`,
+        sublabel: playlist.saved_offline
+          ? `${playlist.song_count} songs • saved offline`
+          : `${playlist.song_count} songs`,
         onSelect: () =>
           view.push({
             name: "playlist",

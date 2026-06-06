@@ -78,7 +78,7 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
     }
 
     // Check if playlists table has all required columns (owner, cover_art_id added for server sync)
-    let playlist_columns: Vec<String> = conn
+    let mut playlist_columns: Vec<String> = conn
         .prepare("PRAGMA table_info(playlists)")?
         .query_map([], |row| row.get::<_, String>(1))?
         .filter_map(|r| r.ok())
@@ -100,6 +100,15 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
              DROP TABLE IF EXISTS playlists;",
         )?;
         conn.execute_batch(SCHEMA)?;
+        playlist_columns = conn
+            .prepare("PRAGMA table_info(playlists)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+    }
+
+    if !playlist_columns.contains(&"offline_saved_at".to_string()) {
+        conn.execute("ALTER TABLE playlists ADD COLUMN offline_saved_at TEXT", [])?;
     }
 
     // Ensure sync_state exists for incremental sync metadata.

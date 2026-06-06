@@ -35,6 +35,7 @@
     type Monitor,
   } from "@tauri-apps/api/window";
   import { error } from "@tauri-apps/plugin-log";
+  import { CircleCheck, Download } from "lucide-svelte";
   import { playlistStore } from "$lib/stores/playlist.svelte";
   import { albumListStore } from "$lib/stores/albumList.svelte";
   import { LIBRARY_REFRESHED_EVENT } from "$lib/services/libraryRefresh.svelte";
@@ -260,6 +261,11 @@
       albums = albumsData;
       songs = songsData;
       offlineSongIds = new Set(offlineSongIdData);
+      if (connection.status.connected) {
+        void playlistStore
+          .reconcileSavedPlaylistsOffline()
+          .then(() => refreshOfflineSongIds());
+      }
     } catch (e) {
       loadError = e instanceof Error ? e : new Error(String(e));
     } finally {
@@ -616,6 +622,16 @@
       await queue.playSongWithQueue(song, filteredPlaylistSongs);
     } catch (e) {
       error(`Failed to play song: ${e}`);
+    }
+  }
+
+  async function handlePlaylistSavedOfflineToggle(playlist: Playlist) {
+    const updated = await playlistStore.setPlaylistSavedOffline(
+      playlist.id,
+      !playlist.saved_offline
+    );
+    if (updated) {
+      await refreshOfflineSongIds();
     }
   }
 
@@ -1021,6 +1037,17 @@
               : 'songs'}"
             coverArtId={selectedPlaylistData.cover_art_id}
             onBack={() => handlePlaylistSelect(null)}
+            actionLabel={selectedPlaylistData.saved_offline
+              ? "Saved Offline"
+              : "Save Offline"}
+            actionTitle={selectedPlaylistData.saved_offline
+              ? "Remove playlist from offline listening"
+              : "Save playlist for offline listening"}
+            actionIcon={selectedPlaylistData.saved_offline
+              ? CircleCheck
+              : Download}
+            onAction={() =>
+              handlePlaylistSavedOfflineToggle(selectedPlaylistData)}
           />
 
           <div class="flex-1 overflow-hidden">

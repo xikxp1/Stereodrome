@@ -428,6 +428,16 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             let playlist_id = parse_payload::<String>(payload)?;
             json_result(runtime.block_on(async { core.download_playlist(playlist_id).await }))
         }
+        "setPlaylistSavedOffline" => {
+            let args = parse_payload::<SetPlaylistSavedOfflinePayload>(payload)?;
+            json_result(runtime.block_on(async {
+                core.set_playlist_saved_offline(args.playlist_id, args.saved_offline)
+                    .await
+            }))
+        }
+        "reconcileSavedPlaylistsOffline" => {
+            json_result(runtime.block_on(async { core.reconcile_saved_playlists_offline().await }))
+        }
         "prefetchNext" => json_result(runtime.block_on(async { core.prefetch_next().await })),
         "getPlaybackState" => json_result(core.get_playback_state()),
         "savePlaybackPosition" => {
@@ -588,6 +598,12 @@ struct PlaylistSongIdsPayload {
 struct PlaylistSongIndexesPayload {
     playlist_id: String,
     song_indexes: Vec<i64>,
+}
+
+#[derive(Deserialize)]
+struct SetPlaylistSavedOfflinePayload {
+    playlist_id: String,
+    saved_offline: bool,
 }
 
 fn parse_payload<T: for<'de> Deserialize<'de>>(payload: Value) -> Result<T, String> {

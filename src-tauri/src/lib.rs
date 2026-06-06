@@ -174,6 +174,8 @@ pub fn run() {
             commands::add_songs_to_playlist,
             commands::remove_song_from_playlist,
             commands::remove_songs_from_playlist,
+            commands::set_playlist_saved_offline,
+            commands::reconcile_saved_playlists_offline,
             commands::search_library,
             commands::scrobble_now_playing,
             commands::scrobble_submit,

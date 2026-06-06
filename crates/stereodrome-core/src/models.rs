@@ -159,6 +159,8 @@ pub struct Playlist {
     pub cover_art_id: Option<String>,
     pub created_at: String,
     pub changed_at: String,
+    pub saved_offline: bool,
+    pub offline_saved_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -285,6 +287,15 @@ pub struct DownloadStatus {
     pub cached: bool,
     pub path: Option<String>,
     pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedPlaylistOfflineResult {
+    pub playlist_id: String,
+    pub saved_offline: bool,
+    pub downloaded_count: i32,
+    pub removed_count: i32,
+    pub skipped_protected_count: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

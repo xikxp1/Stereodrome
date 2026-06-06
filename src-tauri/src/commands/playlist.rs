@@ -1,9 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use log::{debug, info};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
+use crate::cache::AudioCache;
 use crate::error::{AppResult, MutexExt};
 use crate::state::AppState;
 
@@ -17,6 +18,8 @@ pub struct Playlist {
     pub cover_art_id: Option<String>,
     pub created_at: String,
     pub changed_at: String,
+    pub saved_offline: bool,
+    pub offline_saved_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,9 +45,18 @@ pub struct PlaylistSong {
     pub album: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedPlaylistOfflineResult {
+    pub playlist_id: String,
+    pub saved_offline: bool,
+    pub downloaded_count: i32,
+    pub removed_count: i32,
+    pub skipped_protected_count: i32,
+}
+
 /// Sync playlists from Subsonic server to local cache
 #[tauri::command]
-pub async fn sync_playlists(state: State<'_, AppState>) -> AppResult<i32> {
+pub async fn sync_playlists(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<i32> {
     info!("Syncing playlists from server");
 
     // Fetch all playlists from server
@@ -65,53 +77,65 @@ pub async fn sync_playlists(state: State<'_, AppState>) -> AppResult<i32> {
         }
     }
 
-    // Write to local database in a transaction
-    let db = state.db.lock_recover();
-    db.execute_batch("BEGIN TRANSACTION")?;
+    let old_saved_song_ids = {
+        // Write to local database in a transaction
+        let db = state.db.lock_recover();
+        let saved_playlists = saved_playlist_timestamps(&db)?;
+        let old_saved_song_ids = saved_playlist_song_ids(&db)?;
+        db.execute_batch("BEGIN TRANSACTION")?;
 
-    // Clear existing playlist data
-    db.execute("DELETE FROM playlist_songs", [])?;
-    db.execute("DELETE FROM playlists", [])?;
+        // Clear existing playlist data
+        db.execute("DELETE FROM playlist_songs", [])?;
+        db.execute("DELETE FROM playlists", [])?;
 
-    let now = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Utc::now().to_rfc3339();
 
-    // Insert playlists and their songs
-    for detail in &playlist_details {
-        let info = &detail.info;
-        db.execute(
-            "INSERT INTO playlists (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            rusqlite::params![
-                &info.id,
-                &info.name,
-                info.song_count,
-                info.duration,
-                &info.owner,
-                &info.cover_art,
-                &info.created,
-                &info.changed,
-                &now,
-            ],
-        )?;
+        // Insert playlists and their songs
+        for detail in &playlist_details {
+            let info = &detail.info;
+            let offline_saved_at = saved_playlists.get(&info.id);
+            db.execute(
+                "INSERT INTO playlists
+                 (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, offline_saved_at, synced_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    &info.id,
+                    &info.name,
+                    info.song_count,
+                    info.duration,
+                    &info.owner,
+                    &info.cover_art,
+                    &info.created,
+                    &info.changed,
+                    offline_saved_at,
+                    &now,
+                ],
+            )?;
 
-        // Insert playlist songs (only those that exist in the local songs table)
-        for (position, entry) in detail.entries.iter().enumerate() {
-            // Check if song exists in local library
-            let song_exists: bool = db
-                .query_row("SELECT 1 FROM songs WHERE id = ?1", [&entry.id], |_| {
-                    Ok(true)
-                })
-                .unwrap_or(false);
+            // Insert playlist songs (only those that exist in the local songs table)
+            for (position, entry) in detail.entries.iter().enumerate() {
+                // Check if song exists in local library
+                let song_exists: bool = db
+                    .query_row("SELECT 1 FROM songs WHERE id = ?1", [&entry.id], |_| {
+                        Ok(true)
+                    })
+                    .unwrap_or(false);
 
-            if song_exists {
-                db.execute(
-                    "INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![&info.id, &entry.id, position as i32],
-                )?;
+                if song_exists {
+                    db.execute(
+                        "INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![&info.id, &entry.id, position as i32],
+                    )?;
+                }
             }
         }
-    }
 
-    db.execute_batch("COMMIT")?;
+        db.execute_batch("COMMIT")?;
+        old_saved_song_ids
+    };
+
+    let _ = reconcile_saved_playlists_offline_inner(&app_handle, &state).await?;
+    remove_unprotected_cached_songs(&app_handle, &state, old_saved_song_ids)?;
 
     info!("Synced {} playlists with songs", playlist_details.len());
     Ok(playlist_count)
@@ -122,7 +146,7 @@ pub async fn sync_playlists(state: State<'_, AppState>) -> AppResult<i32> {
 pub fn get_playlists(state: State<'_, AppState>) -> AppResult<Vec<Playlist>> {
     let db = state.db.lock_recover();
     let mut stmt = db.prepare(
-        "SELECT id, name, song_count, duration, owner, cover_art_id, created_at, changed_at FROM playlists ORDER BY name",
+        "SELECT id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, offline_saved_at FROM playlists ORDER BY name",
     )?;
 
     let playlists: Vec<Playlist> = stmt
@@ -136,6 +160,8 @@ pub fn get_playlists(state: State<'_, AppState>) -> AppResult<Vec<Playlist>> {
                 cover_art_id: row.get(5)?,
                 created_at: row.get(6)?,
                 changed_at: row.get(7)?,
+                saved_offline: row.get::<_, Option<String>>(8)?.is_some(),
+                offline_saved_at: row.get(8)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -212,7 +238,18 @@ pub async fn create_playlist(
     // Cache locally
     let db = state.db.lock_recover();
     db.execute(
-        "INSERT OR REPLACE INTO playlists (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO playlists
+         (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, offline_saved_at, synced_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)
+         ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            song_count = excluded.song_count,
+            duration = excluded.duration,
+            owner = excluded.owner,
+            cover_art_id = excluded.cover_art_id,
+            created_at = excluded.created_at,
+            changed_at = excluded.changed_at,
+            synced_at = excluded.synced_at",
         rusqlite::params![
             &info.id,
             &info.name,
@@ -251,6 +288,8 @@ pub async fn create_playlist(
         cover_art_id: info.cover_art.clone(),
         created_at: info.created.clone(),
         changed_at: info.changed.clone(),
+        saved_offline: false,
+        offline_saved_at: None,
     })
 }
 
@@ -280,7 +319,13 @@ pub async fn update_playlist(
 
 /// Delete a playlist from server and local cache
 #[tauri::command]
-pub async fn delete_playlist(state: State<'_, AppState>, playlist_id: String) -> AppResult<()> {
+pub async fn delete_playlist(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    playlist_id: String,
+) -> AppResult<()> {
+    let removed_song_ids = playlist_song_ids(&state, &playlist_id)?;
+
     // Delete from server
     state.client.delete_playlist(&playlist_id).await?;
 
@@ -291,6 +336,9 @@ pub async fn delete_playlist(state: State<'_, AppState>, playlist_id: String) ->
         [&playlist_id],
     )?;
     db.execute("DELETE FROM playlists WHERE id = ?1", [&playlist_id])?;
+    drop(db);
+
+    remove_unprotected_cached_songs(&app_handle, &state, removed_song_ids)?;
 
     Ok(())
 }
@@ -298,6 +346,7 @@ pub async fn delete_playlist(state: State<'_, AppState>, playlist_id: String) ->
 /// Add songs to a playlist on server and refresh local cache
 #[tauri::command]
 pub async fn add_songs_to_playlist(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     playlist_id: String,
     song_ids: Vec<String>,
@@ -322,6 +371,9 @@ pub async fn add_songs_to_playlist(
 
     // Re-fetch playlist from server and update local cache
     refresh_playlist_cache(&state, &playlist_id).await?;
+    if playlist_saved_offline(&state, &playlist_id)? {
+        let _ = download_playlist_to_cache(&app_handle, &state, &playlist_id).await?;
+    }
 
     Ok(())
 }
@@ -345,16 +397,18 @@ fn playlist_song_ids_to_add(
 /// Remove a song from a playlist by position on server and refresh local cache
 #[tauri::command]
 pub async fn remove_song_from_playlist(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     playlist_id: String,
     position: i32,
 ) -> AppResult<()> {
-    remove_playlist_positions(&state, &playlist_id, vec![position as i64]).await
+    remove_playlist_positions(&app_handle, &state, &playlist_id, vec![position as i64]).await
 }
 
 /// Remove multiple songs from a playlist by position on server and refresh local cache
 #[tauri::command]
 pub async fn remove_songs_from_playlist(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     playlist_id: String,
     positions: Vec<i32>,
@@ -367,10 +421,11 @@ pub async fn remove_songs_from_playlist(
     positions_to_remove.sort_unstable();
     positions_to_remove.dedup();
 
-    remove_playlist_positions(&state, &playlist_id, positions_to_remove).await
+    remove_playlist_positions(&app_handle, &state, &playlist_id, positions_to_remove).await
 }
 
 async fn remove_playlist_positions(
+    app_handle: &AppHandle,
     state: &State<'_, AppState>,
     playlist_id: &str,
     positions: Vec<i64>,
@@ -378,6 +433,7 @@ async fn remove_playlist_positions(
     if positions.is_empty() {
         return Ok(());
     }
+    let before_song_ids = playlist_song_ids(state, playlist_id)?;
 
     // Remove by index on server
     state
@@ -387,8 +443,70 @@ async fn remove_playlist_positions(
 
     // Re-fetch playlist from server and update local cache
     refresh_playlist_cache(state, playlist_id).await?;
+    if playlist_saved_offline(state, playlist_id)? {
+        let after_song_ids = playlist_song_ids(state, playlist_id)?;
+        let removed_song_ids = before_song_ids
+            .difference(&after_song_ids)
+            .cloned()
+            .collect::<HashSet<_>>();
+        remove_unprotected_cached_songs(app_handle, state, removed_song_ids)?;
+    }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn set_playlist_saved_offline(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    playlist_id: String,
+    saved_offline: bool,
+) -> AppResult<SavedPlaylistOfflineResult> {
+    if saved_offline {
+        let previous_saved_at = playlist_offline_saved_at(&state, &playlist_id)?;
+        set_playlist_offline_saved_at(
+            &state,
+            &playlist_id,
+            Some(
+                previous_saved_at
+                    .clone()
+                    .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+            ),
+        )?;
+        match download_playlist_to_cache(&app_handle, &state, &playlist_id).await {
+            Ok(downloaded_count) => Ok(SavedPlaylistOfflineResult {
+                playlist_id,
+                saved_offline: true,
+                downloaded_count,
+                removed_count: 0,
+                skipped_protected_count: 0,
+            }),
+            Err(error) => {
+                set_playlist_offline_saved_at(&state, &playlist_id, previous_saved_at)?;
+                Err(error)
+            }
+        }
+    } else {
+        let song_ids = playlist_song_ids(&state, &playlist_id)?;
+        set_playlist_offline_saved_at(&state, &playlist_id, None)?;
+        let (removed_count, skipped_protected_count) =
+            remove_unprotected_cached_songs(&app_handle, &state, song_ids)?;
+        Ok(SavedPlaylistOfflineResult {
+            playlist_id,
+            saved_offline: false,
+            downloaded_count: 0,
+            removed_count,
+            skipped_protected_count,
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn reconcile_saved_playlists_offline(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<SavedPlaylistOfflineResult>> {
+    reconcile_saved_playlists_offline_inner(&app_handle, &state).await
 }
 
 /// Re-fetch a single playlist from server and update local cache
@@ -401,7 +519,18 @@ async fn refresh_playlist_cache(state: &State<'_, AppState>, playlist_id: &str) 
 
     // Update playlist metadata
     db.execute(
-        "INSERT OR REPLACE INTO playlists (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, synced_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO playlists
+         (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, offline_saved_at, synced_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, (SELECT offline_saved_at FROM playlists WHERE id = ?1), ?9)
+         ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            song_count = excluded.song_count,
+            duration = excluded.duration,
+            owner = excluded.owner,
+            cover_art_id = excluded.cover_art_id,
+            created_at = excluded.created_at,
+            changed_at = excluded.changed_at,
+            synced_at = excluded.synced_at",
         rusqlite::params![
             &info.id,
             &info.name,
@@ -437,6 +566,179 @@ async fn refresh_playlist_cache(state: &State<'_, AppState>, playlist_id: &str) 
     }
 
     Ok(())
+}
+
+async fn reconcile_saved_playlists_offline_inner(
+    app_handle: &AppHandle,
+    state: &State<'_, AppState>,
+) -> AppResult<Vec<SavedPlaylistOfflineResult>> {
+    let playlist_ids = {
+        let db = state.db.lock_recover();
+        let mut stmt = db
+            .prepare("SELECT id FROM playlists WHERE offline_saved_at IS NOT NULL ORDER BY name")?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    let mut results = Vec::with_capacity(playlist_ids.len());
+    for playlist_id in playlist_ids {
+        let downloaded_count =
+            match download_playlist_to_cache(app_handle, state, &playlist_id).await {
+                Ok(count) => count,
+                Err(error) => {
+                    warn!(
+                        "Failed to reconcile saved playlist {}: {}",
+                        playlist_id, error
+                    );
+                    0
+                }
+            };
+        results.push(SavedPlaylistOfflineResult {
+            playlist_id,
+            saved_offline: true,
+            downloaded_count,
+            removed_count: 0,
+            skipped_protected_count: 0,
+        });
+    }
+
+    Ok(results)
+}
+
+fn saved_playlist_timestamps(db: &rusqlite::Connection) -> AppResult<HashMap<String, String>> {
+    let mut stmt = db
+        .prepare("SELECT id, offline_saved_at FROM playlists WHERE offline_saved_at IS NOT NULL")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    Ok(rows.collect::<Result<HashMap<_, _>, _>>()?)
+}
+
+fn saved_playlist_song_ids(db: &rusqlite::Connection) -> AppResult<HashSet<String>> {
+    let mut stmt = db.prepare(
+        "SELECT DISTINCT ps.song_id
+         FROM playlist_songs ps
+         JOIN playlists p ON p.id = ps.playlist_id
+         WHERE p.offline_saved_at IS NOT NULL",
+    )?;
+    Ok(stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<HashSet<_>, _>>()?)
+}
+
+fn playlist_song_ids(state: &State<'_, AppState>, playlist_id: &str) -> AppResult<HashSet<String>> {
+    let db = state.db.lock_recover();
+    let mut stmt = db.prepare("SELECT song_id FROM playlist_songs WHERE playlist_id = ?1")?;
+    Ok(stmt
+        .query_map([playlist_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<HashSet<_>, _>>()?)
+}
+
+fn playlist_saved_offline(state: &State<'_, AppState>, playlist_id: &str) -> AppResult<bool> {
+    Ok(playlist_offline_saved_at(state, playlist_id)?.is_some())
+}
+
+fn playlist_offline_saved_at(
+    state: &State<'_, AppState>,
+    playlist_id: &str,
+) -> AppResult<Option<String>> {
+    let db = state.db.lock_recover();
+    Ok(db
+        .query_row(
+            "SELECT offline_saved_at FROM playlists WHERE id = ?1",
+            [playlist_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None))
+}
+
+fn set_playlist_offline_saved_at(
+    state: &State<'_, AppState>,
+    playlist_id: &str,
+    offline_saved_at: Option<String>,
+) -> AppResult<()> {
+    let db = state.db.lock_recover();
+    db.execute(
+        "UPDATE playlists SET offline_saved_at = ?1 WHERE id = ?2",
+        rusqlite::params![offline_saved_at, playlist_id],
+    )?;
+    Ok(())
+}
+
+async fn download_playlist_to_cache(
+    app_handle: &AppHandle,
+    state: &State<'_, AppState>,
+    playlist_id: &str,
+) -> AppResult<i32> {
+    let songs = {
+        let db = state.db.lock_recover();
+        let mut stmt = db.prepare(
+            "SELECT s.id, COALESCE(s.suffix, '')
+             FROM playlist_songs ps
+             JOIN songs s ON s.id = ps.song_id
+             WHERE ps.playlist_id = ?1
+             ORDER BY ps.position",
+        )?;
+        stmt.query_map([playlist_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?
+    };
+
+    let cache = AudioCache::new(app_handle)?;
+    let mut downloaded_count = 0;
+    for (song_id, suffix) in songs {
+        cache.get_or_fetch(&state.client, &song_id, &suffix).await?;
+        downloaded_count += 1;
+    }
+    cache.emit_changed("saved-playlist");
+    Ok(downloaded_count)
+}
+
+fn remove_unprotected_cached_songs(
+    app_handle: &AppHandle,
+    state: &State<'_, AppState>,
+    song_ids: HashSet<String>,
+) -> AppResult<(i32, i32)> {
+    let cache = AudioCache::new(app_handle)?;
+    let mut removed_count = 0;
+    let mut skipped_protected_count = 0;
+
+    for song_id in song_ids {
+        let (suffix, protected): (String, bool) = {
+            let db = state.db.lock_recover();
+            let suffix = db
+                .query_row(
+                    "SELECT COALESCE(suffix, '') FROM songs WHERE id = ?1",
+                    [&song_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap_or_default();
+            let protected = db
+                .query_row(
+                    "SELECT EXISTS (
+                        SELECT 1
+                        FROM playlist_songs ps
+                        JOIN playlists p ON p.id = ps.playlist_id
+                        WHERE ps.song_id = ?1 AND p.offline_saved_at IS NOT NULL
+                     )",
+                    [&song_id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap_or(false);
+            (suffix, protected)
+        };
+
+        if protected {
+            skipped_protected_count += 1;
+            continue;
+        }
+        if cache.remove_if_unprotected(&song_id, &suffix)? {
+            removed_count += 1;
+        }
+    }
+
+    Ok((removed_count, skipped_protected_count))
 }
 
 #[cfg(test)]

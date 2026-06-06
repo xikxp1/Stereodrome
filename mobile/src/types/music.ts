@@ -67,6 +67,8 @@ export type Playlist = {
   cover_art_id: string | null;
   created_at: string;
   changed_at: string;
+  saved_offline: boolean;
+  offline_saved_at: string | null;
 };
 
 export type SearchResultSong = {
@@ -167,6 +169,14 @@ export type DownloadStatus = {
   cached: boolean;
   path: string | null;
   bytes: number;
+};
+
+export type SavedPlaylistOfflineResult = {
+  playlist_id: string;
+  saved_offline: boolean;
+  downloaded_count: number;
+  removed_count: number;
+  skipped_protected_count: number;
 };
 
 export type PlaybackStateSnapshot = {

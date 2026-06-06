@@ -756,10 +756,10 @@ impl StereodromeCore {
                 .map(playlist_from_subsonic)
                 .collect::<Vec<_>>();
             self.save_playlists(&mapped)?;
-            return Ok(mapped);
+            return self.get_cached_playlists(false);
         }
 
-        self.get_local_playlists()
+        self.get_cached_playlists(true)
     }
 
     pub async fn get_playlist_songs(&self, playlist_id: String) -> CoreResult<Vec<Song>> {
@@ -793,6 +793,9 @@ impl StereodromeCore {
                 })
                 .collect::<Vec<_>>();
             self.save_playlist_songs(&playlist_id, &songs)?;
+            if self.playlist_saved_offline(&playlist_id)? {
+                let _ = self.download_local_playlist_songs(&playlist_id).await?;
+            }
             return Ok(songs);
         }
 
@@ -812,7 +815,7 @@ impl StereodromeCore {
             .map_err(|e| CoreError::Subsonic(e.to_string()))?;
         let mapped = playlist_from_subsonic(playlist.base);
         self.save_playlists(std::slice::from_ref(&mapped))?;
-        Ok(mapped)
+        self.get_cached_playlist(&mapped.id)
     }
 
     pub async fn rename_playlist(&self, playlist_id: String, name: String) -> CoreResult<()> {
@@ -838,6 +841,7 @@ impl StereodromeCore {
     }
 
     pub async fn delete_playlist(&self, playlist_id: String) -> CoreResult<()> {
+        let removed_song_ids = self.playlist_song_ids(&playlist_id)?;
         let client = self.connected_client().await?;
         client
             .delete_playlist(playlist_id.clone())
@@ -849,6 +853,8 @@ impl StereodromeCore {
             [&playlist_id],
         )?;
         conn.execute("DELETE FROM playlists WHERE id = ?1", [&playlist_id])?;
+        drop(conn);
+        let _ = self.remove_unprotected_cached_songs(removed_song_ids)?;
         Ok(())
     }
 
@@ -872,7 +878,7 @@ impl StereodromeCore {
 
         client
             .update_playlist(
-                playlist_id,
+                playlist_id.clone(),
                 None::<String>,
                 None::<String>,
                 None,
@@ -881,6 +887,10 @@ impl StereodromeCore {
             )
             .await
             .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+        self.refresh_playlist_cache(&playlist_id).await?;
+        if self.playlist_saved_offline(&playlist_id)? {
+            let _ = self.download_playlist(playlist_id).await?;
+        }
         Ok(())
     }
 
@@ -889,10 +899,11 @@ impl StereodromeCore {
         playlist_id: String,
         song_indexes: Vec<i64>,
     ) -> CoreResult<()> {
+        let before_song_ids = self.playlist_song_ids(&playlist_id)?;
         let client = self.connected_client().await?;
         client
             .update_playlist(
-                playlist_id,
+                playlist_id.clone(),
                 None::<String>,
                 None::<String>,
                 None,
@@ -901,6 +912,15 @@ impl StereodromeCore {
             )
             .await
             .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+        self.refresh_playlist_cache(&playlist_id).await?;
+        if self.playlist_saved_offline(&playlist_id)? {
+            let after_song_ids = self.playlist_song_ids(&playlist_id)?;
+            let removed_song_ids = before_song_ids
+                .difference(&after_song_ids)
+                .cloned()
+                .collect::<HashSet<_>>();
+            let _ = self.remove_unprotected_cached_songs(removed_song_ids)?;
+        }
         Ok(())
     }
 
@@ -987,7 +1007,11 @@ impl StereodromeCore {
     }
 
     pub fn clear_audio_cache(&self) -> CoreResult<CacheStats> {
+        let protected_paths = self.protected_audio_cache_paths()?;
         for (path, _) in self.audio_cache_entries()? {
+            if protected_paths.contains(&path) {
+                continue;
+            }
             match std::fs::remove_file(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -995,7 +1019,16 @@ impl StereodromeCore {
             }
         }
         let conn = Connection::open(&self.db_path)?;
-        conn.execute("DELETE FROM download_items", [])?;
+        conn.execute(
+            "DELETE FROM download_items
+             WHERE song_id NOT IN (
+                SELECT DISTINCT ps.song_id
+                FROM playlist_songs ps
+                JOIN playlists p ON p.id = ps.playlist_id
+                WHERE p.offline_saved_at IS NOT NULL
+             )",
+            [],
+        )?;
         self.get_audio_cache_stats()
     }
 
@@ -1088,6 +1121,11 @@ impl StereodromeCore {
     }
 
     pub fn remove_cached_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
+        if self.song_protected_by_saved_playlist(&song_id)? {
+            return Err(CoreError::InvalidInput(format!(
+                "song {song_id} is preserved by a saved playlist"
+            )));
+        }
         if let Some(path) = self.cached_song_path(&song_id)? {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
@@ -1115,12 +1153,88 @@ impl StereodromeCore {
     }
 
     pub async fn download_playlist(&self, playlist_id: String) -> CoreResult<Vec<DownloadStatus>> {
-        let songs = self.get_playlist_songs(playlist_id).await?;
-        let mut statuses = Vec::with_capacity(songs.len());
-        for song in songs {
-            statuses.push(self.download_song(song.id).await?);
+        if self.connected_client().await.is_ok() {
+            self.refresh_playlist_cache(&playlist_id).await?;
         }
-        Ok(statuses)
+        self.download_local_playlist_songs(&playlist_id).await
+    }
+
+    pub async fn set_playlist_saved_offline(
+        &self,
+        playlist_id: String,
+        saved_offline: bool,
+    ) -> CoreResult<SavedPlaylistOfflineResult> {
+        if saved_offline {
+            let previous_saved_at = self.playlist_offline_saved_at(&playlist_id)?;
+            self.set_playlist_offline_saved_at(
+                &playlist_id,
+                Some(
+                    previous_saved_at
+                        .clone()
+                        .unwrap_or_else(|| Utc::now().to_rfc3339()),
+                ),
+            )?;
+            match self.download_playlist(playlist_id.clone()).await {
+                Ok(statuses) => Ok(SavedPlaylistOfflineResult {
+                    playlist_id,
+                    saved_offline: true,
+                    downloaded_count: statuses.len() as i32,
+                    removed_count: 0,
+                    skipped_protected_count: 0,
+                }),
+                Err(error) => {
+                    self.set_playlist_offline_saved_at(&playlist_id, previous_saved_at)?;
+                    Err(error)
+                }
+            }
+        } else {
+            let song_ids = self.playlist_song_ids(&playlist_id)?;
+            self.set_playlist_offline_saved_at(&playlist_id, None)?;
+            let (removed_count, skipped_protected_count) =
+                self.remove_unprotected_cached_songs(song_ids)?;
+            Ok(SavedPlaylistOfflineResult {
+                playlist_id,
+                saved_offline: false,
+                downloaded_count: 0,
+                removed_count,
+                skipped_protected_count,
+            })
+        }
+    }
+
+    pub async fn reconcile_saved_playlists_offline(
+        &self,
+    ) -> CoreResult<Vec<SavedPlaylistOfflineResult>> {
+        let playlist_ids = {
+            let conn = Connection::open(&self.db_path)?;
+            let mut stmt = conn.prepare(
+                "SELECT id FROM playlists WHERE offline_saved_at IS NOT NULL ORDER BY name",
+            )?;
+            stmt.query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        let mut results = Vec::with_capacity(playlist_ids.len());
+        for playlist_id in playlist_ids {
+            let downloaded_count = match self.download_playlist(playlist_id.clone()).await {
+                Ok(statuses) => statuses.len() as i32,
+                Err(error) => {
+                    warn!(
+                        "Failed to reconcile saved playlist {}: {}",
+                        playlist_id, error
+                    );
+                    0
+                }
+            };
+            results.push(SavedPlaylistOfflineResult {
+                playlist_id,
+                saved_offline: true,
+                downloaded_count,
+                removed_count: 0,
+                skipped_protected_count: 0,
+            });
+        }
+        Ok(results)
     }
 
     pub async fn prefetch_next(&self) -> CoreResult<Option<DownloadStatus>> {
@@ -1455,34 +1569,35 @@ impl StereodromeCore {
             .ok_or(CoreError::NotConnected)
     }
 
-    fn get_local_playlists(&self) -> CoreResult<Vec<Playlist>> {
+    fn get_cached_playlist(&self, playlist_id: &str) -> CoreResult<Playlist> {
         let conn = Connection::open(&self.db_path)?;
-        let mut stmt = conn.prepare(
+        conn.query_row(
+            "SELECT id, name, song_count, duration, owner, cover_art_id,
+                    created_at, changed_at, offline_saved_at
+             FROM playlists
+             WHERE id = ?1",
+            [playlist_id],
+            playlist_from_row,
+        )
+        .map_err(Into::into)
+    }
+
+    fn get_cached_playlists(&self, saved_offline_only: bool) -> CoreResult<Vec<Playlist>> {
+        let conn = Connection::open(&self.db_path)?;
+        let sql = if saved_offline_only {
             "SELECT p.id, p.name, p.song_count, p.duration, p.owner, p.cover_art_id,
-                    p.created_at, p.changed_at
+                    p.created_at, p.changed_at, p.offline_saved_at
              FROM playlists p
-             WHERE EXISTS (
-                SELECT 1
-                FROM playlist_songs ps
-                JOIN download_items di ON di.song_id = ps.song_id
-                WHERE ps.playlist_id = p.id
-                  AND di.status = 'downloaded'
-                  AND di.path IS NOT NULL
-             )
-             ORDER BY p.name COLLATE NOCASE",
-        )?;
-        rows_collect(stmt.query_map([], |row| {
-            Ok(Playlist {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                song_count: row.get(2)?,
-                duration: row.get(3)?,
-                owner: row.get(4)?,
-                cover_art_id: row.get(5)?,
-                created_at: row.get(6)?,
-                changed_at: row.get(7)?,
-            })
-        })?)
+             WHERE p.offline_saved_at IS NOT NULL
+             ORDER BY p.name COLLATE NOCASE"
+        } else {
+            "SELECT p.id, p.name, p.song_count, p.duration, p.owner, p.cover_art_id,
+                    p.created_at, p.changed_at, p.offline_saved_at
+             FROM playlists p
+             ORDER BY p.name COLLATE NOCASE"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        rows_collect(stmt.query_map([], playlist_from_row)?)
     }
 
     fn get_local_playlist_songs(&self, playlist_id: &str) -> CoreResult<Vec<Song>> {
@@ -1507,9 +1622,18 @@ impl StereodromeCore {
         let now = Utc::now().to_rfc3339();
         {
             let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO playlists
-                 (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, synced_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO playlists
+                 (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, offline_saved_at, synced_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, (SELECT offline_saved_at FROM playlists WHERE id = ?1), ?9)
+                 ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    song_count = excluded.song_count,
+                    duration = excluded.duration,
+                    owner = excluded.owner,
+                    cover_art_id = excluded.cover_art_id,
+                    created_at = excluded.created_at,
+                    changed_at = excluded.changed_at,
+                    synced_at = excluded.synced_at",
             )?;
             for playlist in playlists {
                 stmt.execute(params![
@@ -1574,6 +1698,124 @@ impl StereodromeCore {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    async fn refresh_playlist_cache(&self, playlist_id: &str) -> CoreResult<()> {
+        let client = self.connected_client().await?;
+        let playlist = client
+            .get_playlist(playlist_id)
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+        let mapped = playlist_from_subsonic(playlist.base);
+        let now = Utc::now().to_rfc3339();
+        let songs = playlist
+            .entry
+            .into_iter()
+            .map(|song| Song {
+                id: song.id,
+                album_id: song.album_id.unwrap_or_default(),
+                artist_id: song.artist_id.unwrap_or_default(),
+                title: song.title,
+                track_number: song.track,
+                disc_number: song.disc_number.unwrap_or(1),
+                duration: song.duration,
+                bit_rate: song.bit_rate,
+                size: song.size,
+                suffix: song.suffix,
+                content_type: song.content_type,
+                path: song.path,
+                year: song.year,
+                genre: song.genre,
+                synced_at: now.clone(),
+                artist: song.artist,
+                album: song.album,
+            })
+            .collect::<Vec<_>>();
+        self.save_playlists(&[mapped])?;
+        self.save_playlist_songs(playlist_id, &songs)?;
+        Ok(())
+    }
+
+    fn playlist_saved_offline(&self, playlist_id: &str) -> CoreResult<bool> {
+        Ok(self.playlist_offline_saved_at(playlist_id)?.is_some())
+    }
+
+    fn playlist_offline_saved_at(&self, playlist_id: &str) -> CoreResult<Option<String>> {
+        let conn = Connection::open(&self.db_path)?;
+        conn.query_row(
+            "SELECT offline_saved_at FROM playlists WHERE id = ?1",
+            [playlist_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(Into::into)
+    }
+
+    fn set_playlist_offline_saved_at(
+        &self,
+        playlist_id: &str,
+        offline_saved_at: Option<String>,
+    ) -> CoreResult<()> {
+        let conn = Connection::open(&self.db_path)?;
+        conn.execute(
+            "UPDATE playlists SET offline_saved_at = ?1 WHERE id = ?2",
+            params![offline_saved_at, playlist_id],
+        )?;
+        Ok(())
+    }
+
+    fn playlist_song_ids(&self, playlist_id: &str) -> CoreResult<HashSet<String>> {
+        let conn = Connection::open(&self.db_path)?;
+        let mut stmt = conn.prepare("SELECT song_id FROM playlist_songs WHERE playlist_id = ?1")?;
+        stmt.query_map([playlist_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<HashSet<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    async fn download_local_playlist_songs(
+        &self,
+        playlist_id: &str,
+    ) -> CoreResult<Vec<DownloadStatus>> {
+        let song_ids = {
+            let conn = Connection::open(&self.db_path)?;
+            let mut stmt = conn.prepare(
+                "SELECT song_id FROM playlist_songs WHERE playlist_id = ?1 ORDER BY position",
+            )?;
+            stmt.query_map([playlist_id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        let mut statuses = Vec::with_capacity(song_ids.len());
+        for song_id in song_ids {
+            statuses.push(self.download_song(song_id).await?);
+        }
+        Ok(statuses)
+    }
+
+    fn remove_unprotected_cached_songs(&self, song_ids: HashSet<String>) -> CoreResult<(i32, i32)> {
+        let mut removed_count = 0;
+        let mut skipped_protected_count = 0;
+
+        for song_id in song_ids {
+            if self.song_protected_by_saved_playlist(&song_id)? {
+                skipped_protected_count += 1;
+                continue;
+            }
+            if let Some(path) = self.cached_song_path(&song_id)? {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {
+                        removed_count += 1;
+                        let conn = Connection::open(&self.db_path)?;
+                        conn.execute("DELETE FROM download_items WHERE song_id = ?1", [&song_id])?;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+
+        Ok((removed_count, skipped_protected_count))
     }
 
     fn sync_job_status(
@@ -2031,6 +2273,39 @@ impl StereodromeCore {
         Ok(entries)
     }
 
+    fn protected_audio_cache_paths(&self) -> CoreResult<HashSet<PathBuf>> {
+        let conn = Connection::open(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT ps.song_id
+             FROM playlist_songs ps
+             JOIN playlists p ON p.id = ps.playlist_id
+             WHERE p.offline_saved_at IS NOT NULL",
+        )?;
+        let song_ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut paths = HashSet::new();
+        for song_id in song_ids {
+            paths.insert(self.audio_cache_path(&song_id, MOBILE_PLAYBACK_FORMAT)?);
+        }
+        Ok(paths)
+    }
+
+    fn song_protected_by_saved_playlist(&self, song_id: &str) -> CoreResult<bool> {
+        let conn = Connection::open(&self.db_path)?;
+        conn.query_row(
+            "SELECT EXISTS (
+                SELECT 1
+                FROM playlist_songs ps
+                JOIN playlists p ON p.id = ps.playlist_id
+                WHERE ps.song_id = ?1 AND p.offline_saved_at IS NOT NULL
+             )",
+            [song_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(Into::into)
+    }
+
     fn max_cache_size(&self) -> CoreResult<u64> {
         let conn = Connection::open(&self.db_path)?;
         let value = sync_value(&conn, "setting_max_cache_size")?
@@ -2047,6 +2322,7 @@ impl StereodromeCore {
     fn enforce_audio_cache_limit(&self) -> CoreResult<()> {
         let max_size = self.max_cache_size()?;
         let mut entries = self.audio_cache_entries()?;
+        let protected_paths = self.protected_audio_cache_paths()?;
         let mut total_size: u64 = entries.iter().map(|(_, size)| *size).sum();
         if total_size <= max_size {
             return Ok(());
@@ -2061,6 +2337,9 @@ impl StereodromeCore {
         for (path, size) in entries {
             if total_size <= max_size {
                 break;
+            }
+            if protected_paths.contains(&path) {
+                continue;
             }
             match std::fs::remove_file(&path) {
                 Ok(()) => {
@@ -2643,7 +2922,25 @@ fn playlist_from_subsonic(playlist: submarine::data::Playlist) -> Playlist {
         cover_art_id: playlist.cover_art,
         created_at: playlist.created.to_rfc3339(),
         changed_at: playlist.changed.to_rfc3339(),
+        saved_offline: false,
+        offline_saved_at: None,
     }
+}
+
+fn playlist_from_row(row: &rusqlite::Row<'_>) -> Result<Playlist, rusqlite::Error> {
+    let offline_saved_at = row.get::<_, Option<String>>(8)?;
+    Ok(Playlist {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        song_count: row.get(2)?,
+        duration: row.get(3)?,
+        owner: row.get(4)?,
+        cover_art_id: row.get(5)?,
+        created_at: row.get(6)?,
+        changed_at: row.get(7)?,
+        saved_offline: offline_saved_at.is_some(),
+        offline_saved_at,
+    })
 }
 
 fn playlist_song_ids_to_add(
@@ -3005,7 +3302,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_playlists_lists_only_downloaded_local_playlists_without_connection() {
+    async fn get_playlists_lists_only_saved_local_playlists_without_connection() {
         let data_dir = unique_temp_dir("local-playlists");
         let core = StereodromeCore::new(&data_dir).expect("core initializes");
         let conn = Connection::open(&core.db_path).expect("open test db");
@@ -3031,10 +3328,10 @@ mod tests {
         )
         .expect("insert songs");
         conn.execute(
-            "INSERT INTO playlists (id, name, song_count, duration, created_at, changed_at, synced_at)
+            "INSERT INTO playlists (id, name, song_count, duration, created_at, changed_at, offline_saved_at, synced_at)
              VALUES
-                ('playlist-downloaded', 'Downloaded Mix', 1, 0, 'now', 'now', 'now'),
-                ('playlist-streaming', 'Streaming Mix', 1, 0, 'now', 'now', 'now')",
+                ('playlist-downloaded', 'Downloaded Mix', 1, 0, 'now', 'now', 'now', 'now'),
+                ('playlist-streaming', 'Streaming Mix', 1, 0, 'now', 'now', NULL, 'now')",
             [],
         )
         .expect("insert playlists");
@@ -3058,6 +3355,8 @@ mod tests {
 
         assert_eq!(playlists.len(), 1);
         assert_eq!(playlists[0].id, "playlist-downloaded");
+        assert!(playlists[0].saved_offline);
+        assert_eq!(playlists[0].offline_saved_at.as_deref(), Some("now"));
 
         std::fs::remove_dir_all(data_dir).ok();
     }
@@ -3084,6 +3383,62 @@ mod tests {
             status.path.as_deref(),
             Some(path_to_file_uri(&cache_path).as_str())
         );
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn clear_audio_cache_keeps_saved_playlist_songs() {
+        let data_dir = unique_temp_dir("clear-keeps-saved-playlist");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let conn = Connection::open(&core.db_path).expect("open test db");
+
+        conn.execute(
+            "INSERT INTO artists (id, name, synced_at)
+             VALUES ('artist-1', 'Artist One', 'now')",
+            [],
+        )
+        .expect("insert artist");
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, synced_at)
+             VALUES ('album-1', 'artist-1', 'Album One', 'now')",
+            [],
+        )
+        .expect("insert album");
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, disc_number, synced_at)
+             VALUES
+                ('song-saved', 'album-1', 'artist-1', 'Saved Song', 1, 'now'),
+                ('song-cache', 'album-1', 'artist-1', 'Cache Song', 1, 'now')",
+            [],
+        )
+        .expect("insert songs");
+        conn.execute(
+            "INSERT INTO playlists (id, name, song_count, duration, created_at, changed_at, offline_saved_at, synced_at)
+             VALUES ('playlist-saved', 'Saved Mix', 1, 0, 'now', 'now', 'now', 'now')",
+            [],
+        )
+        .expect("insert playlist");
+        conn.execute(
+            "INSERT INTO playlist_songs (playlist_id, song_id, position)
+             VALUES ('playlist-saved', 'song-saved', 0)",
+            [],
+        )
+        .expect("insert playlist song");
+
+        let saved_path = core
+            .audio_cache_path("song-saved", MOBILE_PLAYBACK_FORMAT)
+            .expect("saved cache path");
+        let cache_path = core
+            .audio_cache_path("song-cache", MOBILE_PLAYBACK_FORMAT)
+            .expect("regular cache path");
+        std::fs::write(&saved_path, b"saved").expect("write saved cache");
+        std::fs::write(&cache_path, b"cache").expect("write regular cache");
+
+        core.clear_audio_cache().expect("clear cache");
+
+        assert!(saved_path.exists());
+        assert!(!cache_path.exists());
 
         std::fs::remove_dir_all(data_dir).ok();
     }

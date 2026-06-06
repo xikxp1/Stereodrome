@@ -102,11 +102,18 @@ export async function showSongContextMenu(opts: {
 }
 
 export async function showPlaylistContextMenu(opts: {
+  savedOffline: boolean;
+  onToggleSavedOffline: () => void;
   onRename: () => void;
   onDelete: () => void;
 }) {
   const menu = await Menu.new({
     items: [
+      await MenuItem.new({
+        text: opts.savedOffline ? "Remove Offline Save" : "Save Offline",
+        action: () => opts.onToggleSavedOffline(),
+      }),
+      await PredefinedMenuItem.new({ item: "Separator" }),
       await MenuItem.new({ text: "Rename", action: () => opts.onRename() }),
       await MenuItem.new({ text: "Delete", action: () => opts.onDelete() }),
     ],
