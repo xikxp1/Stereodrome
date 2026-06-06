@@ -31,7 +31,15 @@ pub struct NowPlayingEvent {
 /// Report a song as "now playing" to the Subsonic server.
 /// This should be called when playback starts.
 #[tauri::command]
-pub async fn scrobble_now_playing(state: State<'_, AppState>, song_id: String) -> AppResult<()> {
+pub async fn scrobble_now_playing(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    song_id: String,
+) -> AppResult<()> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(AppError::OfflineMode);
+    }
+
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);
     }
@@ -50,10 +58,15 @@ pub async fn scrobble_now_playing(state: State<'_, AppState>, song_id: String) -
 /// This should be called when a song finishes playing (or reaches a scrobble threshold).
 #[tauri::command]
 pub async fn scrobble_submit(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     song_id: String,
     timestamp: Option<u64>,
 ) -> AppResult<()> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(AppError::OfflineMode);
+    }
+
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);
     }
@@ -91,7 +104,9 @@ pub fn start_now_playing_emitter(
             thread::sleep(Duration::from_secs(5));
 
             // Check connection without lock
-            if !client.is_connected() {
+            if crate::commands::settings::manual_offline_enabled(&app_handle)
+                || !client.is_connected()
+            {
                 continue;
             }
 

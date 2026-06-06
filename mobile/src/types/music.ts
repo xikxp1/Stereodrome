@@ -5,6 +5,10 @@ export type ConnectionStatus = {
   server_version: string | null;
 };
 
+export type ConnectivitySettings = {
+  manual_offline_enabled: boolean;
+};
+
 export type Artist = {
   id: string;
   name: string;

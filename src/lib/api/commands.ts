@@ -15,6 +15,7 @@ import type {
   AnalysisProgress,
   PlaybackSettings,
   NotificationSettings,
+  ConnectivitySettings,
   SendNowPlayingNotificationParams,
   SyncSettings,
   LibrarySyncStatus,
@@ -295,6 +296,19 @@ export async function setPlaybackSettings(
   settings: PlaybackSettings
 ): Promise<void> {
   return invoke("set_playback_settings", { settings });
+}
+
+// Connectivity settings commands
+export async function getConnectivitySettings(): Promise<ConnectivitySettings> {
+  return invoke<ConnectivitySettings>("get_connectivity_settings");
+}
+
+export async function setConnectivitySettings(
+  settings: ConnectivitySettings
+): Promise<ConnectivitySettings> {
+  return invoke<ConnectivitySettings>("set_connectivity_settings", {
+    settings,
+  });
 }
 
 // Notification settings commands

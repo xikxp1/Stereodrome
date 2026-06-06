@@ -29,6 +29,7 @@ const LARGE_COVER_ART_SIZE: i32 = 512;
 const NEWEST_HEAD_ALBUM_KEY: &str = "library_newest_head_album_id";
 const NEWEST_ALBUMS_PAGE_SIZE: usize = 200;
 const SETTINGS_SYNC_KEY: &str = "settings_sync";
+const SETTINGS_CONNECTIVITY_KEY: &str = "settings_connectivity";
 const FULL_LAST_ATTEMPT_AT_KEY: &str = "library_reconcile_last_attempt_at";
 const FULL_LAST_SUCCESS_AT_KEY: &str = "library_reconcile_last_success_at";
 const FULL_LAST_ERROR_KEY: &str = "library_reconcile_last_error";
@@ -193,6 +194,10 @@ impl StereodromeCore {
     }
 
     pub async fn connect_server(&self, params: ConnectParams) -> CoreResult<ConnectionStatus> {
+        if self.manual_offline_enabled()? {
+            return Err(CoreError::OfflineMode);
+        }
+
         info!("Connecting to Subsonic server at {}", params.url);
         let client = build_client(&params.url, &params.username, &params.password);
         let ping = client
@@ -252,6 +257,15 @@ impl StereodromeCore {
             debug!("No saved Subsonic session to restore");
             return Ok(ConnectionStatus::disconnected());
         };
+
+        if self.manual_offline_enabled()? {
+            return Ok(ConnectionStatus {
+                connected: false,
+                server_url: Some(config.url),
+                username: Some(config.username),
+                server_version: None,
+            });
+        }
 
         let client = build_client(&config.url, &config.username, &config.password);
         match client.ping().await {
@@ -514,7 +528,36 @@ impl StereodromeCore {
         Ok(settings)
     }
 
+    pub fn get_connectivity_settings(&self) -> CoreResult<ConnectivitySettings> {
+        let conn = Connection::open(&self.db_path)?;
+        let Some(json) = sync_value(&conn, SETTINGS_CONNECTIVITY_KEY)? else {
+            return Ok(ConnectivitySettings::default());
+        };
+        Ok(serde_json::from_str::<ConnectivitySettings>(&json).unwrap_or_default())
+    }
+
+    pub fn set_connectivity_settings(
+        &self,
+        settings: ConnectivitySettings,
+    ) -> CoreResult<ConnectivitySettings> {
+        let conn = Connection::open(&self.db_path)?;
+        write_sync_value(
+            &conn,
+            SETTINGS_CONNECTIVITY_KEY,
+            &serde_json::to_string(&settings)?,
+        )?;
+        Ok(settings)
+    }
+
+    pub fn manual_offline_enabled(&self) -> CoreResult<bool> {
+        Ok(self.get_connectivity_settings()?.manual_offline_enabled)
+    }
+
     pub async fn run_due_library_sync(&self) -> CoreResult<Option<String>> {
+        if self.manual_offline_enabled()? {
+            return Ok(None);
+        }
+
         match self.next_due_library_sync_job()? {
             Some(DueSyncJob::FullReconcile) => {
                 self.reconcile_library().await?;
@@ -929,6 +972,10 @@ impl StereodromeCore {
             return Ok(path_to_file_uri(&path));
         }
 
+        if self.manual_offline_enabled()? {
+            return Err(CoreError::OfflineMode);
+        }
+
         let config = self.current_config()?;
         Ok(subsonic::signed_url(
             &config,
@@ -1058,6 +1105,10 @@ impl StereodromeCore {
             });
         }
 
+        if self.manual_offline_enabled()? {
+            return Err(CoreError::OfflineMode);
+        }
+
         let client = self.connected_client().await?;
         let path = self.audio_cache_path(&song_id, MOBILE_PLAYBACK_FORMAT)?;
         if let Some(parent) = path.parent() {
@@ -1165,6 +1216,10 @@ impl StereodromeCore {
         saved_offline: bool,
     ) -> CoreResult<SavedPlaylistOfflineResult> {
         if saved_offline {
+            if self.manual_offline_enabled()? {
+                return Err(CoreError::OfflineMode);
+            }
+
             let previous_saved_at = self.playlist_offline_saved_at(&playlist_id)?;
             self.set_playlist_offline_saved_at(
                 &playlist_id,
@@ -1205,6 +1260,10 @@ impl StereodromeCore {
     pub async fn reconcile_saved_playlists_offline(
         &self,
     ) -> CoreResult<Vec<SavedPlaylistOfflineResult>> {
+        if self.manual_offline_enabled()? {
+            return Ok(Vec::new());
+        }
+
         let playlist_ids = {
             let conn = Connection::open(&self.db_path)?;
             let mut stmt = conn.prepare(
@@ -1314,6 +1373,7 @@ impl StereodromeCore {
     ) -> CoreResult<PlaybackState> {
         let previous = self.playback_markers()?;
         let lastfm_track = lastfm::track_for_song(&self.db_path, &progress.song_id)?;
+        let manual_offline_enabled = self.manual_offline_enabled()?;
         let now_playing_song_id =
             if previous.now_playing_song_id.as_deref() == Some(&progress.song_id) {
                 previous.now_playing_song_id.clone()
@@ -1323,7 +1383,9 @@ impl StereodromeCore {
                         .scrobble(vec![(progress.song_id.clone(), None)], Some(false))
                         .await;
                 }
-                if let Some(track) = &lastfm_track {
+                if let Some(track) = &lastfm_track
+                    && !manual_offline_enabled
+                {
                     let _ = lastfm::report_now_playing(&self.db_path, track).await;
                 }
                 Some(progress.song_id.clone())
@@ -1339,7 +1401,7 @@ impl StereodromeCore {
                 progress.position_seconds,
                 progress.duration_seconds,
             )?;
-            if inserted {
+            if inserted && !manual_offline_enabled {
                 let _ = lastfm::retry_queue(&self.db_path, false).await;
             }
         }
@@ -1390,10 +1452,18 @@ impl StereodromeCore {
     }
 
     pub async fn begin_lastfm_auth(&self) -> CoreResult<LastfmAuthStart> {
+        if self.manual_offline_enabled()? {
+            return Err(CoreError::OfflineMode);
+        }
+
         lastfm::begin_auth(&self.db_path).await
     }
 
     pub async fn complete_lastfm_auth(&self) -> CoreResult<LastfmStatus> {
+        if self.manual_offline_enabled()? {
+            return Err(CoreError::OfflineMode);
+        }
+
         lastfm::complete_auth(&self.db_path).await
     }
 
@@ -1406,6 +1476,10 @@ impl StereodromeCore {
     }
 
     pub async fn retry_lastfm_queue(&self) -> CoreResult<usize> {
+        if self.manual_offline_enabled()? {
+            return Err(CoreError::OfflineMode);
+        }
+
         lastfm::retry_queue(&self.db_path, true).await
     }
 
@@ -1554,6 +1628,10 @@ impl StereodromeCore {
     }
 
     async fn connected_client(&self) -> CoreResult<Client> {
+        if self.manual_offline_enabled()? {
+            return Err(CoreError::OfflineMode);
+        }
+
         self.client
             .lock()
             .await
@@ -3072,9 +3150,9 @@ fn is_mobile_playback_cache_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DueSyncJob, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate,
-        NewestAlbumPageEntry, NewestPageScanResult, StereodromeCore, SyncSettings,
-        compute_next_run_at, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
+        ConnectivitySettings, CoreError, DueSyncJob, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT,
+        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, StereodromeCore,
+        SyncSettings, compute_next_run_at, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
         prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
         write_sync_value,
     };
@@ -3383,6 +3461,92 @@ mod tests {
             status.path.as_deref(),
             Some(path_to_file_uri(&cache_path).as_str())
         );
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn manual_offline_setting_persists_in_local_core_settings() {
+        let data_dir = unique_temp_dir("manual-offline-setting");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+
+        assert!(
+            !core
+                .get_connectivity_settings()
+                .expect("default connectivity settings")
+                .manual_offline_enabled
+        );
+
+        core.set_connectivity_settings(ConnectivitySettings {
+            manual_offline_enabled: true,
+        })
+        .expect("save connectivity settings");
+
+        let restored = StereodromeCore::new(&data_dir).expect("core reinitializes");
+        assert!(
+            restored
+                .get_connectivity_settings()
+                .expect("restored connectivity settings")
+                .manual_offline_enabled
+        );
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn stream_uri_uses_cached_file_in_manual_offline_mode() {
+        let data_dir = unique_temp_dir("manual-offline-stream-cache");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        core.set_connectivity_settings(ConnectivitySettings {
+            manual_offline_enabled: true,
+        })
+        .expect("save connectivity settings");
+        let song_id = "cached-song";
+        let cache_path = core
+            .audio_cache_path(song_id, MOBILE_PLAYBACK_FORMAT)
+            .expect("cache path");
+        std::fs::write(&cache_path, b"cached audio").expect("write cache file");
+
+        let uri = core
+            .get_stream_uri(song_id.to_string())
+            .expect("cached stream uri works offline");
+
+        assert_eq!(uri, path_to_file_uri(&cache_path));
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn manual_offline_rejects_uncached_network_only_requests() {
+        let data_dir = unique_temp_dir("manual-offline-network-guards");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        core.set_connectivity_settings(ConnectivitySettings {
+            manual_offline_enabled: true,
+        })
+        .expect("save connectivity settings");
+
+        assert!(matches!(
+            core.get_stream_uri("uncached-song".to_string()),
+            Err(CoreError::OfflineMode)
+        ));
+        assert!(matches!(
+            core.download_song("uncached-song".to_string()).await,
+            Err(CoreError::OfflineMode)
+        ));
+        assert!(matches!(
+            core.get_cover_art_uri("cover-id".to_string(), Some(128))
+                .await,
+            Err(CoreError::OfflineMode)
+        ));
+        assert_eq!(
+            core.run_due_library_sync()
+                .await
+                .expect("offline due sync is a no-op"),
+            None
+        );
+        assert!(matches!(
+            core.begin_lastfm_auth().await,
+            Err(CoreError::OfflineMode)
+        ));
 
         std::fs::remove_dir_all(data_dir).ok();
     }

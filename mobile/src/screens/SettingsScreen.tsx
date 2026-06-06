@@ -178,7 +178,10 @@ export function SettingsScreen({ category }: { category?: string }) {
   const scanStatus = useQuery({
     queryKey: scanStatusQueryKey,
     queryFn: stereodromeCore.getScanStatus,
-    enabled: selectedCategory === "sync" && stereodrome.status.connected,
+    enabled:
+      selectedCategory === "sync" &&
+      stereodrome.status.connected &&
+      !stereodrome.manualOfflineEnabled,
   });
   const cacheStats = useQuery({
     queryKey: ["audio-cache-stats"],
@@ -259,6 +262,22 @@ export function SettingsScreen({ category }: { category?: string }) {
   function serverOptions(): SelectableOption[] {
     return [
       {
+        kind: "action",
+        label: "Offline Mode",
+        sublabel: stereodrome.manualOfflineEnabled
+          ? "Downloaded songs only"
+          : "Use server when available",
+        onSelect: async () => {
+          await runBusy("offline-mode", async () => {
+            const nextEnabled = !stereodrome.manualOfflineEnabled;
+            await stereodrome.setManualOfflineEnabled(nextEnabled);
+            setMessage(
+              nextEnabled ? "Offline mode enabled" : "Offline mode disabled"
+            );
+          });
+        },
+      },
+      {
         kind: "editable",
         label: "Server",
         sublabel: stereodrome.status.server_url ?? "Not connected",
@@ -268,6 +287,9 @@ export function SettingsScreen({ category }: { category?: string }) {
             value: stereodrome.status.server_url ?? "",
             keyboardType: "url",
             onSubmit: async (value) => {
+              if (stereodrome.manualOfflineEnabled) {
+                throw new Error("Offline mode is enabled");
+              }
               const url = value.trim();
               if (!url) {
                 throw new Error("Server URL is required");
@@ -285,6 +307,9 @@ export function SettingsScreen({ category }: { category?: string }) {
             title: "Username",
             value: stereodrome.status.username ?? "",
             onSubmit: async (value) => {
+              if (stereodrome.manualOfflineEnabled) {
+                throw new Error("Offline mode is enabled");
+              }
               const username = value.trim();
               if (!username) {
                 throw new Error("Username is required");
@@ -319,46 +344,51 @@ export function SettingsScreen({ category }: { category?: string }) {
   }
 
   function syncOptions(): SelectableOption[] {
-    const syncActions = stereodrome.status.connected
-      ? [
-          {
-            kind: "action" as const,
-            label: "Start scan",
-            sublabel:
-              busyAction === "scan"
-                ? "Starting..."
-                : scanStatus.data?.scanning
-                  ? formatScanStatus(scanStatus.data)
-                  : "Invoke Subsonic scan",
-            onSelect: () => runStartScan(),
-          },
-          {
-            kind: "action" as const,
-            label: "Incremental sync",
-            sublabel:
-              busyAction === "incremental"
-                ? "Syncing..."
-                : `Last: ${formatTimestamp(syncStatus.data?.incremental.last_success_at)}`,
-            onSelect: () => runSync("incremental"),
-          },
-          {
-            kind: "action" as const,
-            label: "Full sync",
-            sublabel:
-              busyAction === "full"
-                ? "Syncing..."
-                : `Last: ${formatTimestamp(syncStatus.data?.full_reconcile.last_success_at)}`,
-            onSelect: () => runSync("full"),
-          },
-        ]
-      : [
-          {
-            kind: "info" as const,
-            label: "Offline Mode",
-            sublabel: "Reconnect to sync library",
-            onSelect: () => stereodrome.refreshStatus(),
-          },
-        ];
+    const syncActions =
+      stereodrome.status.connected && !stereodrome.manualOfflineEnabled
+        ? [
+            {
+              kind: "action" as const,
+              label: "Start scan",
+              sublabel:
+                busyAction === "scan"
+                  ? "Starting..."
+                  : scanStatus.data?.scanning
+                    ? formatScanStatus(scanStatus.data)
+                    : "Invoke Subsonic scan",
+              onSelect: () => runStartScan(),
+            },
+            {
+              kind: "action" as const,
+              label: "Incremental sync",
+              sublabel:
+                busyAction === "incremental"
+                  ? "Syncing..."
+                  : `Last: ${formatTimestamp(syncStatus.data?.incremental.last_success_at)}`,
+              onSelect: () => runSync("incremental"),
+            },
+            {
+              kind: "action" as const,
+              label: "Full sync",
+              sublabel:
+                busyAction === "full"
+                  ? "Syncing..."
+                  : `Last: ${formatTimestamp(syncStatus.data?.full_reconcile.last_success_at)}`,
+              onSelect: () => runSync("full"),
+            },
+          ]
+        : [
+            {
+              kind: "info" as const,
+              label: stereodrome.manualOfflineEnabled
+                ? "Offline Mode"
+                : "Disconnected",
+              sublabel: stereodrome.manualOfflineEnabled
+                ? "Turn off offline mode to sync"
+                : "Reconnect to sync library",
+              onSelect: () => stereodrome.refreshStatus(),
+            },
+          ];
 
     return [
       {
@@ -470,6 +500,17 @@ export function SettingsScreen({ category }: { category?: string }) {
   function lastfmActionOptions(
     status: NonNullable<typeof lastfmStatus.data>
   ): SelectableOption[] {
+    if (stereodrome.manualOfflineEnabled) {
+      return [
+        {
+          kind: "info",
+          label: "Offline Mode",
+          sublabel: "Turn off offline mode for Last.fm network actions",
+          onSelect: refreshLastfm,
+        },
+      ];
+    }
+
     const options: SelectableOption[] = [];
     if (status.available && !status.authenticated) {
       options.push({

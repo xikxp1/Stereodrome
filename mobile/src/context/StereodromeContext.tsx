@@ -18,6 +18,7 @@ type StereodromeContextValue = {
   status: ConnectionStatus;
   hasConfiguredServer: boolean;
   offlineMode: boolean;
+  manualOfflineEnabled: boolean;
   offlineSongIds: Set<string>;
   error: string | null;
   refreshStatus(): Promise<void>;
@@ -31,6 +32,7 @@ type StereodromeContextValue = {
     url?: string;
     username?: string;
   }): Promise<void>;
+  setManualOfflineEnabled(enabled: boolean): Promise<void>;
   sync(): Promise<void>;
   syncIncremental(): Promise<void>;
 };
@@ -66,12 +68,14 @@ export function StereodromeProvider({
   const queryClient = useQueryClient();
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState(disconnected);
+  const [manualOfflineEnabled, setManualOfflineEnabledState] = useState(false);
   const [offlineSongIds, setOfflineSongIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const syncWasActive = useRef(false);
   const lastCompletedSyncKey = useRef<string | null>(null);
   const hasConfiguredServer = Boolean(status.server_url);
-  const offlineMode = hasConfiguredServer && !status.connected;
+  const offlineMode =
+    manualOfflineEnabled || (hasConfiguredServer && !status.connected);
 
   async function refreshOfflineSongIds() {
     try {
@@ -85,12 +89,15 @@ export function StereodromeProvider({
 
   async function refreshStatus() {
     try {
+      const connectivitySettings =
+        await stereodromeCore.getConnectivitySettings();
+      setManualOfflineEnabledState(connectivitySettings.manual_offline_enabled);
       const next = await stereodromeCore.restoreSession();
       setStatus(next);
       setError(null);
       if (next.server_url) {
         await refreshOfflineSongIds();
-        if (next.connected) {
+        if (next.connected && !connectivitySettings.manual_offline_enabled) {
           void stereodromeCore
             .reconcileSavedPlaylistsOffline()
             .then(refreshOfflineSongIds)
@@ -111,6 +118,10 @@ export function StereodromeProvider({
     username: string;
     password: string;
   }) {
+    if (manualOfflineEnabled) {
+      throw new Error("Offline mode is enabled");
+    }
+
     const next = await stereodromeCore.connectServer(params);
     setStatus(next);
     setError(null);
@@ -122,16 +133,24 @@ export function StereodromeProvider({
     url?: string;
     username?: string;
   }) {
+    if (manualOfflineEnabled) {
+      throw new Error("Offline mode is enabled");
+    }
+
     const next = await stereodromeCore.updateServerSettings(params);
     setStatus(next);
     setError(null);
-    if (next.connected) {
+    if (next.connected && !manualOfflineEnabled) {
       await stereodromeCore.reconcileSavedPlaylistsOffline();
     }
     await refreshOfflineSongIds();
   }
 
   async function sync() {
+    if (manualOfflineEnabled) {
+      throw new Error("Offline mode is enabled");
+    }
+
     syncWasActive.current = true;
     try {
       await stereodromeCore.syncLibrary();
@@ -142,6 +161,10 @@ export function StereodromeProvider({
   }
 
   async function syncIncremental() {
+    if (manualOfflineEnabled) {
+      throw new Error("Offline mode is enabled");
+    }
+
     syncWasActive.current = true;
     try {
       await stereodromeCore.syncLibraryIncremental();
@@ -157,13 +180,17 @@ export function StereodromeProvider({
         queryClient.invalidateQueries({ queryKey })
       )
     );
-    if (status.connected) {
+    if (status.connected && !manualOfflineEnabled) {
       await stereodromeCore.reconcileSavedPlaylistsOffline();
     }
     await refreshOfflineSongIds();
   }
 
   async function refreshSyncStatusAfterForeground() {
+    if (manualOfflineEnabled) {
+      return;
+    }
+
     try {
       const syncStatus = await stereodromeCore.getLibrarySyncStatus();
       queryClient.setQueryData(librarySyncStatusQueryKey, syncStatus);
@@ -226,7 +253,9 @@ export function StereodromeProvider({
     function handleAppStateChange(nextState: AppStateStatus) {
       if (nextState === "active") {
         void refreshSyncStatusAfterForeground();
-        void syncLibraryBackgroundRegistration();
+        if (!manualOfflineEnabled) {
+          void syncLibraryBackgroundRegistration();
+        }
       }
     }
 
@@ -237,22 +266,41 @@ export function StereodromeProvider({
     return () => subscription.remove();
   }, [queryClient]);
 
+  async function setManualOfflineEnabled(enabled: boolean) {
+    const settings = await stereodromeCore.setConnectivitySettings({
+      manual_offline_enabled: enabled,
+    });
+    setManualOfflineEnabledState(settings.manual_offline_enabled);
+    await refreshStatus();
+    await syncLibraryBackgroundRegistration();
+  }
+
   const value = useMemo(
     () => ({
       ready,
       status,
       hasConfiguredServer,
       offlineMode,
+      manualOfflineEnabled,
       offlineSongIds,
       error,
       refreshStatus,
       refreshOfflineSongIds,
       connect,
       updateServerSettings,
+      setManualOfflineEnabled,
       sync,
       syncIncremental,
     }),
-    [error, hasConfiguredServer, offlineMode, offlineSongIds, ready, status]
+    [
+      error,
+      hasConfiguredServer,
+      manualOfflineEnabled,
+      offlineMode,
+      offlineSongIds,
+      ready,
+      status,
+    ]
   );
 
   return (

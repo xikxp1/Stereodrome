@@ -197,6 +197,8 @@ pub fn run() {
             commands::clear_normalization_data,
             commands::get_playback_settings,
             commands::set_playback_settings,
+            commands::get_connectivity_settings,
+            commands::set_connectivity_settings,
             commands::set_persisted_volume,
             commands::get_mini_player_position,
             commands::set_mini_player_position,

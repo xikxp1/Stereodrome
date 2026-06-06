@@ -6,6 +6,7 @@ import type {
 } from "../../modules/stereodrome-core/src";
 import type {
   ConnectionStatus,
+  ConnectivitySettings,
   Artist,
   Album,
   AlbumListEntry,
@@ -229,6 +230,14 @@ export const stereodromeCore = {
   },
   setSyncSettings(settings: SyncSettings): Promise<SyncSettings> {
     return invokeJson("setSyncSettings", settings);
+  },
+  getConnectivitySettings(): Promise<ConnectivitySettings> {
+    return invokeJson("getConnectivitySettings");
+  },
+  setConnectivitySettings(
+    settings: ConnectivitySettings
+  ): Promise<ConnectivitySettings> {
+    return invokeJson("setConnectivitySettings", settings);
   },
   runDueLibrarySync(): Promise<string | null> {
     return invokeJson("runDueLibrarySync");

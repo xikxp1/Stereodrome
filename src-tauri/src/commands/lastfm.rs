@@ -11,6 +11,10 @@ pub fn get_lastfm_status(app_handle: AppHandle, state: State<'_, AppState>) -> L
 
 #[tauri::command]
 pub async fn begin_lastfm_auth(app_handle: AppHandle) -> AppResult<LastfmAuthStart> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(crate::error::AppError::OfflineMode);
+    }
+
     crate::lastfm::begin_auth(&app_handle).await
 }
 
@@ -19,6 +23,10 @@ pub async fn complete_lastfm_auth(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<LastfmStatus> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(crate::error::AppError::OfflineMode);
+    }
+
     crate::lastfm::complete_auth(&app_handle, state.inner()).await
 }
 
@@ -37,5 +45,9 @@ pub fn get_lastfm_queue(state: State<'_, AppState>) -> AppResult<Vec<LastfmQueue
 
 #[tauri::command]
 pub async fn retry_lastfm_queue(app_handle: AppHandle) -> AppResult<usize> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(crate::error::AppError::OfflineMode);
+    }
+
     crate::lastfm::retry_queue(&app_handle).await
 }

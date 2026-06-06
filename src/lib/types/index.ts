@@ -204,6 +204,10 @@ export interface NotificationSettings {
   notify_when_miniplayer_open: boolean;
 }
 
+export interface ConnectivitySettings {
+  manual_offline_enabled: boolean;
+}
+
 export interface SendNowPlayingNotificationParams {
   title: string;
   body: string;

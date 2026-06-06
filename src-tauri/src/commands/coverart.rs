@@ -49,6 +49,10 @@ pub async fn get_cover_art(
         return Ok(format!("data:{};base64,{}", mime, base64));
     }
 
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(AppError::OfflineMode);
+    }
+
     // Check if connected
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);
@@ -127,6 +131,10 @@ pub async fn get_cover_art_path(
     // Check cache first
     if cache_path.exists() {
         return Ok(cache_path.to_string_lossy().to_string());
+    }
+
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(AppError::OfflineMode);
     }
 
     // Check if connected

@@ -87,9 +87,7 @@
     connection.isInitializing || !connection.hasInitialized
   );
   const hasConfiguredServer = $derived(Boolean(connection.status.server_url));
-  const isOfflineConfiguredSession = $derived(
-    hasConfiguredServer && !connection.status.connected
-  );
+  const isOfflineConfiguredSession = $derived(connection.offlineMode);
   const configuredAccountKey = $derived.by(() => {
     const serverUrl = connection.status.server_url;
     if (!serverUrl) return null;
@@ -146,7 +144,11 @@
   // Check for updates on startup (runs once after connection)
   let updateChecked = false;
   $effect(() => {
-    if (connection.status.connected && !updateChecked) {
+    if (
+      connection.status.connected &&
+      !connection.manualOfflineEnabled &&
+      !updateChecked
+    ) {
       updateChecked = true;
       // Non-blocking update check
       updater.checkForUpdate();
@@ -196,6 +198,7 @@
       void loadLibraryData();
       if (
         connection.status.connected &&
+        !connection.manualOfflineEnabled &&
         (activeView === "recently_added" ||
           activeView === "recently_played" ||
           activeView === "most_played")
@@ -238,6 +241,7 @@
   $effect(() => {
     if (
       connection.status.connected &&
+      !connection.manualOfflineEnabled &&
       (activeView === "recently_added" ||
         activeView === "recently_played" ||
         activeView === "most_played")
@@ -261,7 +265,7 @@
       albums = albumsData;
       songs = songsData;
       offlineSongIds = new Set(offlineSongIdData);
-      if (connection.status.connected) {
+      if (connection.status.connected && !connection.manualOfflineEnabled) {
         void playlistStore
           .reconcileSavedPlaylistsOffline()
           .then(() => refreshOfflineSongIds());

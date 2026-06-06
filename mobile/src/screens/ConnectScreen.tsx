@@ -20,6 +20,11 @@ export function ConnectScreen() {
   const [error, setError] = useState<string | null>(null);
 
   async function connect() {
+    if (stereodrome.manualOfflineEnabled) {
+      setError("Offline mode is enabled");
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {
@@ -55,7 +60,11 @@ export function ConnectScreen() {
         style={styles.input}
         value={password}
       />
-      <Pressable disabled={busy} onPress={connect} style={styles.button}>
+      <Pressable
+        disabled={busy || stereodrome.manualOfflineEnabled}
+        onPress={connect}
+        style={styles.button}
+      >
         {busy ? (
           <ActivityIndicator color="#fff" />
         ) : (

@@ -665,6 +665,9 @@ pub fn start_lastfm_retry_scheduler(app_handle: AppHandle) {
 
         loop {
             interval.tick().await;
+            if crate::commands::settings::manual_offline_enabled(&app_handle) {
+                continue;
+            }
             if let Err(e) = retry_lastfm_queue_inner(&app_handle, false).await {
                 warn!("Last.fm queue retry failed: {e}");
             }

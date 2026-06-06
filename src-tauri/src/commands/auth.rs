@@ -1,7 +1,8 @@
 use log::warn;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
+use crate::commands::settings::manual_offline_enabled;
 use crate::credentials;
 use crate::error::{AppError, AppResult};
 use crate::state::{AppState, ServerConfig};
@@ -23,9 +24,14 @@ pub struct ConnectParams {
 
 #[tauri::command]
 pub async fn connect_server(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     params: ConnectParams,
 ) -> AppResult<ConnectionStatus> {
+    if manual_offline_enabled(&app_handle) {
+        return Err(AppError::OfflineMode);
+    }
+
     // Connect via client handle (this delegates to the client thread)
     let result = state
         .client
@@ -70,13 +76,16 @@ pub async fn disconnect_server(state: State<'_, AppState>) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub async fn get_connection_status(state: State<'_, AppState>) -> AppResult<ConnectionStatus> {
+pub async fn get_connection_status(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<ConnectionStatus> {
     // Try to load credentials from keyring to get url/username
     let creds = credentials::load_credentials()?;
 
     match creds {
         Some(config) => Ok(ConnectionStatus {
-            connected: state.is_connected(),
+            connected: state.is_connected() && !manual_offline_enabled(&app_handle),
             server_url: Some(config.url),
             username: Some(config.username),
             server_version: None,
@@ -92,7 +101,27 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> AppResult<Conn
 
 /// Attempt to restore session from stored credentials
 #[tauri::command]
-pub async fn restore_session(state: State<'_, AppState>) -> AppResult<ConnectionStatus> {
+pub async fn restore_session(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<ConnectionStatus> {
+    if manual_offline_enabled(&app_handle) {
+        return match credentials::load_credentials()? {
+            Some(config) => Ok(ConnectionStatus {
+                connected: false,
+                server_url: Some(config.url),
+                username: Some(config.username),
+                server_version: None,
+            }),
+            None => Ok(ConnectionStatus {
+                connected: false,
+                server_url: None,
+                username: None,
+                server_version: None,
+            }),
+        };
+    }
+
     // Check if already connected - verify with ping
     if state.is_connected()
         && let Ok(Some(config)) = credentials::load_credentials()

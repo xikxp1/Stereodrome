@@ -33,6 +33,8 @@
     clearNormalizationData,
     getPlaybackSettings,
     setPlaybackSettings,
+    getConnectivitySettings,
+    setConnectivitySettings,
     getNotificationSettings,
     setNotificationSettings,
     getSyncSettings,
@@ -66,6 +68,7 @@
     DynamicsPreset,
     PlaybackSettings,
     NotificationSettings,
+    ConnectivitySettings,
     SyncSettings,
     LibrarySyncStatus,
     SyncJobKind,
@@ -224,6 +227,8 @@
 
   // Playback state
   let playbackSettings = $state<PlaybackSettings | null>(null);
+  let connectivitySettings = $state<ConnectivitySettings | null>(null);
+  let savingConnectivitySettings = $state(false);
   let notificationSettings = $state<NotificationSettings | null>(null);
   let loadingNotifications = $state(false);
   let savingNotifications = $state(false);
@@ -285,6 +290,7 @@
       loadScanStatus();
       loadNormalization();
       loadPlaybackSettings();
+      loadConnectivitySettings();
       loadNotificationSettings();
       loadLastfm();
       loadSyncSettings();
@@ -308,6 +314,7 @@
       }
       // Reset stale state so reopening shows fresh data
       playbackSettings = null;
+      connectivitySettings = null;
       notificationSettings = null;
       lastfmStatus = null;
       lastfmQueue = [];
@@ -376,6 +383,11 @@
   }
 
   async function loadScanStatus() {
+    if (connection.manualOfflineEnabled) {
+      scanStatus = null;
+      return;
+    }
+
     loadingScanStatus = true;
     try {
       scanStatus = await getScanStatus();
@@ -387,6 +399,7 @@
   }
 
   async function handleStartScan() {
+    if (connection.manualOfflineEnabled) return;
     startingScan = true;
     try {
       scanStatus = await startScan();
@@ -398,6 +411,7 @@
   }
 
   async function handleSyncLibrary() {
+    if (connection.manualOfflineEnabled) return;
     syncing = true;
     try {
       await syncLibrary();
@@ -411,6 +425,7 @@
   }
 
   async function handleReconcileLibrary() {
+    if (connection.manualOfflineEnabled) return;
     reconciling = true;
     try {
       await reconcileLibraryState();
@@ -426,6 +441,30 @@
   async function handleDisconnect() {
     await connection.disconnect();
     onClose();
+  }
+
+  async function loadConnectivitySettings() {
+    try {
+      connectivitySettings = await getConnectivitySettings();
+    } catch (e) {
+      error(`Failed to load connectivity settings: ${e}`);
+    }
+  }
+
+  async function handleConnectivitySettingChange(
+    update: Partial<ConnectivitySettings>
+  ) {
+    if (!connectivitySettings) return;
+    savingConnectivitySettings = true;
+    try {
+      const updated = { ...connectivitySettings, ...update };
+      connectivitySettings = await setConnectivitySettings(updated);
+      await connection.checkStatus();
+    } catch (e) {
+      error(`Failed to save connectivity settings: ${e}`);
+    } finally {
+      savingConnectivitySettings = false;
+    }
   }
 
   async function loadPlaybackSettings() {
@@ -929,6 +968,21 @@
                 {connection.status.server_version ?? "-"}
               </span>
             </div>
+            <label
+              class="flex cursor-pointer items-center justify-between text-sm"
+            >
+              <span class="text-base-content/60">Offline mode</span>
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm checkbox-primary"
+                checked={connectivitySettings?.manual_offline_enabled ?? false}
+                onchange={(e) =>
+                  handleConnectivitySettingChange({
+                    manual_offline_enabled: e.currentTarget.checked,
+                  })}
+                disabled={!connectivitySettings || savingConnectivitySettings}
+              />
+            </label>
             <div class="flex justify-between text-sm">
               <span class="text-base-content/60">Scan status</span>
               <span class="font-medium">
@@ -958,7 +1012,9 @@
             <button
               class="btn btn-sm btn-ghost gap-1"
               onclick={handleStartScan}
-              disabled={startingScan || scanStatus?.scanning}
+              disabled={connection.manualOfflineEnabled ||
+                startingScan ||
+                scanStatus?.scanning}
             >
               {#if startingScan || scanStatus?.scanning}
                 <RefreshCw class="h-3.5 w-3.5 animate-spin" />
@@ -1018,7 +1074,8 @@
                       handleSyncSettingChange({
                         incremental_enabled: e.currentTarget.checked,
                       })}
-                    disabled={savingSyncSettings}
+                    disabled={connection.manualOfflineEnabled ||
+                      savingSyncSettings}
                   />
                 </label>
 
@@ -1034,7 +1091,8 @@
                           handleSyncSettingChange({
                             incremental_interval_minutes: interval,
                           })}
-                        disabled={savingSyncSettings}
+                        disabled={connection.manualOfflineEnabled ||
+                          savingSyncSettings}
                       >
                         {interval >= 60 ? `${interval / 60}h` : `${interval}m`}
                       </button>
@@ -1070,7 +1128,8 @@
                       handleSyncSettingChange({
                         full_reconcile_enabled: e.currentTarget.checked,
                       })}
-                    disabled={savingSyncSettings}
+                    disabled={connection.manualOfflineEnabled ||
+                      savingSyncSettings}
                   />
                 </label>
 
@@ -1086,7 +1145,8 @@
                           handleSyncSettingChange({
                             full_reconcile_interval_hours: interval,
                           })}
-                        disabled={savingSyncSettings}
+                        disabled={connection.manualOfflineEnabled ||
+                          savingSyncSettings}
                       >
                         {interval}h
                       </button>
@@ -1120,7 +1180,9 @@
               <button
                 class="btn btn-sm btn-ghost gap-1"
                 onclick={handleSyncLibrary}
-                disabled={syncing || !!syncStatus.active_job}
+                disabled={connection.manualOfflineEnabled ||
+                  syncing ||
+                  !!syncStatus.active_job}
               >
                 {#if syncing}
                   <Database class="h-3.5 w-3.5 animate-pulse" />
@@ -1133,7 +1195,9 @@
               <button
                 class="btn btn-sm btn-ghost gap-1"
                 onclick={handleReconcileLibrary}
-                disabled={reconciling || !!syncStatus.active_job}
+                disabled={connection.manualOfflineEnabled ||
+                  reconciling ||
+                  !!syncStatus.active_job}
               >
                 {#if reconciling}
                   <RefreshCw class="h-3.5 w-3.5 animate-spin" />
@@ -1386,7 +1450,8 @@
                   <button
                     class="btn btn-sm btn-primary gap-1"
                     onclick={handleBeginLastfmAuth}
-                    disabled={startingLastfmAuth}
+                    disabled={connection.manualOfflineEnabled ||
+                      startingLastfmAuth}
                   >
                     {#if startingLastfmAuth}
                       <RefreshCw class="h-3.5 w-3.5 animate-spin" />
@@ -1402,7 +1467,8 @@
                   <button
                     class="btn btn-sm btn-ghost gap-1"
                     onclick={handleCompleteLastfmAuth}
-                    disabled={completingLastfmAuth}
+                    disabled={connection.manualOfflineEnabled ||
+                      completingLastfmAuth}
                   >
                     {#if completingLastfmAuth}
                       <RefreshCw class="h-3.5 w-3.5 animate-spin" />
@@ -1418,7 +1484,8 @@
                   <button
                     class="btn btn-sm btn-ghost gap-1"
                     onclick={handleRetryLastfmQueue}
-                    disabled={retryingLastfmQueue ||
+                    disabled={connection.manualOfflineEnabled ||
+                      retryingLastfmQueue ||
                       lastfmStatus.queue_count === 0}
                   >
                     {#if retryingLastfmQueue}

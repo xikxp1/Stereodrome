@@ -34,6 +34,9 @@ pub enum AppError {
     #[error("Not connected to server")]
     NotConnected,
 
+    #[error("Offline mode is enabled")]
+    OfflineMode,
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

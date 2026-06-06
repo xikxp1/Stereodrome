@@ -129,6 +129,10 @@ impl AudioCache {
             }
         }
 
+        if crate::commands::settings::manual_offline_enabled(&self.app_handle) {
+            return Err(AppError::OfflineMode);
+        }
+
         // Fetch from server via client handle
         let bytes = client
             .stream(song_id)

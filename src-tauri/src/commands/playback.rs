@@ -127,6 +127,10 @@ async fn fetch_song_data(
 /// Prefetch the next song in the queue for gapless playback.
 /// Also triggers normalization analysis if enabled and no data exists.
 fn prefetch_next_song(app_handle: &AppHandle, state: &AppState) {
+    if crate::commands::settings::manual_offline_enabled(app_handle) {
+        return;
+    }
+
     // Check if connected
     if !state.client.is_connected() {
         return;
@@ -282,15 +286,17 @@ pub(crate) async fn play_song_by_id(
 
     // Report "now playing" to Subsonic server
     // Fire and forget - don't fail playback if scrobble fails
-    let _ = state.client.scrobble(song_id, None, Some(false)).await;
-    let app = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) =
-            crate::lastfm::report_now_playing(app, lastfm_metadata, lastfm_duration).await
-        {
-            warn!("Failed to report Last.fm now playing: {e}");
-        }
-    });
+    if !crate::commands::settings::manual_offline_enabled(app_handle) {
+        let _ = state.client.scrobble(song_id, None, Some(false)).await;
+        let app = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) =
+                crate::lastfm::report_now_playing(app, lastfm_metadata, lastfm_duration).await
+            {
+                warn!("Failed to report Last.fm now playing: {e}");
+            }
+        });
+    }
 
     Ok(())
 }
@@ -378,15 +384,17 @@ pub async fn crossfade_play_by_id(
     prefetch_next_song(app_handle, state);
     check_and_queue_gapless(app_handle, state);
 
-    let _ = state.client.scrobble(song_id, None, Some(false)).await;
-    let app = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) =
-            crate::lastfm::report_now_playing(app, lastfm_metadata, lastfm_duration).await
-        {
-            warn!("Failed to report Last.fm now playing: {e}");
-        }
-    });
+    if !crate::commands::settings::manual_offline_enabled(app_handle) {
+        let _ = state.client.scrobble(song_id, None, Some(false)).await;
+        let app = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) =
+                crate::lastfm::report_now_playing(app, lastfm_metadata, lastfm_duration).await
+            {
+                warn!("Failed to report Last.fm now playing: {e}");
+            }
+        });
+    }
 
     Ok(())
 }
@@ -466,18 +474,20 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
     persist_and_emit(&state, app_handle);
 
     // Scrobble the new song
-    let _ = state
-        .client
-        .scrobble(&next_song_id, None, Some(false))
-        .await;
-    let app = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) =
-            crate::lastfm::report_now_playing(app, lastfm_metadata, lastfm_duration).await
-        {
-            warn!("Failed to report Last.fm now playing: {e}");
-        }
-    });
+    if !crate::commands::settings::manual_offline_enabled(app_handle) {
+        let _ = state
+            .client
+            .scrobble(&next_song_id, None, Some(false))
+            .await;
+        let app = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) =
+                crate::lastfm::report_now_playing(app, lastfm_metadata, lastfm_duration).await
+            {
+                warn!("Failed to report Last.fm now playing: {e}");
+            }
+        });
+    }
 
     // Prefetch next-next and check gapless eligibility
     prefetch_next_song(app_handle, &state);
@@ -616,7 +626,9 @@ fn is_gapless_eligible(
 
 /// Check if the next song in queue is gapless-eligible and append it to the current Sink.
 fn check_and_queue_gapless(app_handle: &AppHandle, state: &AppState) {
-    if !state.client.is_connected() {
+    if !state.client.is_connected()
+        && !crate::commands::settings::manual_offline_enabled(app_handle)
+    {
         return;
     }
 
@@ -696,7 +708,9 @@ pub async fn after_gapless_transition(app_handle: &AppHandle, next_song_id: Opti
         info!("Gapless transition to song {}", song_id);
 
         // Scrobble the new song
-        let _ = state.client.scrobble(song_id, None, Some(false)).await;
+        if !crate::commands::settings::manual_offline_enabled(app_handle) {
+            let _ = state.client.scrobble(song_id, None, Some(false)).await;
+        }
 
         let lastfm_song = {
             let conn = state.db.lock_recover();
@@ -722,7 +736,9 @@ pub async fn after_gapless_transition(app_handle: &AppHandle, next_song_id: Opti
             )
             .ok()
         };
-        if let Some((song, duration)) = lastfm_song {
+        if let Some((song, duration)) = lastfm_song
+            && !crate::commands::settings::manual_offline_enabled(app_handle)
+        {
             let app = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = crate::lastfm::report_now_playing(app, song, duration).await {

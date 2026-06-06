@@ -72,7 +72,7 @@
   }
 
   async function loadLibrarySyncStatus() {
-    if (!connection.status.connected) return;
+    if (!connection.status.connected || connection.manualOfflineEnabled) return;
     loadingSyncStatus = true;
     try {
       librarySyncStatus = await getLibrarySyncStatus();
@@ -110,6 +110,7 @@
     syncActionError = null;
 
     try {
+      if (connection.manualOfflineEnabled) return;
       if (job === "incremental") {
         await syncLibrary();
       } else {
@@ -201,7 +202,7 @@
   });
 
   $effect(() => {
-    if (!connection.status.connected) {
+    if (!connection.status.connected || connection.manualOfflineEnabled) {
       librarySyncStatus = null;
       syncPopoverOpen = false;
       return;
@@ -301,6 +302,15 @@
         label: "No server",
         toneClass: "text-base-content/45",
         dotClass: "bg-base-content/35",
+        pulse: false,
+      };
+    }
+
+    if (connection.manualOfflineEnabled) {
+      return {
+        label: "Offline",
+        toneClass: "text-info",
+        dotClass: "bg-info",
         pulse: false,
       };
     }

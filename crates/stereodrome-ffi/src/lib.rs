@@ -23,8 +23,8 @@ use stereodrome_audio::{
 };
 use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
-    AudioProcessingSettings, ConnectParams, DueSyncJob, LibrarySyncStatus, PlaybackProgress,
-    ServerSettingsUpdate, StereodromeCore, SyncSettings,
+    AudioProcessingSettings, ConnectParams, ConnectivitySettings, DueSyncJob, LibrarySyncStatus,
+    PlaybackProgress, ServerSettingsUpdate, StereodromeCore, SyncSettings,
 };
 use url::Url;
 
@@ -325,6 +325,11 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         "setSyncSettings" => {
             let settings = parse_payload::<SyncSettings>(payload)?;
             json_result(core.set_sync_settings(settings))
+        }
+        "getConnectivitySettings" => json_result(core.get_connectivity_settings()),
+        "setConnectivitySettings" => {
+            let settings = parse_payload::<ConnectivitySettings>(payload)?;
+            json_result(core.set_connectivity_settings(settings))
         }
         "runDueLibrarySync" => json_result(run_due_sync_job(mobile)),
         "getScanStatus" => json_result(runtime.block_on(async { core.get_scan_status().await })),

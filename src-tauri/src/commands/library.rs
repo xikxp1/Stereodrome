@@ -333,7 +333,10 @@ pub fn start_library_sync_scheduler(app_handle: AppHandle) {
             thread::sleep(SYNC_SCHEDULER_POLL_INTERVAL);
 
             let state = app_handle.state::<AppState>();
-            if !state.client.is_connected() || sync_job_lock().load(Ordering::SeqCst) {
+            if crate::commands::settings::manual_offline_enabled(&app_handle)
+                || !state.client.is_connected()
+                || sync_job_lock().load(Ordering::SeqCst)
+            {
                 continue;
             }
 
@@ -367,6 +370,10 @@ pub async fn sync_library(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<SyncResult> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(AppError::OfflineMode);
+    }
+
     run_sync_job_with_status(
         state.inner(),
         &app_handle,
@@ -381,6 +388,10 @@ pub async fn reconcile_library_state(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<SyncResult> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(AppError::OfflineMode);
+    }
+
     run_sync_job_with_status(
         state.inner(),
         &app_handle,
@@ -2073,11 +2084,16 @@ pub async fn get_songs(
 
 #[tauri::command]
 pub async fn get_album_list(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     list_type: String,
     size: Option<u32>,
     offset: Option<u32>,
 ) -> AppResult<Vec<crate::client::AlbumListEntry>> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(AppError::OfflineMode);
+    }
+
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);
     }
@@ -2096,7 +2112,14 @@ pub async fn get_album_list(
 }
 
 #[tauri::command]
-pub async fn get_scan_status(state: State<'_, AppState>) -> AppResult<ScanStatus> {
+pub async fn get_scan_status(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<ScanStatus> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(AppError::OfflineMode);
+    }
+
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);
     }
@@ -2114,7 +2137,14 @@ pub async fn get_scan_status(state: State<'_, AppState>) -> AppResult<ScanStatus
 }
 
 #[tauri::command]
-pub async fn start_scan(state: State<'_, AppState>) -> AppResult<ScanStatus> {
+pub async fn start_scan(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<ScanStatus> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(AppError::OfflineMode);
+    }
+
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);
     }

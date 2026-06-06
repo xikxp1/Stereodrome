@@ -217,6 +217,12 @@ impl SyncSettings {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectivitySettings {
+    #[serde(default)]
+    pub manual_offline_enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanStatus {
     pub scanning: bool,

@@ -57,6 +57,10 @@ pub struct SavedPlaylistOfflineResult {
 /// Sync playlists from Subsonic server to local cache
 #[tauri::command]
 pub async fn sync_playlists(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<i32> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(crate::error::AppError::OfflineMode);
+    }
+
     info!("Syncing playlists from server");
 
     // Fetch all playlists from server
@@ -225,10 +229,15 @@ pub fn get_playlist_songs(
 /// Create a new playlist on server and cache locally
 #[tauri::command]
 pub async fn create_playlist(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     name: String,
     song_ids: Option<Vec<String>>,
 ) -> AppResult<Playlist> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(crate::error::AppError::OfflineMode);
+    }
+
     let ids = playlist_song_ids_to_add(song_ids.unwrap_or_default(), &HashSet::new());
     let detail = state.client.create_playlist(&name, ids).await?;
     let info = &detail.info;
@@ -296,10 +305,15 @@ pub async fn create_playlist(
 /// Rename a playlist on server and update local cache
 #[tauri::command]
 pub async fn update_playlist(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     playlist_id: String,
     name: String,
 ) -> AppResult<()> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(crate::error::AppError::OfflineMode);
+    }
+
     // Update on server
     state
         .client
@@ -324,6 +338,10 @@ pub async fn delete_playlist(
     state: State<'_, AppState>,
     playlist_id: String,
 ) -> AppResult<()> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(crate::error::AppError::OfflineMode);
+    }
+
     let removed_song_ids = playlist_song_ids(&state, &playlist_id)?;
 
     // Delete from server
@@ -351,6 +369,10 @@ pub async fn add_songs_to_playlist(
     playlist_id: String,
     song_ids: Vec<String>,
 ) -> AppResult<()> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(crate::error::AppError::OfflineMode);
+    }
+
     let playlist = state.client.get_playlist(&playlist_id).await?;
     let existing_song_ids: HashSet<String> = playlist
         .entries
@@ -402,6 +424,10 @@ pub async fn remove_song_from_playlist(
     playlist_id: String,
     position: i32,
 ) -> AppResult<()> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(crate::error::AppError::OfflineMode);
+    }
+
     remove_playlist_positions(&app_handle, &state, &playlist_id, vec![position as i64]).await
 }
 
@@ -413,6 +439,10 @@ pub async fn remove_songs_from_playlist(
     playlist_id: String,
     positions: Vec<i32>,
 ) -> AppResult<()> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Err(crate::error::AppError::OfflineMode);
+    }
+
     let mut positions_to_remove: Vec<i64> = positions
         .into_iter()
         .filter(|position| *position >= 0)
@@ -463,6 +493,10 @@ pub async fn set_playlist_saved_offline(
     saved_offline: bool,
 ) -> AppResult<SavedPlaylistOfflineResult> {
     if saved_offline {
+        if crate::commands::settings::manual_offline_enabled(&app_handle) {
+            return Err(crate::error::AppError::OfflineMode);
+        }
+
         let previous_saved_at = playlist_offline_saved_at(&state, &playlist_id)?;
         set_playlist_offline_saved_at(
             &state,
@@ -506,6 +540,10 @@ pub async fn reconcile_saved_playlists_offline(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<SavedPlaylistOfflineResult>> {
+    if crate::commands::settings::manual_offline_enabled(&app_handle) {
+        return Ok(Vec::new());
+    }
+
     reconcile_saved_playlists_offline_inner(&app_handle, &state).await
 }
 

@@ -1,10 +1,16 @@
 import {
   connectServer,
   disconnectServer,
+  getConnectivitySettings,
   getConnectionStatus,
   restoreSession,
+  setConnectivitySettings,
 } from "$lib/api/commands";
-import type { ConnectionStatus, ConnectParams } from "$lib/types";
+import type {
+  ConnectionStatus,
+  ConnectParams,
+  ConnectivitySettings,
+} from "$lib/types";
 
 const EMPTY_STATUS: ConnectionStatus = {
   connected: false,
@@ -20,9 +26,23 @@ class ConnectionStore {
   isInitializing = $state(false);
   isConnecting = $state(false);
   error = $state<string | null>(null);
+  connectivitySettings = $state<ConnectivitySettings>({
+    manual_offline_enabled: false,
+  });
 
   private initializePromise: Promise<boolean> | null = null;
   private checkStatusPromise: Promise<void> | null = null;
+
+  get manualOfflineEnabled(): boolean {
+    return this.connectivitySettings.manual_offline_enabled;
+  }
+
+  get offlineMode(): boolean {
+    return (
+      this.manualOfflineEnabled ||
+      Boolean(this.status.server_url && !this.status.connected)
+    );
+  }
 
   private applyStatus(nextStatus: ConnectionStatus): void {
     const nextServerVersion =
@@ -50,6 +70,11 @@ class ConnectionStore {
   }
 
   async connect(params: ConnectParams): Promise<boolean> {
+    if (this.manualOfflineEnabled) {
+      this.error = "Offline mode is enabled";
+      return false;
+    }
+
     this.isConnecting = true;
     this.error = null;
 
@@ -81,6 +106,7 @@ class ConnectionStore {
 
     this.checkStatusPromise = (async () => {
       try {
+        this.connectivitySettings = await getConnectivitySettings();
         const currentStatus = await getConnectionStatus();
         this.applyStatus(
           currentStatus.server_url ? await restoreSession() : currentStatus
@@ -109,6 +135,7 @@ class ConnectionStore {
 
     this.initializePromise = (async () => {
       try {
+        this.connectivitySettings = await getConnectivitySettings();
         this.applyStatus(await restoreSession());
         return this.status.connected;
       } catch (e) {
@@ -122,6 +149,13 @@ class ConnectionStore {
     })();
 
     return this.initializePromise;
+  }
+
+  async setManualOfflineEnabled(enabled: boolean): Promise<void> {
+    this.connectivitySettings = await setConnectivitySettings({
+      manual_offline_enabled: enabled,
+    });
+    await this.checkStatus();
   }
 }
 

@@ -13,6 +13,7 @@ const KEY_NORMALIZATION: &str = "normalization";
 const KEY_PLAYBACK: &str = "playback";
 const KEY_NOTIFICATION: &str = "notification";
 const KEY_SYNC: &str = "sync";
+const KEY_CONNECTIVITY: &str = "connectivity";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -262,6 +263,52 @@ pub async fn set_playback_settings(
     }
 
     Ok(())
+}
+
+// --- Connectivity Settings ---
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ConnectivitySettings {
+    #[serde(default)]
+    pub manual_offline_enabled: bool,
+}
+
+pub fn read_connectivity_settings(app_handle: &AppHandle) -> ConnectivitySettings {
+    if let Ok(store) = app_handle.store(STORE_FILE)
+        && let Some(value) = store.get(KEY_CONNECTIVITY)
+        && let Ok(settings) = serde_json::from_value(value.clone())
+    {
+        return settings;
+    }
+    ConnectivitySettings::default()
+}
+
+fn write_connectivity_settings(app_handle: &AppHandle, settings: &ConnectivitySettings) {
+    if let Ok(store) = app_handle.store(STORE_FILE)
+        && let Ok(value) = serde_json::to_value(settings)
+    {
+        store.set(KEY_CONNECTIVITY, value);
+        let _ = store.save();
+    }
+}
+
+pub fn manual_offline_enabled(app_handle: &AppHandle) -> bool {
+    read_connectivity_settings(app_handle).manual_offline_enabled
+}
+
+#[tauri::command]
+pub fn get_connectivity_settings(app_handle: AppHandle) -> ConnectivitySettings {
+    read_connectivity_settings(&app_handle)
+}
+
+#[tauri::command]
+pub fn set_connectivity_settings(
+    app_handle: AppHandle,
+    settings: ConnectivitySettings,
+) -> AppResult<ConnectivitySettings> {
+    write_connectivity_settings(&app_handle, &settings);
+    let _ = app_handle.emit("connectivity-settings-changed", &settings);
+    Ok(settings)
 }
 
 // --- Library Sync Settings ---
