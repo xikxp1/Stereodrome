@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
 use crate::cache::AudioCache;
+use crate::commands::coverart::preserve_cover_art_for_offline;
 use crate::error::{AppResult, MutexExt};
 use crate::state::AppState;
 
@@ -708,19 +709,23 @@ async fn download_playlist_to_cache(
     state: &State<'_, AppState>,
     playlist_id: &str,
 ) -> AppResult<i32> {
-    let songs = {
+    let (songs, cover_art_ids) = {
         let db = state.db.lock_recover();
-        let mut stmt = db.prepare(
-            "SELECT s.id, COALESCE(s.suffix, '')
-             FROM playlist_songs ps
-             JOIN songs s ON s.id = ps.song_id
-             WHERE ps.playlist_id = ?1
-             ORDER BY ps.position",
-        )?;
-        stmt.query_map([playlist_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?
+        let songs = {
+            let mut stmt = db.prepare(
+                "SELECT s.id, COALESCE(s.suffix, '')
+                 FROM playlist_songs ps
+                 JOIN songs s ON s.id = ps.song_id
+                 WHERE ps.playlist_id = ?1
+                 ORDER BY ps.position",
+            )?;
+            stmt.query_map([playlist_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+        let cover_art_ids = playlist_offline_cover_art_ids(&db, playlist_id)?;
+        (songs, cover_art_ids)
     };
 
     let cache = AudioCache::new(app_handle)?;
@@ -729,8 +734,69 @@ async fn download_playlist_to_cache(
         cache.get_or_fetch(&state.client, &song_id, &suffix).await?;
         downloaded_count += 1;
     }
+
+    for cover_art_id in cover_art_ids {
+        if let Err(error) =
+            preserve_cover_art_for_offline(app_handle, &state.client, &cover_art_id).await
+        {
+            warn!(
+                "Failed to preserve cover art {} for offline playlist {}: {}",
+                cover_art_id, playlist_id, error
+            );
+        }
+    }
+
     cache.emit_changed("saved-playlist");
     Ok(downloaded_count)
+}
+
+fn playlist_offline_cover_art_ids(
+    db: &rusqlite::Connection,
+    playlist_id: &str,
+) -> AppResult<Vec<String>> {
+    let mut stmt = db.prepare(
+        "SELECT cover_art_id FROM (
+            SELECT 0 AS sort_order, 0 AS position, p.cover_art_id
+            FROM playlists p
+            WHERE p.id = ?1
+            UNION ALL
+            SELECT 1 AS sort_order, ps.position, al.cover_art_id
+            FROM playlist_songs ps
+            JOIN songs s ON s.id = ps.song_id
+            LEFT JOIN albums al ON al.id = s.album_id
+            WHERE ps.playlist_id = ?1
+            UNION ALL
+            SELECT 2 AS sort_order, ps.position, ar.cover_art_id
+            FROM playlist_songs ps
+            JOIN songs s ON s.id = ps.song_id
+            LEFT JOIN artists ar ON ar.id = s.artist_id
+            WHERE ps.playlist_id = ?1
+        )
+        ORDER BY sort_order, position",
+    )?;
+    let ids = stmt
+        .query_map([playlist_id], |row| row.get::<_, Option<String>>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(distinct_nonempty_cover_art_ids(ids))
+}
+
+fn distinct_nonempty_cover_art_ids(ids: Vec<Option<String>>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut output = Vec::new();
+
+    for id in ids {
+        let Some(id) = id else {
+            continue;
+        };
+        let id = id.trim();
+        if id.is_empty() || !seen.insert(id.to_string()) {
+            continue;
+        }
+        output.push(id.to_string());
+    }
+
+    output
 }
 
 fn remove_unprotected_cached_songs(
@@ -781,7 +847,10 @@ fn remove_unprotected_cached_songs(
 
 #[cfg(test)]
 mod tests {
-    use super::playlist_song_ids_to_add;
+    use super::{
+        distinct_nonempty_cover_art_ids, playlist_offline_cover_art_ids, playlist_song_ids_to_add,
+    };
+    use rusqlite::Connection;
     use std::collections::HashSet;
 
     #[test]
@@ -825,5 +894,80 @@ mod tests {
         );
 
         assert_eq!(song_ids, ["song-b"]);
+    }
+
+    #[test]
+    fn distinct_nonempty_cover_art_ids_preserves_first_occurrence_order() {
+        let cover_art_ids = distinct_nonempty_cover_art_ids(vec![
+            Some(" playlist-cover ".to_string()),
+            Some("album-cover".to_string()),
+            None,
+            Some("".to_string()),
+            Some("album-cover".to_string()),
+            Some("artist-cover".to_string()),
+            Some("playlist-cover".to_string()),
+        ]);
+
+        assert_eq!(
+            cover_art_ids,
+            ["playlist-cover", "album-cover", "artist-cover"]
+        );
+    }
+
+    #[test]
+    fn playlist_offline_cover_art_ids_includes_playlist_album_and_artist_art() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "
+            CREATE TABLE playlists (
+                id TEXT PRIMARY KEY,
+                cover_art_id TEXT
+            );
+            CREATE TABLE artists (
+                id TEXT PRIMARY KEY,
+                cover_art_id TEXT
+            );
+            CREATE TABLE albums (
+                id TEXT PRIMARY KEY,
+                cover_art_id TEXT
+            );
+            CREATE TABLE songs (
+                id TEXT PRIMARY KEY,
+                album_id TEXT NOT NULL,
+                artist_id TEXT NOT NULL
+            );
+            CREATE TABLE playlist_songs (
+                playlist_id TEXT NOT NULL,
+                song_id TEXT NOT NULL,
+                position INTEGER NOT NULL
+            );
+            INSERT INTO playlists (id, cover_art_id) VALUES ('playlist-1', 'playlist-cover');
+            INSERT INTO artists (id, cover_art_id) VALUES
+                ('artist-1', 'artist-cover'),
+                ('artist-2', 'artist-cover-2');
+            INSERT INTO albums (id, cover_art_id) VALUES
+                ('album-1', 'album-cover'),
+                ('album-2', 'album-cover');
+            INSERT INTO songs (id, album_id, artist_id) VALUES
+                ('song-1', 'album-1', 'artist-1'),
+                ('song-2', 'album-2', 'artist-2');
+            INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES
+                ('playlist-1', 'song-1', 0),
+                ('playlist-1', 'song-2', 1);
+            ",
+        )
+        .unwrap();
+
+        let cover_art_ids = playlist_offline_cover_art_ids(&db, "playlist-1").unwrap();
+
+        assert_eq!(
+            cover_art_ids,
+            [
+                "playlist-cover",
+                "album-cover",
+                "artist-cover",
+                "artist-cover-2"
+            ]
+        );
     }
 }

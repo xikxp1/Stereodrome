@@ -1114,6 +1114,8 @@ impl StereodromeCore {
     pub async fn download_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
         if let Some(path) = self.cached_song_path(&song_id)? {
             let bytes = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            self.preserve_cached_song_cover_art_if_connected(&song_id)
+                .await;
             return Ok(DownloadStatus {
                 song_id,
                 cached: true,
@@ -1164,6 +1166,8 @@ impl StereodromeCore {
                     bytes: bytes.len() as u64,
                     error: None,
                 })?;
+                self.preserve_song_cover_art_for_offline(&client, &song_id)
+                    .await;
                 self.enforce_audio_cache_limit()?;
                 Ok(DownloadStatus {
                     song_id,
@@ -1848,6 +1852,49 @@ impl StereodromeCore {
             .map_err(Into::into)
     }
 
+    fn song_cover_art_id(&self, song_id: &str) -> CoreResult<Option<String>> {
+        let conn = Connection::open(&self.db_path)?;
+        conn.query_row(
+            "SELECT al.cover_art_id
+             FROM songs s
+             LEFT JOIN albums al ON s.album_id = al.id
+             WHERE s.id = ?1",
+            [song_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(Into::into)
+    }
+
+    fn playlist_offline_cover_art_ids(&self, playlist_id: &str) -> CoreResult<Vec<String>> {
+        let conn = Connection::open(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT cover_art_id FROM (
+                SELECT 0 AS sort_order, 0 AS position, p.cover_art_id
+                FROM playlists p
+                WHERE p.id = ?1
+                UNION ALL
+                SELECT 1 AS sort_order, ps.position, al.cover_art_id
+                FROM playlist_songs ps
+                JOIN songs s ON s.id = ps.song_id
+                LEFT JOIN albums al ON al.id = s.album_id
+                WHERE ps.playlist_id = ?1
+                UNION ALL
+                SELECT 2 AS sort_order, ps.position, ar.cover_art_id
+                FROM playlist_songs ps
+                JOIN songs s ON s.id = ps.song_id
+                LEFT JOIN artists ar ON ar.id = s.artist_id
+                WHERE ps.playlist_id = ?1
+            )
+            ORDER BY sort_order, position",
+        )?;
+        let ids = stmt
+            .query_map([playlist_id], |row| row.get::<_, Option<String>>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(distinct_nonempty_cover_art_ids(ids))
+    }
+
     async fn download_local_playlist_songs(
         &self,
         playlist_id: &str,
@@ -1865,7 +1912,79 @@ impl StereodromeCore {
         for song_id in song_ids {
             statuses.push(self.download_song(song_id).await?);
         }
+        self.preserve_playlist_cover_art_for_offline(playlist_id)
+            .await;
         Ok(statuses)
+    }
+
+    async fn preserve_cached_song_cover_art_if_connected(&self, song_id: &str) {
+        if self.manual_offline_enabled().unwrap_or(true) {
+            return;
+        }
+
+        let client = self.client.lock().await.clone();
+        if let Some(client) = client {
+            self.preserve_song_cover_art_for_offline(&client, song_id)
+                .await;
+        }
+    }
+
+    async fn preserve_song_cover_art_for_offline(&self, client: &Client, song_id: &str) {
+        let cover_art_id = match self.song_cover_art_id(song_id) {
+            Ok(Some(cover_art_id)) => cover_art_id,
+            Ok(None) => return,
+            Err(error) => {
+                warn!(
+                    "Failed to resolve cover art for offline song {}: {}",
+                    song_id, error
+                );
+                return;
+            }
+        };
+
+        if let Err(error) = self
+            .preserve_cover_art_for_offline(client, &cover_art_id)
+            .await
+        {
+            warn!(
+                "Failed to preserve cover art {} for offline song {}: {}",
+                cover_art_id, song_id, error
+            );
+        }
+    }
+
+    async fn preserve_playlist_cover_art_for_offline(&self, playlist_id: &str) {
+        if self.manual_offline_enabled().unwrap_or(true) {
+            return;
+        }
+
+        let client = self.client.lock().await.clone();
+        let Some(client) = client else {
+            return;
+        };
+
+        let cover_art_ids = match self.playlist_offline_cover_art_ids(playlist_id) {
+            Ok(cover_art_ids) => cover_art_ids,
+            Err(error) => {
+                warn!(
+                    "Failed to resolve cover art for offline playlist {}: {}",
+                    playlist_id, error
+                );
+                return;
+            }
+        };
+
+        for cover_art_id in cover_art_ids {
+            if let Err(error) = self
+                .preserve_cover_art_for_offline(&client, &cover_art_id)
+                .await
+            {
+                warn!(
+                    "Failed to preserve cover art {} for offline playlist {}: {}",
+                    cover_art_id, playlist_id, error
+                );
+            }
+        }
     }
 
     fn remove_unprotected_cached_songs(&self, song_ids: HashSet<String>) -> CoreResult<(i32, i32)> {
@@ -2234,12 +2353,58 @@ impl StereodromeCore {
     }
 
     fn cover_cache_path(&self, cover_art_id: &str, size: Option<i32>) -> CoreResult<PathBuf> {
-        let safe_id = sanitize_file_component(cover_art_id);
-        let filename = match size {
-            Some(size) => format!("{safe_id}_{size}.jpg"),
-            None => format!("{safe_id}.jpg"),
-        };
-        Ok(self.cover_cache_dir()?.join(filename))
+        Ok(self
+            .cover_cache_dir()?
+            .join(cover_cache_filename(cover_art_id, size)))
+    }
+
+    fn fallback_cover_cache_paths(
+        &self,
+        cover_art_id: &str,
+        size: Option<i32>,
+    ) -> CoreResult<Vec<PathBuf>> {
+        let mut sizes = Vec::new();
+        push_unique_cover_art_size(&mut sizes, size);
+        push_unique_cover_art_size(&mut sizes, Some(LARGE_COVER_ART_SIZE));
+        push_unique_cover_art_size(&mut sizes, Some(128));
+        push_unique_cover_art_size(&mut sizes, None);
+
+        let cache_dir = self.cover_cache_dir()?;
+        Ok(sizes
+            .into_iter()
+            .map(|candidate_size| {
+                cache_dir.join(cover_cache_filename(cover_art_id, candidate_size))
+            })
+            .collect())
+    }
+
+    fn cached_cover_art_path(
+        &self,
+        cover_art_id: &str,
+        size: Option<i32>,
+    ) -> CoreResult<Option<PathBuf>> {
+        let fallback_paths = self.fallback_cover_cache_paths(cover_art_id, size)?;
+        for path in &fallback_paths {
+            if path.exists() {
+                return Ok(Some(path.clone()));
+            }
+        }
+
+        let known_paths = fallback_paths.into_iter().collect::<HashSet<_>>();
+        let sanitized_id = sanitize_file_component(cover_art_id);
+        let mut discovered_paths = std::fs::read_dir(self.cover_cache_dir()?)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .filter(|path| !known_paths.contains(path))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|file_name| file_name.to_str())
+                    .is_some_and(|file_name| cover_art_filename_matches(file_name, &sanitized_id))
+            })
+            .collect::<Vec<_>>();
+        discovered_paths.sort();
+        Ok(discovered_paths.into_iter().next())
     }
 
     async fn get_or_cache_cover_art(
@@ -2247,11 +2412,11 @@ impl StereodromeCore {
         cover_art_id: &str,
         size: Option<i32>,
     ) -> CoreResult<PathBuf> {
-        let path = self.cover_cache_path(cover_art_id, size)?;
-        if path.exists() {
+        if let Some(path) = self.cached_cover_art_path(cover_art_id, size)? {
             return Ok(path);
         }
 
+        let path = self.cover_cache_path(cover_art_id, size)?;
         let client = self.connected_client().await?;
         let bytes = client
             .get_cover_art(cover_art_id, size)
@@ -2262,6 +2427,31 @@ impl StereodromeCore {
         }
         std::fs::write(&path, bytes)?;
         Ok(path)
+    }
+
+    async fn preserve_cover_art_for_offline(
+        &self,
+        client: &Client,
+        cover_art_id: &str,
+    ) -> CoreResult<()> {
+        if cover_art_id.trim().is_empty() {
+            return Ok(());
+        }
+
+        let path = self.cover_cache_path(cover_art_id, Some(LARGE_COVER_ART_SIZE))?;
+        if path.exists() {
+            return Ok(());
+        }
+
+        let bytes = client
+            .get_cover_art(cover_art_id, Some(LARGE_COVER_ART_SIZE))
+            .await
+            .map_err(|e| CoreError::Subsonic(e.to_string()))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, bytes)?;
+        Ok(())
     }
 
     fn prefetch_large_cover_art_if_small(&self, cover_art_id: &str, size: Option<i32>) {
@@ -3128,6 +3318,51 @@ fn sanitize_file_component(value: &str) -> String {
         .collect()
 }
 
+fn cover_cache_filename(cover_art_id: &str, size: Option<i32>) -> String {
+    let safe_id = sanitize_file_component(cover_art_id);
+    match size {
+        Some(size) => format!("{safe_id}_{size}.jpg"),
+        None => format!("{safe_id}.jpg"),
+    }
+}
+
+fn push_unique_cover_art_size(sizes: &mut Vec<Option<i32>>, size: Option<i32>) {
+    if !sizes.contains(&size) {
+        sizes.push(size);
+    }
+}
+
+fn cover_art_filename_matches(file_name: &str, sanitized_id: &str) -> bool {
+    let Some(stem) = file_name.strip_suffix(".jpg") else {
+        return false;
+    };
+
+    if stem == sanitized_id {
+        return true;
+    }
+
+    stem.strip_prefix(&format!("{sanitized_id}_"))
+        .is_some_and(|size| !size.is_empty() && size.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn distinct_nonempty_cover_art_ids(ids: Vec<Option<String>>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut output = Vec::new();
+
+    for id in ids {
+        let Some(id) = id else {
+            continue;
+        };
+        let id = id.trim();
+        if id.is_empty() || !seen.insert(id.to_string()) {
+            continue;
+        }
+        output.push(id.to_string());
+    }
+
+    output
+}
+
 fn path_to_file_uri(path: &Path) -> String {
     url::Url::from_file_path(path)
         .map(|url| url.to_string())
@@ -3148,10 +3383,10 @@ fn is_mobile_playback_cache_path(path: &Path) -> bool {
 mod tests {
     use super::{
         ConnectivitySettings, CoreError, DueSyncJob, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT,
-        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, StereodromeCore,
-        Song, SyncSettings, compute_next_run_at, is_job_due, path_to_file_uri,
-        playlist_song_ids_to_add, prune_stale_library_rows, scan_newest_album_page,
-        should_prefetch_large_cover_art,
+        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, Song, StereodromeCore,
+        SyncSettings, compute_next_run_at, cover_art_filename_matches, cover_cache_filename,
+        distinct_nonempty_cover_art_ids, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
+        prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
         write_sync_value,
     };
     use chrono::{Duration as ChronoDuration, Utc};
@@ -3175,6 +3410,96 @@ mod tests {
         )));
         assert!(!should_prefetch_large_cover_art(Some(0)));
         assert!(!should_prefetch_large_cover_art(None));
+    }
+
+    #[test]
+    fn cover_cache_filename_sanitizes_cover_art_ids() {
+        assert_eq!(
+            cover_cache_filename("album/cover\\id", Some(128)),
+            "album_cover_id_128.jpg"
+        );
+        assert_eq!(
+            cover_cache_filename("album/cover\\id", None),
+            "album_cover_id.jpg"
+        );
+    }
+
+    #[test]
+    fn cover_art_filename_matches_only_same_cover_id() {
+        assert!(cover_art_filename_matches("album_128.jpg", "album"));
+        assert!(cover_art_filename_matches("album.jpg", "album"));
+        assert!(!cover_art_filename_matches("album_large.jpg", "album"));
+        assert!(!cover_art_filename_matches("album-extra_128.jpg", "album"));
+        assert!(!cover_art_filename_matches("album_128.png", "album"));
+    }
+
+    #[test]
+    fn distinct_nonempty_cover_art_ids_preserves_first_occurrence_order() {
+        let cover_art_ids = distinct_nonempty_cover_art_ids(vec![
+            Some(" playlist-cover ".to_string()),
+            Some("album-cover".to_string()),
+            None,
+            Some("".to_string()),
+            Some("album-cover".to_string()),
+            Some("artist-cover".to_string()),
+            Some("playlist-cover".to_string()),
+        ]);
+
+        assert_eq!(
+            cover_art_ids,
+            ["playlist-cover", "album-cover", "artist-cover"]
+        );
+    }
+
+    #[test]
+    fn fallback_cover_cache_paths_prefers_requested_size_then_large_size() {
+        let data_dir = unique_temp_dir("cover-art-fallback-paths");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+
+        let paths = core
+            .fallback_cover_cache_paths("cover-id", Some(128))
+            .expect("fallback paths");
+
+        assert_eq!(
+            paths[0],
+            core.cover_cache_path("cover-id", Some(128))
+                .expect("requested path")
+        );
+        assert_eq!(
+            paths[1],
+            core.cover_cache_path("cover-id", Some(LARGE_COVER_ART_SIZE))
+                .expect("large path")
+        );
+        assert_eq!(
+            paths.last().unwrap(),
+            &core
+                .cover_cache_path("cover-id", None)
+                .expect("unsized path")
+        );
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cover_art_uri_uses_large_cached_cover_in_manual_offline_mode() {
+        let data_dir = unique_temp_dir("manual-offline-cover-cache-fallback");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        core.set_connectivity_settings(ConnectivitySettings {
+            manual_offline_enabled: true,
+        })
+        .expect("save connectivity settings");
+        let large_path = core
+            .cover_cache_path("cover-id", Some(LARGE_COVER_ART_SIZE))
+            .expect("large cover path");
+        std::fs::write(&large_path, b"cover").expect("write large cover");
+
+        let uri = core
+            .get_cover_art_uri("cover-id".to_string(), Some(128))
+            .await
+            .expect("cached cover uri works offline");
+
+        assert_eq!(uri, path_to_file_uri(&large_path));
+        std::fs::remove_dir_all(data_dir).ok();
     }
 
     #[test]
@@ -3686,6 +4011,69 @@ mod tests {
 
         assert!(saved_path.exists());
         assert!(!cache_path.exists());
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn playlist_offline_cover_art_ids_includes_playlist_album_and_artist_art() {
+        let data_dir = unique_temp_dir("playlist-offline-cover-art-ids");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let conn = Connection::open(&core.db_path).expect("open test db");
+
+        conn.execute(
+            "INSERT INTO artists (id, name, cover_art_id, synced_at)
+             VALUES
+                ('artist-1', 'Artist One', 'artist-cover', 'now'),
+                ('artist-2', 'Artist Two', 'artist-cover-2', 'now')",
+            [],
+        )
+        .expect("insert artists");
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, cover_art_id, synced_at)
+             VALUES
+                ('album-1', 'artist-1', 'Album One', 'album-cover', 'now'),
+                ('album-2', 'artist-2', 'Album Two', 'album-cover', 'now')",
+            [],
+        )
+        .expect("insert albums");
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, disc_number, synced_at)
+             VALUES
+                ('song-1', 'album-1', 'artist-1', 'Song One', 1, 'now'),
+                ('song-2', 'album-2', 'artist-2', 'Song Two', 1, 'now')",
+            [],
+        )
+        .expect("insert songs");
+        conn.execute(
+            "INSERT INTO playlists
+             (id, name, song_count, duration, owner, cover_art_id, created_at, changed_at, synced_at)
+             VALUES ('playlist-1', 'Playlist One', 2, 0, NULL, 'playlist-cover', 'now', 'now', 'now')",
+            [],
+        )
+        .expect("insert playlist");
+        conn.execute(
+            "INSERT INTO playlist_songs (playlist_id, song_id, position)
+             VALUES
+                ('playlist-1', 'song-1', 0),
+                ('playlist-1', 'song-2', 1)",
+            [],
+        )
+        .expect("insert playlist songs");
+
+        let cover_art_ids = core
+            .playlist_offline_cover_art_ids("playlist-1")
+            .expect("cover art ids");
+
+        assert_eq!(
+            cover_art_ids,
+            [
+                "playlist-cover",
+                "album-cover",
+                "artist-cover",
+                "artist-cover-2"
+            ]
+        );
 
         std::fs::remove_dir_all(data_dir).ok();
     }
