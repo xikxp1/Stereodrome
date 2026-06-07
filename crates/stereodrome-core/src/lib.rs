@@ -1751,33 +1751,11 @@ impl StereodromeCore {
     fn save_playlist_songs(&self, playlist_id: &str, songs: &[Song]) -> CoreResult<()> {
         let mut conn = Connection::open(&self.db_path)?;
         let tx = conn.transaction()?;
-        {
-            let mut song_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO songs
-                 (id, album_id, artist_id, title, track_number, disc_number, duration,
-                  bit_rate, size, suffix, content_type, path, year, genre, synced_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            )?;
-            for song in songs {
-                song_stmt.execute(params![
-                    song.id,
-                    song.album_id,
-                    song.artist_id,
-                    song.title,
-                    song.track_number,
-                    song.disc_number,
-                    song.duration,
-                    song.bit_rate,
-                    song.size,
-                    song.suffix,
-                    song.content_type,
-                    song.path,
-                    song.year,
-                    song.genre,
-                    song.synced_at
-                ])?;
-            }
-        }
+        let existing_song_ids = {
+            let mut stmt = tx.prepare("SELECT id FROM songs")?;
+            stmt.query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<HashSet<_>, _>>()?
+        };
         tx.execute(
             "DELETE FROM playlist_songs WHERE playlist_id = ?1",
             [playlist_id],
@@ -1788,7 +1766,9 @@ impl StereodromeCore {
                  VALUES (?1, ?2, ?3)",
             )?;
             for (position, song) in songs.iter().enumerate() {
-                playlist_song_stmt.execute(params![playlist_id, song.id, position as i64])?;
+                if existing_song_ids.contains(&song.id) {
+                    playlist_song_stmt.execute(params![playlist_id, song.id, position as i64])?;
+                }
             }
         }
         tx.commit()?;
@@ -3169,8 +3149,9 @@ mod tests {
     use super::{
         ConnectivitySettings, CoreError, DueSyncJob, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT,
         NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, StereodromeCore,
-        SyncSettings, compute_next_run_at, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
-        prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
+        Song, SyncSettings, compute_next_run_at, is_job_due, path_to_file_uri,
+        playlist_song_ids_to_add, prune_stale_library_rows, scan_newest_album_page,
+        should_prefetch_large_cover_art,
         write_sync_value,
     };
     use chrono::{Duration as ChronoDuration, Utc};
@@ -3392,6 +3373,91 @@ mod tests {
         assert_eq!(songs[0].artist.as_deref(), Some("Artist One"));
         assert_eq!(songs[0].album.as_deref(), Some("Album One"));
         assert_eq!(songs[1].id, "song-1");
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn save_playlist_songs_links_only_existing_library_songs() {
+        let data_dir = unique_temp_dir("playlist-non-library-entry");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let conn = Connection::open(&core.db_path).expect("open test db");
+
+        conn.execute(
+            "INSERT INTO artists (id, name, synced_at)
+             VALUES ('artist-1', 'Artist One', 'now')",
+            [],
+        )
+        .expect("insert artist");
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, synced_at)
+             VALUES ('album-1', 'artist-1', 'Album One', 'now')",
+            [],
+        )
+        .expect("insert album");
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, disc_number, synced_at)
+             VALUES ('song-1', 'album-1', 'artist-1', 'Library Song', 1, 'now')",
+            [],
+        )
+        .expect("insert song");
+        conn.execute(
+            "INSERT INTO playlists (id, name, song_count, duration, created_at, changed_at, synced_at)
+             VALUES ('playlist-1', 'Mixed Entries', 2, 0, 'now', 'now', 'now')",
+            [],
+        )
+        .expect("insert playlist");
+
+        let songs = vec![
+            Song {
+                id: "song-1".to_string(),
+                album_id: "album-1".to_string(),
+                artist_id: "artist-1".to_string(),
+                title: "Library Song".to_string(),
+                track_number: None,
+                disc_number: 1,
+                duration: None,
+                bit_rate: None,
+                size: None,
+                suffix: None,
+                content_type: None,
+                path: None,
+                year: None,
+                genre: None,
+                synced_at: "now".to_string(),
+                artist: Some("Artist One".to_string()),
+                album: Some("Album One".to_string()),
+            },
+            Song {
+                id: "external-entry".to_string(),
+                album_id: String::new(),
+                artist_id: String::new(),
+                title: "External Entry".to_string(),
+                track_number: None,
+                disc_number: 1,
+                duration: None,
+                bit_rate: None,
+                size: None,
+                suffix: None,
+                content_type: None,
+                path: None,
+                year: None,
+                genre: None,
+                synced_at: "now".to_string(),
+                artist: None,
+                album: None,
+            },
+        ];
+
+        core.save_playlist_songs("playlist-1", &songs)
+            .expect("save playlist membership");
+
+        assert_eq!(count_rows(&conn, "playlist_songs"), 1);
+        assert_eq!(
+            count_rows(&conn, "playlist_songs WHERE song_id = 'song-1'"),
+            1
+        );
+        assert_eq!(count_rows(&conn, "songs WHERE id = 'external-entry'"), 0);
 
         std::fs::remove_dir_all(data_dir).ok();
     }
