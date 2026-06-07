@@ -7,7 +7,7 @@ mod subsonic;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, Once};
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use log::{debug, info, warn};
@@ -38,6 +38,21 @@ const INCREMENTAL_LAST_SUCCESS_AT_KEY: &str = "library_incremental_last_success_
 const INCREMENTAL_LAST_ERROR_KEY: &str = "library_incremental_last_error";
 const ARTIST_FETCH_CONCURRENCY: usize = 8;
 const ALBUM_FETCH_CONCURRENCY: usize = 12;
+
+static INIT_RUSTLS_CRYPTO_PROVIDER: Once = Once::new();
+
+fn init_rustls_crypto_provider() {
+    INIT_RUSTLS_CRYPTO_PROVIDER.call_once(|| {
+        if rustls::crypto::ring::default_provider()
+            .install_default()
+            .is_ok()
+        {
+            debug!("Installed Rustls Ring crypto provider");
+        } else {
+            debug!("Rustls crypto provider was already installed");
+        }
+    });
+}
 
 struct LibrarySyncData {
     artists: Vec<SyncArtistData>,
@@ -169,6 +184,8 @@ pub struct StereodromeCore {
 
 impl StereodromeCore {
     pub fn new(data_dir: impl AsRef<Path>) -> CoreResult<Self> {
+        init_rustls_crypto_provider();
+
         let data_dir = data_dir.as_ref();
         info!(
             "Initializing Stereodrome Rust core at {}",

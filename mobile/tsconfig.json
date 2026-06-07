@@ -3,9 +3,8 @@
   "compilerOptions": {
     "strict": true,
     "ignoreDeprecations": "5.0",
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["index.ts", "src", "modules"]
