@@ -69,6 +69,17 @@ class ConnectionStore {
     this.status = normalizedStatus;
   }
 
+  private applyConnectivitySettings(nextSettings: ConnectivitySettings): void {
+    if (
+      nextSettings.manual_offline_enabled ===
+      this.connectivitySettings.manual_offline_enabled
+    ) {
+      return;
+    }
+
+    this.connectivitySettings = nextSettings;
+  }
+
   async connect(params: ConnectParams): Promise<boolean> {
     if (this.manualOfflineEnabled) {
       this.error = "Offline mode is enabled";
@@ -106,7 +117,7 @@ class ConnectionStore {
 
     this.checkStatusPromise = (async () => {
       try {
-        this.connectivitySettings = await getConnectivitySettings();
+        this.applyConnectivitySettings(await getConnectivitySettings());
         const currentStatus = await getConnectionStatus();
         this.applyStatus(
           currentStatus.server_url ? await restoreSession() : currentStatus
@@ -135,7 +146,7 @@ class ConnectionStore {
 
     this.initializePromise = (async () => {
       try {
-        this.connectivitySettings = await getConnectivitySettings();
+        this.applyConnectivitySettings(await getConnectivitySettings());
         this.applyStatus(await restoreSession());
         return this.status.connected;
       } catch (e) {
@@ -152,9 +163,11 @@ class ConnectionStore {
   }
 
   async setManualOfflineEnabled(enabled: boolean): Promise<void> {
-    this.connectivitySettings = await setConnectivitySettings({
-      manual_offline_enabled: enabled,
-    });
+    this.applyConnectivitySettings(
+      await setConnectivitySettings({
+        manual_offline_enabled: enabled,
+      })
+    );
     await this.checkStatus();
   }
 }

@@ -203,7 +203,7 @@
           activeView === "recently_played" ||
           activeView === "most_played")
       ) {
-        albumListStore.loadView(activeView);
+        void albumListStore.loadView(activeView, { force: true });
       }
     };
 
@@ -246,7 +246,7 @@
         activeView === "recently_played" ||
         activeView === "most_played")
     ) {
-      albumListStore.loadView(activeView);
+      void albumListStore.loadView(activeView);
     }
   });
 

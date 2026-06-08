@@ -3,6 +3,10 @@ import type { AlbumListEntry } from "$lib/types";
 
 const PAGE_SIZE = 120;
 
+interface LoadViewOptions {
+  force?: boolean;
+}
+
 class AlbumListStore {
   entries = $state<AlbumListEntry[]>([]);
   totalCount = $state<number>(0);
@@ -12,6 +16,7 @@ class AlbumListStore {
   hasMore = $state(true);
   currentListType: string | null = null;
   private offset = 0;
+  private loadRequestId = 0;
 
   static getListType(activeView: string): string | null {
     switch (activeView) {
@@ -26,15 +31,29 @@ class AlbumListStore {
     }
   }
 
-  async loadView(activeView: string) {
+  async loadView(activeView: string, options: LoadViewOptions = {}) {
     const listType = AlbumListStore.getListType(activeView);
     if (!listType) return;
 
-    // Reset all state
-    this.entries = [];
-    this.totalCount = 0;
-    this.offset = 0;
-    this.hasMore = true;
+    const isSameList = this.currentListType === listType;
+    if (
+      isSameList &&
+      !options.force &&
+      (this.entries.length > 0 || this.isLoading)
+    ) {
+      return;
+    }
+
+    const shouldReset = !isSameList || this.entries.length === 0;
+    const requestId = ++this.loadRequestId;
+
+    if (shouldReset) {
+      this.entries = [];
+      this.totalCount = 0;
+      this.offset = 0;
+      this.hasMore = true;
+    }
+
     this.error = null;
     this.currentListType = listType;
     this.isLoading = true;
@@ -45,34 +64,59 @@ class AlbumListStore {
         getAlbumList(listType, PAGE_SIZE, 0),
         getAlbumCount(),
       ]);
+      if (this.loadRequestId !== requestId || this.currentListType !== listType)
+        return;
+
       this.entries = data;
       this.totalCount = count;
       this.offset = data.length;
       this.hasMore = data.length < count;
     } catch (e) {
-      this.error = e instanceof Error ? e : new Error(String(e));
+      if (
+        this.loadRequestId === requestId &&
+        this.currentListType === listType
+      ) {
+        this.error = e instanceof Error ? e : new Error(String(e));
+      }
     } finally {
-      this.isLoading = false;
+      if (
+        this.loadRequestId === requestId &&
+        this.currentListType === listType
+      ) {
+        this.isLoading = false;
+      }
     }
   }
 
   async loadMore() {
     if (!this.currentListType || this.isLoadingMore || !this.hasMore) return;
 
+    const listType = this.currentListType;
+    const requestId = this.loadRequestId;
+
     this.isLoadingMore = true;
     try {
-      const data = await getAlbumList(
-        this.currentListType,
-        PAGE_SIZE,
-        this.offset
-      );
+      const data = await getAlbumList(listType, PAGE_SIZE, this.offset);
+      if (this.loadRequestId !== requestId || this.currentListType !== listType)
+        return;
+
       this.entries = [...this.entries, ...data];
       this.offset += data.length;
       this.hasMore = this.offset < this.totalCount;
     } catch (e) {
-      this.error = e instanceof Error ? e : new Error(String(e));
+      if (
+        this.loadRequestId === requestId &&
+        this.currentListType === listType
+      ) {
+        this.error = e instanceof Error ? e : new Error(String(e));
+      }
     } finally {
-      this.isLoadingMore = false;
+      if (
+        this.loadRequestId === requestId &&
+        this.currentListType === listType
+      ) {
+        this.isLoadingMore = false;
+      }
     }
   }
 }
