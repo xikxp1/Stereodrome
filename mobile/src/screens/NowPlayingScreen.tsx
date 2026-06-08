@@ -156,14 +156,14 @@ const styles = StyleSheet.create({
     aspectRatio: 1,
     borderRadius: 4,
     marginBottom: 12,
-    width: "70%",
+    width: "80%",
   },
   coverPlaceholder: {
     aspectRatio: 1,
     backgroundColor: "#d8d8d0",
     borderRadius: 4,
     marginBottom: 12,
-    width: "70%",
+    width: "80%",
   },
   title: {
     color: colors.text,
