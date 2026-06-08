@@ -1,11 +1,26 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 use crate::error::{AppError, AppResult};
 use crate::state::ServerConfig;
+use keyring_core::{Entry, Error as KeyringError};
 
 const SERVICE_NAME: &str = "stereodrome";
 const ACCOUNT_NAME: &str = "server_credentials";
 const LASTFM_ACCOUNT_NAME: &str = "lastfm_session";
+static KEYRING_STORE_INITIALIZED: OnceLock<()> = OnceLock::new();
+
+fn keyring_entry(account: &str) -> AppResult<Entry> {
+    if KEYRING_STORE_INITIALIZED.get().is_none() {
+        keyring::use_native_store(false).map_err(|e| {
+            AppError::Credentials(format!("Failed to initialize keyring store: {}", e))
+        })?;
+        let _ = KEYRING_STORE_INITIALIZED.set(());
+    }
+
+    Entry::new(SERVICE_NAME, account)
+        .map_err(|e| AppError::Credentials(format!("Failed to create keyring entry: {}", e)))
+}
 
 /// Credentials stored in the OS keyring as a single JSON entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,8 +52,7 @@ impl From<StoredCredentials> for ServerConfig {
 
 /// Save server credentials to the OS keyring
 pub fn save_credentials(config: &ServerConfig) -> AppResult<()> {
-    let entry = keyring::Entry::new(SERVICE_NAME, ACCOUNT_NAME)
-        .map_err(|e| AppError::Credentials(format!("Failed to create keyring entry: {}", e)))?;
+    let entry = keyring_entry(ACCOUNT_NAME)?;
 
     let creds = StoredCredentials::from(config);
     let json = serde_json::to_string(&creds)
@@ -53,8 +67,7 @@ pub fn save_credentials(config: &ServerConfig) -> AppResult<()> {
 
 /// Load server credentials from the OS keyring
 pub fn load_credentials() -> AppResult<Option<ServerConfig>> {
-    let entry = keyring::Entry::new(SERVICE_NAME, ACCOUNT_NAME)
-        .map_err(|e| AppError::Credentials(format!("Failed to create keyring entry: {}", e)))?;
+    let entry = keyring_entry(ACCOUNT_NAME)?;
 
     match entry.get_password() {
         Ok(json) => {
@@ -63,7 +76,7 @@ pub fn load_credentials() -> AppResult<Option<ServerConfig>> {
             })?;
             Ok(Some(creds.into()))
         }
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(KeyringError::NoEntry) => Ok(None),
         Err(e) => Err(AppError::Credentials(format!(
             "Failed to load credentials: {}",
             e
@@ -73,12 +86,11 @@ pub fn load_credentials() -> AppResult<Option<ServerConfig>> {
 
 /// Delete server credentials from the OS keyring
 pub fn delete_credentials() -> AppResult<()> {
-    let entry = keyring::Entry::new(SERVICE_NAME, ACCOUNT_NAME)
-        .map_err(|e| AppError::Credentials(format!("Failed to create keyring entry: {}", e)))?;
+    let entry = keyring_entry(ACCOUNT_NAME)?;
 
     match entry.delete_credential() {
         Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()), // Already deleted, that's fine
+        Err(KeyringError::NoEntry) => Ok(()), // Already deleted, that's fine
         Err(e) => Err(AppError::Credentials(format!(
             "Failed to delete credentials: {}",
             e
@@ -94,8 +106,7 @@ pub struct LastfmSession {
 }
 
 pub fn save_lastfm_session(session: &LastfmSession) -> AppResult<()> {
-    let entry = keyring::Entry::new(SERVICE_NAME, LASTFM_ACCOUNT_NAME)
-        .map_err(|e| AppError::Credentials(format!("Failed to create keyring entry: {}", e)))?;
+    let entry = keyring_entry(LASTFM_ACCOUNT_NAME)?;
 
     let json = serde_json::to_string(session).map_err(|e| {
         AppError::Credentials(format!("Failed to serialize Last.fm session: {}", e))
@@ -109,8 +120,7 @@ pub fn save_lastfm_session(session: &LastfmSession) -> AppResult<()> {
 }
 
 pub fn load_lastfm_session() -> AppResult<Option<LastfmSession>> {
-    let entry = keyring::Entry::new(SERVICE_NAME, LASTFM_ACCOUNT_NAME)
-        .map_err(|e| AppError::Credentials(format!("Failed to create keyring entry: {}", e)))?;
+    let entry = keyring_entry(LASTFM_ACCOUNT_NAME)?;
 
     match entry.get_password() {
         Ok(json) => {
@@ -119,7 +129,7 @@ pub fn load_lastfm_session() -> AppResult<Option<LastfmSession>> {
             })?;
             Ok(Some(session))
         }
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(KeyringError::NoEntry) => Ok(None),
         Err(e) => Err(AppError::Credentials(format!(
             "Failed to load Last.fm session: {}",
             e
@@ -128,12 +138,11 @@ pub fn load_lastfm_session() -> AppResult<Option<LastfmSession>> {
 }
 
 pub fn delete_lastfm_session() -> AppResult<()> {
-    let entry = keyring::Entry::new(SERVICE_NAME, LASTFM_ACCOUNT_NAME)
-        .map_err(|e| AppError::Credentials(format!("Failed to create keyring entry: {}", e)))?;
+    let entry = keyring_entry(LASTFM_ACCOUNT_NAME)?;
 
     match entry.delete_credential() {
         Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(KeyringError::NoEntry) => Ok(()),
         Err(e) => Err(AppError::Credentials(format!(
             "Failed to delete Last.fm session: {}",
             e

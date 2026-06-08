@@ -1,6 +1,6 @@
 [package]
 name = "stereodrome"
-version = "0.1.23"
+version = "0.1.24"
 description = "Desktop music player for Subsonic-compatible music servers"
 authors = ["Ivan Kachalkin<xikxp1@gmail.com>"]
 edition = "2024"
@@ -16,43 +16,44 @@ name = "stereodrome_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.5.5", features = [] }
+tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
 base64 = "0.22.1"
 bs2b = { version = "0.2.0", features = ["streaming"] }
-chrono = { version = "0.4.44", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
 ebur128 = "0.1.10"
-filetime = "0.2.27"
+filetime = "0.2.29"
 fundsp = "0.23.0"
-keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
-log = "0.4.29"
+keyring = "4.0.1"
+keyring-core = "1.0.0"
+log = "0.4.32"
 md5 = "0.8.0"
 rand = "0.10.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls", "system-proxy"] }
-ringbuf = "0.4.8"
+ringbuf = "0.5.0"
 rodio = { version = "0.22.2", features = ["symphonia-all"] }
-rusqlite = { version = "0.39.0", features = ["bundled"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 rustfft = "6.4.1"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde_json = "1.0.150"
 souvlaki = "0.8.3"
-stereodrome-audio = { version = "0.1.17", path = "../crates/stereodrome-audio" }
-stereodrome-core = { version = "0.1.17", path = "../crates/stereodrome-core" }
+stereodrome-audio = { version = "0.1.23", path = "../crates/stereodrome-audio" }
+stereodrome-core = { version = "0.1.23", path = "../crates/stereodrome-core" }
 submarine = "0.1.1"
-tantivy = "0.25.0"
-tauri = { version = "2.10.3", features = ["tray-icon"] }
-tauri-plugin-dialog = "2.7.0"
+tantivy = "0.26.1"
+tauri = { version = "2.11.2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2.7.1"
 tauri-plugin-log = "2.8.0"
 tauri-plugin-notification = "2.3.3"
-tauri-plugin-opener = "2.5.3"
-tauri-plugin-prevent-default = "4.0.4"
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-prevent-default = "5.0.0"
 tauri-plugin-process = "2.3.1"
-tauri-plugin-single-instance = "2.4.1"
-tauri-plugin-store = "2.4.2"
+tauri-plugin-single-instance = "2.4.2"
+tauri-plugin-store = "2.4.3"
 thiserror = "2.0.18"
-tokio = { version = "1.52.1", features = ["full"] }
-uuid = { version = "1.23.1", features = ["v4"] }
+tokio = { version = "1.52.3", features = ["full"] }
+uuid = { version = "1.23.2", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.7.2"
@@ -63,4 +64,4 @@ objc2-app-kit = "0.3.2"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1", version = "2.1.0" }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-updater = "2.10.0"
+tauri-plugin-updater = "2.10.1"

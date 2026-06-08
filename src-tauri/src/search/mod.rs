@@ -503,7 +503,7 @@ impl IndexManager {
         debug!("Search: parsed query = {:?}", query);
 
         let top_docs = searcher
-            .search(&query, &TopDocs::with_limit(limit))
+            .search(&query, &TopDocs::with_limit(limit).order_by_score())
             .map_err(|e| AppError::Search(format!("Search error: {}", e)))?;
 
         debug!(
