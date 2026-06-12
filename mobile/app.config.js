@@ -8,10 +8,12 @@ module.exports = () => {
   const slug = expo.slug;
   const projectId = process.env.EAS_PROJECT_ID || eas.projectId;
   const buildNumber = process.env.IOS_BUILD_NUMBER || ios.buildNumber || "1";
+  const plugins = withPlugin(expo.plugins || [], "expo-background-task");
 
   return {
     ...expo,
     slug,
+    plugins,
     ios: {
       ...ios,
       buildNumber,
@@ -25,6 +27,13 @@ module.exports = () => {
           }
         : eas,
     },
-    plugins: ["expo-background-task"],
   };
 };
+
+function withPlugin(plugins, pluginName) {
+  const hasPlugin = plugins.some((plugin) =>
+    Array.isArray(plugin) ? plugin[0] === pluginName : plugin === pluginName
+  );
+
+  return hasPlugin ? plugins : [...plugins, pluginName];
+}
