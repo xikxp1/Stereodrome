@@ -27,6 +27,7 @@ type PlaybackContextValue = {
   isPlaying: boolean;
   nextSong: PlayableSong | null;
   position: number;
+  repeatMode: QueueState["repeat_mode"];
   repeatEnabled: boolean;
   shuffleEnabled: boolean;
   queue: PlayableSong[];
@@ -660,6 +661,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       nextSong,
       position,
       queue,
+      repeatMode,
       repeatEnabled: repeatMode !== "Off",
       shuffleEnabled,
       clearQueue,

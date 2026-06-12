@@ -1,7 +1,7 @@
 import { Animated, Easing, Pressable, StyleSheet, View } from "react-native";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { RefreshCw, Repeat2, Shuffle } from "lucide-react-native";
+import { RefreshCw, Repeat, Repeat1, Shuffle } from "lucide-react-native";
 
 import { ClickWheel } from "@/components/ClickWheel";
 import { Header } from "@/components/Header";
@@ -37,6 +37,7 @@ export function IpodShell() {
   const current = view.current;
   const navigationOffset = view.transitionDirection === "back" ? -24 : 24;
   const leftHandedButtons = buttonHandedness === "left";
+  const RepeatIcon = playback.repeatMode === "One" ? Repeat1 : Repeat;
   const playbackDuration =
     playback.duration || playback.currentSong?.duration || 0;
   const playbackTime = playback.currentSong
@@ -164,7 +165,7 @@ export function IpodShell() {
         </View>
         <View style={styles.wheelSlot}>
           <Pressable
-            accessibilityLabel="Toggle repeat"
+            accessibilityLabel="Cycle repeat mode"
             accessibilityRole="button"
             accessibilityState={{ selected: playback.repeatEnabled }}
             onPress={() => void playback.toggleRepeat()}
@@ -174,7 +175,7 @@ export function IpodShell() {
               playback.repeatEnabled && styles.queueButtonActive,
             ]}
           >
-            <Repeat2
+            <RepeatIcon
               color={
                 playback.repeatEnabled ? colors.selectedText : colors.wheelIcon
               }
