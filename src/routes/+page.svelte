@@ -7,6 +7,7 @@
   import SongList from "$lib/components/library/SongList.svelte";
   import ArtistGridView from "$lib/components/library/ArtistGridView.svelte";
   import AlbumGridView from "$lib/components/library/AlbumGridView.svelte";
+  import ArtistAlbumRail from "$lib/components/library/ArtistAlbumRail.svelte";
   import DetailHeader from "$lib/components/library/DetailHeader.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
   import QueuePanel from "$lib/components/QueuePanel.svelte";
@@ -483,6 +484,32 @@
     return [];
   });
 
+  function compareArtistAlbums(left: Album, right: Album) {
+    const leftYear = left.year ?? Number.NEGATIVE_INFINITY;
+    const rightYear = right.year ?? Number.NEGATIVE_INFINITY;
+
+    if (leftYear !== rightYear) {
+      return leftYear - rightYear;
+    }
+
+    const nameSort = left.name.localeCompare(right.name);
+    return nameSort !== 0 ? nameSort : left.id.localeCompare(right.id);
+  }
+
+  const detailArtistAlbums = $derived.by(() => {
+    const detail = detailView;
+    if (!detail || detail.type !== "artist" || !detail.artist) return [];
+
+    const artistId = detail.artist.id;
+    const visibleAlbumIds = new Set(detailSongs.map((song) => song.album_id));
+
+    return albums
+      .filter(
+        (album) => album.artist_id === artistId && visibleAlbumIds.has(album.id)
+      )
+      .sort(compareArtistAlbums);
+  });
+
   // Stats for detail view
   const detailTotalDuration = $derived(
     detailSongs.reduce((acc, s) => acc + (s.duration || 0), 0)
@@ -757,6 +784,10 @@
 
   function handleSongNavigateToAlbum(song: Song) {
     navigateToAlbum(song.album_id);
+  }
+
+  function handleArtistAlbumSelect(album: Album) {
+    navigateToAlbum(album.id);
   }
 
   function handleAlbumNavigateToArtist(album: Album | AlbumListEntry) {
@@ -1122,6 +1153,11 @@
                 : 'albums'}"
               coverArtId={detailView.artist.cover_art_id}
               onBack={handleDetailBack}
+            />
+
+            <ArtistAlbumRail
+              albums={detailArtistAlbums}
+              onSelect={handleArtistAlbumSelect}
             />
 
             <div class="flex-1 overflow-hidden">
