@@ -52,13 +52,32 @@ object StereodromeCoreBridge {
     }
 
     val status = parseOkValue(call("audioGetStatus", "null"))
-    val hasCurrentSong = status?.optString("current_song_id")?.isNotEmpty() == true
-    if (hasCurrentSong) {
+    if (stringOrNull(status, "current_song_id") != null) {
       call("audioResume", "null")
     } else {
-      call("audioPlayCurrent", "null")
+      playCurrentFromPersistedPosition()
     }
     invalidationListener?.invoke()
+  }
+
+  // Starting playback from a stopped core (e.g. media-notification play after
+  // the app restored a paused session) should continue from the persisted
+  // position instead of restarting the song from the beginning.
+  private fun playCurrentFromPersistedPosition() {
+    val snapshot = parseOkValue(call("getPlaybackState", "null"))
+    val savedSongId = stringOrNull(snapshot, "current_song_id")
+    val savedPosition = snapshot?.optDouble("position_seconds", 0.0) ?: 0.0
+
+    val playStatus = parseOkValue(call("audioPlayCurrent", "null"))
+    val playingSongId = stringOrNull(playStatus, "current_song_id")
+    if (playingSongId == null || playingSongId != savedSongId || savedPosition <= 0.5) {
+      return
+    }
+
+    val duration = playStatus?.optDouble("duration", 0.0) ?: 0.0
+    val target =
+      if (duration > 0.0) minOf(savedPosition, maxOf(0.0, duration - 1.0)) else savedPosition
+    call("audioSeek", JSONObject.numberToString(target))
   }
 
   fun pause() {
@@ -77,13 +96,10 @@ object StereodromeCoreBridge {
     val status = parseOkValue(call("audioGetStatus", "null"))
     if (status?.optBoolean("is_playing") == true) {
       call("audioPause", "null")
+    } else if (stringOrNull(status, "current_song_id") != null) {
+      call("audioResume", "null")
     } else {
-      val hasCurrentSong = status?.optString("current_song_id")?.isNotEmpty() == true
-      if (hasCurrentSong) {
-        call("audioResume", "null")
-      } else {
-        call("audioPlayCurrent", "null")
-      }
+      playCurrentFromPersistedPosition()
     }
     invalidationListener?.invoke()
   }
@@ -120,6 +136,16 @@ object StereodromeCoreBridge {
     }
     call("audioSeek", JSONObject.numberToString(positionSeconds))
     invalidationListener?.invoke()
+  }
+
+  // `JSONObject.optString` coerces a JSON null into the literal string
+  // "null", which made null song ids look like real ones. Resolve to a
+  // Kotlin null instead.
+  private fun stringOrNull(obj: JSONObject?, key: String): String? {
+    if (obj == null || obj.isNull(key)) {
+      return null
+    }
+    return obj.optString(key).takeIf { it.isNotEmpty() }
   }
 
   private fun parseOkValue(raw: String): JSONObject? {

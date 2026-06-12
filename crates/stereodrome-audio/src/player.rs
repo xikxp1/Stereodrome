@@ -20,6 +20,12 @@ use crate::normalizer::NormalizingSource;
 /// Larger buffer prevents sample loss from lock contention
 const SPECTRUM_BUFFER_SIZE: usize = 32768;
 
+/// How long transport commands (pause/resume/stop/seek) wait for the audio
+/// thread to apply them. Status reads issued right after these calls drive
+/// the native media controls, so the state change must be visible before
+/// the call returns. Bounded so a wedged audio thread cannot hang callers.
+const TRANSPORT_ACK_TIMEOUT: Duration = Duration::from_millis(1000);
+
 #[derive(Debug, Clone, serde::Serialize, Default)]
 pub struct SongMetadata {
     pub id: String,
@@ -58,11 +64,20 @@ enum AudioCommand {
         binaural_preset: Option<BinauralPreset>,
         equalizer_settings: Option<EqualizerSettings>,
     },
-    Pause,
-    Resume,
-    Stop,
+    Pause {
+        ack: Sender<()>,
+    },
+    Resume {
+        ack: Sender<()>,
+    },
+    Stop {
+        ack: Sender<()>,
+    },
     SetVolume(f32),
-    Seek(f64),
+    Seek {
+        position_secs: f64,
+        ack: Sender<()>,
+    },
     /// Append a song to the existing player for gapless playback.
     /// Unlike Play, this does NOT create a new player.
     AppendGapless {
@@ -417,22 +432,33 @@ impl AudioPlayer {
             .store(value, Ordering::SeqCst);
     }
 
-    pub fn pause(&self) -> AudioResult<()> {
+    /// Send a transport command and wait until the audio thread has applied
+    /// it, so that `get_status()` immediately afterwards reflects the change.
+    fn send_transport_command(
+        &self,
+        name: &str,
+        make_command: impl FnOnce(Sender<()>) -> AudioCommand,
+    ) -> AudioResult<()> {
+        let (ack_tx, ack_rx) = mpsc::channel();
         self.command_tx
-            .send(AudioCommand::Pause)
-            .map_err(|e| AudioError::Playback(format!("Failed to send pause command: {}", e)))
+            .send(make_command(ack_tx))
+            .map_err(|e| AudioError::Playback(format!("Failed to send {name} command: {e}")))?;
+        if ack_rx.recv_timeout(TRANSPORT_ACK_TIMEOUT).is_err() {
+            warn!("Audio thread did not acknowledge {name} command in time");
+        }
+        Ok(())
+    }
+
+    pub fn pause(&self) -> AudioResult<()> {
+        self.send_transport_command("pause", |ack| AudioCommand::Pause { ack })
     }
 
     pub fn resume(&self) -> AudioResult<()> {
-        self.command_tx
-            .send(AudioCommand::Resume)
-            .map_err(|e| AudioError::Playback(format!("Failed to send resume command: {}", e)))
+        self.send_transport_command("resume", |ack| AudioCommand::Resume { ack })
     }
 
     pub fn stop(&self) -> AudioResult<()> {
-        self.command_tx
-            .send(AudioCommand::Stop)
-            .map_err(|e| AudioError::Playback(format!("Failed to send stop command: {}", e)))
+        self.send_transport_command("stop", |ack| AudioCommand::Stop { ack })
     }
 
     pub fn set_volume(&self, volume: f32) -> AudioResult<()> {
@@ -446,9 +472,10 @@ impl AudioPlayer {
     pub fn seek(&self, position_secs: f64) -> AudioResult<()> {
         let duration = self.shared_state.read_inner().duration;
         let clamped = position_secs.clamp(0.0, duration);
-        self.command_tx
-            .send(AudioCommand::Seek(clamped))
-            .map_err(|e| AudioError::Playback(format!("Failed to send seek command: {}", e)))
+        self.send_transport_command("seek", |ack| AudioCommand::Seek {
+            position_secs: clamped,
+            ack,
+        })
     }
 
     #[allow(dead_code)]
@@ -803,7 +830,7 @@ fn run_audio_thread(
                         }
                     }
                 }
-                AudioCommand::Pause => {
+                AudioCommand::Pause { ack } => {
                     if let Some(ref sink) = current_sink
                         && !sink.is_paused()
                     {
@@ -830,8 +857,9 @@ fn run_audio_thread(
                         shared_state.is_playing.store(false, Ordering::SeqCst);
                         debug!("Playback thread paused current sink");
                     }
+                    let _ = ack.send(());
                 }
-                AudioCommand::Resume => {
+                AudioCommand::Resume { ack } => {
                     if let Some(ref sink) = current_sink
                         && sink.is_paused()
                     {
@@ -849,8 +877,9 @@ fn run_audio_thread(
                         shared_state.is_playing.store(true, Ordering::SeqCst);
                         debug!("Playback thread resumed current sink");
                     }
+                    let _ = ack.send(());
                 }
-                AudioCommand::Stop => {
+                AudioCommand::Stop { ack } => {
                     info!("Playback thread stop");
                     if let Some(sink) = current_sink.take() {
                         sink.stop();
@@ -872,6 +901,7 @@ fn run_audio_thread(
                         inner.duration = 0.0;
                         inner.gapless_segments.clear();
                     }
+                    let _ = ack.send(());
                 }
                 AudioCommand::SetVolume(volume) => {
                     debug!("Playback thread set volume: {:.3}", volume);
@@ -882,7 +912,7 @@ fn run_audio_thread(
                         sink.set_volume(volume);
                     }
                 }
-                AudioCommand::Seek(position_secs) => {
+                AudioCommand::Seek { position_secs, ack } => {
                     debug!("Playback thread seek requested: {:.3}s", position_secs);
                     // If crossfade is active, abort it and restore full volume
                     if crossfade_state.is_some() {
@@ -936,6 +966,7 @@ fn run_audio_thread(
                             );
                         }
                     }
+                    let _ = ack.send(());
                 }
                 AudioCommand::AppendGapless {
                     audio_data,

@@ -83,6 +83,15 @@ public class StereodromeCoreModule: Module {
       if method == "audioStop" {
         self.setAudioSessionActive(false)
       }
+      switch method {
+      case "audioPause", "audioResume", "audioSeek", "audioPlayCurrent", "audioApplySettings":
+        // Mirror the new state into the system widget right away; the JS
+        // sync path may be deduped or suspended (e.g. locking the phone
+        // immediately after pausing in-app).
+        self.refreshNowPlayingPlaybackState()
+      default:
+        break
+      }
       return result
     }
 
@@ -294,6 +303,16 @@ public class StereodromeCoreModule: Module {
 
     switch type {
     case .began:
+      // iOS re-posts a queued interruption when the app wakes from suspension
+      // (reason .appWasSuspended). Nothing was playing when it happened, and
+      // it can be delivered right after a lock-screen play command — treating
+      // it as live would pause the track the user just resumed.
+      if let reasonValue = notification.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt,
+        let reason = AVAudioSession.InterruptionReason(rawValue: reasonValue),
+        reason == .appWasSuspended
+      {
+        return
+      }
       // iOS has halted our audio output. Pause the Rust core so its state
       // matches reality; otherwise a later remote play command becomes a
       // no-op (resume on a sink that was never paused).
