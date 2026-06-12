@@ -18,6 +18,8 @@ import { PlaylistsScreen } from "@/screens/PlaylistsScreen";
 import { QueueScreen } from "@/screens/QueueScreen";
 import { SearchScreen } from "@/screens/SearchScreen";
 import { SettingsScreen } from "@/screens/SettingsScreen";
+import { SongContextMenuScreen } from "@/screens/SongContextMenuScreen";
+import { SongPlaylistPickerScreen } from "@/screens/SongPlaylistPickerScreen";
 import { SongsScreen } from "@/screens/SongsScreen";
 
 export function renderView(view: ViewInstance) {
@@ -71,6 +73,10 @@ export function renderView(view: ViewInstance) {
       return <DownloadsScreen />;
     case "search":
       return <SearchScreen />;
+    case "songContextMenu":
+      return <SongContextMenuScreen />;
+    case "songPlaylistPicker":
+      return <SongPlaylistPickerScreen />;
     case "nowPlaying":
       return <NowPlayingScreen />;
     case "settings":

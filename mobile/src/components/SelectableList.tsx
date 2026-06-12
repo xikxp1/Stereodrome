@@ -18,6 +18,7 @@ const rowHeight = 34;
 const edgePaddingRows = 2;
 
 export type SelectableOption = {
+  disabled?: boolean;
   label: string;
   kind?: "action" | "editable" | "info";
   sublabel?: string;
@@ -46,22 +47,34 @@ const SelectableRow = memo(
     return (
       <Pressable
         delayLongPress={450}
-        disabled={disabled}
+        disabled={disabled || item.disabled}
         onLongPress={() => onLongPress(index)}
         onPress={() => onPress(index)}
-        style={[styles.row, selected && styles.selected]}
+        style={[
+          styles.row,
+          selected && styles.selected,
+          item.disabled && styles.disabled,
+        ]}
       >
         <View style={styles.labelGroup}>
           <Text
             numberOfLines={1}
-            style={[styles.label, selected && styles.selectedText]}
+            style={[
+              styles.label,
+              selected && styles.selectedText,
+              item.disabled && !selected && styles.disabledText,
+            ]}
           >
             {item.label}
           </Text>
           {item.sublabel ? (
             <Text
               numberOfLines={1}
-              style={[styles.sublabel, selected && styles.selectedText]}
+              style={[
+                styles.sublabel,
+                selected && styles.selectedText,
+                item.disabled && !selected && styles.disabledText,
+              ]}
             >
               {item.sublabel}
             </Text>
@@ -74,6 +87,7 @@ const SelectableRow = memo(
   (previous, next) =>
     previous.disabled === next.disabled &&
     previous.index === next.index &&
+    previous.item.disabled === next.item.disabled &&
     previous.item.label === next.item.label &&
     previous.item.kind === next.item.kind &&
     previous.item.sublabel === next.item.sublabel &&
@@ -105,6 +119,7 @@ export function SelectableList({
   empty = "Nothing here",
   loadingMore = false,
   loadingMoreText = "Loading more",
+  onActiveIndexChange,
   onEndReached,
   preserveSelectionOnChange = false,
   resetSelectionKey,
@@ -114,6 +129,10 @@ export function SelectableList({
   empty?: string;
   loadingMore?: boolean;
   loadingMoreText?: string;
+  onActiveIndexChange?: (
+    index: number,
+    option: SelectableOption | null
+  ) => void;
   onEndReached?: () => void;
   preserveSelectionOnChange?: boolean;
   resetSelectionKey?: string | number | null;
@@ -149,6 +168,10 @@ export function SelectableList({
       offset: 0,
     });
   }, []);
+
+  useEffect(() => {
+    onActiveIndexChange?.(activeIndex, options[activeIndex] ?? null);
+  }, [activeIndex, onActiveIndexChange, options]);
 
   const scrollSelectedIntoView = useCallback((index: number) => {
     const listHeight = listHeightRef.current;
@@ -243,10 +266,16 @@ export function SelectableList({
           activateIndex(Math.max(0, activeIndexRef.current - 1));
         }
         if (input === "select") {
-          void optionsRef.current[activeIndexRef.current]?.onSelect();
+          const option = optionsRef.current[activeIndexRef.current];
+          if (!option?.disabled) {
+            void option?.onSelect();
+          }
         }
         if (input === "select_long") {
-          void optionsRef.current[activeIndexRef.current]?.onLongSelect?.();
+          const option = optionsRef.current[activeIndexRef.current];
+          if (!option?.disabled) {
+            void option?.onLongSelect?.();
+          }
         }
       }),
     [activateIndex, disabled, subscribe]
@@ -362,6 +391,12 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 15,
     fontWeight: "700",
+  },
+  disabled: {
+    opacity: 0.5,
+  },
+  disabledText: {
+    color: colors.muted,
   },
   sublabel: {
     color: colors.muted,

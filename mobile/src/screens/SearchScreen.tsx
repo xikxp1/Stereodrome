@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
 import { colors } from "@/components/theme";
 import { usePlayback } from "@/context/PlaybackContext";
+import { useSongActions } from "@/context/SongActionContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { visibleSearchResults, visibleSongs } from "@/services/offlineLibrary";
@@ -15,6 +16,7 @@ export function SearchScreen() {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const playback = usePlayback();
+  const { clearActiveSongTarget, setActiveSongTarget } = useSongActions();
   const stereodrome = useStereodrome();
   const view = useViewStack();
   const results = useQuery({
@@ -70,8 +72,28 @@ export function SearchScreen() {
     stereodrome.offlineMode,
     stereodrome.offlineSongIds
   );
+  const resultSongs = data?.songs ?? [];
+  const handleActiveIndexChange = useCallback(
+    (index: number) => {
+      const song = resultSongs[index] ?? null;
+      setActiveSongTarget(
+        song
+          ? {
+              song,
+              origin: "list",
+            }
+          : null
+      );
+    },
+    [resultSongs, setActiveSongTarget]
+  );
+
+  useEffect(() => {
+    return () => clearActiveSongTarget();
+  }, [clearActiveSongTarget]);
+
   const options = [
-    ...(data?.songs ?? []).map((song) => ({
+    ...resultSongs.map((song) => ({
       label: song.title,
       sublabel: song.artist ?? undefined,
       onSelect: async () => {
@@ -126,6 +148,7 @@ export function SearchScreen() {
             : "Type to search"
         }
         options={options}
+        onActiveIndexChange={handleActiveIndexChange}
       />
     </View>
   );

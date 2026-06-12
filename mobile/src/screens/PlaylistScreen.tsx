@@ -1,7 +1,9 @@
+import { useCallback, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
 import { usePlayback } from "@/context/PlaybackContext";
+import { useSongActions } from "@/context/SongActionContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { visibleSongs } from "@/services/offlineLibrary";
@@ -14,6 +16,7 @@ export function PlaylistScreen({
   title: string;
 }) {
   const playback = usePlayback();
+  const { clearActiveSongTarget, setActiveSongTarget } = useSongActions();
   const stereodrome = useStereodrome();
   const view = useViewStack();
   const queryClient = useQueryClient();
@@ -35,6 +38,27 @@ export function PlaylistScreen({
     stereodrome.offlineMode,
     stereodrome.offlineSongIds
   );
+  const songOptionOffset = stereodrome.offlineMode ? 0 : 1;
+  const handleActiveIndexChange = useCallback(
+    (index: number) => {
+      const song = shownSongs[index - songOptionOffset] ?? null;
+      setActiveSongTarget(
+        song
+          ? {
+              song,
+              fullSong: song,
+              sourcePlaylistId: playlistId,
+              origin: "list",
+            }
+          : null
+      );
+    },
+    [playlistId, shownSongs, setActiveSongTarget, songOptionOffset]
+  );
+
+  useEffect(() => {
+    return () => clearActiveSongTarget();
+  }, [clearActiveSongTarget]);
 
   async function toggleSavedOffline() {
     if (!playlistId || stereodrome.offlineMode) {
@@ -78,6 +102,7 @@ export function PlaylistScreen({
             : "No songs"
       }
       options={options}
+      onActiveIndexChange={handleActiveIndexChange}
     />
   );
 }

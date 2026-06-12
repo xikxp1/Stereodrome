@@ -1,7 +1,13 @@
 import { Animated, Easing, Pressable, StyleSheet, View } from "react-native";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Dices, Repeat, Repeat1, Shuffle } from "lucide-react-native";
+import {
+  Dices,
+  MoreHorizontal,
+  Repeat,
+  Repeat1,
+  Shuffle,
+} from "lucide-react-native";
 
 import { ClickWheel } from "@/components/ClickWheel";
 import { Header } from "@/components/Header";
@@ -9,6 +15,7 @@ import { colors } from "@/components/theme";
 import { useInputBus } from "@/context/InputContext";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { usePlayback } from "@/context/PlaybackContext";
+import { useSongActions } from "@/context/SongActionContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import {
   connectView,
@@ -32,6 +39,7 @@ export function IpodShell() {
   const { subscribe } = useInputBus();
   const { buttonHandedness } = useMobileSettings();
   const playback = usePlayback();
+  const songActions = useSongActions();
   const stereodrome = useStereodrome();
   const insets = useSafeAreaInsets();
   const current = view.current;
@@ -182,6 +190,24 @@ export function IpodShell() {
               size={20}
             />
           </Pressable>
+          <Pressable
+            accessibilityLabel="Song actions"
+            accessibilityRole="button"
+            accessibilityState={{
+              disabled: !songActions.canOpenSongContextMenu,
+            }}
+            disabled={!songActions.canOpenSongContextMenu}
+            onPress={songActions.openSongContextMenu}
+            style={[
+              styles.queueButton,
+              leftHandedButtons
+                ? styles.songActionsLeft
+                : styles.songActionsRight,
+              !songActions.canOpenSongContextMenu && styles.queueButtonDisabled,
+            ]}
+          >
+            <MoreHorizontal color={colors.wheelIcon} size={20} />
+          </Pressable>
           <View
             style={[
               styles.queueButtonGroup,
@@ -276,6 +302,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.selected,
     borderColor: colors.selected,
   },
+  queueButtonDisabled: {
+    opacity: 0.42,
+  },
   repeatLeft: {
     left: 8,
     position: "absolute",
@@ -285,6 +314,16 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 8,
     top: 36,
+  },
+  songActionsLeft: {
+    left: 8,
+    position: "absolute",
+    top: 84,
+  },
+  songActionsRight: {
+    position: "absolute",
+    right: 8,
+    top: 84,
   },
   queueButtonGroup: {
     gap: 12,

@@ -9,6 +9,7 @@ import { IpodShell } from "@/components/IpodShell";
 import { InputProvider } from "@/context/InputContext";
 import { MobileSettingsProvider } from "@/context/MobileSettingsContext";
 import { PlaybackProvider } from "@/context/PlaybackContext";
+import { SongActionProvider } from "@/context/SongActionContext";
 import { StereodromeProvider } from "@/context/StereodromeContext";
 import { ViewProvider } from "@/context/ViewContext";
 import "@/services/librarySyncScheduler";
@@ -39,7 +40,9 @@ export default function App() {
               <PlaybackProvider>
                 <InputProvider>
                   <ViewProvider>
-                    <IpodShell />
+                    <SongActionProvider>
+                      <IpodShell />
+                    </SongActionProvider>
                   </ViewProvider>
                 </InputProvider>
               </PlaybackProvider>

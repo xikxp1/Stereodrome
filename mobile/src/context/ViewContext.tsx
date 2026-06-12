@@ -22,6 +22,8 @@ export type ViewName =
   | "queue"
   | "downloads"
   | "search"
+  | "songContextMenu"
+  | "songPlaylistPicker"
   | "nowPlaying"
   | "settings";
 
