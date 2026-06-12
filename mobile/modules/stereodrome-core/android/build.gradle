@@ -8,6 +8,7 @@ version = '0.1.24'
 
 android {
   namespace "expo.modules.stereodromecore"
+  ndkVersion rootProject.ext.ndkVersion
 
   defaultConfig {
     minSdkVersion 26
