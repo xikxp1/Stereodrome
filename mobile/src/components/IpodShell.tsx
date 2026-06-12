@@ -1,7 +1,7 @@
 import { Animated, Easing, Pressable, StyleSheet, View } from "react-native";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { RefreshCw, Repeat, Repeat1, Shuffle } from "lucide-react-native";
+import { Dices, Repeat, Repeat1, Shuffle } from "lucide-react-native";
 
 import { ClickWheel } from "@/components/ClickWheel";
 import { Header } from "@/components/Header";
@@ -213,7 +213,7 @@ export function IpodShell() {
               onPress={() => void playback.rerollNext()}
               style={styles.queueButton}
             >
-              <RefreshCw color={colors.wheelIcon} size={20} />
+              <Dices color={colors.wheelIcon} size={20} />
             </Pressable>
           </View>
           <ClickWheel />
