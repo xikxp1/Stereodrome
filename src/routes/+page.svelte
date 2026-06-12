@@ -59,6 +59,7 @@
   let queueOpen = $state(false);
   let settingsOpen = $state(false);
   let selectedPlaylist = $state<Playlist | null>(null);
+  let albumDetailBackArtist: Artist | null = $state(null);
 
   // Scroll restoration state
   let artistGridScrollOffset: number | null = $state(null);
@@ -227,6 +228,7 @@
       selectedAlbum = null;
       selectedSong = null;
       detailView = null;
+      albumDetailBackArtist = null;
       loadError = null;
       isLoading = false;
       return;
@@ -633,6 +635,7 @@
   function handleViewChange(view: string) {
     activeView = view;
     detailView = null; // Clear detail view when switching top-level views
+    albumDetailBackArtist = null;
     selectedPlaylist = null; // Deselect playlist when changing library views
     artistGridScrollOffset = null;
     albumGridScrollOffset = null;
@@ -643,6 +646,7 @@
     if (playlist) {
       playlistStore.selectPlaylist(playlist);
       detailView = null;
+      albumDetailBackArtist = null;
     } else {
       playlistStore.selectPlaylist(null);
     }
@@ -668,9 +672,11 @@
 
   function handleArtistGridSelect(artist: Artist) {
     detailView = { type: "artist", artist };
+    albumDetailBackArtist = null;
   }
 
   function handleAlbumGridSelect(album: Album | AlbumListEntry) {
+    albumDetailBackArtist = null;
     if ("synced_at" in album) {
       // Full Album from local cache
       detailView = { type: "album", album: album as Album };
@@ -681,6 +687,7 @@
   }
 
   function handleAlbumListEntrySelect(entry: Album | AlbumListEntry) {
+    albumDetailBackArtist = null;
     // Try to find in local cache for full data
     const localAlbum = albums.find((a) => a.id === entry.id);
     if (localAlbum) {
@@ -720,9 +727,10 @@
     selectedArtist = artist;
     selectedAlbum = null;
     detailView = { type: "artist", artist };
+    albumDetailBackArtist = null;
   }
 
-  function navigateToAlbum(albumId: string) {
+  function navigateToAlbum(albumId: string, backArtist: Artist | null = null) {
     const album = albums.find((entry) => entry.id === albumId);
     if (!album) return;
 
@@ -732,10 +740,22 @@
     selectedArtist =
       artists.find((entry) => entry.id === album.artist_id) ?? null;
     detailView = { type: "album", album };
+    albumDetailBackArtist = backArtist;
   }
 
   function handleDetailBack() {
+    if (detailView?.type === "album" && albumDetailBackArtist) {
+      const artist = albumDetailBackArtist;
+      activeView = "artists";
+      selectedArtist = artist;
+      selectedAlbum = null;
+      detailView = { type: "artist", artist };
+      albumDetailBackArtist = null;
+      return;
+    }
+
     detailView = null;
+    albumDetailBackArtist = null;
   }
 
   async function handleDetailSongPlay(song: Song) {
@@ -787,7 +807,9 @@
   }
 
   function handleArtistAlbumSelect(album: Album) {
-    navigateToAlbum(album.id);
+    const backArtist =
+      detailView?.type === "artist" ? (detailView.artist ?? null) : null;
+    navigateToAlbum(album.id, backArtist);
   }
 
   function handleAlbumNavigateToArtist(album: Album | AlbumListEntry) {
