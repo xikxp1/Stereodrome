@@ -25,5 +25,8 @@ module.exports = () => {
           }
         : eas,
     },
+    "plugins": [
+      "expo-background-task"
+    ]
   };
 };
