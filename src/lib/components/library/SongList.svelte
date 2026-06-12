@@ -445,7 +445,10 @@
       </div>
 
       <!-- Virtualized song list body -->
-      <div bind:this={scrollContainer} class="flex-1 overflow-auto">
+      <div
+        bind:this={scrollContainer}
+        class="min-w-0 flex-1 overflow-y-auto overflow-x-hidden"
+      >
         <div style="height: {totalSize}px; width: 100%; position: relative;">
           {#each virtualItems as row (row.index)}
             {@const song = songs[row.index]}
@@ -477,8 +480,10 @@
               </div>
               <div class="cell-name font-medium">
                 {#if playingSongId === song.id}
-                  <span class="inline-flex items-center gap-1.5">
-                    <Volume2 class="w-3 h-3 animate-pulse" />
+                  <span
+                    class="inline-flex min-w-0 max-w-full items-center gap-1.5"
+                  >
+                    <Volume2 class="w-3 h-3 shrink-0 animate-pulse" />
                     <span class="truncate">{song.title}</span>
                   </span>
                 {:else}
@@ -544,16 +549,20 @@
 <style>
   .song-list-container {
     container-type: inline-size;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .song-grid-header,
   .song-grid-row {
     display: grid;
     grid-template-columns:
-      40px 28px minmax(120px, 1fr) 52px minmax(100px, 0.6fr)
-      minmax(100px, 0.8fr) 56px 96px;
+      40px 28px minmax(0, 1fr) 52px minmax(0, 0.6fr) minmax(0, 0.8fr)
+      56px minmax(0, 0.5fr);
     align-items: center;
     font-size: 0.75rem;
+    min-width: 0;
+    width: 100%;
   }
 
   /* Hide genre column below 900px */
@@ -561,8 +570,8 @@
     .song-grid-header,
     .song-grid-row {
       grid-template-columns:
-        40px 28px minmax(120px, 1fr) 52px minmax(100px, 0.6fr)
-        minmax(100px, 0.8fr) 56px;
+        40px 28px minmax(0, 1fr) 52px minmax(0, 0.6fr)
+        minmax(0, 0.8fr) 56px;
     }
 
     .cell-genre {
@@ -575,8 +584,8 @@
     .song-grid-header,
     .song-grid-row {
       grid-template-columns:
-        40px 28px minmax(120px, 1fr) 52px minmax(80px, 0.6fr)
-        minmax(80px, 0.8fr);
+        40px 28px minmax(0, 1fr) 52px minmax(0, 0.6fr)
+        minmax(0, 0.8fr);
     }
 
     .cell-year,
@@ -602,6 +611,9 @@
   .song-grid-header > div {
     padding: 0.375rem 0.75rem;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
     border-right: 1px solid oklch(88% 0.006 250);
   }
 
