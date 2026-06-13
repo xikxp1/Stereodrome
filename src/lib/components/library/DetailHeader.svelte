@@ -13,6 +13,7 @@
     actionDisabled?: boolean;
     actionIcon?: ComponentType;
     onAction?: () => void;
+    onCoverArtClick?: () => void;
   }
 
   let {
@@ -25,6 +26,7 @@
     actionDisabled = false,
     actionIcon: ActionIcon,
     onAction,
+    onCoverArtClick,
   }: Props = $props();
 </script>
 
@@ -40,7 +42,24 @@
   </button>
 
   {#if coverArtId}
-    <LazyImage {coverArtId} size={64} alt={title} class="w-12 h-12 rounded" />
+    {#if onCoverArtClick}
+      <button
+        type="button"
+        class="group h-12 w-12 shrink-0 overflow-hidden rounded p-0 transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        onclick={() => onCoverArtClick()}
+        title="View cover art"
+        aria-label="View cover art for {title}"
+      >
+        <LazyImage
+          {coverArtId}
+          size={64}
+          alt={title}
+          class="h-full w-full rounded"
+        />
+      </button>
+    {:else}
+      <LazyImage {coverArtId} size={64} alt={title} class="w-12 h-12 rounded" />
+    {/if}
   {/if}
 
   <div class="min-w-0 flex-1">

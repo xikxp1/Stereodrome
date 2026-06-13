@@ -119,6 +119,12 @@
     height: number;
   }
 
+  interface CoverArtWindowData {
+    id: string;
+    album: string;
+    artist: string;
+  }
+
   // Fetch cover art thumbnail when track changes
   $effect(() => {
     const coverArtId = currentTrack?.coverArtId;
@@ -818,31 +824,22 @@
     }
   }
 
-  async function handleCoverArtClick() {
-    if (!currentTrack?.coverArtId) return;
-
-    const coverArtData = {
-      id: currentTrack.coverArtId,
-      album: currentTrack.album,
-      artist: currentTrack.artist,
-    };
-
+  async function openCoverArtWindow(coverArtData: CoverArtWindowData) {
+    const title = `${coverArtData.artist}${coverArtData.album ? ` — ${coverArtData.album}` : ""}`;
     // Check if window already exists
     const existingWindow = await WebviewWindow.getByLabel("cover-art-viewer");
     if (existingWindow) {
       // Update existing window with new cover art
       await emit("cover-art-update", coverArtData);
-      await existingWindow.setTitle(
-        `${currentTrack.artist}${currentTrack.album ? ` — ${currentTrack.album}` : ""}`
-      );
+      await existingWindow.setTitle(title);
       await existingWindow.setFocus();
       return;
     }
 
     // Create a new window for cover art viewing
     const webview = new WebviewWindow("cover-art-viewer", {
-      url: `/cover-art?id=${encodeURIComponent(currentTrack.coverArtId)}&album=${encodeURIComponent(currentTrack.album)}&artist=${encodeURIComponent(currentTrack.artist)}`,
-      title: `${currentTrack.artist}${currentTrack.album ? ` — ${currentTrack.album}` : ""}`,
+      url: `/cover-art?id=${encodeURIComponent(coverArtData.id)}&album=${encodeURIComponent(coverArtData.album)}&artist=${encodeURIComponent(coverArtData.artist)}`,
+      title,
       width: 500,
       height: 550,
       resizable: true,
@@ -853,6 +850,51 @@
     webview.once("tauri://error", (e) => {
       error(`Failed to create cover art window: ${e}`);
     });
+  }
+
+  async function handleCoverArtClick() {
+    if (!currentTrack?.coverArtId) return;
+
+    try {
+      await openCoverArtWindow({
+        id: currentTrack.coverArtId,
+        album: currentTrack.album,
+        artist: currentTrack.artist,
+      });
+    } catch (e) {
+      error(`Failed to open cover art window: ${e}`);
+    }
+  }
+
+  function getAlbumArtistName(album: Album | AlbumListEntry): string {
+    return (
+      album.artistName ??
+      (album.artist_id
+        ? (artists.find((artist) => artist.id === album.artist_id)?.name ??
+          "Unknown Artist")
+        : "Unknown Artist")
+    );
+  }
+
+  async function handleAlbumCoverArtClick(album: Album | AlbumListEntry) {
+    if (!album.cover_art_id) return;
+
+    try {
+      await openCoverArtWindow({
+        id: album.cover_art_id,
+        album: album.name,
+        artist: getAlbumArtistName(album),
+      });
+    } catch (e) {
+      error(`Failed to open album cover art window: ${e}`);
+    }
+  }
+
+  function handleDetailAlbumCoverArtClick() {
+    const detail = detailView;
+    if (detail?.type !== "album" || !detail.album) return;
+
+    void handleAlbumCoverArtClick(detail.album);
   }
 
   // Keyboard shortcuts handler
@@ -1227,6 +1269,7 @@
               subtitle={detailView.album.artistName ?? ""}
               coverArtId={detailView.album.cover_art_id}
               onBack={handleDetailBack}
+              onCoverArtClick={handleDetailAlbumCoverArtClick}
             />
 
             <div class="flex-1 overflow-hidden">
@@ -1275,6 +1318,7 @@
               subtitle={detailView.album.artistName ?? ""}
               coverArtId={detailView.album.cover_art_id}
               onBack={handleDetailBack}
+              onCoverArtClick={handleDetailAlbumCoverArtClick}
             />
 
             <div class="flex-1 overflow-hidden">
