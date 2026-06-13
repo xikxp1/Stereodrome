@@ -2,10 +2,29 @@ use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 
 use crate::cache::{
-    AudioCache, CacheStats, KEY_MAX_CACHE_SIZE, MAX_CACHE_SIZE, MIN_CACHE_SIZE, STORE_FILE,
+    AudioCache, CacheLocationInfo, CacheRootUpdateResult, CacheStats, KEY_MAX_CACHE_SIZE,
+    MAX_CACHE_SIZE, MIN_CACHE_SIZE, STORE_FILE, cache_location_info, emit_audio_cache_changed,
+    set_cache_root as persist_cache_root,
 };
 use crate::error::{AppResult, MutexExt};
 use crate::state::AppState;
+
+/// Get configured cache locations.
+#[tauri::command]
+pub fn get_cache_locations(app_handle: AppHandle) -> AppResult<CacheLocationInfo> {
+    cache_location_info(&app_handle)
+}
+
+/// Set the cache root and move existing cache files into the new root.
+#[tauri::command]
+pub fn set_cache_root(
+    app_handle: AppHandle,
+    cache_root: Option<String>,
+) -> AppResult<CacheRootUpdateResult> {
+    let result = persist_cache_root(&app_handle, cache_root)?;
+    emit_audio_cache_changed(&app_handle, "location_changed");
+    Ok(result)
+}
 
 /// Get statistics about the audio cache
 #[tauri::command]

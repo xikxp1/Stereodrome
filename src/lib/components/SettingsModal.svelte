@@ -17,10 +17,14 @@
     Radio,
     ExternalLink,
     ListMusic,
+    FolderOpen,
+    RotateCcw,
   } from "lucide-svelte";
   import {
     getAudioCacheStats,
+    getCacheLocations,
     clearAudioCache,
+    setCacheRoot,
     setMaxCacheSize,
     getScanStatus,
     startScan,
@@ -52,7 +56,7 @@
   } from "$lib/api/commands";
   import { marked } from "marked";
   import { error } from "@tauri-apps/plugin-log";
-  import { ask } from "@tauri-apps/plugin-dialog";
+  import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { connection } from "$lib/stores/connection.svelte";
@@ -74,6 +78,8 @@
     SyncJobKind,
     LastfmQueueItem,
     LastfmStatus,
+    CacheLocationInfo,
+    CacheRootUpdateResult,
   } from "$lib/types";
 
   const dynamicsPresets: DynamicsPreset[] = ["light", "medium", "heavy"];
@@ -216,6 +222,10 @@
   let loadingStats = $state(false);
   let clearing = $state(false);
   let savingSize = $state(false);
+  let cacheLocations = $state<CacheLocationInfo | null>(null);
+  let loadingCacheLocations = $state(false);
+  let movingCacheLocation = $state(false);
+  let cacheMoveResult = $state<CacheRootUpdateResult | null>(null);
 
   // Scan state
   let scanStatus = $state<ScanStatus | null>(null);
@@ -287,6 +297,7 @@
   $effect(() => {
     if (open) {
       loadCacheStats();
+      loadCacheLocations();
       loadScanStatus();
       loadNormalization();
       loadPlaybackSettings();
@@ -324,6 +335,8 @@
       analysisProgress = null;
       syncSettings = null;
       syncStatus = null;
+      cacheLocations = null;
+      cacheMoveResult = null;
     }
   });
 
@@ -352,6 +365,17 @@
     }
   }
 
+  async function loadCacheLocations() {
+    loadingCacheLocations = true;
+    try {
+      cacheLocations = await getCacheLocations();
+    } catch (e) {
+      error(`Failed to load cache locations: ${e}`);
+    } finally {
+      loadingCacheLocations = false;
+    }
+  }
+
   async function handleSizeChange(sizeGB: number) {
     savingSize = true;
     try {
@@ -362,6 +386,44 @@
       error(`Failed to set cache size: ${e}`);
     } finally {
       savingSize = false;
+    }
+  }
+
+  async function handleChooseCacheRoot() {
+    const selected = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "Choose Cache Folder",
+    });
+    if (!selected) return;
+    const cacheRoot = Array.isArray(selected) ? selected[0] : selected;
+    if (!cacheRoot) return;
+
+    await updateCacheRoot(cacheRoot);
+  }
+
+  async function handleResetCacheRoot() {
+    if (!cacheLocations || cacheLocations.is_default) return;
+    const confirmed = await ask(
+      "Move cached audio and artwork back to the default cache folder?",
+      { title: "Reset Cache Location", kind: "warning" }
+    );
+    if (!confirmed) return;
+    await updateCacheRoot(null);
+  }
+
+  async function updateCacheRoot(cacheRoot: string | null) {
+    movingCacheLocation = true;
+    cacheMoveResult = null;
+    try {
+      const result = await setCacheRoot(cacheRoot);
+      cacheMoveResult = result;
+      cacheLocations = result.locations;
+      await loadCacheStats();
+    } catch (e) {
+      error(`Failed to update cache location: ${e}`);
+    } finally {
+      movingCacheLocation = false;
     }
   }
 
@@ -823,6 +885,16 @@
     const sizes = ["B", "KB", "MB", "GB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+  }
+
+  function formatMoveResult(result: CacheRootUpdateResult): string {
+    const moved = result.audio.moved_files + result.cover_art.moved_files;
+    const skipped = result.audio.skipped_files + result.cover_art.skipped_files;
+    const failed = result.audio.failed_files + result.cover_art.failed_files;
+    const parts = [`${moved} moved`];
+    if (skipped > 0) parts.push(`${skipped} skipped`);
+    if (failed > 0) parts.push(`${failed} failed`);
+    return parts.join(", ");
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -1993,6 +2065,53 @@
             </div>
           {:else if cacheStats}
             <div class="mb-4 space-y-2">
+              <div class="border-b border-base-300 pb-3">
+                <div class="mb-2 flex items-center justify-between text-sm">
+                  <span class="text-base-content/60">Cache folder</span>
+                  {#if loadingCacheLocations || movingCacheLocation}
+                    <RefreshCw class="h-3.5 w-3.5 animate-spin" />
+                  {/if}
+                </div>
+                {#if cacheLocations}
+                  <div
+                    class="break-all rounded-md bg-base-300/60 px-2 py-1.5 font-mono text-xs text-base-content/70"
+                    title={cacheLocations.cache_root}
+                  >
+                    {cacheLocations.cache_root}
+                  </div>
+                  <div class="mt-2 flex flex-wrap gap-2">
+                    <button
+                      class="btn btn-xs h-7 min-h-0 gap-1"
+                      onclick={handleChooseCacheRoot}
+                      disabled={movingCacheLocation}
+                    >
+                      <FolderOpen class="h-3.5 w-3.5" />
+                      Choose Folder
+                    </button>
+                    <button
+                      class="btn btn-xs btn-ghost h-7 min-h-0 gap-1"
+                      onclick={handleResetCacheRoot}
+                      disabled={movingCacheLocation ||
+                        cacheLocations.is_default}
+                    >
+                      <RotateCcw class="h-3.5 w-3.5" />
+                      Reset
+                    </button>
+                  </div>
+                  {#if cacheMoveResult}
+                    <p class="mt-2 text-xs text-base-content/50">
+                      Cache location updated: {formatMoveResult(
+                        cacheMoveResult
+                      )}.
+                    </p>
+                  {/if}
+                {:else}
+                  <div class="text-sm text-base-content/60">
+                    Unable to load cache folder
+                  </div>
+                {/if}
+              </div>
+
               <div class="flex justify-between text-sm">
                 <span class="text-base-content/60">Cached files</span>
                 <span class="font-medium">{cacheStats.file_count}</span>

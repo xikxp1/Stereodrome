@@ -26,6 +26,8 @@ import type {
   SavedPlaylistOfflineResult,
   MiniPlayerMode,
   MiniPlayerPosition,
+  CacheLocationInfo,
+  CacheRootUpdateResult,
 } from "$lib/types";
 
 // Auth commands
@@ -229,6 +231,16 @@ export interface CacheStats {
 export const MIN_CACHE_SIZE = 500 * 1024 * 1024; // 500 MB
 export const MAX_CACHE_SIZE = 50 * 1024 * 1024 * 1024; // 50 GB
 export const DEFAULT_CACHE_SIZE = 5 * 1024 * 1024 * 1024; // 5 GB
+
+export async function getCacheLocations(): Promise<CacheLocationInfo> {
+  return invoke<CacheLocationInfo>("get_cache_locations");
+}
+
+export async function setCacheRoot(
+  cacheRoot: string | null
+): Promise<CacheRootUpdateResult> {
+  return invoke<CacheRootUpdateResult>("set_cache_root", { cacheRoot });
+}
 
 export async function getAudioCacheStats(): Promise<CacheStats> {
   return invoke<CacheStats>("get_audio_cache_stats");

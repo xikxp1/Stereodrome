@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use filetime::FileTime;
 use log::{debug, warn};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -29,6 +29,10 @@ pub const AUDIO_CACHE_CHANGED_EVENT: &str = "audio-cache-changed";
 #[derive(Debug, Clone, Serialize)]
 pub struct AudioCacheChangedEvent {
     pub reason: &'static str,
+}
+
+pub(crate) fn emit_audio_cache_changed(app_handle: &AppHandle, reason: &'static str) {
+    let _ = app_handle.emit(AUDIO_CACHE_CHANGED_EVENT, AudioCacheChangedEvent { reason });
 }
 
 /// Read the configured max cache size from settings store
@@ -69,12 +73,7 @@ impl AudioCache {
     /// Create a new AudioCache instance, reading max size from settings
     pub fn new(app_handle: &AppHandle) -> AppResult<Self> {
         let max_size = read_max_cache_size(app_handle);
-        let data_dir = app_handle
-            .path()
-            .app_data_dir()
-            .map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, e)))?;
-        let cache_dir = data_dir.join("audio_cache");
-        fs::create_dir_all(&cache_dir)?;
+        let cache_dir = crate::cache::audio_cache_dir(app_handle)?;
         Ok(Self {
             app_handle: app_handle.clone(),
             cache_dir,
@@ -83,9 +82,7 @@ impl AudioCache {
     }
 
     pub(crate) fn emit_changed(&self, reason: &'static str) {
-        let _ = self
-            .app_handle
-            .emit(AUDIO_CACHE_CHANGED_EVENT, AudioCacheChangedEvent { reason });
+        emit_audio_cache_changed(&self.app_handle, reason);
     }
 
     /// Get the cache file path for a song

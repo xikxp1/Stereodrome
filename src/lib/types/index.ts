@@ -208,6 +208,26 @@ export interface ConnectivitySettings {
   manual_offline_enabled: boolean;
 }
 
+export interface CacheLocationInfo {
+  cache_root: string;
+  default_cache_root: string;
+  audio_cache_dir: string;
+  cover_cache_dir: string;
+  is_default: boolean;
+}
+
+export interface CacheMoveSummary {
+  moved_files: number;
+  skipped_files: number;
+  failed_files: number;
+}
+
+export interface CacheRootUpdateResult {
+  locations: CacheLocationInfo;
+  audio: CacheMoveSummary;
+  cover_art: CacheMoveSummary;
+}
+
 export interface SendNowPlayingNotificationParams {
   title: string;
   body: string;

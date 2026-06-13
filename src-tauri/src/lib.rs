@@ -182,6 +182,8 @@ pub fn run() {
             commands::get_cover_art,
             commands::get_cover_art_path,
             commands::get_song_cover_art,
+            commands::get_cache_locations,
+            commands::set_cache_root,
             commands::get_audio_cache_stats,
             commands::get_offline_song_ids,
             commands::clear_audio_cache,

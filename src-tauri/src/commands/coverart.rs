@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use log::warn;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
+use crate::cache::cover_cache_dir;
 use crate::client::SubsonicClientHandle;
 use crate::error::{AppError, AppResult, MutexExt};
 use crate::state::AppState;
@@ -15,13 +16,7 @@ const FALLBACK_COVER_ART_SIZES: [i32; 5] = [PRESERVED_COVER_ART_SIZE, 200, 128, 
 
 /// Get the cover art cache directory path
 fn get_cache_dir(app_handle: &AppHandle) -> AppResult<PathBuf> {
-    let data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, e)))?;
-    let cache_dir = data_dir.join("cover_cache");
-    fs::create_dir_all(&cache_dir)?;
-    Ok(cache_dir)
+    cover_cache_dir(app_handle)
 }
 
 fn sanitize_cover_art_id(cover_art_id: &str) -> String {

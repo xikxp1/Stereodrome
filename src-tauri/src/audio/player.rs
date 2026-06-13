@@ -314,8 +314,7 @@ impl AudioPlayer {
                         if let Some(media_controls) = app_handle.try_state::<MediaControlsManager>()
                         {
                             let cover_art_path = song.cover_art_id.as_ref().and_then(|id| {
-                                let data_dir = app_handle.path().app_data_dir().ok()?;
-                                let cache_dir = data_dir.join("cover_cache");
+                                let cache_dir = crate::cache::cover_cache_dir(&app_handle).ok()?;
                                 let sanitized_id = id.replace(['/', '\\'], "_");
 
                                 for size in [800, 128, 64] {
