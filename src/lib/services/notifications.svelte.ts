@@ -22,6 +22,7 @@ class NotificationService {
   private unlistenFocus: UnlistenFn | null = null;
   private initialized = false;
   private readonly shouldNotify = getCurrentWindow().label === "main";
+  private readonly notifiedUpdateVersions = new Set<string>();
 
   async init() {
     if (this.initialized) return;
@@ -124,6 +125,32 @@ class NotificationService {
       body,
       attachments,
     });
+  }
+
+  async notifyUpdateAvailable(version: string) {
+    if (!this.shouldNotify) return;
+    if (this.notifiedUpdateVersions.has(version)) return;
+
+    let settings: NotificationSettings;
+    try {
+      settings = await getNotificationSettings();
+    } catch (e) {
+      error(`Failed to read notification settings: ${e}`);
+      return;
+    }
+
+    if (!settings.enabled) {
+      return;
+    }
+    if (!(await this.ensurePermissionGranted())) {
+      return;
+    }
+
+    sendNotification({
+      title: "Stereodrome Update Available",
+      body: `Version ${version} is available to install.`,
+    });
+    this.notifiedUpdateVersions.add(version);
   }
 
   destroy() {

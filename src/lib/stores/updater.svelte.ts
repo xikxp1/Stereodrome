@@ -3,6 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { error } from "@tauri-apps/plugin-log";
 import { setTrayUpdateAvailable } from "$lib/api/commands";
+import { notifications } from "$lib/services/notifications.svelte";
 
 class UpdaterStore {
   updateAvailable = $state(false);
@@ -42,6 +43,11 @@ class UpdaterStore {
         setTrayUpdateAvailable(update.version).catch((e) =>
           error(`Failed to set tray update available: ${e}`)
         );
+        notifications
+          .notifyUpdateAvailable(update.version)
+          .catch((e) =>
+            error(`Failed to send update available notification: ${e}`)
+          );
         return true;
       }
 
