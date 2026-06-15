@@ -44,8 +44,8 @@ public class StereodromeCoreModule: Module {
     label: "dev.xikxp1.stereodrome.mobile.remote-commands")
   private var remoteCommandTargets: [Any] = []
   private var audioSessionObservers: [NSObjectProtocol] = []
-  // Only accessed on remoteCommandQueue.
   private var shouldResumeAfterInterruption = false
+  private var canPlayRemoteCommands = false
 
   deinit {
     clearRemoteCommandHandlers()
@@ -205,6 +205,7 @@ public class StereodromeCoreModule: Module {
 
   private func clearNowPlayingInfo() {
     MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    canPlayRemoteCommands = false
     let commandCenter = MPRemoteCommandCenter.shared()
     commandCenter.nextTrackCommand.isEnabled = false
     commandCenter.previousTrackCommand.isEnabled = false
@@ -439,6 +440,10 @@ public class StereodromeCoreModule: Module {
   private func performRemoteCommand(_ action: RemoteCommandAction) {
     switch action {
     case .play:
+      guard canPlayRemoteCommands else {
+        notifyNativePlaybackChanged()
+        return
+      }
       setAudioSessionActive(true)
       let status = parseOkValue(callSync(method: "audioGetStatus", payload: "null"))
       if stringValue(status?["current_song_id"]) == nil {
@@ -452,6 +457,9 @@ public class StereodromeCoreModule: Module {
       let status = parseOkValue(callSync(method: "audioGetStatus", payload: "null"))
       if boolValue(status?["is_playing"]) {
         _ = callSync(method: "audioPause", payload: "null")
+      } else if !canPlayRemoteCommands {
+        notifyNativePlaybackChanged()
+        return
       } else if stringValue(status?["current_song_id"]) == nil {
         setAudioSessionActive(true)
         playCurrentFromPersistedPosition()
@@ -460,10 +468,18 @@ public class StereodromeCoreModule: Module {
         _ = callSync(method: "audioResume", payload: "null")
       }
     case .next:
+      guard canPlayRemoteCommands else {
+        notifyNativePlaybackChanged()
+        return
+      }
       setAudioSessionActive(true)
       _ = callSync(method: "playNext", payload: "true")
       _ = callSync(method: "audioPlayCurrent", payload: "null")
     case .previous:
+      guard canPlayRemoteCommands else {
+        notifyNativePlaybackChanged()
+        return
+      }
       setAudioSessionActive(true)
       _ = callSync(method: "playPrevious", payload: "null")
       _ = callSync(method: "audioPlayCurrent", payload: "null")
@@ -499,12 +515,15 @@ public class StereodromeCoreModule: Module {
 
   private func configureCommandAvailability(_ payload: [String: Any]) {
     let commandCenter = MPRemoteCommandCenter.shared()
-    commandCenter.nextTrackCommand.isEnabled = boolValue(payload["can_next"])
-    commandCenter.previousTrackCommand.isEnabled = boolValue(payload["can_previous"])
+    let canPlay = boolValue(payload["can_play"])
+    let isPlaying = boolValue(payload["is_playing"])
+    canPlayRemoteCommands = canPlay
+    commandCenter.nextTrackCommand.isEnabled = canPlay && boolValue(payload["can_next"])
+    commandCenter.previousTrackCommand.isEnabled = canPlay && boolValue(payload["can_previous"])
     commandCenter.changePlaybackPositionCommand.isEnabled = boolValue(payload["can_seek"])
-    commandCenter.playCommand.isEnabled = true
-    commandCenter.pauseCommand.isEnabled = true
-    commandCenter.togglePlayPauseCommand.isEnabled = true
+    commandCenter.playCommand.isEnabled = canPlay
+    commandCenter.pauseCommand.isEnabled = canPlay || isPlaying
+    commandCenter.togglePlayPauseCommand.isEnabled = canPlay || isPlaying
     commandCenter.stopCommand.isEnabled = true
   }
 

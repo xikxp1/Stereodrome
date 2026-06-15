@@ -12,6 +12,7 @@ data class NowPlayingInfo(
   val queueIndex: Int?,
   val queueCount: Int,
   val canNext: Boolean,
+  val canPlay: Boolean,
   val canPrevious: Boolean,
   val canSeek: Boolean,
 ) {
@@ -29,6 +30,7 @@ data class NowPlayingInfo(
         queueIndex = payload.intValue("queue_index"),
         queueCount = payload.intValue("queue_count") ?: 0,
         canNext = payload.booleanValue("can_next"),
+        canPlay = payload.booleanValue("can_play"),
         canPrevious = payload.booleanValue("can_previous"),
         canSeek = payload.booleanValue("can_seek"),
       )

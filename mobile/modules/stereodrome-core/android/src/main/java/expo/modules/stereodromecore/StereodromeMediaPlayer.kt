@@ -67,6 +67,10 @@ class StereodromeMediaPlayer(
 
   override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<Any> {
     if (playWhenReady) {
+      if (info?.canPlay != true) {
+        invalidateOnPlayerLooper()
+        return Futures.immediateFuture(Any())
+      }
       StereodromeAudioFocus.request(appContext)
       StereodromeCoreBridge.play()
     } else {
@@ -84,10 +88,16 @@ class StereodromeMediaPlayer(
   ): ListenableFuture<Any> {
     when (seekCommand) {
       Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> {
+        if (info?.canPlay != true) {
+          return Futures.immediateFuture(Any())
+        }
         StereodromeAudioFocus.request(appContext)
         StereodromeCoreBridge.next()
       }
       Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> {
+        if (info?.canPlay != true) {
+          return Futures.immediateFuture(Any())
+        }
         StereodromeAudioFocus.request(appContext)
         StereodromeCoreBridge.previous()
       }
@@ -112,16 +122,19 @@ class StereodromeMediaPlayer(
       .add(Player.COMMAND_GET_CURRENT_MEDIA_ITEM)
       .add(Player.COMMAND_GET_METADATA)
       .add(Player.COMMAND_GET_TIMELINE)
-      .add(Player.COMMAND_PLAY_PAUSE)
       .add(Player.COMMAND_STOP)
+
+    if (currentInfo?.canPlay == true || currentInfo?.isPlaying == true) {
+      builder.add(Player.COMMAND_PLAY_PAUSE)
+    }
 
     if (currentInfo?.canSeek == true) {
       builder.add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
     }
-    if (currentInfo?.canNext == true) {
+    if (currentInfo != null && currentInfo.canPlay && currentInfo.canNext) {
       builder.add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
     }
-    if (currentInfo?.canPrevious == true) {
+    if (currentInfo != null && currentInfo.canPlay && currentInfo.canPrevious) {
       builder.add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
     }
 

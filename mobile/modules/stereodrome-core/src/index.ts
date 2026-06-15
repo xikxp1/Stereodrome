@@ -30,6 +30,7 @@ export type NativeNowPlayingInfo = {
   queue_index: number | null;
   queue_count: number;
   can_next: boolean;
+  can_play: boolean;
   can_previous: boolean;
   can_seek: boolean;
 };

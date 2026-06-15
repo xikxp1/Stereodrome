@@ -2,6 +2,7 @@ import { stereodromeCore } from "@/services/stereodromeCore";
 import type { PlayableSong } from "@/types/music";
 
 type NativeMediaControlsSnapshot = {
+  canPlay: boolean;
   currentSong: PlayableSong | null;
   duration: number;
   isPlaying: boolean;
@@ -43,6 +44,7 @@ class NativeMediaControlsSync {
     const canPrevious = queueCount > 1 && queueIndex !== null;
     const canNext = snapshot.nextSong !== null;
     const canSeek = duration > 0;
+    const canPlay = snapshot.canPlay;
     const infoKey = JSON.stringify({
       song_id: currentSong.id,
       title: currentSong.title,
@@ -53,6 +55,7 @@ class NativeMediaControlsSync {
       queueIndex,
       queueCount,
       canNext,
+      canPlay,
       canPrevious,
       canSeek,
     });
@@ -70,6 +73,7 @@ class NativeMediaControlsSync {
         queue_index: queueIndex,
         queue_count: queueCount,
         can_next: canNext,
+        can_play: canPlay,
         can_previous: canPrevious,
         can_seek: canSeek,
       });
