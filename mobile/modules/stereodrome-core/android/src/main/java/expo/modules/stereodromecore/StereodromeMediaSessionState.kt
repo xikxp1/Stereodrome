@@ -44,7 +44,35 @@ object StereodromeMediaSessionState {
     player?.updateProgress(progress)
   }
 
+  fun updateFromAudioStatus(context: Context, status: AudioPlaybackStatus) = synchronized(lock) {
+    val songId = status.currentSongId
+    if (songId == null) {
+      clearLocked(context)
+      return
+    }
+
+    val current = nowPlayingInfo ?: return
+    if (current.songId != songId) {
+      return
+    }
+
+    val nextInfo = current.copy(
+      durationSeconds = status.durationSeconds,
+      positionSeconds = status.positionSeconds,
+      isPlaying = status.isPlaying,
+    )
+    nowPlayingInfo = nextInfo
+    if (status.isPlaying && !serviceStarted) {
+      startService(context, foreground = true)
+    }
+    player?.setNowPlayingInfo(nextInfo)
+  }
+
   fun clear(context: Context) = synchronized(lock) {
+    clearLocked(context)
+  }
+
+  private fun clearLocked(context: Context) {
     nowPlayingInfo = null
     player?.clearNowPlayingInfo()
     context.stopService(Intent(context, StereodromeMediaSessionService::class.java))

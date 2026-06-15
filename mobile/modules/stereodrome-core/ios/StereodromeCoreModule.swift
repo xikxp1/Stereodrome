@@ -84,11 +84,12 @@ public class StereodromeCoreModule: Module {
         self.setAudioSessionActive(false)
       }
       switch method {
-      case "audioPause", "audioResume", "audioSeek", "audioPlayCurrent", "audioApplySettings":
+      case "audioPause", "audioResume", "audioSeek", "audioPlayCurrent", "audioApplySettings",
+        "audioStop":
         // Mirror the new state into the system widget right away; the JS
         // sync path may be deduped or suspended (e.g. locking the phone
         // immediately after pausing in-app).
-        self.refreshNowPlayingPlaybackState()
+        self.refreshNowPlayingPlaybackState(clearWhenStopped: method == "audioStop")
       default:
         break
       }
@@ -188,6 +189,7 @@ public class StereodromeCoreModule: Module {
     }
 
     MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    updateNowPlayingPlaybackState(isPlaying: boolValue(payload["is_playing"]))
     configureCommandAvailability(payload)
   }
 
@@ -201,10 +203,13 @@ public class StereodromeCoreModule: Module {
     info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = doubleValue(payload["position_seconds"])
     info[MPNowPlayingInfoPropertyPlaybackRate] = boolValue(payload["is_playing"]) ? 1.0 : 0.0
     MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    updateNowPlayingPlaybackState(isPlaying: boolValue(payload["is_playing"]))
   }
 
   private func clearNowPlayingInfo() {
-    MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    let center = MPNowPlayingInfoCenter.default()
+    center.nowPlayingInfo = nil
+    center.playbackState = .stopped
     canPlayRemoteCommands = false
     let commandCenter = MPRemoteCommandCenter.shared()
     commandCenter.nextTrackCommand.isEnabled = false
@@ -384,20 +389,31 @@ public class StereodromeCoreModule: Module {
   /// Pushes the Rust core's playback state into the system now-playing info and
   /// notifies JS. Keeps the lock screen accurate even when the JS runtime is
   /// suspended in the background.
-  private func notifyNativePlaybackChanged() {
-    refreshNowPlayingPlaybackState()
+  private func notifyNativePlaybackChanged(clearWhenStopped: Bool = false) {
+    refreshNowPlayingPlaybackState(clearWhenStopped: clearWhenStopped)
     DispatchQueue.main.async {
       self.sendEvent("native-playback-invalidated")
     }
   }
 
-  private func refreshNowPlayingPlaybackState() {
+  private func updateNowPlayingPlaybackState(isPlaying: Bool) {
+    MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+  }
+
+  private func refreshNowPlayingPlaybackState(clearWhenStopped: Bool = false) {
     guard
       let status = parseOkValue(callSync(method: "audioGetStatus", payload: "null")),
       stringValue(status["current_song_id"]) != nil
     else {
+      if clearWhenStopped {
+        clearNowPlayingInfo()
+      } else {
+        MPNowPlayingInfoCenter.default().playbackState = .stopped
+      }
       return
     }
+    let isPlaying = boolValue(status["is_playing"])
+    updateNowPlayingPlaybackState(isPlaying: isPlaying)
     guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo, !info.isEmpty else {
       return
     }
@@ -406,7 +422,7 @@ public class StereodromeCoreModule: Module {
       info[MPMediaItemPropertyPlaybackDuration] = duration
     }
     info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = doubleValue(status["position"])
-    info[MPNowPlayingInfoPropertyPlaybackRate] = boolValue(status["is_playing"]) ? 1.0 : 0.0
+    info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
     MPNowPlayingInfoCenter.default().nowPlayingInfo = info
   }
 
@@ -488,7 +504,7 @@ public class StereodromeCoreModule: Module {
       setAudioSessionActive(false)
     }
 
-    notifyNativePlaybackChanged()
+    notifyNativePlaybackChanged(clearWhenStopped: action == .stop)
   }
 
   /// Starting playback from a stopped core (e.g. lock-screen play after the

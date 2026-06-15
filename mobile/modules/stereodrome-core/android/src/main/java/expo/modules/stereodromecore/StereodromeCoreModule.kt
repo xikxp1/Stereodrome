@@ -2,6 +2,7 @@ package expo.modules.stereodromecore
 
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import org.json.JSONObject
 
 class StereodromeCoreModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -27,10 +28,14 @@ class StereodromeCoreModule : Module() {
       if (method == "audioPlayCurrent" || method == "audioResume") {
         requestAudioFocus()
       }
+      val result = callCore(method, payload)
       if (method == "audioStop") {
         abandonAudioFocus()
       }
-      callCore(method, payload)
+      if (shouldRefreshMediaSession(method)) {
+        refreshMediaSessionFromCoreStatus()
+      }
+      result
     }
 
     AsyncFunction("setNowPlayingInfo") { payload: Map<String, Any?> ->
@@ -60,6 +65,38 @@ class StereodromeCoreModule : Module() {
 
   private fun callCore(method: String, payload: String): String {
     return StereodromeCoreBridge.call(method, payload)
+  }
+
+  private fun shouldRefreshMediaSession(method: String): Boolean =
+    method == "audioPause" ||
+      method == "audioResume" ||
+      method == "audioSeek" ||
+      method == "audioPlayCurrent" ||
+      method == "audioApplySettings" ||
+      method == "audioStop"
+
+  private fun refreshMediaSessionFromCoreStatus() {
+    val context = appContext.reactContext ?: return
+    val status = AudioPlaybackStatus.fromJson(
+      parseOkValue(callCore("audioGetStatus", "null")),
+    ) ?: return
+    StereodromeMediaSessionState.updateFromAudioStatus(
+      context.applicationContext,
+      status,
+    )
+  }
+
+  private fun parseOkValue(raw: String): JSONObject? {
+    return try {
+      val envelope = JSONObject(raw)
+      if (!envelope.optBoolean("ok")) {
+        null
+      } else {
+        envelope.optJSONObject("value")
+      }
+    } catch (_: Exception) {
+      null
+    }
   }
 
   private fun escapeJson(value: String): String =

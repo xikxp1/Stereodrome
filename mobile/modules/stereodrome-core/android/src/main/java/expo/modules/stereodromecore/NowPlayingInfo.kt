@@ -1,5 +1,7 @@
 package expo.modules.stereodromecore
 
+import org.json.JSONObject
+
 data class NowPlayingInfo(
   val songId: String,
   val title: String,
@@ -56,6 +58,27 @@ data class NowPlayingProgress(
   }
 }
 
+data class AudioPlaybackStatus(
+  val currentSongId: String?,
+  val positionSeconds: Double,
+  val durationSeconds: Double,
+  val isPlaying: Boolean,
+) {
+  companion object {
+    fun fromJson(obj: JSONObject?): AudioPlaybackStatus? {
+      if (obj == null) {
+        return null
+      }
+      return AudioPlaybackStatus(
+        currentSongId = stringOrNull(obj, "current_song_id"),
+        positionSeconds = obj.optDouble("position", 0.0),
+        durationSeconds = obj.optDouble("duration", 0.0),
+        isPlaying = obj.optBoolean("is_playing", false),
+      )
+    }
+  }
+}
+
 private fun Map<String, Any?>.stringValue(key: String): String? =
   this[key]?.toString()?.takeIf { it.isNotBlank() }
 
@@ -79,3 +102,10 @@ private fun Map<String, Any?>.booleanValue(key: String): Boolean =
     is String -> value == "true"
     else -> false
   }
+
+private fun stringOrNull(obj: JSONObject, key: String): String? {
+  if (obj.isNull(key)) {
+    return null
+  }
+  return obj.optString(key).takeIf { it.isNotEmpty() }
+}

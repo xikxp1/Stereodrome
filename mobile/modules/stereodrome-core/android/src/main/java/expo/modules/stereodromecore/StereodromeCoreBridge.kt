@@ -138,6 +138,13 @@ object StereodromeCoreBridge {
     invalidationListener?.invoke()
   }
 
+  fun audioStatus(): AudioPlaybackStatus? {
+    if (!hasCore()) {
+      return null
+    }
+    return AudioPlaybackStatus.fromJson(parseOkValue(call("audioGetStatus", "null")))
+  }
+
   // `JSONObject.optString` coerces a JSON null into the literal string
   // "null", which made null song ids look like real ones. Resolve to a
   // Kotlin null instead.
