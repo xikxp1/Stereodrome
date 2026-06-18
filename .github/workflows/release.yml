@@ -50,6 +50,95 @@ jobs:
           echo "release_version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "RELEASE_VERSION=$RELEASE_VERSION" >> "$GITHUB_ENV"
 
+  validate_release_version:
+    name: Validate release version
+    needs: version
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check versioned files
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.release_version }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const expected = process.env.RELEASE_VERSION;
+          const failures = [];
+
+          function checkJson(path, getVersion = (json) => json.version) {
+            const actual = getVersion(JSON.parse(fs.readFileSync(path, "utf8")));
+            if (actual !== expected) {
+              failures.push(`${path}: expected ${expected}, got ${actual ?? "<missing>"}`);
+            }
+          }
+
+          function checkCargoPackage(path) {
+            const text = fs.readFileSync(path, "utf8");
+            const match = text.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
+            const actual = match?.[1];
+            if (actual !== expected) {
+              failures.push(`${path}: expected ${expected}, got ${actual ?? "<missing>"}`);
+            }
+          }
+
+          function checkGradle(path) {
+            const text = fs.readFileSync(path, "utf8");
+            const projectVersion = text.match(/^version = '([^']+)'/m)?.[1];
+            const versionName = text.match(/^\s*versionName "([^"]+)"/m)?.[1];
+
+            if (projectVersion !== expected) {
+              failures.push(`${path}: expected project version ${expected}, got ${projectVersion ?? "<missing>"}`);
+            }
+
+            if (versionName !== expected) {
+              failures.push(`${path}: expected versionName ${expected}, got ${versionName ?? "<missing>"}`);
+            }
+          }
+
+          [
+            "src-tauri/Cargo.toml",
+            "crates/stereodrome-audio/Cargo.toml",
+            "crates/stereodrome-core/Cargo.toml",
+            "crates/stereodrome-ffi/Cargo.toml",
+          ].forEach(checkCargoPackage);
+
+          checkJson("mobile/app.json", (json) => json.expo?.version);
+          checkJson("mobile/modules/stereodrome-core/package.json");
+
+          checkGradle("mobile/modules/stereodrome-core/android/build.gradle");
+
+          if (failures.length > 0) {
+            console.error("Release version does not match versioned files:");
+            for (const failure of failures) {
+              console.error(`- ${failure}`);
+            }
+            console.error(`Run: bun scripts/set-version.mjs ${expected}`);
+            process.exit(1);
+          }
+          NODE
+
+  prepare_release:
+    name: Prepare GitHub release
+    needs: [version, validate_release_version]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Remove existing release for tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: v${{ needs.version.outputs.release_version }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release delete "$RELEASE_TAG" --yes
+            echo "Deleted existing release $RELEASE_TAG before uploading fresh artifacts."
+          else
+            echo "No existing release $RELEASE_TAG found."
+          fi
+
   release_notes:
     name: Compose release notes
     needs: version
@@ -103,7 +192,7 @@ jobs:
           echo 'EOF' >> $GITHUB_OUTPUT
 
   build:
-    needs: [version, release_notes]
+    needs: [version, validate_release_version, prepare_release, release_notes]
     strategy:
       fail-fast: false
       matrix:
