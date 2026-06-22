@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use log::{Level, LevelFilter, Metadata, Record};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use stereodrome_audio::{
     AudioPlayer, BinauralPreset, CrossfadePlayRequest, DynamicsPreset, EqualizerSettings,
@@ -105,6 +105,7 @@ pub struct MobileCore {
     runtime: tokio::runtime::Runtime,
     data_dir: PathBuf,
     sync_state: Arc<Mutex<MobileSyncState>>,
+    saved_playlist_offline_state: Arc<Mutex<SavedPlaylistOfflineState>>,
     monitor_running: Arc<AtomicBool>,
 }
 
@@ -142,6 +143,33 @@ impl From<DueSyncJob> for MobileSyncJob {
 #[derive(Debug, Default)]
 struct MobileSyncState {
     active_job: Option<MobileSyncJob>,
+}
+
+#[derive(Clone, Debug)]
+enum SavedPlaylistOfflineTarget {
+    All,
+    Playlist(String),
+}
+
+impl SavedPlaylistOfflineTarget {
+    fn display_name(&self) -> String {
+        match self {
+            Self::All => "saved playlist offline reconcile".to_string(),
+            Self::Playlist(playlist_id) => format!("saved playlist offline download {playlist_id}"),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct SavedPlaylistOfflineState {
+    running: bool,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SavedPlaylistOfflineStatus {
+    running: bool,
+    last_error: Option<String>,
 }
 
 #[unsafe(no_mangle)]
@@ -192,6 +220,9 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
                     runtime,
                     data_dir,
                     sync_state: Arc::new(Mutex::new(MobileSyncState::default())),
+                    saved_playlist_offline_state: Arc::new(Mutex::new(
+                        SavedPlaylistOfflineState::default(),
+                    )),
                     monitor_running,
                 }))
             }
@@ -435,13 +466,24 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         }
         "setPlaylistSavedOffline" => {
             let args = parse_payload::<SetPlaylistSavedOfflinePayload>(payload)?;
-            json_result(runtime.block_on(async {
-                core.set_playlist_saved_offline(args.playlist_id, args.saved_offline)
-                    .await
-            }))
+            let result =
+                core.mark_playlist_saved_offline(args.playlist_id.clone(), args.saved_offline);
+            if result.is_ok() && args.saved_offline {
+                start_saved_playlist_offline_job(
+                    mobile,
+                    SavedPlaylistOfflineTarget::Playlist(args.playlist_id),
+                )?;
+            }
+            json_result(result)
         }
         "reconcileSavedPlaylistsOffline" => {
             json_result(runtime.block_on(async { core.reconcile_saved_playlists_offline().await }))
+        }
+        "startSavedPlaylistsOfflineReconcile" => json_result(
+            start_saved_playlist_offline_job(mobile, SavedPlaylistOfflineTarget::All).map(|_| ()),
+        ),
+        "getSavedPlaylistsOfflineReconcileStatus" => {
+            json_result(get_saved_playlist_offline_status(mobile))
         }
         "prefetchNext" => json_result(runtime.block_on(async { core.prefetch_next().await })),
         "getPlaybackState" => json_result(core.get_playback_state()),
@@ -700,6 +742,103 @@ fn run_sync_job(data_dir: PathBuf, job: MobileSyncJob) -> Result<(), String> {
             .map(|_| ())
             .map_err(|error| error.to_string()),
     }
+}
+
+fn start_saved_playlist_offline_job(
+    mobile: &MobileCore,
+    target: SavedPlaylistOfflineTarget,
+) -> Result<(), String> {
+    {
+        let mut state = mobile
+            .saved_playlist_offline_state
+            .lock()
+            .map_err(|_| "saved playlist offline state lock is poisoned".to_string())?;
+        if state.running {
+            return Ok(());
+        }
+        state.running = true;
+        state.last_error = None;
+    }
+
+    let data_dir = mobile.data_dir.clone();
+    let saved_playlist_offline_state = Arc::clone(&mobile.saved_playlist_offline_state);
+    thread::spawn(move || {
+        let job_name = target.display_name();
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            run_saved_playlist_offline_job(data_dir, target)
+        }));
+        let last_error = match result {
+            Ok(Ok(())) => {
+                log::info!(
+                    target: "stereodrome_ffi",
+                    "Mobile {job_name} finished"
+                );
+                None
+            }
+            Ok(Err(error)) => {
+                log::warn!(
+                    target: "stereodrome_ffi",
+                    "Mobile {job_name} failed: {error}"
+                );
+                Some(error)
+            }
+            Err(payload) => {
+                let error = format!(
+                    "Mobile {job_name} panicked: {}",
+                    panic_payload_message(payload.as_ref())
+                );
+                log::error!(target: "stereodrome_ffi", "{error}");
+                Some(error)
+            }
+        };
+
+        if let Ok(mut state) = saved_playlist_offline_state.lock() {
+            state.running = false;
+            state.last_error = last_error;
+        }
+    });
+
+    Ok(())
+}
+
+fn run_saved_playlist_offline_job(
+    data_dir: PathBuf,
+    target: SavedPlaylistOfflineTarget,
+) -> Result<(), String> {
+    log::info!(
+        target: "stereodrome_ffi",
+        "Starting mobile {} in background",
+        target.display_name()
+    );
+    let core = StereodromeCore::new(data_dir).map_err(|error| error.to_string())?;
+    let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
+    runtime
+        .block_on(async { core.restore_session().await })
+        .map_err(|error| error.to_string())?;
+
+    match target {
+        SavedPlaylistOfflineTarget::All => runtime
+            .block_on(async { core.reconcile_saved_playlists_offline().await })
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        SavedPlaylistOfflineTarget::Playlist(playlist_id) => runtime
+            .block_on(async { core.download_playlist(playlist_id).await })
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+    }
+}
+
+fn get_saved_playlist_offline_status(
+    mobile: &MobileCore,
+) -> Result<SavedPlaylistOfflineStatus, String> {
+    let state = mobile
+        .saved_playlist_offline_state
+        .lock()
+        .map_err(|_| "saved playlist offline state lock is poisoned".to_string())?;
+    Ok(SavedPlaylistOfflineStatus {
+        running: state.running,
+        last_error: state.last_error.clone(),
+    })
 }
 
 fn run_due_sync_job(mobile: &MobileCore) -> Result<Option<String>, String> {

@@ -66,7 +66,11 @@ export function PlaylistScreen({
     }
     await stereodromeCore.setPlaylistSavedOffline(playlistId, !savedOffline);
     await queryClient.invalidateQueries({ queryKey: ["playlists"] });
-    await stereodrome.refreshOfflineSongIds();
+    if (savedOffline) {
+      await stereodrome.refreshOfflineSongIds();
+    } else {
+      await stereodrome.reconcileSavedPlaylistsOffline();
+    }
   }
 
   const options = [

@@ -183,6 +183,11 @@ export type SavedPlaylistOfflineResult = {
   skipped_protected_count: number;
 };
 
+export type SavedPlaylistOfflineStatus = {
+  running: boolean;
+  last_error: string | null;
+};
+
 export type PlaybackStateSnapshot = {
   current_song_id: string | null;
   position_seconds: number;

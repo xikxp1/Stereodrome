@@ -23,6 +23,7 @@ type StereodromeContextValue = {
   error: string | null;
   refreshStatus(): Promise<void>;
   refreshOfflineSongIds(): Promise<void>;
+  reconcileSavedPlaylistsOffline(): Promise<void>;
   connect(params: {
     url: string;
     username: string;
@@ -45,6 +46,7 @@ const disconnected: ConnectionStatus = {
 };
 
 const librarySyncStatusQueryKey = ["library-sync-status"] as const;
+const savedPlaylistOfflinePollIntervalMs = 2000;
 const libraryQueryKeys = [
   ["artists"],
   ["albums"],
@@ -73,6 +75,9 @@ export function StereodromeProvider({
   const [error, setError] = useState<string | null>(null);
   const syncWasActive = useRef(false);
   const lastCompletedSyncKey = useRef<string | null>(null);
+  const savedPlaylistOfflinePoll = useRef<ReturnType<
+    typeof setInterval
+  > | null>(null);
   const hasConfiguredServer = Boolean(status.server_url);
   const offlineMode =
     manualOfflineEnabled || (hasConfiguredServer && !status.connected);
@@ -87,6 +92,51 @@ export function StereodromeProvider({
     }
   }
 
+  function stopSavedPlaylistOfflinePolling() {
+    if (!savedPlaylistOfflinePoll.current) {
+      return;
+    }
+    clearInterval(savedPlaylistOfflinePoll.current);
+    savedPlaylistOfflinePoll.current = null;
+  }
+
+  async function pollSavedPlaylistOfflineReconcile() {
+    try {
+      const status =
+        await stereodromeCore.getSavedPlaylistsOfflineReconcileStatus();
+      if (status.running) {
+        return;
+      }
+
+      stopSavedPlaylistOfflinePolling();
+      if (status.last_error) {
+        setError(status.last_error);
+      } else {
+        setError(null);
+      }
+      await refreshOfflineSongIds();
+    } catch (e) {
+      stopSavedPlaylistOfflinePolling();
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function startSavedPlaylistOfflinePolling() {
+    if (savedPlaylistOfflinePoll.current) {
+      return;
+    }
+    void pollSavedPlaylistOfflineReconcile();
+    savedPlaylistOfflinePoll.current = setInterval(
+      () => void pollSavedPlaylistOfflineReconcile(),
+      savedPlaylistOfflinePollIntervalMs
+    );
+  }
+
+  async function reconcileSavedPlaylistsOfflineInBackground() {
+    await stereodromeCore.startSavedPlaylistsOfflineReconcile();
+    startSavedPlaylistOfflinePolling();
+  }
+
   async function refreshStatus() {
     try {
       const connectivitySettings =
@@ -98,10 +148,9 @@ export function StereodromeProvider({
       if (next.server_url) {
         await refreshOfflineSongIds();
         if (next.connected && !connectivitySettings.manual_offline_enabled) {
-          void stereodromeCore
-            .reconcileSavedPlaylistsOffline()
-            .then(refreshOfflineSongIds)
-            .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+          void reconcileSavedPlaylistsOfflineInBackground().catch((e) =>
+            setError(e instanceof Error ? e.message : String(e))
+          );
         }
       } else {
         setOfflineSongIds(new Set());
@@ -125,7 +174,7 @@ export function StereodromeProvider({
     const next = await stereodromeCore.connectServer(params);
     setStatus(next);
     setError(null);
-    await stereodromeCore.reconcileSavedPlaylistsOffline();
+    await reconcileSavedPlaylistsOfflineInBackground();
     await refreshOfflineSongIds();
   }
 
@@ -141,7 +190,7 @@ export function StereodromeProvider({
     setStatus(next);
     setError(null);
     if (next.connected && !manualOfflineEnabled) {
-      await stereodromeCore.reconcileSavedPlaylistsOffline();
+      await reconcileSavedPlaylistsOfflineInBackground();
     }
     await refreshOfflineSongIds();
   }
@@ -181,7 +230,7 @@ export function StereodromeProvider({
       )
     );
     if (status.connected && !manualOfflineEnabled) {
-      await stereodromeCore.reconcileSavedPlaylistsOffline();
+      await reconcileSavedPlaylistsOfflineInBackground();
     }
     await refreshOfflineSongIds();
   }
@@ -228,6 +277,7 @@ export function StereodromeProvider({
       });
     return () => {
       mounted = false;
+      stopSavedPlaylistOfflinePolling();
     };
   }, []);
 
@@ -286,6 +336,8 @@ export function StereodromeProvider({
       error,
       refreshStatus,
       refreshOfflineSongIds,
+      reconcileSavedPlaylistsOffline:
+        reconcileSavedPlaylistsOfflineInBackground,
       connect,
       updateServerSettings,
       setManualOfflineEnabled,

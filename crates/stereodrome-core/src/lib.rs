@@ -1278,6 +1278,43 @@ impl StereodromeCore {
         }
     }
 
+    pub fn mark_playlist_saved_offline(
+        &self,
+        playlist_id: String,
+        saved_offline: bool,
+    ) -> CoreResult<SavedPlaylistOfflineResult> {
+        if saved_offline {
+            if self.manual_offline_enabled()? {
+                return Err(CoreError::OfflineMode);
+            }
+
+            let previous_saved_at = self.playlist_offline_saved_at(&playlist_id)?;
+            self.set_playlist_offline_saved_at(
+                &playlist_id,
+                Some(previous_saved_at.unwrap_or_else(|| Utc::now().to_rfc3339())),
+            )?;
+            Ok(SavedPlaylistOfflineResult {
+                playlist_id,
+                saved_offline: true,
+                downloaded_count: 0,
+                removed_count: 0,
+                skipped_protected_count: 0,
+            })
+        } else {
+            let song_ids = self.playlist_song_ids(&playlist_id)?;
+            self.set_playlist_offline_saved_at(&playlist_id, None)?;
+            let (removed_count, skipped_protected_count) =
+                self.remove_unprotected_cached_songs(song_ids)?;
+            Ok(SavedPlaylistOfflineResult {
+                playlist_id,
+                saved_offline: false,
+                downloaded_count: 0,
+                removed_count,
+                skipped_protected_count,
+            })
+        }
+    }
+
     pub async fn reconcile_saved_playlists_offline(
         &self,
     ) -> CoreResult<Vec<SavedPlaylistOfflineResult>> {

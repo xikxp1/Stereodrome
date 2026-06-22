@@ -27,6 +27,7 @@ import type {
   ScanStatus,
   SearchResults,
   SavedPlaylistOfflineResult,
+  SavedPlaylistOfflineStatus,
   Song,
   SyncSettings,
 } from "@/types/music";
@@ -357,6 +358,12 @@ export const stereodromeCore = {
   },
   reconcileSavedPlaylistsOffline(): Promise<SavedPlaylistOfflineResult[]> {
     return invokeJson("reconcileSavedPlaylistsOffline");
+  },
+  startSavedPlaylistsOfflineReconcile(): Promise<void> {
+    return invokeJson("startSavedPlaylistsOfflineReconcile");
+  },
+  getSavedPlaylistsOfflineReconcileStatus(): Promise<SavedPlaylistOfflineStatus> {
+    return invokeJson("getSavedPlaylistsOfflineReconcileStatus");
   },
   prefetchNext(): Promise<DownloadStatus | null> {
     return invokeJson("prefetchNext");
