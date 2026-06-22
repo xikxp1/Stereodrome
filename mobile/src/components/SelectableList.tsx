@@ -22,6 +22,7 @@ export type SelectableOption = {
   label: string;
   kind?: "action" | "editable" | "info";
   sublabel?: string;
+  wheelOnly?: boolean;
   onSelect(): void | Promise<void>;
   onLongSelect?(): void | Promise<void>;
 };
@@ -91,6 +92,7 @@ const SelectableRow = memo(
     previous.item.label === next.item.label &&
     previous.item.kind === next.item.kind &&
     previous.item.sublabel === next.item.sublabel &&
+    previous.item.wheelOnly === next.item.wheelOnly &&
     previous.selected === next.selected
 );
 
@@ -286,6 +288,9 @@ export function SelectableList({
     (index: number) => {
       rowLongPressed.current = true;
       activateIndex(index);
+      if (optionsRef.current[index]?.wheelOnly) {
+        return;
+      }
       void optionsRef.current[index]?.onLongSelect?.();
     },
     [activateIndex]
@@ -298,6 +303,9 @@ export function SelectableList({
       }
 
       activateIndex(index);
+      if (optionsRef.current[index]?.wheelOnly) {
+        return;
+      }
       void optionsRef.current[index]?.onSelect();
     },
     [activateIndex]
