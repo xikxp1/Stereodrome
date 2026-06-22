@@ -15,6 +15,7 @@ import {
   SelectableList,
   type SelectableOption,
 } from "@/components/SelectableList";
+import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
 import { colors } from "@/components/theme";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { useStereodrome } from "@/context/StereodromeContext";
@@ -204,6 +205,18 @@ export function SettingsScreen({ category }: { category?: string }) {
     enabled:
       selectedCategory === "playback" || selectedCategory === "normalization",
   });
+  const { protectedActionRows } = useProtectedSelectableAction(
+    [
+      selectedCategory ?? "root",
+      stereodrome.manualOfflineEnabled,
+      stereodrome.hasConfiguredServer,
+      stereodrome.status.connected,
+      lastfmStatus.data?.authenticated ?? false,
+      syncStatus.data?.active_job ?? "idle",
+      cacheStats.data?.file_count ?? 0,
+      cacheStats.data?.total_size ?? 0,
+    ].join(":")
+  );
 
   function openTextEdit(config: TextEditConfig) {
     setTextEdit(config);
@@ -261,13 +274,21 @@ export function SettingsScreen({ category }: { category?: string }) {
 
   function serverOptions(): SelectableOption[] {
     return [
-      {
-        kind: "action",
+      ...protectedActionRows({
+        id: "toggle-offline-mode",
         label: "Offline Mode",
         sublabel: stereodrome.manualOfflineEnabled
           ? "Downloaded songs only"
           : "Use server when available",
-        onSelect: async () => {
+        confirmLabel: stereodrome.manualOfflineEnabled
+          ? "Confirm Online"
+          : "Confirm Offline",
+        confirmSublabel: stereodrome.manualOfflineEnabled
+          ? "Use wheel select to use server again"
+          : "Use wheel select to use downloads only",
+        cancelLabel: "Cancel Change",
+        cancelSublabel: "Keep current connectivity mode",
+        onConfirm: async () => {
           await runBusy("offline-mode", async () => {
             const nextEnabled = !stereodrome.manualOfflineEnabled;
             await stereodrome.setManualOfflineEnabled(nextEnabled);
@@ -276,7 +297,7 @@ export function SettingsScreen({ category }: { category?: string }) {
             );
           });
         },
-      },
+      }),
       {
         kind: "editable",
         label: "Server",
@@ -325,20 +346,22 @@ export function SettingsScreen({ category }: { category?: string }) {
         onSelect: () => stereodrome.refreshStatus(),
       },
       ...(stereodrome.hasConfiguredServer
-        ? [
-            {
-              kind: "action" as const,
-              label: "Disconnect",
-              sublabel: "Sign out of this server",
-              onSelect: async () => {
-                await runBusy("disconnect", async () => {
-                  await stereodromeCore.disconnectServer();
-                  await stereodrome.refreshStatus();
-                  setMessage("Disconnected");
-                });
-              },
+        ? protectedActionRows({
+            id: "disconnect-server",
+            label: "Disconnect",
+            sublabel: "Sign out of this server",
+            confirmLabel: "Confirm Disconnect",
+            confirmSublabel: "Use wheel select to sign out",
+            cancelLabel: "Cancel Disconnect",
+            cancelSublabel: "Keep server connection",
+            onConfirm: async () => {
+              await runBusy("disconnect", async () => {
+                await stereodromeCore.disconnectServer();
+                await stereodrome.refreshStatus();
+                setMessage("Disconnected");
+              });
             },
-          ]
+          })
         : []),
     ];
   }
@@ -347,8 +370,8 @@ export function SettingsScreen({ category }: { category?: string }) {
     const syncActions =
       stereodrome.status.connected && !stereodrome.manualOfflineEnabled
         ? [
-            {
-              kind: "action" as const,
+            ...protectedActionRows({
+              id: "start-scan",
               label: "Start scan",
               sublabel:
                 busyAction === "scan"
@@ -356,8 +379,12 @@ export function SettingsScreen({ category }: { category?: string }) {
                   : scanStatus.data?.scanning
                     ? formatScanStatus(scanStatus.data)
                     : "Invoke Subsonic scan",
-              onSelect: () => runStartScan(),
-            },
+              confirmLabel: "Confirm Scan",
+              confirmSublabel: "Use wheel select to ask server to scan",
+              cancelLabel: "Cancel Scan",
+              cancelSublabel: "Do not start server scan",
+              onConfirm: () => runStartScan(),
+            }),
             {
               kind: "action" as const,
               label: "Incremental sync",
@@ -367,15 +394,19 @@ export function SettingsScreen({ category }: { category?: string }) {
                   : `Last: ${formatTimestamp(syncStatus.data?.incremental.last_success_at)}`,
               onSelect: () => runSync("incremental"),
             },
-            {
-              kind: "action" as const,
+            ...protectedActionRows({
+              id: "full-sync",
               label: "Full sync",
               sublabel:
                 busyAction === "full"
                   ? "Syncing..."
                   : `Last: ${formatTimestamp(syncStatus.data?.full_reconcile.last_success_at)}`,
-              onSelect: () => runSync("full"),
-            },
+              confirmLabel: "Confirm Full Sync",
+              confirmSublabel: "Use wheel select to reconcile library",
+              cancelLabel: "Cancel Full Sync",
+              cancelSublabel: "Do not start full sync",
+              onConfirm: () => runSync("full"),
+            }),
           ]
         : [
             {
@@ -545,12 +576,16 @@ export function SettingsScreen({ category }: { category?: string }) {
               : "Submit pending scrobbles",
           onSelect: () => runRetryLastfmQueue(),
         },
-        {
-          kind: "action",
+        ...protectedActionRows({
+          id: "disconnect-lastfm",
           label: "Disconnect",
           sublabel: "Remove Last.fm session",
-          onSelect: () => runDisconnectLastfm(),
-        }
+          confirmLabel: "Confirm Disconnect",
+          confirmSublabel: "Use wheel select to remove Last.fm session",
+          cancelLabel: "Cancel Disconnect",
+          cancelSublabel: "Keep Last.fm connected",
+          onConfirm: () => runDisconnectLastfm(),
+        })
       );
     }
     return options;
@@ -606,12 +641,16 @@ export function SettingsScreen({ category }: { category?: string }) {
           }),
         onLongSelect: () => cycleCacheSize(-1),
       },
-      {
-        kind: "action",
+      ...protectedActionRows({
+        id: "settings-clear-audio-cache",
         label: "Clear Audio Cache",
         sublabel:
           busyAction === "clear-cache" ? "Clearing..." : "Remove cached audio",
-        onSelect: async () => {
+        confirmLabel: "Confirm Clear",
+        confirmSublabel: "Use wheel select to remove cached audio",
+        cancelLabel: "Cancel Clear",
+        cancelSublabel: "Keep cached audio",
+        onConfirm: async () => {
           await runBusy("clear-cache", async () => {
             await stereodromeCore.clearAudioCache();
             await queryClient.invalidateQueries({
@@ -621,7 +660,7 @@ export function SettingsScreen({ category }: { category?: string }) {
             setMessage("Cache cleared");
           });
         },
-      },
+      }),
     ];
   }
 

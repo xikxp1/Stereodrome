@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   SelectableList,
   type SelectableOption,
 } from "@/components/SelectableList";
+import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
 import { usePlayback } from "@/context/PlaybackContext";
 import { useSongActions } from "@/context/SongActionContext";
 import { useStereodrome } from "@/context/StereodromeContext";
@@ -23,7 +24,6 @@ export function PlaylistScreen({
   const stereodrome = useStereodrome();
   const view = useViewStack();
   const queryClient = useQueryClient();
-  const [confirmingRemoval, setConfirmingRemoval] = useState(false);
   const songs = useQuery({
     queryKey: ["playlist-songs", playlistId],
     queryFn: () => stereodromeCore.getPlaylistSongs(playlistId),
@@ -37,6 +37,13 @@ export function PlaylistScreen({
     (item) => item.id === playlistId
   );
   const savedOffline = playlist?.saved_offline ?? false;
+  const {
+    armProtectedAction,
+    pendingActionId,
+    protectedActionRows,
+  } = useProtectedSelectableAction(
+    `${playlistId}:${savedOffline}:${stereodrome.offlineMode}`
+  );
   const shownSongs = visibleSongs(
     songs.data ?? [],
     stereodrome.offlineMode,
@@ -44,7 +51,7 @@ export function PlaylistScreen({
   );
   const songOptionOffset = stereodrome.offlineMode
     ? 0
-    : confirmingRemoval && savedOffline
+    : pendingActionId === "remove-offline-save" && savedOffline
       ? 2
       : 1;
   const handleActiveIndexChange = useCallback(
@@ -68,15 +75,10 @@ export function PlaylistScreen({
     return () => clearActiveSongTarget();
   }, [clearActiveSongTarget]);
 
-  useEffect(() => {
-    setConfirmingRemoval(false);
-  }, [playlistId, savedOffline, stereodrome.offlineMode]);
-
   async function setSavedOffline(nextSavedOffline: boolean) {
     if (!playlistId || stereodrome.offlineMode) {
       return;
     }
-    setConfirmingRemoval(false);
     await stereodromeCore.setPlaylistSavedOffline(playlistId, nextSavedOffline);
     await queryClient.invalidateQueries({ queryKey: ["playlists"] });
     if (nextSavedOffline) {
@@ -89,33 +91,22 @@ export function PlaylistScreen({
   const actionOptions: SelectableOption[] =
     stereodrome.offlineMode
       ? []
-      : confirmingRemoval && savedOffline
-        ? [
-            {
-              label: "Cancel Removal",
-              sublabel: "Keep playlist saved offline",
-              onSelect: () => setConfirmingRemoval(false),
-            },
-            {
-              label: "Confirm Remove",
-              sublabel: "Use wheel select to remove offline save",
-              wheelOnly: true,
-              onSelect: () => setSavedOffline(false),
-            },
-          ]
+      : savedOffline
+        ? protectedActionRows({
+            id: "remove-offline-save",
+            label: "Remove Offline Save",
+            sublabel: "Requires wheel confirmation",
+            confirmLabel: "Confirm Remove",
+            confirmSublabel: "Use wheel select to remove offline save",
+            cancelLabel: "Cancel Removal",
+            cancelSublabel: "Keep playlist saved offline",
+            onConfirm: () => setSavedOffline(false),
+          })
         : [
             {
-              label: savedOffline ? "Remove Offline Save" : "Save Offline",
-              sublabel: savedOffline
-                ? "Requires wheel confirmation"
-                : "Download and preserve playlist songs",
-              onSelect: () => {
-                if (savedOffline) {
-                  setConfirmingRemoval(true);
-                  return;
-                }
-                void setSavedOffline(true);
-              },
+              label: "Save Offline",
+              sublabel: "Download and preserve playlist songs",
+              onSelect: () => setSavedOffline(true),
             },
           ];
 
@@ -132,10 +123,10 @@ export function PlaylistScreen({
         ? undefined
         : () => {
             if (savedOffline) {
-              setConfirmingRemoval(true);
+              armProtectedAction("remove-offline-save");
               return;
             }
-            void setSavedOffline(true);
+            return setSavedOffline(true);
           },
     })),
   ];

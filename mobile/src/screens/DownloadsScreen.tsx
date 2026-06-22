@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
+import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
@@ -11,6 +12,9 @@ export function DownloadsScreen() {
     queryKey: ["audio-cache-stats"],
     queryFn: stereodromeCore.getAudioCacheStats,
   });
+  const { protectedActionRows } = useProtectedSelectableAction(
+    `downloads:${cacheStats.data?.file_count ?? 0}:${cacheStats.data?.total_size ?? 0}`
+  );
 
   async function refreshCache() {
     await queryClient.invalidateQueries({ queryKey: ["audio-cache-stats"] });
@@ -39,14 +43,19 @@ export function DownloadsScreen() {
                 },
               },
             ]),
-        {
+        ...protectedActionRows({
+          id: "clear-audio-cache",
           label: "Clear Audio Cache",
           sublabel: `${cacheStats.data?.file_count ?? 0} cached files`,
-          onSelect: async () => {
+          confirmLabel: "Confirm Clear",
+          confirmSublabel: "Use wheel select to remove cached audio",
+          cancelLabel: "Cancel Clear",
+          cancelSublabel: "Keep cached audio",
+          onConfirm: async () => {
             await stereodromeCore.clearAudioCache();
             await refreshCache();
           },
-        },
+        }),
       ];
 
   return (
