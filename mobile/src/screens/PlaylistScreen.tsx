@@ -37,13 +37,10 @@ export function PlaylistScreen({
     (item) => item.id === playlistId
   );
   const savedOffline = playlist?.saved_offline ?? false;
-  const {
-    armProtectedAction,
-    pendingActionId,
-    protectedActionRows,
-  } = useProtectedSelectableAction(
-    `${playlistId}:${savedOffline}:${stereodrome.offlineMode}`
-  );
+  const { armProtectedAction, pendingActionId, protectedActionRows } =
+    useProtectedSelectableAction(
+      `${playlistId}:${savedOffline}:${stereodrome.offlineMode}`
+    );
   const shownSongs = visibleSongs(
     songs.data ?? [],
     stereodrome.offlineMode,
@@ -88,27 +85,26 @@ export function PlaylistScreen({
     }
   }
 
-  const actionOptions: SelectableOption[] =
-    stereodrome.offlineMode
-      ? []
-      : savedOffline
-        ? protectedActionRows({
-            id: "remove-offline-save",
-            label: "Remove Offline Save",
-            sublabel: "Requires wheel confirmation",
-            confirmLabel: "Confirm Remove",
-            confirmSublabel: "Use wheel select to remove offline save",
-            cancelLabel: "Cancel Removal",
-            cancelSublabel: "Keep playlist saved offline",
-            onConfirm: () => setSavedOffline(false),
-          })
-        : [
-            {
-              label: "Save Offline",
-              sublabel: "Download and preserve playlist songs",
-              onSelect: () => setSavedOffline(true),
-            },
-          ];
+  const actionOptions: SelectableOption[] = stereodrome.offlineMode
+    ? []
+    : savedOffline
+      ? protectedActionRows({
+          id: "remove-offline-save",
+          label: "Remove Offline Save",
+          sublabel: "Requires wheel confirmation",
+          confirmLabel: "Confirm Remove",
+          confirmSublabel: "Use wheel select to remove offline save",
+          cancelLabel: "Cancel Removal",
+          cancelSublabel: "Keep playlist saved offline",
+          onConfirm: () => setSavedOffline(false),
+        })
+      : [
+          {
+            label: "Save Offline",
+            sublabel: "Download and preserve playlist songs",
+            onSelect: () => setSavedOffline(true),
+          },
+        ];
 
   const options = [
     ...actionOptions,
