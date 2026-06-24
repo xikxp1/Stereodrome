@@ -1,6 +1,7 @@
+use crate::runtime::AppHandle;
 use log::warn;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::commands::settings::manual_offline_enabled;
 use crate::credentials;

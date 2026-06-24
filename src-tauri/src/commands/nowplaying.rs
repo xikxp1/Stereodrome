@@ -1,10 +1,11 @@
+use crate::runtime::AppHandle;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{Emitter, State};
 
 use crate::client::SubsonicClientHandle;
 use crate::error::{AppError, AppResult};

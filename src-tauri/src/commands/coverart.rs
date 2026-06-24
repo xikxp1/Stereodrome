@@ -2,9 +2,10 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::runtime::AppHandle;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use log::warn;
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::cache::cover_cache_dir;
 use crate::client::SubsonicClientHandle;

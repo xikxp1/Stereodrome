@@ -6,7 +6,9 @@ use std::time::Duration;
 use log::{debug, error, info};
 use tauri::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{Emitter, Manager};
+
+use crate::runtime::{App, AppHandle, Runtime};
 
 const MENU_ID_APP_INFO: &str = "app_info";
 const MENU_ID_NOW_PLAYING: &str = "now_playing";
@@ -25,11 +27,11 @@ pub enum TrayCommand {
 }
 
 struct TrayState {
-    tray: TrayIcon,
-    app_info_item: MenuItem<tauri::Wry>,
+    tray: TrayIcon<Runtime>,
+    app_info_item: MenuItem<Runtime>,
     app_version: String,
-    play_pause_item: MenuItem<tauri::Wry>,
-    now_playing_item: MenuItem<tauri::Wry>,
+    play_pause_item: MenuItem<Runtime>,
+    now_playing_item: MenuItem<Runtime>,
 }
 
 pub struct TrayManager {
@@ -38,7 +40,7 @@ pub struct TrayManager {
 }
 
 impl TrayManager {
-    pub fn new(app: &tauri::App) -> Option<Self> {
+    pub fn new(app: &App) -> Option<Self> {
         // Get app version
         let version = app.package_info().version.to_string();
         let app_info_text = format!("Stereodrome v{}", version);
@@ -158,7 +160,7 @@ impl TrayManager {
         };
 
         // Build tray icon with event handlers
-        let tray = match TrayIconBuilder::new()
+        let tray = match TrayIconBuilder::<Runtime>::new()
             .icon(icon)
             .icon_as_template(true)
             .tooltip("Stereodrome")

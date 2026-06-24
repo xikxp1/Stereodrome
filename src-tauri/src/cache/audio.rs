@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use crate::runtime::AppHandle;
 use filetime::FileTime;
 use log::{debug, warn};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::Emitter;
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex as TokioMutex;
 

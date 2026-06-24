@@ -1,5 +1,6 @@
+use crate::runtime::AppHandle;
 use log::{info, warn};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{Emitter, State};
 
 use crate::audio::loudness;
 use crate::cache::AudioCache;

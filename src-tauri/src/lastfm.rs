@@ -1,11 +1,12 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use crate::runtime::AppHandle;
 use chrono::Utc;
 use log::{debug, warn};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::Manager;
 use tauri_plugin_store::StoreExt;
 
 use crate::audio::SongMetadata;

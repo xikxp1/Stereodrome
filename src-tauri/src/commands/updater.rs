@@ -1,4 +1,5 @@
-use tauri::{AppHandle, Manager};
+use crate::runtime::AppHandle;
+use tauri::Manager;
 
 use crate::tray::TrayManager;
 

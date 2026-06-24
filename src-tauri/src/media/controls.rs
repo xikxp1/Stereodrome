@@ -2,12 +2,13 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
 
+use crate::runtime::AppHandle;
 use log::{debug, error, info, warn};
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
     SeekDirection,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::Emitter;
 
 use crate::audio::SongMetadata;
 

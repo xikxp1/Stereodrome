@@ -4,11 +4,12 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+use crate::runtime::AppHandle;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use log::{debug, info, warn};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{Emitter, Manager, State};
 use tokio::task::JoinSet;
 
 use crate::error::{AppError, AppResult, MutexExt};

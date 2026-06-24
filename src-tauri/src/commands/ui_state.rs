@@ -1,4 +1,4 @@
-use tauri::AppHandle;
+use crate::runtime::AppHandle;
 use tauri_plugin_store::StoreExt;
 
 use crate::commands::windowing::MiniPlayerPosition;

@@ -2,9 +2,10 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::runtime::AppHandle;
 use log::warn;
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::Manager;
 use tauri_plugin_store::StoreExt;
 
 use crate::error::{AppError, AppResult};

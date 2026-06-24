@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::runtime::AppHandle;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::cache::AudioCache;
 use crate::commands::coverart::preserve_cover_art_for_offline;

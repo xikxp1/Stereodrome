@@ -1,5 +1,6 @@
+use crate::runtime::AppHandle;
 use log::warn;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{Emitter, State};
 use tauri_plugin_store::StoreExt;
 
 use crate::audio::binaural::BinauralPreset;

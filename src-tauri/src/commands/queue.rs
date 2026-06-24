@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
+use crate::runtime::AppHandle;
 use rusqlite::params_from_iter;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{Emitter, State};
 
 use crate::audio::queue::{PlayQueue, QueueItem, RepeatMode};
 use crate::db::queue::save_queue;

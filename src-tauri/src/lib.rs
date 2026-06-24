@@ -7,6 +7,7 @@ mod db;
 mod error;
 mod lastfm;
 mod media;
+mod runtime;
 mod search;
 mod state;
 mod tray;
@@ -16,8 +17,9 @@ use std::sync::Arc;
 use error::MutexExt as _;
 use log::{LevelFilter, info, warn};
 use media::MediaControlsManager;
+use runtime::{AppHandle, Runtime};
 use state::AppState;
-use tauri::{AppHandle, Manager};
+use tauri::Manager;
 use tauri_plugin_log::{Target, TargetKind};
 use tray::TrayManager;
 
@@ -35,7 +37,7 @@ fn focus_main_window(app: &AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::<Runtime>::default();
 
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -63,7 +65,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_prevent_default::debug());
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", any(feature = "cef", feature = "wry")))]
     let builder = builder.plugin(tauri_nspanel::init());
 
     builder

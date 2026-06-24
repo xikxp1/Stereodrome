@@ -1,12 +1,13 @@
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "wry", not(feature = "cef")))]
 use tauri::Emitter;
-#[cfg(not(target_os = "macos"))]
-use tauri::WebviewWindowBuilder;
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Position, Size, WebviewUrl};
+use tauri::{LogicalPosition, LogicalSize, Manager, Position, Size, WebviewUrl};
 
 use crate::error::{AppError, AppResult};
+#[cfg(not(all(target_os = "macos", feature = "wry", not(feature = "cef"))))]
+use crate::runtime::Runtime;
+use crate::runtime::{AppHandle, WebviewWindow};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const MINI_PLAYER_LABEL: &str = "mini-player";
@@ -15,7 +16,7 @@ const MINI_PLAYER_URL: &str = "/mini-player";
 const MINI_PLAYER_WIDTH: f64 = 320.0;
 const MINI_PLAYER_HEIGHT: f64 = 72.0;
 const NANO_PLAYER_SIZE: f64 = 30.0;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "wry", not(feature = "cef")))]
 const MINI_PLAYER_HOVER_EVENT: &str = "mini-player-hover-state";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -31,7 +32,7 @@ pub enum MiniPlayerMode {
     Nano,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "wry", not(feature = "cef")))]
 #[derive(Debug, Clone, Copy, Serialize)]
 struct MiniPlayerHoverState {
     hovered: bool,
@@ -45,7 +46,7 @@ fn mini_player_dimensions(mode: MiniPlayerMode) -> (f64, f64) {
 }
 
 fn apply_mini_player_mode(
-    window: &tauri::WebviewWindow,
+    window: &WebviewWindow,
     mode: MiniPlayerMode,
     position: MiniPlayerPosition,
 ) -> AppResult<()> {
@@ -116,6 +117,39 @@ fn restore_main_window_impl(app_handle: &AppHandle) -> AppResult<()> {
 }
 
 #[cfg(target_os = "macos")]
+fn run_windowing_on_main_thread<F>(app_handle: &AppHandle, task: F) -> AppResult<()>
+where
+    F: FnOnce(AppHandle) -> AppResult<()> + Send + 'static,
+{
+    if objc2::MainThreadMarker::new().is_some() {
+        return task(app_handle.clone());
+    }
+
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let task_handle = app_handle.clone();
+    app_handle
+        .run_on_main_thread(move || {
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(task_handle)))
+                    .unwrap_or_else(|payload| {
+                        let message = payload
+                            .downcast_ref::<String>()
+                            .map(String::as_str)
+                            .or_else(|| payload.downcast_ref::<&'static str>().copied())
+                            .unwrap_or("unknown panic");
+                        Err(AppError::Window(format!(
+                            "window command panicked on main thread: {message}"
+                        )))
+                    });
+            let _ = tx.send(result);
+        })
+        .map_err(|e| AppError::Window(format!("failed to schedule window command: {e}")))?;
+
+    rx.recv()
+        .map_err(|e| AppError::Window(format!("failed to receive window command result: {e}")))?
+}
+
+#[cfg(all(target_os = "macos", feature = "wry", not(feature = "cef")))]
 tauri_nspanel::tauri_panel! {
     panel!(MiniPlayerPanel {
         config: {
@@ -139,49 +173,51 @@ tauri_nspanel::tauri_panel! {
     panel_event!(MiniPlayerPanelEventHandler {})
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "wry", not(feature = "cef")))]
 fn create_mini_player_window(
     app_handle: &AppHandle,
     position: MiniPlayerPosition,
 ) -> AppResult<()> {
     use tauri_nspanel::{CollectionBehavior, PanelBuilder, PanelLevel, StyleMask};
 
-    let panel = PanelBuilder::<_, MiniPlayerPanel>::new(app_handle, MINI_PLAYER_LABEL)
-        .url(WebviewUrl::App(MINI_PLAYER_URL.into()))
-        .title(MINI_PLAYER_TITLE)
-        .position(Position::Logical(LogicalPosition::new(
-            position.x, position.y,
-        )))
-        .size(Size::Logical(LogicalSize::new(
-            MINI_PLAYER_WIDTH,
-            MINI_PLAYER_HEIGHT,
-        )))
-        .level(PanelLevel::Floating)
-        .floating(true)
-        .becomes_key_only_if_needed(true)
-        .accepts_mouse_moved_events(true)
-        .hides_on_deactivate(false)
-        .style_mask(StyleMask::empty().borderless().nonactivating_panel())
-        .collection_behavior(
-            CollectionBehavior::new()
-                .full_screen_auxiliary()
-                .can_join_all_spaces(),
-        )
-        .with_window(|window| {
-            window
-                .inner_size(MINI_PLAYER_WIDTH, MINI_PLAYER_HEIGHT)
-                .min_inner_size(MINI_PLAYER_WIDTH, MINI_PLAYER_HEIGHT)
-                .max_inner_size(MINI_PLAYER_WIDTH, MINI_PLAYER_HEIGHT)
-                .resizable(false)
-                .decorations(false)
-                .transparent(true)
-                .always_on_top(true)
-                .skip_taskbar(true)
-                .focused(false)
-                .accept_first_mouse(true)
-        })
-        .build()
-        .map_err(|e| AppError::Window(format!("failed to create mini player panel: {e}")))?;
+    let panel = PanelBuilder::<_, MiniPlayerPanel<crate::runtime::Runtime>>::new(
+        app_handle,
+        MINI_PLAYER_LABEL,
+    )
+    .url(WebviewUrl::App(MINI_PLAYER_URL.into()))
+    .title(MINI_PLAYER_TITLE)
+    .position(Position::Logical(LogicalPosition::new(
+        position.x, position.y,
+    )))
+    .size(Size::Logical(LogicalSize::new(
+        MINI_PLAYER_WIDTH,
+        MINI_PLAYER_HEIGHT,
+    )))
+    .level(PanelLevel::Floating)
+    .floating(true)
+    .becomes_key_only_if_needed(true)
+    .accepts_mouse_moved_events(true)
+    .hides_on_deactivate(false)
+    .style_mask(StyleMask::empty().borderless().nonactivating_panel())
+    .collection_behavior(
+        CollectionBehavior::new()
+            .full_screen_auxiliary()
+            .can_join_all_spaces(),
+    )
+    .with_window(|window| {
+        window
+            .inner_size(MINI_PLAYER_WIDTH, MINI_PLAYER_HEIGHT)
+            .min_inner_size(MINI_PLAYER_WIDTH, MINI_PLAYER_HEIGHT)
+            .max_inner_size(MINI_PLAYER_WIDTH, MINI_PLAYER_HEIGHT)
+            .resizable(false)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .focused(false)
+            .accept_first_mouse(true)
+    })
+    .build()
+    .map_err(|e| AppError::Window(format!("failed to create mini player panel: {e}")))?;
 
     let handler = MiniPlayerPanelEventHandler::new();
 
@@ -207,12 +243,12 @@ fn create_mini_player_window(
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(all(target_os = "macos", feature = "wry", not(feature = "cef"))))]
 fn create_mini_player_window(
     app_handle: &AppHandle,
     position: MiniPlayerPosition,
 ) -> AppResult<()> {
-    WebviewWindowBuilder::new(
+    let builder = tauri::WebviewWindowBuilder::<Runtime, _>::new(
         app_handle,
         MINI_PLAYER_LABEL,
         WebviewUrl::App(MINI_PLAYER_URL.into()),
@@ -223,25 +259,43 @@ fn create_mini_player_window(
     .max_inner_size(MINI_PLAYER_WIDTH, MINI_PLAYER_HEIGHT)
     .position(position.x, position.y)
     .resizable(false)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .focused(false)
-    .accept_first_mouse(true)
-    .build()
-    .map_err(|e| AppError::Window(format!("failed to create mini player window: {e}")))?;
+    .decorations(false);
+
+    #[cfg(all(feature = "wry", not(feature = "cef")))]
+    let builder = builder.transparent(true);
+
+    builder
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .accept_first_mouse(true)
+        .build()
+        .map_err(|e| AppError::Window(format!("failed to create mini player window: {e}")))?;
 
     Ok(())
 }
 
 #[tauri::command]
 pub fn open_mini_player(app_handle: AppHandle, position: MiniPlayerPosition) -> AppResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        run_windowing_on_main_thread(&app_handle, move |app_handle| {
+            open_mini_player_impl(app_handle, position)
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        open_mini_player_impl(app_handle, position)
+    }
+}
+
+fn open_mini_player_impl(app_handle: AppHandle, position: MiniPlayerPosition) -> AppResult<()> {
     if let Some(window) = app_handle.get_webview_window(MINI_PLAYER_LABEL) {
         apply_mini_player_mode(&window, MiniPlayerMode::Mini, position)?;
         let _ = window.unminimize();
         let _ = window.show();
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "wry", not(feature = "cef")))]
         {
             use tauri_nspanel::ManagerExt;
             if let Ok(panel) = app_handle.get_webview_panel(MINI_PLAYER_LABEL) {
@@ -251,7 +305,7 @@ pub fn open_mini_player(app_handle: AppHandle, position: MiniPlayerPosition) -> 
                 let _ = window.show();
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(all(target_os = "macos", feature = "wry", not(feature = "cef"))))]
         {
             let _ = window.set_focus();
         }
@@ -273,6 +327,24 @@ pub fn set_mini_player_mode(
     mode: MiniPlayerMode,
     position: MiniPlayerPosition,
 ) -> AppResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        run_windowing_on_main_thread(&app_handle, move |app_handle| {
+            set_mini_player_mode_impl(app_handle, mode, position)
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        set_mini_player_mode_impl(app_handle, mode, position)
+    }
+}
+
+fn set_mini_player_mode_impl(
+    app_handle: AppHandle,
+    mode: MiniPlayerMode,
+    position: MiniPlayerPosition,
+) -> AppResult<()> {
     let Some(window) = app_handle.get_webview_window(MINI_PLAYER_LABEL) else {
         return Err(AppError::Window(
             "mini player mode update requested but window not found".to_string(),
@@ -285,6 +357,18 @@ pub fn set_mini_player_mode(
 #[tauri::command]
 pub fn close_mini_player(app_handle: AppHandle) -> AppResult<()> {
     #[cfg(target_os = "macos")]
+    {
+        run_windowing_on_main_thread(&app_handle, close_mini_player_impl)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        close_mini_player_impl(app_handle)
+    }
+}
+
+fn close_mini_player_impl(app_handle: AppHandle) -> AppResult<()> {
+    #[cfg(all(target_os = "macos", feature = "wry", not(feature = "cef")))]
     {
         use tauri_nspanel::ManagerExt;
 
@@ -299,7 +383,7 @@ pub fn close_mini_player(app_handle: AppHandle) -> AppResult<()> {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(all(target_os = "macos", feature = "wry", not(feature = "cef"))))]
     {
         if let Some(window) = app_handle.get_webview_window(MINI_PLAYER_LABEL) {
             window
@@ -316,5 +400,15 @@ pub fn close_mini_player(app_handle: AppHandle) -> AppResult<()> {
 
 #[tauri::command]
 pub fn restore_main_window(app_handle: AppHandle) -> AppResult<()> {
-    restore_main_window_impl(&app_handle)
+    #[cfg(target_os = "macos")]
+    {
+        run_windowing_on_main_thread(&app_handle, |app_handle| {
+            restore_main_window_impl(&app_handle)
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        restore_main_window_impl(&app_handle)
+    }
 }

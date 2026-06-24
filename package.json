@@ -13,7 +13,7 @@
     "format": "bun --bun prettier --write .",
     "format:check": "bun --bun prettier --check .",
     "version:set": "bun scripts/set-version.mjs",
-    "tauri": "bun node_modules/@tauri-apps/cli/tauri.js"
+    "tauri": "bun scripts/tauri-cef-cli.mjs"
   },
   "license": "MIT",
   "dependencies": {

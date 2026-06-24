@@ -171,7 +171,7 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
-pub fn get_db_path(app_handle: &tauri::AppHandle) -> AppResult<String> {
+pub fn get_db_path(app_handle: &crate::runtime::AppHandle) -> AppResult<String> {
     let app_dir = app_handle.path().app_data_dir().map_err(|e| {
         crate::error::AppError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
