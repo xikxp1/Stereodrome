@@ -7,7 +7,7 @@ object StereodromeCoreBridge {
   private val jni = StereodromeCoreJni()
   private val lock = Any()
   private var handle: Long = 0
-  private var invalidationListener: (() -> Unit)? = null
+  @Volatile private var playbackSnapshotListener: ((String) -> Unit)? = null
 
   fun initialize(dataDir: String): Boolean = synchronized(lock) {
     if (handle != 0L) {
@@ -24,8 +24,13 @@ object StereodromeCoreBridge {
     }
   }
 
-  fun setInvalidationListener(listener: (() -> Unit)?) {
-    invalidationListener = listener
+  fun setPlaybackSnapshotListener(listener: ((String) -> Unit)?) {
+    playbackSnapshotListener = listener
+  }
+
+  @JvmStatic
+  fun onRustPlaybackSnapshot(snapshot: String) {
+    playbackSnapshotListener?.invoke(snapshot)
   }
 
   fun call(method: String, payload: String): String = synchronized(lock) {
@@ -44,10 +49,6 @@ object StereodromeCoreBridge {
       return
     }
     call("audioPause", "null")
-    audioStatus()?.let { status ->
-      StereodromeMediaSessionState.updateFromAudioStatus(context.applicationContext, status)
-    }
-    invalidationListener?.invoke()
   }
 
   fun play() {
@@ -61,7 +62,6 @@ object StereodromeCoreBridge {
     } else {
       playCurrentFromPersistedPosition()
     }
-    invalidationListener?.invoke()
   }
 
   // Starting playback from a stopped core (e.g. media-notification play after
@@ -89,7 +89,6 @@ object StereodromeCoreBridge {
       return
     }
     call("audioPause", "null")
-    invalidationListener?.invoke()
   }
 
   fun toggle() {
@@ -105,7 +104,6 @@ object StereodromeCoreBridge {
     } else {
       playCurrentFromPersistedPosition()
     }
-    invalidationListener?.invoke()
   }
 
   fun stop() {
@@ -113,7 +111,6 @@ object StereodromeCoreBridge {
       return
     }
     call("audioStop", "null")
-    invalidationListener?.invoke()
   }
 
   fun next() {
@@ -122,7 +119,6 @@ object StereodromeCoreBridge {
     }
     call("playNext", "true")
     call("audioPlayCurrent", "null")
-    invalidationListener?.invoke()
   }
 
   fun previous() {
@@ -131,7 +127,6 @@ object StereodromeCoreBridge {
     }
     call("playPrevious", "null")
     call("audioPlayCurrent", "null")
-    invalidationListener?.invoke()
   }
 
   fun seekTo(positionSeconds: Double) {
@@ -139,14 +134,6 @@ object StereodromeCoreBridge {
       return
     }
     call("audioSeek", JSONObject.numberToString(positionSeconds))
-    invalidationListener?.invoke()
-  }
-
-  fun audioStatus(): AudioPlaybackStatus? {
-    if (!hasCore()) {
-      return null
-    }
-    return AudioPlaybackStatus.fromJson(parseOkValue(call("audioGetStatus", "null")))
   }
 
   // `JSONObject.optString` coerces a JSON null into the literal string

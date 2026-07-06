@@ -1035,6 +1035,19 @@ impl StereodromeCore {
         }
     }
 
+    pub fn cached_song_cover_art_uri(
+        &self,
+        song_id: &str,
+        size: Option<i32>,
+    ) -> CoreResult<Option<String>> {
+        let Some(cover_art_id) = self.song_cover_art_id(song_id)? else {
+            return Ok(None);
+        };
+        Ok(self
+            .cached_cover_art_path(&cover_art_id, size)?
+            .map(|path| path_to_file_uri(&path)))
+    }
+
     pub fn get_audio_cache_stats(&self) -> CoreResult<CacheStats> {
         let max_size = self.max_cache_size()?;
         let entries = self.audio_cache_entries()?;

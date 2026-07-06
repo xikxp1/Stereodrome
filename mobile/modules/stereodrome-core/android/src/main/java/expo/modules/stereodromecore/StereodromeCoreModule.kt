@@ -1,17 +1,28 @@
 package expo.modules.stereodromecore
 
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
-import org.json.JSONObject
 
 class StereodromeCoreModule : Module() {
+  private val mainHandler = Handler(Looper.getMainLooper())
+  private var applicationContext: Context? = null
+
   override fun definition() = ModuleDefinition {
     Name("StereodromeCore")
-    Events("native-playback-invalidated")
+    Events("playback-state")
 
     AsyncFunction("initialize") { dataDir: String ->
-      StereodromeCoreBridge.setInvalidationListener {
-        sendEvent("native-playback-invalidated")
+      applicationContext = appContext.reactContext?.applicationContext
+      StereodromeCoreBridge.setPlaybackSnapshotListener { snapshot ->
+        mainHandler.post {
+          applicationContext?.let { context ->
+            StereodromeMediaSessionState.applyPlaybackSnapshot(context, snapshot)
+          }
+          sendEvent("playback-state", mapOf("snapshot" to snapshot))
+        }
       }
       StereodromeCoreBridge.initialize(dataDir)
     }
@@ -32,71 +43,12 @@ class StereodromeCoreModule : Module() {
       if (method == "audioStop") {
         abandonAudioFocus()
       }
-      if (shouldRefreshMediaSession(method)) {
-        refreshMediaSessionFromCoreStatus()
-      }
       result
-    }
-
-    AsyncFunction("setNowPlayingInfo") { payload: Map<String, Any?> ->
-      appContext.reactContext?.let { context ->
-        StereodromeMediaSessionState.setNowPlayingInfo(
-          context,
-          NowPlayingInfo.fromPayload(payload),
-        )
-      }
-    }
-
-    AsyncFunction("updateNowPlayingProgress") { payload: Map<String, Any?> ->
-      appContext.reactContext?.let { context ->
-        StereodromeMediaSessionState.updateProgress(
-          context,
-          NowPlayingProgress.fromPayload(payload),
-        )
-      }
-    }
-
-    AsyncFunction("clearNowPlayingInfo") {
-      appContext.reactContext?.let { context ->
-        StereodromeMediaSessionState.clear(context)
-      }
     }
   }
 
   private fun callCore(method: String, payload: String): String {
     return StereodromeCoreBridge.call(method, payload)
-  }
-
-  private fun shouldRefreshMediaSession(method: String): Boolean =
-    method == "audioPause" ||
-      method == "audioResume" ||
-      method == "audioSeek" ||
-      method == "audioPlayCurrent" ||
-      method == "audioApplySettings" ||
-      method == "audioStop"
-
-  private fun refreshMediaSessionFromCoreStatus() {
-    val context = appContext.reactContext ?: return
-    val status = AudioPlaybackStatus.fromJson(
-      parseOkValue(callCore("audioGetStatus", "null")),
-    ) ?: return
-    StereodromeMediaSessionState.updateFromAudioStatus(
-      context.applicationContext,
-      status,
-    )
-  }
-
-  private fun parseOkValue(raw: String): JSONObject? {
-    return try {
-      val envelope = JSONObject(raw)
-      if (!envelope.optBoolean("ok")) {
-        null
-      } else {
-        envelope.optJSONObject("value")
-      }
-    } catch (_: Exception) {
-      null
-    }
   }
 
   private fun escapeJson(value: String): String =

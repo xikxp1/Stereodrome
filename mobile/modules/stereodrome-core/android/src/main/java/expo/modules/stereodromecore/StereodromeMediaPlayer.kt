@@ -47,19 +47,6 @@ class StereodromeMediaPlayer(
     invalidateOnPlayerLooper()
   }
 
-  fun updateProgress(progress: NowPlayingProgress) {
-    val current = info ?: return
-    if (progress.songId != null && progress.songId != current.songId) {
-      return
-    }
-    info = current.copy(
-      durationSeconds = progress.durationSeconds,
-      positionSeconds = progress.positionSeconds,
-      isPlaying = progress.isPlaying,
-    )
-    invalidateOnPlayerLooper()
-  }
-
   fun clearNowPlayingInfo() {
     info = null
     invalidateOnPlayerLooper()
@@ -78,7 +65,6 @@ class StereodromeMediaPlayer(
       StereodromeAudioFocus.abandon(appContext)
     }
     info = info?.copy(isPlaying = playWhenReady)
-    refreshFromCoreStatus()
     return Futures.immediateFuture(Any())
   }
 
@@ -94,7 +80,6 @@ class StereodromeMediaPlayer(
         }
         StereodromeAudioFocus.request(appContext)
         StereodromeCoreBridge.next()
-        refreshFromCoreStatus()
       }
       Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> {
         if (info?.canPlay != true) {
@@ -102,13 +87,11 @@ class StereodromeMediaPlayer(
         }
         StereodromeAudioFocus.request(appContext)
         StereodromeCoreBridge.previous()
-        refreshFromCoreStatus()
       }
       Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM -> {
         val nextPositionSeconds = max(0.0, positionMs / 1000.0)
         StereodromeCoreBridge.seekTo(nextPositionSeconds)
         info = info?.copy(positionSeconds = nextPositionSeconds)
-        refreshFromCoreStatus()
       }
     }
     return Futures.immediateFuture(Any())
@@ -118,7 +101,6 @@ class StereodromeMediaPlayer(
     StereodromeCoreBridge.stop()
     StereodromeAudioFocus.abandon(appContext)
     info = info?.copy(isPlaying = false, positionSeconds = 0.0)
-    refreshFromCoreStatus()
     return Futures.immediateFuture(Any())
   }
 
@@ -166,11 +148,6 @@ class StereodromeMediaPlayer(
   }
 
   private fun secondsToMillis(seconds: Double): Long = (seconds * 1000).toLong()
-
-  private fun refreshFromCoreStatus() {
-    val status = StereodromeCoreBridge.audioStatus() ?: return
-    StereodromeMediaSessionState.updateFromAudioStatus(appContext, status)
-  }
 
   private fun invalidateOnPlayerLooper() {
     if (Looper.myLooper() == playerLooper) {

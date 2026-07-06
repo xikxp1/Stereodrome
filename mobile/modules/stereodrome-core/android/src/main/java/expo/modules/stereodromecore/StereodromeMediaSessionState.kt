@@ -20,53 +20,18 @@ object StereodromeMediaSessionState {
     }
   }
 
-  fun setNowPlayingInfo(context: Context, info: NowPlayingInfo) = synchronized(lock) {
+  fun applyPlaybackSnapshot(context: Context, snapshot: String) = synchronized(lock) {
+    val info = NowPlayingInfo.fromSnapshotJson(snapshot)
+    if (info == null) {
+      clearLocked(context)
+      return@synchronized
+    }
+
     nowPlayingInfo = info
-    if (info.isPlaying && !isServiceRunningLocked()) {
-      startService(context, foreground = true)
+    if (!isServiceRunningLocked()) {
+      startService(context, foreground = info.isPlaying)
     }
     player?.setNowPlayingInfo(info)
-  }
-
-  fun updateProgress(context: Context, progress: NowPlayingProgress) = synchronized(lock) {
-    val current = nowPlayingInfo
-    if (current != null && (progress.songId == null || progress.songId == current.songId)) {
-      nowPlayingInfo = current.copy(
-        durationSeconds = progress.durationSeconds,
-        positionSeconds = progress.positionSeconds,
-        isPlaying = progress.isPlaying,
-      )
-    }
-    if (progress.isPlaying && !isServiceRunningLocked()) {
-      startService(context, foreground = true)
-    }
-    player?.updateProgress(progress)
-  }
-
-  fun updateFromAudioStatus(context: Context, status: AudioPlaybackStatus) {
-    synchronized(lock) {
-      val songId = status.currentSongId
-      if (songId == null) {
-        clearLocked(context)
-        return@synchronized
-      }
-
-      val current = nowPlayingInfo ?: return@synchronized
-      if (current.songId != songId) {
-        return@synchronized
-      }
-
-      val nextInfo = current.copy(
-        durationSeconds = status.durationSeconds,
-        positionSeconds = status.positionSeconds,
-        isPlaying = status.isPlaying,
-      )
-      nowPlayingInfo = nextInfo
-      if (status.isPlaying && !isServiceRunningLocked()) {
-        startService(context, foreground = true)
-      }
-      player?.setNowPlayingInfo(nextInfo)
-    }
   }
 
   fun clear(context: Context) = synchronized(lock) {

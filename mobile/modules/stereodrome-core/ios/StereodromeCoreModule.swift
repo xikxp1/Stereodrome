@@ -20,9 +20,13 @@ private func stereodromeCoreCall(
 private func stereodromeCoreFreeString(_ value: UnsafeMutablePointer<CChar>?)
 
 private typealias StereodromeRustLogCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
+private typealias StereodromePlaybackCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
 
 @_silgen_name("stereodrome_core_set_log_callback")
 private func stereodromeCoreSetLogCallback(_ callback: StereodromeRustLogCallback?)
+
+@_silgen_name("stereodrome_core_set_playback_callback")
+private func stereodromeCoreSetPlaybackCallback(_ callback: StereodromePlaybackCallback?)
 
 private weak var activeStereodromeCoreModule: StereodromeCoreModule?
 
@@ -34,6 +38,16 @@ private func stereodromeRustLogCallback(_ message: UnsafePointer<CChar>?) {
   NSLog("%@", logMessage)
   DispatchQueue.main.async {
     activeStereodromeCoreModule?.emitRustLog(logMessage)
+  }
+}
+
+private func stereodromePlaybackCallback(_ snapshot: UnsafePointer<CChar>?) {
+  guard let snapshot else {
+    return
+  }
+  let rawSnapshot = String(cString: snapshot)
+  DispatchQueue.main.async {
+    activeStereodromeCoreModule?.handlePlaybackSnapshot(rawSnapshot)
   }
 }
 
@@ -50,6 +64,10 @@ public class StereodromeCoreModule: Module {
   deinit {
     clearRemoteCommandHandlers()
     clearAudioSessionObservers()
+    if activeStereodromeCoreModule === self {
+      stereodromeCoreSetPlaybackCallback(nil)
+      activeStereodromeCoreModule = nil
+    }
     coreQueue.sync {
       stereodromeCoreDestroy(core)
     }
@@ -61,6 +79,7 @@ public class StereodromeCoreModule: Module {
     AsyncFunction("initialize") { (_ dataDir: String) -> Bool in
       activeStereodromeCoreModule = self
       stereodromeCoreSetLogCallback(stereodromeRustLogCallback)
+      stereodromeCoreSetPlaybackCallback(stereodromePlaybackCallback)
       self.configureAudioSession()
       if let existing = self.core {
         self.coreQueue.sync {
@@ -83,16 +102,6 @@ public class StereodromeCoreModule: Module {
       if method == "audioStop" {
         self.setAudioSessionActive(false)
       }
-      switch method {
-      case "audioPause", "audioResume", "audioSeek", "audioPlayCurrent", "audioApplySettings",
-        "audioStop":
-        // Mirror the new state into the system widget right away; the JS
-        // sync path may be deduped or suspended (e.g. locking the phone
-        // immediately after pausing in-app).
-        self.refreshNowPlayingPlaybackState(clearWhenStopped: method == "audioStop")
-      default:
-        break
-      }
       return result
     }
 
@@ -107,19 +116,7 @@ public class StereodromeCoreModule: Module {
       return self.callSync(method: "getStreamUri", payload: "\"\(escapedSongId)\"")
     }
 
-    AsyncFunction("setNowPlayingInfo") { (_ payload: [String: Any]) in
-      self.setNowPlayingInfo(payload)
-    }
-
-    AsyncFunction("updateNowPlayingProgress") { (_ payload: [String: Any]) in
-      self.updateNowPlayingProgress(payload)
-    }
-
-    AsyncFunction("clearNowPlayingInfo") {
-      self.clearNowPlayingInfo()
-    }
-
-    Events("native-playback-invalidated")
+    Events("playback-state")
   }
 
   fileprivate func emitRustLog(_ message: String) {
@@ -169,41 +166,51 @@ public class StereodromeCoreModule: Module {
     }
   }
 
-  private func setNowPlayingInfo(_ payload: [String: Any]) {
+  fileprivate func handlePlaybackSnapshot(_ snapshot: String) {
+    applyPlaybackSnapshot(snapshot)
+    sendEvent("playback-state", ["snapshot": snapshot])
+  }
+
+  private func applyPlaybackSnapshot(_ snapshotJson: String) {
+    guard
+      let data = snapshotJson.data(using: .utf8),
+      let snapshot = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+      return
+    }
+
+    guard
+      stringValue(snapshot["state"]) != "stopped",
+      let song = snapshot["song"] as? [String: Any]
+    else {
+      clearNowPlayingInfo()
+      return
+    }
+
+    let duration = doubleValue(snapshot["duration_seconds"]) > 0
+      ? doubleValue(snapshot["duration_seconds"])
+      : doubleValue(song["duration_seconds"])
     var info: [String: Any] = [
-      MPMediaItemPropertyTitle: stringValue(payload["title"]) ?? "Unknown Title",
-      MPMediaItemPropertyArtist: stringValue(payload["artist"]) ?? "Unknown Artist",
-      MPMediaItemPropertyAlbumTitle: stringValue(payload["album"]) ?? "Unknown Album",
-      MPMediaItemPropertyPlaybackDuration: doubleValue(payload["duration_seconds"]),
-      MPNowPlayingInfoPropertyElapsedPlaybackTime: doubleValue(payload["position_seconds"]),
-      MPNowPlayingInfoPropertyPlaybackRate: boolValue(payload["is_playing"]) ? 1.0 : 0.0,
-      MPNowPlayingInfoPropertyPlaybackQueueCount: intValue(payload["queue_count"]) ?? 0,
+      MPMediaItemPropertyTitle: stringValue(song["title"]) ?? "Unknown Title",
+      MPMediaItemPropertyArtist: stringValue(song["artist"]) ?? "Unknown Artist",
+      MPMediaItemPropertyAlbumTitle: stringValue(song["album"]) ?? "Unknown Album",
+      MPMediaItemPropertyPlaybackDuration: duration,
+      MPNowPlayingInfoPropertyElapsedPlaybackTime: doubleValue(snapshot["position_seconds"]),
+      MPNowPlayingInfoPropertyPlaybackRate: boolValue(snapshot["is_playing"]) ? 1.0 : 0.0,
+      MPNowPlayingInfoPropertyPlaybackQueueCount: intValue(snapshot["queue_length"]) ?? 0,
     ]
 
-    if let queueIndex = intValue(payload["queue_index"]) {
+    if let queueIndex = intValue(snapshot["queue_index"]) {
       info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = queueIndex
     }
 
-    if let artwork = artworkValue(stringValue(payload["artwork_uri"])) {
+    if let artwork = artworkValue(stringValue(song["artwork_uri"])) {
       info[MPMediaItemPropertyArtwork] = artwork
     }
 
     MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-    updateNowPlayingPlaybackState(isPlaying: boolValue(payload["is_playing"]))
-    configureCommandAvailability(payload)
-  }
-
-  private func updateNowPlayingProgress(_ payload: [String: Any]) {
-    // Never create a bare now-playing entry from a progress-only update; full
-    // metadata must be published through setNowPlayingInfo first.
-    guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo, !info.isEmpty else {
-      return
-    }
-    info[MPMediaItemPropertyPlaybackDuration] = doubleValue(payload["duration_seconds"])
-    info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = doubleValue(payload["position_seconds"])
-    info[MPNowPlayingInfoPropertyPlaybackRate] = boolValue(payload["is_playing"]) ? 1.0 : 0.0
-    MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-    updateNowPlayingPlaybackState(isPlaying: boolValue(payload["is_playing"]))
+    updateNowPlayingPlaybackState(isPlaying: boolValue(snapshot["is_playing"]))
+    configureCommandAvailability(snapshot)
   }
 
   private func clearNowPlayingInfo() {
@@ -328,7 +335,6 @@ public class StereodromeCoreModule: Module {
         if wasPlaying {
           _ = self.callSync(method: "audioPause", payload: "null")
         }
-        self.notifyNativePlaybackChanged()
       }
     case .ended:
       let optionsValue =
@@ -342,7 +348,6 @@ public class StereodromeCoreModule: Module {
           self.setAudioSessionActive(true)
           _ = self.callSync(method: "audioResume", payload: "null")
         }
-        self.notifyNativePlaybackChanged()
       }
     @unknown default:
       break
@@ -367,7 +372,6 @@ public class StereodromeCoreModule: Module {
       self.shouldResumeAfterInterruption = false
       if self.isCorePlaying() {
         _ = self.callSync(method: "audioPause", payload: "null")
-        self.notifyNativePlaybackChanged()
       }
     }
   }
@@ -377,7 +381,6 @@ public class StereodromeCoreModule: Module {
       self.shouldResumeAfterInterruption = false
       _ = self.callSync(method: "audioPause", payload: "null")
       self.configureAudioSession()
-      self.notifyNativePlaybackChanged()
     }
   }
 
@@ -386,44 +389,8 @@ public class StereodromeCoreModule: Module {
     return boolValue(status?["is_playing"])
   }
 
-  /// Pushes the Rust core's playback state into the system now-playing info and
-  /// notifies JS. Keeps the lock screen accurate even when the JS runtime is
-  /// suspended in the background.
-  private func notifyNativePlaybackChanged(clearWhenStopped: Bool = false) {
-    refreshNowPlayingPlaybackState(clearWhenStopped: clearWhenStopped)
-    DispatchQueue.main.async {
-      self.sendEvent("native-playback-invalidated")
-    }
-  }
-
   private func updateNowPlayingPlaybackState(isPlaying: Bool) {
     MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
-  }
-
-  private func refreshNowPlayingPlaybackState(clearWhenStopped: Bool = false) {
-    guard
-      let status = parseOkValue(callSync(method: "audioGetStatus", payload: "null")),
-      stringValue(status["current_song_id"]) != nil
-    else {
-      if clearWhenStopped {
-        clearNowPlayingInfo()
-      } else {
-        MPNowPlayingInfoCenter.default().playbackState = .stopped
-      }
-      return
-    }
-    let isPlaying = boolValue(status["is_playing"])
-    updateNowPlayingPlaybackState(isPlaying: isPlaying)
-    guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo, !info.isEmpty else {
-      return
-    }
-    let duration = doubleValue(status["duration"])
-    if duration > 0 {
-      info[MPMediaItemPropertyPlaybackDuration] = duration
-    }
-    info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = doubleValue(status["position"])
-    info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
-    MPNowPlayingInfoCenter.default().nowPlayingInfo = info
   }
 
   private enum RemoteCommandAction {
@@ -448,7 +415,6 @@ public class StereodromeCoreModule: Module {
   private func enqueueRemoteSeek(_ positionSeconds: TimeInterval) -> MPRemoteCommandHandlerStatus {
     remoteCommandQueue.async {
       _ = self.callSync(method: "audioSeek", payload: "\(max(0.0, positionSeconds))")
-      self.notifyNativePlaybackChanged()
     }
     return .success
   }
@@ -457,7 +423,6 @@ public class StereodromeCoreModule: Module {
     switch action {
     case .play:
       guard canPlayRemoteCommands else {
-        notifyNativePlaybackChanged()
         return
       }
       setAudioSessionActive(true)
@@ -474,7 +439,6 @@ public class StereodromeCoreModule: Module {
       if boolValue(status?["is_playing"]) {
         _ = callSync(method: "audioPause", payload: "null")
       } else if !canPlayRemoteCommands {
-        notifyNativePlaybackChanged()
         return
       } else if stringValue(status?["current_song_id"]) == nil {
         setAudioSessionActive(true)
@@ -485,7 +449,6 @@ public class StereodromeCoreModule: Module {
       }
     case .next:
       guard canPlayRemoteCommands else {
-        notifyNativePlaybackChanged()
         return
       }
       setAudioSessionActive(true)
@@ -493,7 +456,6 @@ public class StereodromeCoreModule: Module {
       _ = callSync(method: "audioPlayCurrent", payload: "null")
     case .previous:
       guard canPlayRemoteCommands else {
-        notifyNativePlaybackChanged()
         return
       }
       setAudioSessionActive(true)
@@ -503,8 +465,6 @@ public class StereodromeCoreModule: Module {
       _ = callSync(method: "audioStop", payload: "null")
       setAudioSessionActive(false)
     }
-
-    notifyNativePlaybackChanged(clearWhenStopped: action == .stop)
   }
 
   /// Starting playback from a stopped core (e.g. lock-screen play after the

@@ -1,10 +1,6 @@
 import { Directory, Paths } from "expo-file-system";
 import NativeStereodromeCore from "../../modules/stereodrome-core/src";
 import type {
-  NativeNowPlayingInfo,
-  NativeNowPlayingProgress,
-} from "../../modules/stereodrome-core/src";
-import type {
   ConnectionStatus,
   ConnectivitySettings,
   Artist,
@@ -19,6 +15,7 @@ import type {
   LastfmQueueItem,
   LastfmStatus,
   PlaybackProgress,
+  PlaybackSnapshot,
   PlaybackStateSnapshot,
   Playlist,
   QueueItem,
@@ -48,6 +45,7 @@ const syncStatusPollIntervalMs = 2000;
 let initializePromise: Promise<boolean> | null = null;
 let syncStatusPoll: ReturnType<typeof setInterval> | null = null;
 let syncStatusPollInFlight = false;
+let nativePlaybackSubscription: { remove(): void } | null = null;
 const listeners = new Map<CoreEventName, Set<CoreEventHandler>>();
 
 function fileUriToPath(uri: string): string {
@@ -122,6 +120,22 @@ function startSyncStatusPolling() {
   }
 }
 
+function startNativePlaybackSubscription() {
+  if (nativePlaybackSubscription || !NativeStereodromeCore.addListener) {
+    return;
+  }
+  nativePlaybackSubscription = NativeStereodromeCore.addListener(
+    "playback-state",
+    ({ snapshot }) => {
+      try {
+        emitCoreEvent("playback-state", JSON.parse(snapshot) as PlaybackSnapshot);
+      } catch (error) {
+        emitCoreEvent("error", error);
+      }
+    }
+  );
+}
+
 function queueItemFromSong(song: {
   id: string;
   title: string;
@@ -171,6 +185,7 @@ async function ensureInitialized(): Promise<boolean> {
     if (!initialized) {
       throw new Error("Stereodrome Rust core failed to initialize");
     }
+    startNativePlaybackSubscription();
 
     return true;
   })();
@@ -371,6 +386,9 @@ export const stereodromeCore = {
   getPlaybackState(): Promise<PlaybackStateSnapshot> {
     return invokeJson("getPlaybackState");
   },
+  getPlaybackSnapshot(): Promise<PlaybackSnapshot> {
+    return invokeJson("getPlaybackSnapshot");
+  },
   savePlaybackPosition(
     progress: PlaybackProgress
   ): Promise<PlaybackStateSnapshot> {
@@ -428,26 +446,6 @@ export const stereodromeCore = {
   },
   audioGetStatus(): Promise<AudioPlaybackStatus> {
     return invokeJson("audioGetStatus");
-  },
-  async setNowPlayingInfo(payload: NativeNowPlayingInfo): Promise<void> {
-    await NativeStereodromeCore.setNowPlayingInfo?.(payload);
-  },
-  async updateNowPlayingProgress(
-    payload: NativeNowPlayingProgress
-  ): Promise<void> {
-    await NativeStereodromeCore.updateNowPlayingProgress?.(payload);
-  },
-  async clearNowPlayingInfo(): Promise<void> {
-    await NativeStereodromeCore.clearNowPlayingInfo?.();
-  },
-  addNativePlaybackInvalidatedListener(listener: () => void): () => void {
-    const subscription = NativeStereodromeCore.addListener?.(
-      "native-playback-invalidated",
-      listener
-    );
-    return () => {
-      subscription?.remove();
-    };
   },
   getAudioProcessingSettings(): Promise<AudioProcessingSettings> {
     return invokeJson("getAudioProcessingSettings");

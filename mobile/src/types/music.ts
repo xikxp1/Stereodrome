@@ -197,6 +197,33 @@ export type PlaybackStateSnapshot = {
   updated_at: string;
 };
 
+export type PlaybackSnapshotSong = {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration_seconds: number;
+  artwork_uri: string | null;
+};
+
+export type PlaybackSnapshot = {
+  seq: number;
+  state: "playing" | "paused" | "stopped" | "stalled";
+  is_playing: boolean;
+  audio_loaded: boolean;
+  song: PlaybackSnapshotSong | null;
+  position_seconds: number;
+  duration_seconds: number;
+  volume: number;
+  queue: QueueState;
+  queue_index: number | null;
+  queue_length: number;
+  can_play: boolean;
+  can_next: boolean;
+  can_previous: boolean;
+  can_seek: boolean;
+};
+
 export type PlaybackProgress = {
   song_id: string;
   position_seconds: number;
