@@ -59,12 +59,17 @@ class StereodromeMediaPlayer(
         return Futures.immediateFuture(Any())
       }
       StereodromeAudioFocus.request(appContext)
-      StereodromeCoreBridge.play()
+      StereodromeCoreCommandQueue.enqueue("audioResume") {
+        StereodromeCoreBridge.play()
+      }
     } else {
-      StereodromeCoreBridge.pause()
+      StereodromeCoreCommandQueue.enqueue("audioPause") {
+        StereodromeCoreBridge.pause()
+      }
       StereodromeAudioFocus.abandon(appContext)
     }
     info = info?.copy(isPlaying = playWhenReady)
+    invalidateOnPlayerLooper()
     return Futures.immediateFuture(Any())
   }
 
@@ -79,28 +84,38 @@ class StereodromeMediaPlayer(
           return Futures.immediateFuture(Any())
         }
         StereodromeAudioFocus.request(appContext)
-        StereodromeCoreBridge.next()
+        StereodromeCoreCommandQueue.enqueue("playNext") {
+          StereodromeCoreBridge.next()
+        }
       }
       Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> {
         if (info?.canPlay != true) {
           return Futures.immediateFuture(Any())
         }
         StereodromeAudioFocus.request(appContext)
-        StereodromeCoreBridge.previous()
+        StereodromeCoreCommandQueue.enqueue("playPrevious") {
+          StereodromeCoreBridge.previous()
+        }
       }
       Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM -> {
         val nextPositionSeconds = max(0.0, positionMs / 1000.0)
-        StereodromeCoreBridge.seekTo(nextPositionSeconds)
         info = info?.copy(positionSeconds = nextPositionSeconds)
+        invalidateOnPlayerLooper()
+        StereodromeCoreCommandQueue.enqueue("audioSeek") {
+          StereodromeCoreBridge.seekTo(nextPositionSeconds)
+        }
       }
     }
     return Futures.immediateFuture(Any())
   }
 
   override fun handleStop(): ListenableFuture<Any> {
-    StereodromeCoreBridge.stop()
+    StereodromeCoreCommandQueue.enqueue("audioStop") {
+      StereodromeCoreBridge.stop()
+    }
     StereodromeAudioFocus.abandon(appContext)
     info = info?.copy(isPlaying = false, positionSeconds = 0.0)
+    invalidateOnPlayerLooper()
     return Futures.immediateFuture(Any())
   }
 

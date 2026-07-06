@@ -11,7 +11,6 @@ object StereodromeAudioFocus {
 
   fun request(context: Context) {
     val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    val appContext = context.applicationContext
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       val request = focusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
         .setAudioAttributes(
@@ -24,7 +23,9 @@ object StereodromeAudioFocus {
           if (focusChange == AudioManager.AUDIOFOCUS_LOSS ||
             focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
           ) {
-            StereodromeCoreBridge.pauseFromAudioFocusLoss(appContext)
+            StereodromeCoreCommandQueue.enqueue("audioFocusPause") {
+              StereodromeCoreBridge.pauseFromAudioFocusLoss()
+            }
           }
         }
         .build()

@@ -17,7 +17,9 @@ class StereodromeMediaSessionService : MediaSessionService() {
   private val becomingNoisyReceiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
       if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-        StereodromeCoreBridge.pause()
+        StereodromeCoreCommandQueue.enqueue("audioPause") {
+          StereodromeCoreBridge.pause()
+        }
       }
     }
   }
