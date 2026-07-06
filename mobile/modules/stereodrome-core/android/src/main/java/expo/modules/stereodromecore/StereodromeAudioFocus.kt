@@ -8,6 +8,10 @@ import android.os.Build
 
 object StereodromeAudioFocus {
   private var focusRequest: AudioFocusRequest? = null
+  @Volatile private var shouldResumeAfterTransientLoss = false
+  private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+    handleFocusChange(focusChange)
+  }
 
   fun request(context: Context) {
     val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -19,22 +23,14 @@ object StereodromeAudioFocus {
             .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
             .build()
         )
-        .setOnAudioFocusChangeListener { focusChange ->
-          if (focusChange == AudioManager.AUDIOFOCUS_LOSS ||
-            focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
-          ) {
-            StereodromeCoreCommandQueue.enqueue("audioFocusPause") {
-              StereodromeCoreBridge.pauseFromAudioFocusLoss()
-            }
-          }
-        }
+        .setOnAudioFocusChangeListener(focusChangeListener)
         .build()
         .also { focusRequest = it }
       audioManager.requestAudioFocus(request)
     } else {
       @Suppress("DEPRECATION")
       audioManager.requestAudioFocus(
-        null,
+        focusChangeListener,
         AudioManager.STREAM_MUSIC,
         AudioManager.AUDIOFOCUS_GAIN
       )
@@ -42,12 +38,39 @@ object StereodromeAudioFocus {
   }
 
   fun abandon(context: Context) {
+    shouldResumeAfterTransientLoss = false
     val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
     } else {
       @Suppress("DEPRECATION")
-      audioManager.abandonAudioFocus(null)
+      audioManager.abandonAudioFocus(focusChangeListener)
+    }
+  }
+
+  private fun handleFocusChange(focusChange: Int) {
+    when (focusChange) {
+      AudioManager.AUDIOFOCUS_LOSS -> {
+        StereodromeCoreCommandQueue.enqueue("audioFocusLoss") {
+          shouldResumeAfterTransientLoss = false
+          StereodromeCoreBridge.pauseFromAudioFocusLoss()
+        }
+      }
+      AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+        StereodromeCoreCommandQueue.enqueue("audioFocusLossTransient") {
+          shouldResumeAfterTransientLoss =
+            StereodromeCoreBridge.pauseFromTransientAudioFocusLoss()
+        }
+      }
+      AudioManager.AUDIOFOCUS_GAIN -> {
+        StereodromeCoreCommandQueue.enqueue("audioFocusGain") {
+          val shouldResume = shouldResumeAfterTransientLoss
+          shouldResumeAfterTransientLoss = false
+          if (shouldResume) {
+            StereodromeCoreBridge.resumeFromAudioFocusGain()
+          }
+        }
+      }
     }
   }
 }

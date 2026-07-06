@@ -47,7 +47,22 @@ object StereodromeCoreBridge {
     if (!hasCore()) {
       return
     }
+    if (!isPlaying()) {
+      return
+    }
     call("audioPause", "null")
+  }
+
+  fun pauseFromTransientAudioFocusLoss(): Boolean {
+    if (!hasCore() || !isPlaying()) {
+      return false
+    }
+    call("audioPause", "null")
+    return true
+  }
+
+  fun resumeFromAudioFocusGain() {
+    play()
   }
 
   fun play() {
@@ -95,4 +110,16 @@ object StereodromeCoreBridge {
     call("audioSeek", JSONObject.numberToString(positionSeconds))
   }
 
+  private fun isPlaying(): Boolean {
+    return try {
+      val envelope = JSONObject(call("getPlaybackSnapshot", "null"))
+      if (envelope.optBoolean("ok", false)) {
+        envelope.optJSONObject("value")?.optBoolean("is_playing", false) == true
+      } else {
+        false
+      }
+    } catch (error: Throwable) {
+      false
+    }
+  }
 }
