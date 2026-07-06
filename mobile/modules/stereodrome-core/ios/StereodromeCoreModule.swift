@@ -386,8 +386,8 @@ public class StereodromeCoreModule: Module {
   }
 
   private func isCorePlaying() -> Bool {
-    let status = parseOkValue(callSync(method: "audioGetStatus", payload: "null"))
-    return boolValue(status?["is_playing"])
+    let snapshot = parseOkValue(callSync(method: "getPlaybackSnapshot", payload: "null"))
+    return boolValue(snapshot?["is_playing"])
   }
 
   private func updateNowPlayingPlaybackState(isPlaying: Bool) {
@@ -427,26 +427,26 @@ public class StereodromeCoreModule: Module {
         return
       }
       setAudioSessionActive(true)
-      let status = parseOkValue(callSync(method: "audioGetStatus", payload: "null"))
-      if stringValue(status?["current_song_id"]) == nil {
-        playCurrentFromPersistedPosition()
-      } else {
+      let snapshot = parseOkValue(callSync(method: "getPlaybackSnapshot", payload: "null"))
+      if boolValue(snapshot?["audio_loaded"]) {
         _ = callSync(method: "audioResume", payload: "null")
+      } else {
+        playCurrentFromPersistedPosition()
       }
     case .pause:
       _ = callSync(method: "audioPause", payload: "null")
     case .toggle:
-      let status = parseOkValue(callSync(method: "audioGetStatus", payload: "null"))
-      if boolValue(status?["is_playing"]) {
+      let snapshot = parseOkValue(callSync(method: "getPlaybackSnapshot", payload: "null"))
+      if boolValue(snapshot?["is_playing"]) {
         _ = callSync(method: "audioPause", payload: "null")
       } else if !canPlayRemoteCommands {
         return
-      } else if stringValue(status?["current_song_id"]) == nil {
-        setAudioSessionActive(true)
-        playCurrentFromPersistedPosition()
-      } else {
+      } else if boolValue(snapshot?["audio_loaded"]) {
         setAudioSessionActive(true)
         _ = callSync(method: "audioResume", payload: "null")
+      } else {
+        setAudioSessionActive(true)
+        playCurrentFromPersistedPosition()
       }
     case .next:
       guard canPlayRemoteCommands else {

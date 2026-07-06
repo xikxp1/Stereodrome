@@ -729,10 +729,6 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             let progress = parse_payload::<PlaybackProgress>(payload)?;
             json_result(core.save_playback_position(progress))
         }
-        "reportPlaybackProgress" => {
-            let progress = parse_payload::<PlaybackProgress>(payload)?;
-            json_result(runtime.block_on(async { core.report_playback_progress(progress).await }))
-        }
         "getLastfmStatus" => json_result(Ok::<_, String>(core.get_lastfm_status())),
         "beginLastfmAuth" => {
             json_result(runtime.block_on(async { core.begin_lastfm_auth().await }))
@@ -766,13 +762,6 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         }
         "audioPrepareNextTransition" => {
             json_result(runtime.block_on(async { prepare_next_transition(mobile).await }))
-        }
-        "audioCrossfadeNext" => {
-            let result = runtime.block_on(async { crossfade_next(mobile).await });
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
-            json_result(result)
         }
         "audioPause" => {
             let result = mobile.audio.pause().map(|_| ());
@@ -816,10 +805,12 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         }
         "audioSetVolume" => {
             let volume = parse_payload::<f32>(payload)?;
-            json_result(mobile.audio.set_volume(volume).map(|_| ()))
+            let result = mobile.audio.set_volume(volume).map(|_| ());
+            if result.is_ok() {
+                mobile.announcer.emit(core, &mobile.audio);
+            }
+            json_result(result)
         }
-        "audioGetStatus" => json_result(Ok::<_, String>(mobile.audio.get_status())),
-        "getQueue" => json_result(core.get_queue()),
         "playSongWithQueue" => {
             let args = parse_payload::<PlaySongWithQueuePayload>(payload)?;
             let result = core.play_song_with_queue(args.song_id, args.song_ids);
@@ -1609,13 +1600,6 @@ async fn prepare_next_transition_from(
             prepared.processing.equalizer_settings,
         )
         .map_err(|e| e.to_string())
-}
-
-async fn crossfade_next(mobile: &MobileCore) -> Result<Option<QueueState>, String> {
-    if mobile.audio.is_crossfade_initiated() {
-        return Ok(None);
-    }
-    crossfade_next_from(&mobile.core, &mobile.audio).await
 }
 
 async fn crossfade_next_from(

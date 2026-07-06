@@ -56,8 +56,8 @@ object StereodromeCoreBridge {
       return
     }
 
-    val status = parseOkValue(call("audioGetStatus", "null"))
-    if (stringOrNull(status, "current_song_id") != null) {
+    val snapshot = parseOkValue(call("getPlaybackSnapshot", "null"))
+    if (snapshot?.optBoolean("audio_loaded", false) == true) {
       call("audioResume", "null")
     } else {
       playCurrentFromPersistedPosition()

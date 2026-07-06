@@ -453,9 +453,6 @@ export const stereodromeCore = {
       return nextSettings;
     });
   },
-  getQueue(): Promise<QueueState> {
-    return invokeJson("getQueue");
-  },
   playSongWithQueue(songId: string, songIds: string[]): Promise<QueueState> {
     return queueMutation("playSongWithQueue", {
       song_id: songId,
@@ -493,15 +490,15 @@ export const stereodromeCore = {
   },
   async playQueueItem(index: number): Promise<QueueState> {
     await invokeJson<QueueItem | null>("playQueueItem", index);
-    return this.getQueue();
+    return (await this.getPlaybackSnapshot()).queue;
   },
   async playNext(force = true): Promise<QueueState> {
     await invokeJson<QueueItem | null>("playNext", force);
-    return this.getQueue();
+    return (await this.getPlaybackSnapshot()).queue;
   },
   async playPrevious(): Promise<QueueState> {
     await invokeJson<QueueItem | null>("playPrevious");
-    return this.getQueue();
+    return (await this.getPlaybackSnapshot()).queue;
   },
   toggleShuffle(): Promise<QueueState> {
     return queueMutation("toggleShuffle");
