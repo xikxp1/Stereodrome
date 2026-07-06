@@ -617,7 +617,7 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
     let runtime = &mobile.runtime;
     let core = &mobile.core;
 
-    match method {
+    let response = match method {
         "connectServer" => {
             let params = parse_payload::<ConnectParams>(payload)?;
             json_result(runtime.block_on(async { core.connect_server(params).await }))
@@ -809,25 +809,16 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
                             }
                             Ok::<(), String>(())
                         })
-                        .map(|_| {
-                            mobile.announcer.emit(core, &mobile.audio);
-                            next_settings
-                        })
+                        .map(|_| next_settings)
                 });
             json_result(result)
         }
         "audioPlayCurrent" => {
             let result = runtime.block_on(async { play_current_queue_item(mobile, None).await });
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "audioApplySettings" => {
             let result = runtime.block_on(async { apply_audio_settings(mobile).await });
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "audioPrepareNextTransition" => {
@@ -835,18 +826,12 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         }
         "audioPause" => {
             let result = mobile.audio.pause().map(|_| ());
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "audioResume" => {
             let result = runtime
                 .block_on(async { resume_current_playback(mobile).await })
                 .map(|_| ());
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "audioRebuildOutput" => {
@@ -855,151 +840,130 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
                     .block_on(async { prepare_next_transition(mobile).await })
                     .map_err(stereodrome_audio::AudioError::Playback)
             });
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result.map(|_| ()))
         }
         "audioStop" => {
             let result = mobile.audio.stop().map(|_| ());
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "audioSeek" => {
             let position = parse_payload::<f64>(payload)?;
             let result = mobile.audio.seek(position).map(|_| ());
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "audioSetVolume" => {
             let volume = parse_payload::<f32>(payload)?;
             let result = mobile.audio.set_volume(volume).map(|_| ());
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "playSongWithQueue" => {
             let args = parse_payload::<PlaySongWithQueuePayload>(payload)?;
             let result = core.play_song_with_queue(args.song_id, args.song_ids);
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "addToQueue" => {
             let item = parse_payload::<QueueItem>(payload)?;
             let result = core.add_to_queue(item);
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "addSongsToQueue" => {
             let items = parse_payload::<Vec<QueueItem>>(payload)?;
             let result = core.add_songs_to_queue(items);
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "insertNext" => {
             let item = parse_payload::<QueueItem>(payload)?;
             let result = core.insert_next(item);
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "insertNextSongs" => {
             let items = parse_payload::<Vec<QueueItem>>(payload)?;
             let result = core.insert_next_songs(items);
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "removeFromQueue" => {
             let index = parse_payload::<usize>(payload)?;
             let result = core.remove_from_queue(index);
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "clearQueue" => {
             let result = core.clear_queue();
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "moveQueueItem" => {
             let args = parse_payload::<MoveQueueItemPayload>(payload)?;
             let result = core.move_queue_item(args.from, args.to);
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "playQueueItem" => {
             let index = parse_payload::<usize>(payload)?;
             let result = core.play_queue_item(index);
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "playNext" => {
             let force = parse_payload::<Option<bool>>(payload)?;
             let result = core.play_next(force);
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "playPrevious" => {
             let result = core.play_previous();
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "toggleShuffle" => {
             let result = core.toggle_shuffle();
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "setRepeatMode" => {
             let mode = parse_payload::<RepeatMode>(payload)?;
             let result = core.set_repeat_mode(mode);
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "cycleRepeatMode" => {
             let result = core.cycle_repeat_mode();
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         "rerollNext" => {
             let result = core.reroll_next();
-            if result.is_ok() {
-                mobile.announcer.emit(core, &mobile.audio);
-            }
             json_result(result)
         }
         other => Err(format!("unknown method: {other}")),
+    };
+
+    if response.is_ok() && should_emit_playback_snapshot(method) {
+        mobile.announcer.emit(core, &mobile.audio);
     }
+
+    response
+}
+
+fn should_emit_playback_snapshot(method: &str) -> bool {
+    matches!(
+        method,
+        "setAudioProcessingSettings"
+            | "audioPlayCurrent"
+            | "audioApplySettings"
+            | "audioPause"
+            | "audioResume"
+            | "audioRebuildOutput"
+            | "audioStop"
+            | "audioSeek"
+            | "audioSetVolume"
+            | "playSongWithQueue"
+            | "addToQueue"
+            | "addSongsToQueue"
+            | "insertNext"
+            | "insertNextSongs"
+            | "removeFromQueue"
+            | "clearQueue"
+            | "moveQueueItem"
+            | "playQueueItem"
+            | "playNext"
+            | "playPrevious"
+            | "toggleShuffle"
+            | "setRepeatMode"
+            | "cycleRepeatMode"
+            | "rerollNext"
+    )
 }
 
 #[derive(Deserialize)]
@@ -1965,6 +1929,61 @@ mod tests {
         assert!(is_mobile_monitor_suspension_gap(
             MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD
         ));
+    }
+
+    #[test]
+    fn playback_snapshot_policy_includes_dispatch_mutations_that_emit() {
+        let emitting_methods = [
+            "setAudioProcessingSettings",
+            "audioPlayCurrent",
+            "audioApplySettings",
+            "audioPause",
+            "audioResume",
+            "audioRebuildOutput",
+            "audioStop",
+            "audioSeek",
+            "audioSetVolume",
+            "playSongWithQueue",
+            "addToQueue",
+            "addSongsToQueue",
+            "insertNext",
+            "insertNextSongs",
+            "removeFromQueue",
+            "clearQueue",
+            "moveQueueItem",
+            "playQueueItem",
+            "playNext",
+            "playPrevious",
+            "toggleShuffle",
+            "setRepeatMode",
+            "cycleRepeatMode",
+            "rerollNext",
+        ];
+
+        for method in emitting_methods {
+            assert!(
+                should_emit_playback_snapshot(method),
+                "{method} should emit a playback snapshot after successful dispatch"
+            );
+        }
+    }
+
+    #[test]
+    fn playback_snapshot_policy_excludes_non_emitting_dispatch_methods() {
+        let non_emitting_methods = [
+            "getPlaybackSnapshot",
+            "getPlaybackState",
+            "audioPrepareNextTransition",
+            "getArtists",
+            "unknownMethod",
+        ];
+
+        for method in non_emitting_methods {
+            assert!(
+                !should_emit_playback_snapshot(method),
+                "{method} should not emit a playback snapshot from dispatch"
+            );
+        }
     }
 
     #[test]
