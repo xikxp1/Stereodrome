@@ -116,7 +116,7 @@ public class StereodromeCoreModule: Module {
       return self.callSync(method: "getStreamUri", payload: "\"\(escapedSongId)\"")
     }
 
-    Events("playback-state")
+    Events("playback-snapshot")
   }
 
   fileprivate func emitRustLog(_ message: String) {
@@ -168,7 +168,7 @@ public class StereodromeCoreModule: Module {
 
   fileprivate func handlePlaybackSnapshot(_ snapshot: String) {
     applyPlaybackSnapshot(snapshot)
-    sendEvent("playback-state", ["snapshot": snapshot])
+    sendEvent("playback-snapshot", ["snapshot": snapshot])
   }
 
   private func applyPlaybackSnapshot(_ snapshotJson: String) {

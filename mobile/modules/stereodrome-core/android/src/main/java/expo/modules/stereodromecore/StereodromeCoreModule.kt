@@ -12,7 +12,7 @@ class StereodromeCoreModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("StereodromeCore")
-    Events("playback-state")
+    Events("playback-snapshot")
 
     AsyncFunction("initialize") { dataDir: String ->
       applicationContext = appContext.reactContext?.applicationContext
@@ -21,7 +21,7 @@ class StereodromeCoreModule : Module() {
           applicationContext?.let { context ->
             StereodromeMediaSessionState.applyPlaybackSnapshot(context, snapshot)
           }
-          sendEvent("playback-state", mapOf("snapshot" to snapshot))
+          sendEvent("playback-snapshot", mapOf("snapshot" to snapshot))
         }
       }
       StereodromeCoreBridge.initialize(dataDir)

@@ -366,7 +366,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       );
     const unsubscribePlayback =
       stereodromeCore.addEventListener<PlaybackSnapshot>(
-        "playback-state",
+        "playback-snapshot",
         (snapshot) => {
           void applyPlaybackSnapshot(snapshot).catch((playbackError) => {
             setError(errorMessage(playbackError));

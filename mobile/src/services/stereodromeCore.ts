@@ -33,7 +33,7 @@ type Envelope<T> = { ok: true; value: T } | { ok: false; error: string };
 type CoreEventName =
   | "queue-changed"
   | "audio-processing-settings-changed"
-  | "playback-state"
+  | "playback-snapshot"
   | "sync-status-changed"
   | "error";
 type CoreEventHandler<T = unknown> = (payload: T) => void;
@@ -125,11 +125,11 @@ function startNativePlaybackSubscription() {
     return;
   }
   nativePlaybackSubscription = NativeStereodromeCore.addListener(
-    "playback-state",
+    "playback-snapshot",
     ({ snapshot }) => {
       try {
         emitCoreEvent(
-          "playback-state",
+          "playback-snapshot",
           JSON.parse(snapshot) as PlaybackSnapshot
         );
       } catch (error) {
@@ -397,11 +397,6 @@ export const stereodromeCore = {
   ): Promise<PlaybackStateSnapshot> {
     return invokeJson("savePlaybackPosition", progress);
   },
-  reportPlaybackProgress(
-    progress: PlaybackProgress
-  ): Promise<PlaybackStateSnapshot> {
-    return invokeJson("reportPlaybackProgress", progress);
-  },
   getLastfmStatus(): Promise<LastfmStatus> {
     return invokeJson("getLastfmStatus");
   },
@@ -428,9 +423,6 @@ export const stereodromeCore = {
   },
   audioPrepareNextTransition(): Promise<void> {
     return invokeJson("audioPrepareNextTransition");
-  },
-  audioCrossfadeNext(): Promise<QueueState | null> {
-    return invokeJson("audioCrossfadeNext");
   },
   audioPause(): Promise<void> {
     return invokeJson("audioPause");

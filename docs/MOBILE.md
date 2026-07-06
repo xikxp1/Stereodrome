@@ -171,7 +171,7 @@ Tasks:
   - `setRepeatMode`
   - `cycleRepeatMode`
   - `rerollNext`
-- Add event delivery from native modules to React Native for `queue-changed`, `playback-state`, `sync-status-changed`, and error events.
+- Add event delivery from native modules to React Native for `queue-changed`, `playback-snapshot`, `sync-status-changed`, and error events.
 - Replace `PlaybackContext` queue ownership with backend queue state.
 
 Acceptance criteria:
@@ -240,6 +240,10 @@ Acceptance criteria:
 - Next-track prefetch works from backend queue state.
 
 ### Phase 4: Playback State, Server State, and Background Behavior
+
+Status: superseded by `docs/MOBILE_PLAYBACK_SYNC.md`, which moved mobile playback
+state to Rust-owned snapshots and native-owned media sessions. Keep this section
+as historical context only; new playback sync work should follow that document.
 
 Goal: backend owns playback truth and server reporting.
 
@@ -489,11 +493,8 @@ Manual QA:
 
 ## Immediate Next Work
 
-The best first implementation slice is shared queue ownership on mobile:
-
-- It touches important architecture without requiring the hardest mobile audio-output decision.
-- It removes the largest current state drift between desktop and mobile.
-- It enables persistence, scrobbling, prefetch, downloads, and background controls to build on one source of truth.
-- It can reuse existing desktop queue tests and behavior almost directly.
-
-After that, implement audio/cover cache and local-file playback. Once TrackPlayer can play cached files from backend queue state, the app has a stable foundation for offline support and later DSP work.
+Playback queue ownership, Rust-backed mobile audio, snapshot delivery, and
+native media-session integration have moved past this original plan. Current
+next work should be chosen from `docs/MOBILE_PLAYBACK_SYNC.md` and remaining
+feature parity gaps in this document, with special care to keep Rust snapshots
+as the single playback state contract.

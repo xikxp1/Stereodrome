@@ -91,21 +91,6 @@ object StereodromeCoreBridge {
     call("audioPause", "null")
   }
 
-  fun toggle() {
-    if (!hasCore()) {
-      return
-    }
-
-    val status = parseOkValue(call("audioGetStatus", "null"))
-    if (status?.optBoolean("is_playing") == true) {
-      call("audioPause", "null")
-    } else if (stringOrNull(status, "current_song_id") != null) {
-      call("audioResume", "null")
-    } else {
-      playCurrentFromPersistedPosition()
-    }
-  }
-
   fun stop() {
     if (!hasCore()) {
       return
