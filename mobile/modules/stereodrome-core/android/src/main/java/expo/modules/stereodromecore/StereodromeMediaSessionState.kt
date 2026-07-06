@@ -3,9 +3,14 @@ package expo.modules.stereodromecore
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import java.lang.ref.WeakReference
 
 object StereodromeMediaSessionState {
+  private const val TAG = "StereodromeMediaSession"
+  private const val BACKGROUND_SERVICE_START_NOT_ALLOWED =
+    "android.app.BackgroundServiceStartNotAllowedException"
+
   private val lock = Any()
   private var service: WeakReference<StereodromeMediaSessionService>? = null
   private var player: StereodromeMediaPlayer? = null
@@ -57,10 +62,22 @@ object StereodromeMediaSessionState {
 
   private fun startService(context: Context, foreground: Boolean = false) {
     val intent = Intent(context, StereodromeMediaSessionService::class.java)
-    if (foreground && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      context.startForegroundService(intent)
-    } else {
-      context.startService(intent)
+    try {
+      if (foreground && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        context.startForegroundService(intent)
+      } else {
+        context.startService(intent)
+      }
+    } catch (exception: IllegalStateException) {
+      if (
+        !foreground &&
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        exception.javaClass.name == BACKGROUND_SERVICE_START_NOT_ALLOWED
+      ) {
+        Log.w(TAG, "Skipped paused media session service start while app is backgrounded")
+      } else {
+        throw exception
+      }
     }
   }
 }
