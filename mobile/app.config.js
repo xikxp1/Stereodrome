@@ -1,17 +1,17 @@
-const app = require("./app.json");
-
-module.exports = () => {
-  const expo = app.expo;
-  const extra = expo.extra || {};
+module.exports = ({ config }) => {
+  const extra = config.extra || {};
   const eas = extra.eas || {};
-  const ios = expo.ios || {};
-  const slug = expo.slug;
+  const ios = config.ios || {};
+  const slug = config.slug;
   const projectId = process.env.EAS_PROJECT_ID || eas.projectId;
   const buildNumber = process.env.IOS_BUILD_NUMBER || ios.buildNumber || "1";
-  const plugins = withPlugin(expo.plugins || [], "expo-background-task");
+  const plugins = withPlugins(config.plugins || [], [
+    "expo-background-task",
+    "expo-status-bar",
+  ]);
 
   return {
-    ...expo,
+    ...config,
     slug,
     plugins,
     ios: {
@@ -30,10 +30,12 @@ module.exports = () => {
   };
 };
 
-function withPlugin(plugins, pluginName) {
-  const hasPlugin = plugins.some((plugin) =>
-    Array.isArray(plugin) ? plugin[0] === pluginName : plugin === pluginName
-  );
+function withPlugins(plugins, pluginNames) {
+  return pluginNames.reduce((nextPlugins, pluginName) => {
+    const hasPlugin = nextPlugins.some((plugin) =>
+      Array.isArray(plugin) ? plugin[0] === pluginName : plugin === pluginName
+    );
 
-  return hasPlugin ? plugins : [...plugins, pluginName];
+    return hasPlugin ? nextPlugins : [...nextPlugins, pluginName];
+  }, plugins);
 }
