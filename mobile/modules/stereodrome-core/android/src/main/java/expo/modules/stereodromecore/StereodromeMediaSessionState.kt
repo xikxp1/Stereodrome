@@ -3,19 +3,26 @@ package expo.modules.stereodromecore
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import java.lang.ref.WeakReference
 
 object StereodromeMediaSessionState {
   private val lock = Any()
+  private var service: WeakReference<StereodromeMediaSessionService>? = null
   private var player: StereodromeMediaPlayer? = null
   private var nowPlayingInfo: NowPlayingInfo? = null
 
-  fun attachPlayer(player: StereodromeMediaPlayer) = synchronized(lock) {
+  fun attachService(
+    service: StereodromeMediaSessionService,
+    player: StereodromeMediaPlayer,
+  ) = synchronized(lock) {
+    this.service = WeakReference(service)
     this.player = player
     player.setNowPlayingInfo(nowPlayingInfo)
   }
 
-  fun detachPlayer(player: StereodromeMediaPlayer) = synchronized(lock) {
-    if (this.player == player) {
+  fun detachService(service: StereodromeMediaSessionService) = synchronized(lock) {
+    if (this.service?.get() === service) {
+      this.service = null
       this.player = null
     }
   }
@@ -45,7 +52,7 @@ object StereodromeMediaSessionState {
   }
 
   private fun isServiceRunningLocked(): Boolean {
-    return player != null
+    return service?.get() != null
   }
 
   private fun startService(context: Context, foreground: Boolean = false) {

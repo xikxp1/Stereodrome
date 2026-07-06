@@ -28,7 +28,7 @@ class StereodromeMediaSessionService : MediaSessionService() {
     super.onCreate()
     val mediaPlayer = StereodromeMediaPlayer(this, Looper.getMainLooper())
     player = mediaPlayer
-    StereodromeMediaSessionState.attachPlayer(mediaPlayer)
+    StereodromeMediaSessionState.attachService(this, mediaPlayer)
     mediaSession = MediaSession.Builder(this, mediaPlayer).build()
     val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -45,7 +45,7 @@ class StereodromeMediaSessionService : MediaSessionService() {
     unregisterReceiver(becomingNoisyReceiver)
     player?.release()
     mediaSession?.release()
-    player?.let { StereodromeMediaSessionState.detachPlayer(it) }
+    StereodromeMediaSessionState.detachService(this)
     player = null
     mediaSession = null
     super.onDestroy()
