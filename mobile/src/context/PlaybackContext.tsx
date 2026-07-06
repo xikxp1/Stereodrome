@@ -241,24 +241,28 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const playCurrentQueueItem = useCallback(
     async (startPositionSeconds?: number) => {
       expectedAudioSongIdRef.current = currentSongRef.current?.id ?? null;
-      let status = await stereodromeCore.audioPlayCurrent();
+      try {
+        let status = await stereodromeCore.audioPlayCurrent();
 
-      if (
-        startPositionSeconds !== undefined &&
-        Number.isFinite(startPositionSeconds) &&
-        startPositionSeconds > 0
-      ) {
-        const seekPosition =
-          status.duration > 0
-            ? Math.min(startPositionSeconds, status.duration)
-            : startPositionSeconds;
-        await stereodromeCore.audioSeek(Math.max(0, seekPosition));
-        status = await stereodromeCore.audioGetStatus();
+        if (
+          startPositionSeconds !== undefined &&
+          Number.isFinite(startPositionSeconds) &&
+          startPositionSeconds > 0
+        ) {
+          const seekPosition =
+            status.duration > 0
+              ? Math.min(startPositionSeconds, status.duration)
+              : startPositionSeconds;
+          await stereodromeCore.audioSeek(Math.max(0, seekPosition));
+          status = await stereodromeCore.audioGetStatus();
+        }
+
+        restoredStartPositionRef.current = null;
+        updateAudioStatus(status);
+        void prepareNextPlayback().catch(() => {});
+      } finally {
+        expectedAudioSongIdRef.current = null;
       }
-
-      restoredStartPositionRef.current = null;
-      updateAudioStatus(status);
-      void prepareNextPlayback().catch(() => {});
     },
     [prepareNextPlayback, updateAudioStatus]
   );

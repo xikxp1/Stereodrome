@@ -1,5 +1,6 @@
 package expo.modules.stereodromecore
 
+import android.content.Context
 import org.json.JSONObject
 
 object StereodromeCoreBridge {
@@ -38,11 +39,14 @@ object StereodromeCoreBridge {
     handle != 0L
   }
 
-  fun pauseFromAudioFocusLoss() {
+  fun pauseFromAudioFocusLoss(context: Context) {
     if (!hasCore()) {
       return
     }
     call("audioPause", "null")
+    audioStatus()?.let { status ->
+      StereodromeMediaSessionState.updateFromAudioStatus(context.applicationContext, status)
+    }
     invalidationListener?.invoke()
   }
 

@@ -100,6 +100,7 @@ enum AudioCommand {
         binaural_preset: Option<BinauralPreset>,
         equalizer_settings: Option<EqualizerSettings>,
         crossfade_duration_ms: u32,
+        ack: Sender<AudioResult<()>>,
     },
     Shutdown,
 }
@@ -406,6 +407,7 @@ impl AudioPlayer {
             crossfade_duration_ms,
         } = request;
 
+        let (ack_tx, ack_rx) = mpsc::channel();
         self.command_tx
             .send(AudioCommand::CrossfadePlay {
                 audio_data,
@@ -416,8 +418,20 @@ impl AudioPlayer {
                 binaural_preset,
                 equalizer_settings,
                 crossfade_duration_ms,
+                ack: ack_tx,
             })
-            .map_err(|e| AudioError::Playback(format!("Failed to send crossfade command: {}", e)))
+            .map_err(|e| {
+                AudioError::Playback(format!("Failed to send crossfade command: {}", e))
+            })?;
+        match ack_rx.recv_timeout(TRANSPORT_ACK_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(AudioError::Playback(
+                "Audio thread did not acknowledge crossfade command in time".to_string(),
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(AudioError::Playback(
+                "Audio thread disconnected while starting crossfade".to_string(),
+            )),
+        }
     }
 
     #[allow(dead_code)]
@@ -443,10 +457,15 @@ impl AudioPlayer {
         self.command_tx
             .send(make_command(ack_tx))
             .map_err(|e| AudioError::Playback(format!("Failed to send {name} command: {e}")))?;
-        if ack_rx.recv_timeout(TRANSPORT_ACK_TIMEOUT).is_err() {
-            warn!("Audio thread did not acknowledge {name} command in time");
+        match ack_rx.recv_timeout(TRANSPORT_ACK_TIMEOUT) {
+            Ok(()) => Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(AudioError::Playback(format!(
+                "Audio thread did not acknowledge {name} command in time"
+            ))),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(AudioError::Playback(format!(
+                "Audio thread disconnected while applying {name} command"
+            ))),
         }
-        Ok(())
     }
 
     pub fn pause(&self) -> AudioResult<()> {
@@ -1039,6 +1058,7 @@ fn run_audio_thread(
                     binaural_preset,
                     equalizer_settings,
                     crossfade_duration_ms,
+                    ack,
                 } => {
                     info!(
                         "Playback thread crossfade: song_id={}, title={:?}, bytes={}, duration={:.3}s, fade={}ms",
@@ -1100,11 +1120,17 @@ fn run_audio_thread(
                             current_sink = Some(new_sink);
                             crossfade_state = Some(CrossfadeState::new(crossfade_duration_ms));
                             debug!("Playback thread started crossfade");
+                            let _ = ack.send(Ok(()));
                         }
                         Err(e) => {
-                            error!("Failed to decode crossfade audio: {:?}", e);
+                            let message = format!("Failed to decode crossfade audio: {e:?}");
+                            error!("{message}");
                             // Restore original sink if decode fails
                             current_sink = crossfade_sink.take();
+                            shared_state
+                                .crossfade_initiated
+                                .store(false, Ordering::SeqCst);
+                            let _ = ack.send(Err(AudioError::Playback(message)));
                         }
                     }
                 }

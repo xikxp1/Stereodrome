@@ -51,6 +51,7 @@ class NativeMediaControlsSync {
       artist: currentSong.artist ?? null,
       album: currentSong.album ?? null,
       duration,
+      is_playing: snapshot.isPlaying,
       artworkUri,
       queueIndex,
       queueCount,

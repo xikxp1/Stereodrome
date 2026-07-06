@@ -411,7 +411,10 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
         let next_id = queue.peek_next().map(|i| i.song_id.clone());
         match (current_id, next_id) {
             (Some(curr), Some(next)) => (curr, next),
-            _ => return,
+            _ => {
+                reset_crossfade_initiated(&state);
+                return;
+            }
         }
     };
 
@@ -423,6 +426,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
             is_gapless_eligible(&conn, &current_song_id, &next_song_id)
         };
         if eligible {
+            reset_crossfade_initiated(&state);
             return;
         }
     }
@@ -433,6 +437,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
         queue.repeat_mode()
     };
     if repeat_mode == RepeatMode::One {
+        reset_crossfade_initiated(&state);
         return;
     }
 
@@ -442,6 +447,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
         Ok(d) => d,
         Err(e) => {
             warn!("Crossfade: failed to fetch song data: {e}");
+            reset_crossfade_initiated(&state);
             return;
         }
     };
@@ -462,6 +468,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
             crossfade_duration_ms,
         }) {
             warn!("Crossfade: failed to start: {e}");
+            reset_crossfade_initiated(&state);
             return;
         }
     }
@@ -492,6 +499,11 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
     // Prefetch next-next and check gapless eligibility
     prefetch_next_song(app_handle, &state);
     check_and_queue_gapless(app_handle, &state);
+}
+
+fn reset_crossfade_initiated(state: &AppState) {
+    let audio_player = state.audio_player.lock_recover();
+    audio_player.set_crossfade_initiated(false);
 }
 
 /// Spawn background loudness analysis if normalization is enabled but no data exists.

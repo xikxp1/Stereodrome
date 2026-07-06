@@ -8,7 +8,6 @@ object StereodromeMediaSessionState {
   private val lock = Any()
   private var player: StereodromeMediaPlayer? = null
   private var nowPlayingInfo: NowPlayingInfo? = null
-  private var serviceStarted = false
 
   fun attachPlayer(player: StereodromeMediaPlayer) = synchronized(lock) {
     this.player = player
@@ -23,7 +22,7 @@ object StereodromeMediaSessionState {
 
   fun setNowPlayingInfo(context: Context, info: NowPlayingInfo) = synchronized(lock) {
     nowPlayingInfo = info
-    if (info.isPlaying) {
+    if (info.isPlaying && !isServiceRunningLocked()) {
       startService(context, foreground = true)
     }
     player?.setNowPlayingInfo(info)
@@ -38,7 +37,7 @@ object StereodromeMediaSessionState {
         isPlaying = progress.isPlaying,
       )
     }
-    if (progress.isPlaying && !serviceStarted) {
+    if (progress.isPlaying && !isServiceRunningLocked()) {
       startService(context, foreground = true)
     }
     player?.updateProgress(progress)
@@ -63,7 +62,7 @@ object StereodromeMediaSessionState {
         isPlaying = status.isPlaying,
       )
       nowPlayingInfo = nextInfo
-      if (status.isPlaying && !serviceStarted) {
+      if (status.isPlaying && !isServiceRunningLocked()) {
         startService(context, foreground = true)
       }
       player?.setNowPlayingInfo(nextInfo)
@@ -78,7 +77,10 @@ object StereodromeMediaSessionState {
     nowPlayingInfo = null
     player?.clearNowPlayingInfo()
     context.stopService(Intent(context, StereodromeMediaSessionService::class.java))
-    serviceStarted = false
+  }
+
+  private fun isServiceRunningLocked(): Boolean {
+    return player != null
   }
 
   private fun startService(context: Context, foreground: Boolean = false) {
@@ -88,6 +90,5 @@ object StereodromeMediaSessionState {
     } else {
       context.startService(intent)
     }
-    serviceStarted = true
   }
 }
