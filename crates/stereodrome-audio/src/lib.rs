@@ -16,8 +16,8 @@ pub use compressor::DynamicsPreset;
 pub use equalizer::{EQ_BAND_COUNT, EqualizerSettings, default_bands_db, sanitize_bands_db};
 pub use error::{AudioError, AudioResult};
 pub use player::{
-    AudioPlayer, AudioStateHandle, CrossfadePlayRequest, PlaybackState, PlaybackStatus,
-    SongMetadata,
+    AudioPlayer, AudioStateHandle, CrossfadePlayRequest, PlaybackLifecycleState, PlaybackState,
+    PlaybackStatus, SongMetadata,
 };
 
 pub trait MutexExt<T> {

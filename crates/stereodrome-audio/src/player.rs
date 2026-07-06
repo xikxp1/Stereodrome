@@ -1,8 +1,8 @@
 use log::{debug, error, info, warn};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
-use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
@@ -25,6 +25,18 @@ const SPECTRUM_BUFFER_SIZE: usize = 32768;
 /// the native media controls, so the state change must be visible before
 /// the call returns. Bounded so a wedged audio thread cannot hang callers.
 const TRANSPORT_ACK_TIMEOUT: Duration = Duration::from_millis(1000);
+const STALL_GRACE_DURATION: Duration = Duration::from_millis(750);
+const STALL_TIMEOUT: Duration = Duration::from_millis(2500);
+const POSITION_EPSILON_SECONDS: f64 = 0.01;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaybackLifecycleState {
+    Playing,
+    Paused,
+    Stopped,
+    Stalled,
+}
 
 #[derive(Debug, Clone, serde::Serialize, Default)]
 pub struct SongMetadata {
@@ -37,6 +49,7 @@ pub struct SongMetadata {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PlaybackStatus {
+    pub state: PlaybackLifecycleState,
     pub is_playing: bool,
     pub current_song_id: Option<String>,
     pub position: f64,
@@ -46,6 +59,7 @@ pub struct PlaybackStatus {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PlaybackState {
+    pub state: PlaybackLifecycleState,
     pub is_playing: bool,
     pub position: f64,
     pub duration: f64,
@@ -68,7 +82,10 @@ enum AudioCommand {
         ack: Sender<()>,
     },
     Resume {
-        ack: Sender<()>,
+        ack: Sender<AudioResult<()>>,
+    },
+    RebuildOutput {
+        ack: Sender<AudioResult<()>>,
     },
     Stop {
         ack: Sender<()>,
@@ -117,6 +134,46 @@ pub struct CrossfadePlayRequest {
     pub crossfade_duration_ms: u32,
 }
 
+#[derive(Debug, Clone)]
+struct AudioProcessingRequest {
+    normalization_gain: Option<f32>,
+    dynamics_preset: Option<DynamicsPreset>,
+    binaural_preset: Option<BinauralPreset>,
+    equalizer_settings: Option<EqualizerSettings>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveAudioRequest {
+    audio_data: Arc<[u8]>,
+    metadata: SongMetadata,
+    duration_secs: f64,
+    processing: AudioProcessingRequest,
+}
+
+impl ActiveAudioRequest {
+    fn new(
+        audio_data: Arc<[u8]>,
+        metadata: SongMetadata,
+        duration_secs: f64,
+        normalization_gain: Option<f32>,
+        dynamics_preset: Option<DynamicsPreset>,
+        binaural_preset: Option<BinauralPreset>,
+        equalizer_settings: Option<EqualizerSettings>,
+    ) -> Self {
+        Self {
+            audio_data,
+            metadata,
+            duration_secs,
+            processing: AudioProcessingRequest {
+                normalization_gain,
+                dynamics_preset,
+                binaural_preset,
+                equalizer_settings,
+            },
+        }
+    }
+}
+
 /// A segment within a gapless playback chain.
 /// Each segment represents one song appended to the same Rodio player.
 #[derive(Debug, Clone)]
@@ -124,15 +181,17 @@ struct GaplessSegment {
     metadata: SongMetadata,
     duration: f64,         // this segment's duration in seconds
     cumulative_start: f64, // sum of all previous segments' durations
+    request: ActiveAudioRequest,
 }
 
 /// Inner playback state consolidated into a single struct for efficient locking
 struct PlaybackInner {
     current_song: Option<SongMetadata>,
     volume: f32,
-    playback_start: Option<Instant>,
-    paused_position: f64,
+    consumed_position: f64,
     duration: f64,
+    active_request: Option<ActiveAudioRequest>,
+    source_generation: u64,
     /// Gapless playback segments. When multiple consecutive album tracks are
     /// appended to the same player, each gets a segment for position tracking.
     gapless_segments: Vec<GaplessSegment>,
@@ -143,9 +202,10 @@ impl Default for PlaybackInner {
         Self {
             current_song: None,
             volume: 0.8,
-            playback_start: None,
-            paused_position: 0.0,
+            consumed_position: 0.0,
             duration: 0.0,
+            active_request: None,
+            source_generation: 0,
             gapless_segments: Vec::new(),
         }
     }
@@ -155,7 +215,10 @@ impl Default for PlaybackInner {
 /// Uses a single RwLock for efficient concurrent reads (position emitter at 10Hz).
 struct SharedState {
     is_playing: AtomicBool,
+    stalled: AtomicBool,
+    stream_failed: AtomicBool,
     crossfade_initiated: AtomicBool,
+    next_source_generation: AtomicU64,
     inner: RwLock<PlaybackInner>,
 }
 
@@ -163,7 +226,10 @@ impl SharedState {
     fn new() -> Self {
         Self {
             is_playing: AtomicBool::new(false),
+            stalled: AtomicBool::new(false),
+            stream_failed: AtomicBool::new(false),
             crossfade_initiated: AtomicBool::new(false),
+            next_source_generation: AtomicU64::new(1),
             inner: RwLock::new(PlaybackInner::default()),
         }
     }
@@ -181,21 +247,167 @@ impl SharedState {
     }
 
     fn get_position(&self) -> f64 {
-        let inner = self.read_inner();
-        self.calculate_position(&inner)
+        self.read_inner().consumed_position
     }
 
-    /// Calculate position from an already-acquired read guard (avoids double locking)
-    fn calculate_position(&self, inner: &PlaybackInner) -> f64 {
-        if !self.is_playing.load(Ordering::SeqCst) {
-            return inner.paused_position;
+    fn state_from_inner(&self, inner: &PlaybackInner) -> PlaybackLifecycleState {
+        if inner.current_song.is_none() {
+            PlaybackLifecycleState::Stopped
+        } else if self.stalled.load(Ordering::SeqCst) {
+            PlaybackLifecycleState::Stalled
+        } else if self.is_playing.load(Ordering::SeqCst) {
+            PlaybackLifecycleState::Playing
+        } else {
+            PlaybackLifecycleState::Paused
+        }
+    }
+
+    fn state(&self) -> PlaybackLifecycleState {
+        let inner = self.read_inner();
+        self.state_from_inner(&inner)
+    }
+
+    fn is_playing(&self) -> bool {
+        self.state() == PlaybackLifecycleState::Playing
+    }
+
+    fn mark_playing(&self) {
+        self.stream_failed.store(false, Ordering::SeqCst);
+        self.stalled.store(false, Ordering::SeqCst);
+        self.is_playing.store(true, Ordering::SeqCst);
+    }
+
+    fn mark_paused(&self) {
+        self.stalled.store(false, Ordering::SeqCst);
+        self.is_playing.store(false, Ordering::SeqCst);
+    }
+
+    fn mark_stalled(&self) {
+        if self.read_inner().current_song.is_some() {
+            self.stalled.store(true, Ordering::SeqCst);
+            self.is_playing.store(false, Ordering::SeqCst);
+        }
+    }
+
+    fn mark_stream_failed(&self) {
+        self.stream_failed.store(true, Ordering::SeqCst);
+        self.mark_stalled();
+    }
+
+    fn mark_stopped(&self) {
+        self.stream_failed.store(false, Ordering::SeqCst);
+        self.stalled.store(false, Ordering::SeqCst);
+        self.is_playing.store(false, Ordering::SeqCst);
+    }
+
+    fn next_generation(&self) -> u64 {
+        self.next_source_generation.fetch_add(1, Ordering::SeqCst)
+    }
+
+    fn segment_index_for_position(inner: &PlaybackInner, position: f64) -> usize {
+        if inner.gapless_segments.is_empty() {
+            return 0;
+        }
+        let mut segment_idx = 0;
+        for (index, segment) in inner.gapless_segments.iter().enumerate() {
+            if position < segment.cumulative_start + segment.duration {
+                segment_idx = index;
+                break;
+            }
+            segment_idx = index;
+        }
+        segment_idx
+    }
+
+    fn segment_index_for_current_position(inner: &PlaybackInner) -> usize {
+        Self::segment_index_for_position(inner, inner.consumed_position)
+    }
+
+    fn update_consumed_position(&self, generation: u64, source_position: f64) -> bool {
+        let mut inner = self.write_inner();
+        if inner.source_generation != generation {
+            return false;
         }
 
-        if let Some(instant) = inner.playback_start {
-            (instant.elapsed().as_secs_f64() + inner.paused_position).min(inner.duration)
-        } else {
-            inner.paused_position
+        let previous = inner.consumed_position;
+        let mut cumulative_position = source_position.max(0.0);
+        if inner.gapless_segments.len() > 1 {
+            let mut segment_idx = Self::segment_index_for_current_position(&inner);
+            let current_segment = &inner.gapless_segments[segment_idx];
+            let candidate = current_segment.cumulative_start + source_position;
+            let near_segment_end =
+                previous >= current_segment.cumulative_start + current_segment.duration - 0.5;
+            if segment_idx + 1 < inner.gapless_segments.len()
+                && near_segment_end
+                && candidate + 0.25 < previous
+            {
+                segment_idx += 1;
+            }
+            cumulative_position =
+                inner.gapless_segments[segment_idx].cumulative_start + source_position.max(0.0);
         }
+
+        inner.consumed_position = cumulative_position.clamp(0.0, inner.duration);
+        inner.consumed_position > previous + POSITION_EPSILON_SECONDS
+    }
+
+    fn set_consumed_position(&self, generation: u64, cumulative_position: f64) {
+        let mut inner = self.write_inner();
+        if inner.source_generation == generation {
+            inner.consumed_position = cumulative_position.clamp(0.0, inner.duration);
+        }
+    }
+
+    fn active_request_at_position(&self) -> Option<(ActiveAudioRequest, f64)> {
+        let inner = self.read_inner();
+        if inner.gapless_segments.is_empty() {
+            return inner
+                .active_request
+                .clone()
+                .map(|request| (request, inner.consumed_position));
+        }
+
+        let segment_idx = Self::segment_index_for_current_position(&inner);
+        let segment = &inner.gapless_segments[segment_idx];
+        let position = (inner.consumed_position - segment.cumulative_start)
+            .max(0.0)
+            .min(segment.duration);
+        Some((segment.request.clone(), position))
+    }
+
+    fn set_active_request(&self, generation: u64, request: ActiveAudioRequest) {
+        let mut inner = self.write_inner();
+        inner.current_song = Some(request.metadata.clone());
+        inner.consumed_position = 0.0;
+        inner.duration = request.duration_secs;
+        inner.active_request = Some(request.clone());
+        inner.source_generation = generation;
+        inner.gapless_segments = vec![GaplessSegment {
+            metadata: request.metadata.clone(),
+            duration: request.duration_secs,
+            cumulative_start: 0.0,
+            request,
+        }];
+    }
+
+    fn replace_with_rebuilt_request(
+        &self,
+        generation: u64,
+        request: ActiveAudioRequest,
+        position: f64,
+    ) {
+        let mut inner = self.write_inner();
+        inner.current_song = Some(request.metadata.clone());
+        inner.consumed_position = position.clamp(0.0, request.duration_secs);
+        inner.duration = request.duration_secs;
+        inner.active_request = Some(request.clone());
+        inner.source_generation = generation;
+        inner.gapless_segments = vec![GaplessSegment {
+            metadata: request.metadata.clone(),
+            duration: request.duration_secs,
+            cumulative_start: 0.0,
+            request,
+        }];
     }
 
     /// Get playback state with segment-aware position/metadata and the current segment index.
@@ -203,19 +415,13 @@ impl SharedState {
     /// instead of cumulative position across the chain.
     fn get_gapless_state(&self) -> (PlaybackState, usize) {
         let inner = self.read_inner();
-        let is_playing = self.is_playing.load(Ordering::SeqCst);
-        let cumulative_pos = self.calculate_position(&inner);
+        let lifecycle_state = self.state_from_inner(&inner);
+        let is_playing = lifecycle_state == PlaybackLifecycleState::Playing;
+        let cumulative_pos = inner.consumed_position;
 
         if inner.gapless_segments.len() > 1 {
             // Find which segment we're in
-            let mut seg_idx = 0;
-            for (i, seg) in inner.gapless_segments.iter().enumerate() {
-                if cumulative_pos < seg.cumulative_start + seg.duration {
-                    seg_idx = i;
-                    break;
-                }
-                seg_idx = i; // default to last segment
-            }
+            let seg_idx = Self::segment_index_for_current_position(&inner);
             let seg = &inner.gapless_segments[seg_idx];
             let song_pos = (cumulative_pos - seg.cumulative_start)
                 .max(0.0)
@@ -223,6 +429,7 @@ impl SharedState {
 
             (
                 PlaybackState {
+                    state: lifecycle_state,
                     is_playing,
                     position: song_pos,
                     duration: seg.duration,
@@ -234,6 +441,7 @@ impl SharedState {
         } else {
             (
                 PlaybackState {
+                    state: lifecycle_state,
                     is_playing,
                     position: cumulative_pos,
                     duration: inner.duration,
@@ -248,6 +456,7 @@ impl SharedState {
     fn get_status(&self) -> PlaybackStatus {
         let (state, _) = self.get_gapless_state();
         PlaybackStatus {
+            state: state.state,
             is_playing: state.is_playing,
             current_song_id: state.song.map(|s| s.id),
             position: state.position,
@@ -291,15 +500,18 @@ impl AudioStateHandle {
     }
 
     pub fn is_playing(&self) -> bool {
-        self.shared_state.is_playing.load(Ordering::SeqCst)
+        self.shared_state.is_playing()
     }
 
     pub fn clear_finished_state(&self) {
         let mut inner = self.shared_state.write_inner();
         inner.current_song = None;
-        inner.paused_position = 0.0;
+        inner.consumed_position = 0.0;
         inner.duration = 0.0;
+        inner.active_request = None;
+        inner.source_generation = 0;
         inner.gapless_segments.clear();
+        self.shared_state.mark_stopped();
     }
 }
 
@@ -468,12 +680,36 @@ impl AudioPlayer {
         }
     }
 
+    fn send_result_command(
+        &self,
+        name: &str,
+        make_command: impl FnOnce(Sender<AudioResult<()>>) -> AudioCommand,
+    ) -> AudioResult<()> {
+        let (ack_tx, ack_rx) = mpsc::channel();
+        self.command_tx
+            .send(make_command(ack_tx))
+            .map_err(|e| AudioError::Playback(format!("Failed to send {name} command: {e}")))?;
+        match ack_rx.recv_timeout(TRANSPORT_ACK_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(AudioError::Playback(format!(
+                "Audio thread did not acknowledge {name} command in time"
+            ))),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(AudioError::Playback(format!(
+                "Audio thread disconnected while applying {name} command"
+            ))),
+        }
+    }
+
     pub fn pause(&self) -> AudioResult<()> {
         self.send_transport_command("pause", |ack| AudioCommand::Pause { ack })
     }
 
     pub fn resume(&self) -> AudioResult<()> {
-        self.send_transport_command("resume", |ack| AudioCommand::Resume { ack })
+        self.send_result_command("resume", |ack| AudioCommand::Resume { ack })
+    }
+
+    pub fn rebuild_output(&self) -> AudioResult<()> {
+        self.send_result_command("rebuild output", |ack| AudioCommand::RebuildOutput { ack })
     }
 
     pub fn stop(&self) -> AudioResult<()> {
@@ -541,7 +777,7 @@ impl AudioPlayer {
 
     #[allow(dead_code)]
     pub fn is_playing(&self) -> bool {
-        self.shared_state.is_playing.load(Ordering::SeqCst)
+        self.shared_state.is_playing()
     }
 
     #[allow(dead_code)]
@@ -728,6 +964,166 @@ enum AudioThreadEvent {
     Disconnected,
 }
 
+struct PlaybackWatchdog {
+    last_progress_at: Instant,
+    grace_until: Instant,
+    last_position: f64,
+}
+
+impl PlaybackWatchdog {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            last_progress_at: now,
+            grace_until: now + STALL_GRACE_DURATION,
+            last_position: 0.0,
+        }
+    }
+
+    fn reset(&mut self, position: f64) {
+        let now = Instant::now();
+        self.last_progress_at = now;
+        self.grace_until = now + STALL_GRACE_DURATION;
+        self.last_position = position;
+    }
+
+    fn observe(&mut self, position: f64, should_detect_stall: bool, shared_state: &SharedState) {
+        let now = Instant::now();
+        let advanced = position > self.last_position + POSITION_EPSILON_SECONDS;
+        let jumped = (position - self.last_position).abs() > 0.5;
+        if advanced || jumped {
+            self.last_progress_at = now;
+            self.last_position = position;
+            if shared_state.stalled.load(Ordering::SeqCst) && should_detect_stall {
+                shared_state.mark_playing();
+            }
+            return;
+        }
+
+        if should_detect_stall
+            && now >= self.grace_until
+            && now.duration_since(self.last_progress_at) >= STALL_TIMEOUT
+        {
+            shared_state.mark_stalled();
+        }
+    }
+}
+
+fn open_output_stream(shared_state: &Arc<SharedState>) -> AudioResult<MixerDeviceSink> {
+    let callback_state = Arc::clone(shared_state);
+    let mut stream = DeviceSinkBuilder::from_default_device()
+        .map_err(|e| AudioError::Playback(format!("Failed to create audio stream builder: {e:?}")))?
+        .with_error_callback(move |error| {
+            warn!("Rust audio stream error: {error:?}");
+            callback_state.mark_stream_failed();
+        })
+        .open_sink_or_fallback()
+        .map_err(|e| AudioError::Playback(format!("Failed to open audio stream: {e:?}")))?;
+    stream.log_on_drop(false);
+    Ok(stream)
+}
+
+fn append_request_to_sink(
+    sink: &Player,
+    request: &ActiveAudioRequest,
+    spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
+    spectrum_enabled: &Arc<AtomicBool>,
+) -> AudioResult<()> {
+    let byte_len = request.audio_data.len() as u64;
+    let cursor = Cursor::new(Arc::clone(&request.audio_data));
+    let source = Decoder::builder()
+        .with_data(cursor)
+        .with_byte_len(byte_len)
+        .with_coarse_seek(true)
+        .build()
+        .map_err(|e| {
+            AudioError::Playback(format!(
+                "Failed to decode audio for {}: {e:?}",
+                request.metadata.id
+            ))
+        })?;
+
+    append_output_source(
+        sink,
+        source,
+        spectrum_producer,
+        spectrum_enabled,
+        request.processing.normalization_gain,
+        request.processing.dynamics_preset.as_ref(),
+        request.processing.binaural_preset.as_ref(),
+        request.processing.equalizer_settings.as_ref(),
+    );
+    Ok(())
+}
+
+fn connect_request_sink(
+    stream: &MixerDeviceSink,
+    request: &ActiveAudioRequest,
+    volume: f32,
+    spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
+    spectrum_enabled: &Arc<AtomicBool>,
+) -> AudioResult<Player> {
+    let sink = Player::connect_new(stream.mixer());
+    sink.set_volume(volume);
+    append_request_to_sink(&sink, request, spectrum_producer, spectrum_enabled)?;
+    Ok(sink)
+}
+
+fn seek_sink_to_position(sink: &Player, position: f64, duration: f64) -> AudioResult<f64> {
+    let target = if duration > 1.0 {
+        position.clamp(0.0, duration - 1.0)
+    } else {
+        0.0
+    };
+    sink.try_seek(Duration::from_secs_f64(target))
+        .map_err(|e| AudioError::Playback(format!("Failed to seek rebuilt audio: {e:?}")))?;
+    Ok(target)
+}
+
+fn rebuild_active_output(
+    shared_state: &Arc<SharedState>,
+    stream: &mut MixerDeviceSink,
+    current_sink: &mut Option<Player>,
+    crossfade_sink: &mut Option<Player>,
+    crossfade_state: &mut Option<CrossfadeState>,
+    spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
+    spectrum_enabled: &Arc<AtomicBool>,
+) -> AudioResult<(u64, f64)> {
+    let Some((request, position)) = shared_state.active_request_at_position() else {
+        return Ok((0, 0.0));
+    };
+
+    if let Some(sink) = current_sink.take() {
+        sink.stop();
+    }
+    if let Some(sink) = crossfade_sink.take() {
+        sink.stop();
+    }
+    *crossfade_state = None;
+    shared_state
+        .crossfade_initiated
+        .store(false, Ordering::SeqCst);
+
+    let mut next_stream = open_output_stream(shared_state)?;
+    next_stream.log_on_drop(false);
+    let generation = shared_state.next_generation();
+    let volume = shared_state.read_inner().volume;
+    let sink = connect_request_sink(
+        &next_stream,
+        &request,
+        volume,
+        spectrum_producer,
+        spectrum_enabled,
+    )?;
+    let restored_position = seek_sink_to_position(&sink, position, request.duration_secs)?;
+
+    *stream = next_stream;
+    shared_state.replace_with_rebuilt_request(generation, request, restored_position);
+    shared_state.mark_playing();
+    *current_sink = Some(sink);
+    Ok((generation, restored_position))
+}
+
 /// Main audio thread function
 fn run_audio_thread(
     command_rx: Receiver<AudioCommand>,
@@ -737,15 +1133,13 @@ fn run_audio_thread(
 ) {
     info!("Rust audio playback thread starting");
 
-    // Open the default audio output stream
-    let stream = match DeviceSinkBuilder::open_default_sink() {
-        Ok(mut s) => {
-            s.log_on_drop(false);
+    let mut stream = match open_output_stream(&shared_state) {
+        Ok(s) => {
             info!("Rust audio output stream opened");
             s
         }
         Err(e) => {
-            error!("Failed to open audio stream: {:?}", e);
+            error!("Failed to open audio stream: {e}");
             return;
         }
     };
@@ -753,9 +1147,11 @@ fn run_audio_thread(
     let mut current_sink: Option<Player> = None;
     let mut crossfade_sink: Option<Player> = None;
     let mut crossfade_state: Option<CrossfadeState> = None;
+    let mut current_generation = 0_u64;
+    let mut watchdog = PlaybackWatchdog::new();
 
     loop {
-        let event = if crossfade_state.is_some() || shared_state.is_playing.load(Ordering::SeqCst) {
+        let event = if current_sink.is_some() || crossfade_state.is_some() {
             match command_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(command) => AudioThreadEvent::Command(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => AudioThreadEvent::Timeout,
@@ -801,67 +1197,43 @@ fn run_audio_thread(
                         audio_data.len(),
                         duration_secs
                     );
-                    let byte_len = audio_data.len() as u64;
-                    let cursor = Cursor::new(audio_data);
-                    match Decoder::builder()
-                        .with_data(cursor)
-                        .with_byte_len(byte_len)
-                        .with_coarse_seek(true)
-                        .build()
-                    {
-                        Ok(source) => {
-                            let sink = Player::connect_new(stream.mixer());
-                            let volume = shared_state.read_inner().volume;
-                            sink.set_volume(volume);
-
-                            append_output_source(
-                                &sink,
-                                source,
-                                &spectrum_producer,
-                                &spectrum_enabled,
-                                normalization_gain,
-                                dynamics_preset.as_ref(),
-                                binaural_preset.as_ref(),
-                                equalizer_settings.as_ref(),
-                            );
-
-                            // Update shared state (single lock acquisition)
-                            {
-                                let mut inner = shared_state.write_inner();
-                                inner.current_song = Some(metadata.clone());
-                                inner.playback_start = Some(Instant::now());
-                                inner.paused_position = 0.0;
-                                inner.duration = duration_secs;
-                                // Initialize gapless segments with this first song
-                                inner.gapless_segments = vec![GaplessSegment {
-                                    metadata,
-                                    duration: duration_secs,
-                                    cumulative_start: 0.0,
-                                }];
-                            }
-                            shared_state.is_playing.store(true, Ordering::SeqCst);
-
+                    let request = ActiveAudioRequest::new(
+                        audio_data,
+                        metadata,
+                        duration_secs,
+                        normalization_gain,
+                        dynamics_preset,
+                        binaural_preset,
+                        equalizer_settings,
+                    );
+                    let volume = shared_state.read_inner().volume;
+                    match connect_request_sink(
+                        &stream,
+                        &request,
+                        volume,
+                        &spectrum_producer,
+                        &spectrum_enabled,
+                    ) {
+                        Ok(sink) => {
+                            let generation = shared_state.next_generation();
+                            shared_state.set_active_request(generation, request);
+                            shared_state.mark_playing();
+                            current_generation = generation;
+                            watchdog.reset(0.0);
                             current_sink = Some(sink);
                             debug!("Playback thread started song");
                         }
-                        Err(e) => {
-                            error!("Failed to decode audio: {:?}", e);
-                        }
+                        Err(e) => error!("{e}"),
                     }
                 }
                 AudioCommand::Pause { ack } => {
                     if let Some(ref sink) = current_sink
                         && !sink.is_paused()
                     {
-                        // Save current position (single lock acquisition)
-                        {
-                            let mut inner = shared_state.write_inner();
-                            if let Some(instant) = inner.playback_start {
-                                let elapsed =
-                                    instant.elapsed().as_secs_f64() + inner.paused_position;
-                                inner.paused_position = elapsed;
-                            }
-                        }
+                        shared_state.update_consumed_position(
+                            current_generation,
+                            sink.get_pos().as_secs_f64(),
+                        );
 
                         sink.pause();
 
@@ -873,30 +1245,72 @@ fn run_audio_thread(
                             cf_state.pause();
                         }
 
-                        shared_state.is_playing.store(false, Ordering::SeqCst);
+                        shared_state.mark_paused();
                         debug!("Playback thread paused current sink");
                     }
                     let _ = ack.send(());
                 }
                 AudioCommand::Resume { ack } => {
-                    if let Some(ref sink) = current_sink
-                        && sink.is_paused()
-                    {
-                        shared_state.write_inner().playback_start = Some(Instant::now());
-                        sink.play();
+                    let result = if current_sink.as_ref().is_some_and(|sink| {
+                        !sink.empty() && !shared_state.stalled.load(Ordering::SeqCst)
+                    }) {
+                        if let Some(ref sink) = current_sink
+                            && sink.is_paused()
+                        {
+                            sink.play();
 
-                        // Also resume crossfade sink and timer
-                        if let Some(ref cf_sink) = crossfade_sink {
-                            cf_sink.play();
+                            // Also resume crossfade sink and timer
+                            if let Some(ref cf_sink) = crossfade_sink {
+                                cf_sink.play();
+                            }
+                            if let Some(ref mut cf_state) = crossfade_state {
+                                cf_state.resume();
+                            }
                         }
-                        if let Some(ref mut cf_state) = crossfade_state {
-                            cf_state.resume();
+                        let position = current_sink
+                            .as_ref()
+                            .map(|sink| sink.get_pos().as_secs_f64())
+                            .unwrap_or_else(|| shared_state.get_position());
+                        shared_state.mark_playing();
+                        watchdog.reset(position);
+                        debug!("Playback thread ensured current sink is playing");
+                        Ok(())
+                    } else {
+                        rebuild_active_output(
+                            &shared_state,
+                            &mut stream,
+                            &mut current_sink,
+                            &mut crossfade_sink,
+                            &mut crossfade_state,
+                            &spectrum_producer,
+                            &spectrum_enabled,
+                        )
+                        .map(|(generation, position)| {
+                            if generation != 0 {
+                                current_generation = generation;
+                                watchdog.reset(position);
+                            }
+                        })
+                    };
+                    let _ = ack.send(result);
+                }
+                AudioCommand::RebuildOutput { ack } => {
+                    let result = rebuild_active_output(
+                        &shared_state,
+                        &mut stream,
+                        &mut current_sink,
+                        &mut crossfade_sink,
+                        &mut crossfade_state,
+                        &spectrum_producer,
+                        &spectrum_enabled,
+                    )
+                    .map(|(generation, position)| {
+                        if generation != 0 {
+                            current_generation = generation;
+                            watchdog.reset(position);
                         }
-
-                        shared_state.is_playing.store(true, Ordering::SeqCst);
-                        debug!("Playback thread resumed current sink");
-                    }
-                    let _ = ack.send(());
+                    });
+                    let _ = ack.send(result);
                 }
                 AudioCommand::Stop { ack } => {
                     info!("Playback thread stop");
@@ -910,16 +1324,19 @@ fn run_audio_thread(
                     shared_state
                         .crossfade_initiated
                         .store(false, Ordering::SeqCst);
-                    shared_state.is_playing.store(false, Ordering::SeqCst);
+                    shared_state.mark_stopped();
                     // Reset all state in single lock acquisition
                     {
                         let mut inner = shared_state.write_inner();
                         inner.current_song = None;
-                        inner.playback_start = None;
-                        inner.paused_position = 0.0;
+                        inner.consumed_position = 0.0;
                         inner.duration = 0.0;
+                        inner.active_request = None;
+                        inner.source_generation = 0;
                         inner.gapless_segments.clear();
                     }
+                    current_generation = 0;
+                    watchdog.reset(0.0);
                     let _ = ack.send(());
                 }
                 AudioCommand::SetVolume(volume) => {
@@ -955,7 +1372,7 @@ fn run_audio_thread(
                             let inner = shared_state.read_inner();
                             if inner.gapless_segments.len() > 1 {
                                 // Find current segment from cumulative position
-                                let cumulative = shared_state.calculate_position(&inner);
+                                let cumulative = inner.consumed_position;
                                 let mut seg_idx = 0;
                                 for (i, seg) in inner.gapless_segments.iter().enumerate() {
                                     if cumulative < seg.cumulative_start + seg.duration {
@@ -976,9 +1393,11 @@ fn run_audio_thread(
                         if let Err(e) = sink.try_seek(seek_duration) {
                             warn!("Seek failed: {:?}", e);
                         } else {
-                            let mut inner = shared_state.write_inner();
-                            inner.paused_position = cumulative_pos;
-                            inner.playback_start = Some(Instant::now());
+                            shared_state.set_consumed_position(current_generation, cumulative_pos);
+                            if !sink.is_paused() {
+                                shared_state.mark_playing();
+                            }
+                            watchdog.reset(cumulative_pos);
                             debug!(
                                 "Playback thread seek complete: segment={:.3}s cumulative={:.3}s",
                                 seek_pos, cumulative_pos
@@ -1004,26 +1423,22 @@ fn run_audio_thread(
                         duration_secs
                     );
                     if let Some(ref sink) = current_sink {
-                        let byte_len = audio_data.len() as u64;
-                        let cursor = Cursor::new(audio_data);
-                        match Decoder::builder()
-                            .with_data(cursor)
-                            .with_byte_len(byte_len)
-                            .with_coarse_seek(true)
-                            .build()
-                        {
-                            Ok(source) => {
-                                append_output_source(
-                                    sink,
-                                    source,
-                                    &spectrum_producer,
-                                    &spectrum_enabled,
-                                    normalization_gain,
-                                    dynamics_preset.as_ref(),
-                                    binaural_preset.as_ref(),
-                                    equalizer_settings.as_ref(),
-                                );
-
+                        let request = ActiveAudioRequest::new(
+                            audio_data,
+                            metadata,
+                            duration_secs,
+                            normalization_gain,
+                            dynamics_preset,
+                            binaural_preset,
+                            equalizer_settings,
+                        );
+                        match append_request_to_sink(
+                            sink,
+                            &request,
+                            &spectrum_producer,
+                            &spectrum_enabled,
+                        ) {
+                            Ok(()) => {
                                 // Add gapless segment and update total duration
                                 {
                                     let mut inner = shared_state.write_inner();
@@ -1033,16 +1448,22 @@ fn run_audio_thread(
                                         .map(|s| s.cumulative_start + s.duration)
                                         .unwrap_or(inner.duration);
                                     inner.gapless_segments.push(GaplessSegment {
-                                        metadata,
-                                        duration: duration_secs,
+                                        metadata: request.metadata.clone(),
+                                        duration: request.duration_secs,
                                         cumulative_start,
+                                        request,
                                     });
-                                    inner.duration = cumulative_start + duration_secs;
+                                    inner.duration = cumulative_start
+                                        + inner
+                                            .gapless_segments
+                                            .last()
+                                            .map(|segment| segment.duration)
+                                            .unwrap_or(0.0);
                                 }
                                 debug!("Playback thread appended gapless segment");
                             }
                             Err(e) => {
-                                error!("Failed to decode gapless audio: {:?}", e);
+                                error!("{e}");
                             }
                         }
                     } else {
@@ -1076,61 +1497,46 @@ fn run_audio_thread(
                     // Move current sink to crossfade_sink (it keeps playing, fading out)
                     crossfade_sink = current_sink.take();
 
-                    let byte_len = audio_data.len() as u64;
-                    let cursor = Cursor::new(audio_data);
-                    match Decoder::builder()
-                        .with_data(cursor)
-                        .with_byte_len(byte_len)
-                        .with_coarse_seek(true)
-                        .build()
-                    {
-                        Ok(source) => {
-                            let new_sink = Player::connect_new(stream.mixer());
-                            new_sink.set_volume(0.0); // Start silent, will ramp up
-
-                            append_output_source(
-                                &new_sink,
-                                source,
-                                &spectrum_producer,
-                                &spectrum_enabled,
-                                normalization_gain,
-                                dynamics_preset.as_ref(),
-                                binaural_preset.as_ref(),
-                                equalizer_settings.as_ref(),
-                            );
-
+                    let request = ActiveAudioRequest::new(
+                        audio_data,
+                        metadata,
+                        duration_secs,
+                        normalization_gain,
+                        dynamics_preset,
+                        binaural_preset,
+                        equalizer_settings,
+                    );
+                    match connect_request_sink(
+                        &stream,
+                        &request,
+                        0.0,
+                        &spectrum_producer,
+                        &spectrum_enabled,
+                    ) {
+                        Ok(new_sink) => {
                             // Update shared state for the new song
-                            {
-                                let mut inner = shared_state.write_inner();
-                                inner.current_song = Some(metadata.clone());
-                                inner.playback_start = Some(Instant::now());
-                                inner.paused_position = 0.0;
-                                inner.duration = duration_secs;
-                                inner.gapless_segments = vec![GaplessSegment {
-                                    metadata,
-                                    duration: duration_secs,
-                                    cumulative_start: 0.0,
-                                }];
-                            }
-                            shared_state.is_playing.store(true, Ordering::SeqCst);
+                            let generation = shared_state.next_generation();
+                            shared_state.set_active_request(generation, request);
+                            shared_state.mark_playing();
                             shared_state
                                 .crossfade_initiated
                                 .store(false, Ordering::SeqCst);
 
                             current_sink = Some(new_sink);
+                            current_generation = generation;
+                            watchdog.reset(0.0);
                             crossfade_state = Some(CrossfadeState::new(crossfade_duration_ms));
                             debug!("Playback thread started crossfade");
                             let _ = ack.send(Ok(()));
                         }
                         Err(e) => {
-                            let message = format!("Failed to decode crossfade audio: {e:?}");
-                            error!("{message}");
+                            error!("{e}");
                             // Restore original sink if decode fails
                             current_sink = crossfade_sink.take();
                             shared_state
                                 .crossfade_initiated
                                 .store(false, Ordering::SeqCst);
-                            let _ = ack.send(Err(AudioError::Playback(message)));
+                            let _ = ack.send(Err(e));
                         }
                     }
                 }
@@ -1146,6 +1552,22 @@ fn run_audio_thread(
                 }
             },
             AudioThreadEvent::Timeout => {
+                if let Some(ref sink) = current_sink {
+                    let source_position = sink.get_pos().as_secs_f64();
+                    let advanced =
+                        shared_state.update_consumed_position(current_generation, source_position);
+                    let observed_position = shared_state.get_position();
+                    let should_detect_stall = !sink.is_paused() && !sink.empty();
+                    if advanced {
+                        if shared_state.stalled.load(Ordering::SeqCst) && should_detect_stall {
+                            shared_state.mark_playing();
+                        }
+                        watchdog.reset(observed_position);
+                    } else {
+                        watchdog.observe(observed_position, should_detect_stall, &shared_state);
+                    }
+                }
+
                 // Crossfade volume ramping (~20Hz with 50ms timeout)
                 if let Some(ref cf_state) = crossfade_state {
                     let progress = cf_state.progress();
@@ -1185,14 +1607,14 @@ fn run_audio_thread(
                 // Check if current playback has ended
                 if let Some(ref sink) = current_sink
                     && sink.empty()
-                    && shared_state.is_playing.load(Ordering::SeqCst)
+                    && shared_state.state() != PlaybackLifecycleState::Paused
                 {
                     // Set paused_position to duration so position emitter can detect end
                     {
                         let mut inner = shared_state.write_inner();
-                        inner.paused_position = inner.duration;
+                        inner.consumed_position = inner.duration;
                     }
-                    shared_state.is_playing.store(false, Ordering::SeqCst);
+                    shared_state.mark_paused();
                     info!("Playback thread reached end of current sink");
                 }
             }
@@ -1204,4 +1626,115 @@ fn run_audio_thread(
     }
 
     info!("Rust audio playback thread exited");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_request(song_id: &str, duration_secs: f64) -> ActiveAudioRequest {
+        ActiveAudioRequest::new(
+            Arc::<[u8]>::from(vec![0_u8; 4]),
+            SongMetadata {
+                id: song_id.to_string(),
+                title: song_id.to_string(),
+                artist: "artist".to_string(),
+                album: "album".to_string(),
+                cover_art_id: None,
+            },
+            duration_secs,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn consumed_position_does_not_advance_from_wall_clock() {
+        let shared = SharedState::new();
+        let generation = shared.next_generation();
+        shared.set_active_request(generation, test_request("a", 30.0));
+        shared.mark_playing();
+
+        std::thread::sleep(Duration::from_millis(20));
+
+        assert_eq!(shared.get_position(), 0.0);
+        assert_eq!(shared.state(), PlaybackLifecycleState::Playing);
+    }
+
+    #[test]
+    fn stale_generation_position_updates_are_ignored() {
+        let shared = SharedState::new();
+        let generation = shared.next_generation();
+        shared.set_active_request(generation, test_request("a", 30.0));
+
+        assert!(!shared.update_consumed_position(generation + 1, 12.0));
+        assert_eq!(shared.get_position(), 0.0);
+
+        assert!(shared.update_consumed_position(generation, 12.0));
+        assert_eq!(shared.get_position(), 12.0);
+    }
+
+    #[test]
+    fn watchdog_enters_stalled_when_position_freezes() {
+        let shared = SharedState::new();
+        let generation = shared.next_generation();
+        shared.set_active_request(generation, test_request("a", 30.0));
+        shared.mark_playing();
+
+        let now = Instant::now();
+        let mut watchdog = PlaybackWatchdog {
+            last_progress_at: now - STALL_TIMEOUT - Duration::from_millis(1),
+            grace_until: now - Duration::from_millis(1),
+            last_position: 0.0,
+        };
+
+        watchdog.observe(0.0, true, &shared);
+
+        assert_eq!(shared.state(), PlaybackLifecycleState::Stalled);
+        assert!(!shared.is_playing());
+    }
+
+    #[test]
+    fn watchdog_recovers_from_stalled_when_position_advances() {
+        let shared = SharedState::new();
+        let generation = shared.next_generation();
+        shared.set_active_request(generation, test_request("a", 30.0));
+        shared.mark_stalled();
+
+        let mut watchdog = PlaybackWatchdog::new();
+        watchdog.reset(0.0);
+        watchdog.observe(1.0, true, &shared);
+
+        assert_eq!(shared.state(), PlaybackLifecycleState::Playing);
+        assert!(shared.is_playing());
+    }
+
+    #[test]
+    fn gapless_source_position_rollover_becomes_cumulative() {
+        let shared = SharedState::new();
+        let generation = shared.next_generation();
+        let first = test_request("a", 10.0);
+        let second = test_request("b", 20.0);
+        shared.set_active_request(generation, first);
+        {
+            let mut inner = shared.write_inner();
+            inner.consumed_position = 9.9;
+            inner.duration = 30.0;
+            inner.gapless_segments.push(GaplessSegment {
+                metadata: second.metadata.clone(),
+                duration: second.duration_secs,
+                cumulative_start: 10.0,
+                request: second,
+            });
+        }
+
+        assert!(shared.update_consumed_position(generation, 0.2));
+
+        let (state, segment_idx) = shared.get_gapless_state();
+        assert_eq!(segment_idx, 1);
+        assert_eq!(state.song.as_ref().map(|song| song.id.as_str()), Some("b"));
+        assert!((state.position - 0.2).abs() < 0.001);
+    }
 }

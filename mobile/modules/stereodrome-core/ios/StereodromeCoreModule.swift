@@ -379,8 +379,9 @@ public class StereodromeCoreModule: Module {
   private func handleMediaServicesReset() {
     remoteCommandQueue.async {
       self.shouldResumeAfterInterruption = false
-      _ = self.callSync(method: "audioPause", payload: "null")
       self.configureAudioSession()
+      self.setAudioSessionActive(true)
+      _ = self.callSync(method: "audioRebuildOutput", payload: "null")
     }
   }
 

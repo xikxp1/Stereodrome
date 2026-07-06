@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use stereodrome_audio::{
     AudioPlayer, BinauralPreset, CrossfadePlayRequest, DynamicsPreset, EqualizerSettings,
-    SongMetadata,
+    PlaybackLifecycleState, SongMetadata,
 };
 use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
@@ -250,12 +250,11 @@ fn build_playback_snapshot(
         }
     };
 
-    let state = if audio_state.is_playing {
-        "playing"
-    } else if song.is_some() {
-        "paused"
-    } else {
-        "stopped"
+    let state = match audio_state.state {
+        PlaybackLifecycleState::Playing => "playing",
+        PlaybackLifecycleState::Paused => "paused",
+        PlaybackLifecycleState::Stopped => "stopped",
+        PlaybackLifecycleState::Stalled => "stalled",
     };
     let queue_index = queue.current_index;
     let queue_length = queue.items.len();
@@ -786,6 +785,17 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             }
             json_result(result)
         }
+        "audioRebuildOutput" => {
+            let result = mobile.audio.rebuild_output().and_then(|_| {
+                runtime
+                    .block_on(async { prepare_next_transition(mobile).await })
+                    .map_err(stereodrome_audio::AudioError::Playback)
+            });
+            if result.is_ok() {
+                mobile.announcer.emit(core, &mobile.audio);
+            }
+            json_result(result.map(|_| ()))
+        }
         "audioStop" => {
             let result = mobile.audio.stop().map(|_| ());
             if result.is_ok() {
@@ -1288,11 +1298,17 @@ fn start_mobile_playback_monitor(
         let state_handle = audio.state_handle();
         let mut last_segment_idx = 0usize;
         let mut last_report: Option<MobileProgressReport> = None;
+        let mut last_snapshot_marker: Option<MobilePlaybackMarker> = None;
 
         while running.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(100));
 
             let (state, segment_idx) = state_handle.get_gapless_state();
+            let marker = MobilePlaybackMarker::from_state(&state, segment_idx);
+            if last_snapshot_marker.as_ref() != Some(&marker) {
+                announcer.emit(&core, &audio);
+                last_snapshot_marker = Some(marker);
+            }
             let Some(song) = state.song.clone() else {
                 last_segment_idx = 0;
                 last_report = None;
@@ -1422,6 +1438,25 @@ struct MobileProgressReport {
     is_playing: bool,
     position: f64,
     song_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct MobilePlaybackMarker {
+    state: stereodrome_audio::PlaybackLifecycleState,
+    is_playing: bool,
+    song_id: Option<String>,
+    segment_idx: usize,
+}
+
+impl MobilePlaybackMarker {
+    fn from_state(state: &stereodrome_audio::PlaybackState, segment_idx: usize) -> Self {
+        Self {
+            state: state.state,
+            is_playing: state.is_playing,
+            song_id: state.song.as_ref().map(|song| song.id.clone()),
+            segment_idx,
+        }
+    }
 }
 
 fn report_mobile_progress(

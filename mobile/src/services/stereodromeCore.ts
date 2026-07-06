@@ -438,6 +438,9 @@ export const stereodromeCore = {
   audioResume(): Promise<void> {
     return invokeJson("audioResume");
   },
+  audioRebuildOutput(): Promise<void> {
+    return invokeJson("audioRebuildOutput");
+  },
   audioStop(): Promise<void> {
     return invokeJson("audioStop");
   },

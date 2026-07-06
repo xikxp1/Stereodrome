@@ -261,6 +261,7 @@ export type LastfmQueueItem = {
 };
 
 export type AudioPlaybackStatus = {
+  state: "playing" | "paused" | "stopped" | "stalled";
   is_playing: boolean;
   current_song_id: string | null;
   position: number;
