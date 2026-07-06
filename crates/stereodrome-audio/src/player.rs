@@ -279,6 +279,10 @@ impl SharedState {
         self.is_playing.store(true, Ordering::SeqCst);
     }
 
+    fn mark_output_ready(&self) {
+        self.stream_failed.store(false, Ordering::SeqCst);
+    }
+
     fn mark_paused(&self) {
         self.stalled.store(false, Ordering::SeqCst);
         self.is_playing.store(false, Ordering::SeqCst);
@@ -1069,6 +1073,29 @@ fn connect_request_sink(
     Ok(sink)
 }
 
+fn ensure_output_stream<'a>(
+    shared_state: &Arc<SharedState>,
+    stream: &'a mut Option<MixerDeviceSink>,
+) -> AudioResult<&'a MixerDeviceSink> {
+    if stream.is_none() {
+        match open_output_stream(shared_state) {
+            Ok(next_stream) => {
+                info!("Rust audio output stream opened");
+                *stream = Some(next_stream);
+                shared_state.mark_output_ready();
+            }
+            Err(e) => {
+                shared_state.mark_stream_failed();
+                return Err(e);
+            }
+        }
+    }
+
+    stream
+        .as_ref()
+        .ok_or_else(|| AudioError::Playback("Audio output stream is unavailable".to_string()))
+}
+
 fn seek_sink_to_position(sink: &Player, position: f64, duration: f64) -> AudioResult<f64> {
     let target = if duration > 1.0 {
         position.clamp(0.0, duration - 1.0)
@@ -1082,16 +1109,38 @@ fn seek_sink_to_position(sink: &Player, position: f64, duration: f64) -> AudioRe
 
 fn rebuild_active_output(
     shared_state: &Arc<SharedState>,
-    stream: &mut MixerDeviceSink,
+    stream: &mut Option<MixerDeviceSink>,
     current_sink: &mut Option<Player>,
     crossfade_sink: &mut Option<Player>,
     crossfade_state: &mut Option<CrossfadeState>,
     spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
     spectrum_enabled: &Arc<AtomicBool>,
 ) -> AudioResult<(u64, f64)> {
+    let mut next_stream = match open_output_stream(shared_state) {
+        Ok(stream) => stream,
+        Err(e) => {
+            shared_state.mark_stream_failed();
+            return Err(e);
+        }
+    };
+    next_stream.log_on_drop(false);
+
     let Some((request, position)) = shared_state.active_request_at_position() else {
+        *stream = Some(next_stream);
+        shared_state.mark_output_ready();
         return Ok((0, 0.0));
     };
+
+    let generation = shared_state.next_generation();
+    let volume = shared_state.read_inner().volume;
+    let sink = connect_request_sink(
+        &next_stream,
+        &request,
+        volume,
+        spectrum_producer,
+        spectrum_enabled,
+    )?;
+    let restored_position = seek_sink_to_position(&sink, position, request.duration_secs)?;
 
     if let Some(sink) = current_sink.take() {
         sink.stop();
@@ -1104,20 +1153,7 @@ fn rebuild_active_output(
         .crossfade_initiated
         .store(false, Ordering::SeqCst);
 
-    let mut next_stream = open_output_stream(shared_state)?;
-    next_stream.log_on_drop(false);
-    let generation = shared_state.next_generation();
-    let volume = shared_state.read_inner().volume;
-    let sink = connect_request_sink(
-        &next_stream,
-        &request,
-        volume,
-        spectrum_producer,
-        spectrum_enabled,
-    )?;
-    let restored_position = seek_sink_to_position(&sink, position, request.duration_secs)?;
-
-    *stream = next_stream;
+    *stream = Some(next_stream);
     shared_state.replace_with_rebuilt_request(generation, request, restored_position);
     shared_state.mark_playing();
     *current_sink = Some(sink);
@@ -1136,11 +1172,12 @@ fn run_audio_thread(
     let mut stream = match open_output_stream(&shared_state) {
         Ok(s) => {
             info!("Rust audio output stream opened");
-            s
+            Some(s)
         }
         Err(e) => {
-            error!("Failed to open audio stream: {e}");
-            return;
+            error!("Failed to open audio stream; continuing without output: {e}");
+            shared_state.mark_stream_failed();
+            None
         }
     };
 
@@ -1194,13 +1231,18 @@ fn run_audio_thread(
                         equalizer_settings,
                     );
                     let volume = shared_state.read_inner().volume;
-                    match connect_request_sink(
-                        &stream,
-                        &request,
-                        volume,
-                        &spectrum_producer,
-                        &spectrum_enabled,
-                    ) {
+                    let result = ensure_output_stream(&shared_state, &mut stream).and_then(
+                        |output_stream| {
+                            connect_request_sink(
+                                output_stream,
+                                &request,
+                                volume,
+                                &spectrum_producer,
+                                &spectrum_enabled,
+                            )
+                        },
+                    );
+                    match result {
                         Ok(sink) => {
                             // Stop any existing playback including crossfade only after the
                             // replacement source has decoded and connected successfully.
@@ -1512,13 +1554,18 @@ fn run_audio_thread(
                         binaural_preset,
                         equalizer_settings,
                     );
-                    match connect_request_sink(
-                        &stream,
-                        &request,
-                        0.0,
-                        &spectrum_producer,
-                        &spectrum_enabled,
-                    ) {
+                    let result = ensure_output_stream(&shared_state, &mut stream).and_then(
+                        |output_stream| {
+                            connect_request_sink(
+                                output_stream,
+                                &request,
+                                0.0,
+                                &spectrum_producer,
+                                &spectrum_enabled,
+                            )
+                        },
+                    );
+                    match result {
                         Ok(new_sink) => {
                             // Only replace the audible transition state after the new source
                             // has decoded and connected successfully.
