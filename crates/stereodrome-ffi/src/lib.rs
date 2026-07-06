@@ -1333,6 +1333,10 @@ fn start_mobile_playback_monitor(
 
         while running.load(Ordering::SeqCst) {
             thread::sleep(MOBILE_PLAYBACK_MONITOR_INTERVAL);
+            if !running.load(Ordering::SeqCst) {
+                break;
+            }
+
             let now = Instant::now();
             let elapsed_since_last_tick = now.duration_since(last_tick);
             last_tick = now;
