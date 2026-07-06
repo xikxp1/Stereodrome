@@ -459,11 +459,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         await reconcilePlaybackSnapshot();
       }
     });
-  }, [
-    persistPlaybackPosition,
-    reconcilePlaybackSnapshot,
-    runPlaybackAction,
-  ]);
+  }, [persistPlaybackPosition, reconcilePlaybackSnapshot, runPlaybackAction]);
 
   const toggleRepeat = useCallback(async () => {
     await runPlaybackAction("queue", async () => {

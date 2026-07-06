@@ -30,10 +30,7 @@ import type {
 } from "@/types/music";
 
 type Envelope<T> = { ok: true; value: T } | { ok: false; error: string };
-type CoreEventName =
-  | "playback-snapshot"
-  | "sync-status-changed"
-  | "error";
+type CoreEventName = "playback-snapshot" | "sync-status-changed" | "error";
 type CoreEventHandler<T = unknown> = (payload: T) => void;
 
 const unavailable =
