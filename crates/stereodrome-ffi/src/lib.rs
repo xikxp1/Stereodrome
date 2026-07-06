@@ -9,7 +9,7 @@ use std::ffi::{CStr, CString, c_char};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -125,13 +125,29 @@ pub struct MobileCore {
 
 #[derive(Clone)]
 struct PlaybackAnnouncer {
-    next_seq: Arc<AtomicU64>,
+    sequencer: Arc<Mutex<PlaybackSnapshotSequencer>>,
+}
+
+struct PlaybackSnapshotSequencer {
+    next_seq: u64,
+}
+
+impl PlaybackSnapshotSequencer {
+    fn new() -> Self {
+        Self { next_seq: 1 }
+    }
+
+    fn sequence<T>(&mut self, build: impl FnOnce(u64) -> T) -> T {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        build(seq)
+    }
 }
 
 impl PlaybackAnnouncer {
     fn new() -> Self {
         Self {
-            next_seq: Arc::new(AtomicU64::new(1)),
+            sequencer: Arc::new(Mutex::new(PlaybackSnapshotSequencer::new())),
         }
     }
 
@@ -140,32 +156,60 @@ impl PlaybackAnnouncer {
         core: &StereodromeCore,
         audio: &AudioPlayer,
     ) -> Result<PlaybackSnapshot, String> {
-        build_playback_snapshot(self.next_seq.fetch_add(1, Ordering::SeqCst), core, audio)
+        self.sequence_snapshot(|seq| build_playback_snapshot(seq, core, audio))
     }
 
     fn emit(&self, core: &StereodromeCore, audio: &AudioPlayer) {
-        let snapshot = match self.snapshot(core, audio) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                log::warn!(
-                    target: "stereodrome_ffi",
-                    "Failed to build playback snapshot: {error}"
-                );
-                return;
+        let result = self.sequence_snapshot(|seq| {
+            let snapshot = build_playback_snapshot(seq, core, audio)?;
+            let json = serde_json::to_string(&snapshot)
+                .map_err(|_| "Failed to serialize playback snapshot".to_string())?;
+
+            if let Some(callback) = PLAYBACK_CALLBACK.lock().ok().and_then(|guard| *guard) {
+                let message = CString::new(json).map_err(|_| {
+                    "Failed to build playback snapshot callback payload".to_string()
+                })?;
+                callback(message.as_ptr());
             }
-        };
-        let Ok(json) = serde_json::to_string(&snapshot) else {
-            log::warn!(
-                target: "stereodrome_ffi",
-                "Failed to serialize playback snapshot"
-            );
-            return;
-        };
-        if let Some(callback) = PLAYBACK_CALLBACK.lock().ok().and_then(|guard| *guard)
-            && let Ok(message) = CString::new(json)
-        {
-            callback(message.as_ptr());
+
+            Ok(())
+        });
+
+        if let Err(error) = result {
+            match error.as_str() {
+                "Failed to serialize playback snapshot" => {
+                    log::warn!(
+                        target: "stereodrome_ffi",
+                        "Failed to serialize playback snapshot"
+                    );
+                }
+                "Failed to build playback snapshot callback payload" => {
+                    log::warn!(
+                        target: "stereodrome_ffi",
+                        "Failed to build playback snapshot callback payload"
+                    );
+                }
+                _ => {
+                    log::warn!(
+                        target: "stereodrome_ffi",
+                        "Failed to build playback snapshot: {error}"
+                    );
+                }
+            }
         }
+    }
+
+    fn sequence_snapshot<T>(
+        &self,
+        build: impl FnOnce(u64) -> Result<T, String>,
+    ) -> Result<T, String> {
+        // Keep seq assignment, snapshot capture, and emitted callback delivery in one
+        // critical section so higher seq values cannot describe older captured state.
+        let mut sequencer = self
+            .sequencer
+            .lock()
+            .map_err(|_| "playback snapshot sequencer lock poisoned".to_string())?;
+        sequencer.sequence(build)
     }
 }
 
@@ -1905,6 +1949,9 @@ fn into_c_string(value: String) -> *mut c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+    use std::sync::mpsc::{self, RecvTimeoutError};
 
     #[test]
     fn mobile_monitor_gap_under_threshold_is_not_suspension() {
@@ -1918,5 +1965,77 @@ mod tests {
         assert!(is_mobile_monitor_suspension_gap(
             MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD
         ));
+    }
+
+    #[test]
+    fn playback_snapshot_sequencer_serializes_seq_allocation_and_snapshot_build() {
+        let sequencer = Arc::new(Mutex::new(PlaybackSnapshotSequencer::new()));
+        let state = Arc::new(AtomicU64::new(0));
+        let first_entered = Arc::new(Barrier::new(2));
+        let second_started = Arc::new(AtomicBool::new(false));
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let (second_captured_tx, second_captured_rx) = mpsc::channel();
+
+        let first_handle = {
+            let sequencer = Arc::clone(&sequencer);
+            let state = Arc::clone(&state);
+            let first_entered = Arc::clone(&first_entered);
+            thread::spawn(move || {
+                let mut sequencer = sequencer.lock().expect("sequencer lock should not poison");
+                sequencer.sequence(|seq| {
+                    first_entered.wait();
+                    release_first_rx
+                        .recv()
+                        .expect("first snapshot should be released");
+                    (seq, state.load(AtomicOrdering::SeqCst))
+                })
+            })
+        };
+
+        first_entered.wait();
+
+        let second_handle = {
+            let sequencer = Arc::clone(&sequencer);
+            let state = Arc::clone(&state);
+            let second_started = Arc::clone(&second_started);
+            thread::spawn(move || {
+                second_started.store(true, AtomicOrdering::SeqCst);
+                let mut sequencer = sequencer.lock().expect("sequencer lock should not poison");
+                let snapshot = sequencer.sequence(|seq| (seq, state.load(AtomicOrdering::SeqCst)));
+                second_captured_tx
+                    .send(snapshot)
+                    .expect("second snapshot should be observable");
+                snapshot
+            })
+        };
+
+        while !second_started.load(AtomicOrdering::SeqCst) {
+            thread::yield_now();
+        }
+
+        match second_captured_rx.recv_timeout(Duration::from_millis(25)) {
+            Err(RecvTimeoutError::Timeout) => {}
+            Ok(snapshot) => panic!("second snapshot captured before first completed: {snapshot:?}"),
+            Err(RecvTimeoutError::Disconnected) => panic!("second snapshot thread exited early"),
+        }
+
+        state.store(1, AtomicOrdering::SeqCst);
+        release_first_tx
+            .send(())
+            .expect("first snapshot thread should be waiting");
+
+        let first_snapshot = first_handle
+            .join()
+            .expect("first snapshot thread should not panic");
+        let second_snapshot = second_handle
+            .join()
+            .expect("second snapshot thread should not panic");
+        let observed_second_snapshot = second_captured_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second snapshot should be delivered");
+
+        assert_eq!(first_snapshot, (1, 1));
+        assert_eq!(second_snapshot, (2, 1));
+        assert_eq!(observed_second_snapshot, second_snapshot);
     }
 }
