@@ -153,7 +153,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
-  const applyQueueState = useCallback(async (state: QueueState) => {
+  const applyQueueState = useCallback((state: QueueState) => {
     const songs = state.items.map(playableFromQueueItem);
     const preparedSong = state.prepared_next_item
       ? playableFromQueueItem(state.prepared_next_item)
@@ -180,13 +180,13 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const applyPlaybackSnapshot = useCallback(
-    async (snapshot: PlaybackSnapshot) => {
+    (snapshot: PlaybackSnapshot) => {
       if (snapshot.seq <= lastSnapshotSeqRef.current) {
         return;
       }
       lastSnapshotSeqRef.current = snapshot.seq;
 
-      await applyQueueState(snapshot.queue);
+      applyQueueState(snapshot.queue);
 
       const current =
         snapshot.song === null
@@ -214,7 +214,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   );
 
   const reconcilePlaybackSnapshot = useCallback(async () => {
-    await applyPlaybackSnapshot(await stereodromeCore.getPlaybackSnapshot());
+    applyPlaybackSnapshot(await stereodromeCore.getPlaybackSnapshot());
   }, [applyPlaybackSnapshot]);
 
   const prepareNextPlayback = useCallback(async () => {
@@ -329,7 +329,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      await applyPlaybackSnapshot(playbackSnapshot);
+      applyPlaybackSnapshot(playbackSnapshot);
       await applyAudioProcessingSettings();
       await restorePlaybackState(playbackSnapshot.queue, playbackState);
       await reconcilePlaybackSnapshot();
@@ -345,9 +345,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       stereodromeCore.addEventListener<PlaybackSnapshot>(
         "playback-snapshot",
         (snapshot) => {
-          void applyPlaybackSnapshot(snapshot).catch((playbackError) => {
-            setError(errorMessage(playbackError));
-          });
+          applyPlaybackSnapshot(snapshot);
         }
       );
 
