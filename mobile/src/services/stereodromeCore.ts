@@ -31,7 +31,6 @@ import type {
 
 type Envelope<T> = { ok: true; value: T } | { ok: false; error: string };
 type CoreEventName =
-  | "queue-changed"
   | "audio-processing-settings-changed"
   | "playback-snapshot"
   | "sync-status-changed"
@@ -160,9 +159,7 @@ async function queueMutation(
   payload: unknown = null
 ): Promise<QueueState> {
   try {
-    const state = await invokeJson<QueueState>(name, payload);
-    emitCoreEvent("queue-changed", state);
-    return state;
+    return await invokeJson<QueueState>(name, payload);
   } catch (error) {
     emitCoreEvent("error", error);
     throw error;
@@ -442,9 +439,6 @@ export const stereodromeCore = {
   audioSetVolume(volume: number): Promise<void> {
     return invokeJson("audioSetVolume", volume);
   },
-  audioGetStatus(): Promise<AudioPlaybackStatus> {
-    return invokeJson("audioGetStatus");
-  },
   getAudioProcessingSettings(): Promise<AudioProcessingSettings> {
     return invokeJson("getAudioProcessingSettings");
   },
@@ -499,21 +493,15 @@ export const stereodromeCore = {
   },
   async playQueueItem(index: number): Promise<QueueState> {
     await invokeJson<QueueItem | null>("playQueueItem", index);
-    const state = await this.getQueue();
-    emitCoreEvent("queue-changed", state);
-    return state;
+    return this.getQueue();
   },
   async playNext(force = true): Promise<QueueState> {
     await invokeJson<QueueItem | null>("playNext", force);
-    const state = await this.getQueue();
-    emitCoreEvent("queue-changed", state);
-    return state;
+    return this.getQueue();
   },
   async playPrevious(): Promise<QueueState> {
     await invokeJson<QueueItem | null>("playPrevious");
-    const state = await this.getQueue();
-    emitCoreEvent("queue-changed", state);
-    return state;
+    return this.getQueue();
   },
   toggleShuffle(): Promise<QueueState> {
     return queueMutation("toggleShuffle");
