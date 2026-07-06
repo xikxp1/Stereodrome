@@ -77,6 +77,7 @@ enum AudioCommand {
         dynamics_preset: Option<DynamicsPreset>,
         binaural_preset: Option<BinauralPreset>,
         equalizer_settings: Option<EqualizerSettings>,
+        ack: Sender<AudioResult<()>>,
     },
     Pause {
         ack: Sender<()>,
@@ -105,6 +106,7 @@ enum AudioCommand {
         dynamics_preset: Option<DynamicsPreset>,
         binaural_preset: Option<BinauralPreset>,
         equalizer_settings: Option<EqualizerSettings>,
+        ack: Sender<AudioResult<()>>,
     },
     /// Crossfade to a new song: keep the current sink fading out
     /// while a new sink fades in over the specified duration.
@@ -567,17 +569,16 @@ impl AudioPlayer {
         binaural_preset: Option<BinauralPreset>,
         equalizer_settings: Option<EqualizerSettings>,
     ) -> AudioResult<()> {
-        self.command_tx
-            .send(AudioCommand::Play {
-                audio_data,
-                metadata,
-                duration_secs,
-                normalization_gain,
-                dynamics_preset,
-                binaural_preset,
-                equalizer_settings,
-            })
-            .map_err(|e| AudioError::Playback(format!("Failed to send play command: {}", e)))
+        self.send_result_command("play", |ack| AudioCommand::Play {
+            audio_data,
+            metadata,
+            duration_secs,
+            normalization_gain,
+            dynamics_preset,
+            binaural_preset,
+            equalizer_settings,
+            ack,
+        })
     }
 
     /// Append a song to the existing player for gapless playback.
@@ -593,17 +594,16 @@ impl AudioPlayer {
         binaural_preset: Option<BinauralPreset>,
         equalizer_settings: Option<EqualizerSettings>,
     ) -> AudioResult<()> {
-        self.command_tx
-            .send(AudioCommand::AppendGapless {
-                audio_data,
-                metadata,
-                duration_secs,
-                normalization_gain,
-                dynamics_preset,
-                binaural_preset,
-                equalizer_settings,
-            })
-            .map_err(|e| AudioError::Playback(format!("Failed to send gapless command: {}", e)))
+        self.send_result_command("append gapless", |ack| AudioCommand::AppendGapless {
+            audio_data,
+            metadata,
+            duration_secs,
+            normalization_gain,
+            dynamics_preset,
+            binaural_preset,
+            equalizer_settings,
+            ack,
+        })
     }
 
     /// Start a crossfade transition: fade out current song while fading in a new one.
@@ -1174,21 +1174,8 @@ fn run_audio_thread(
                     dynamics_preset,
                     binaural_preset,
                     equalizer_settings,
+                    ack,
                 } => {
-                    // Stop any existing playback including crossfade
-                    if let Some(sink) = current_sink.take() {
-                        debug!("Stopping existing sink before starting new track");
-                        sink.stop();
-                    }
-                    if let Some(cf_sink) = crossfade_sink.take() {
-                        debug!("Stopping active crossfade sink before starting new track");
-                        cf_sink.stop();
-                    }
-                    crossfade_state = None;
-                    shared_state
-                        .crossfade_initiated
-                        .store(false, Ordering::SeqCst);
-
                     // Decode and play with coarse seek enabled for better seeking
                     info!(
                         "Playback thread play: song_id={}, title={:?}, bytes={}, duration={:.3}s",
@@ -1215,6 +1202,21 @@ fn run_audio_thread(
                         &spectrum_enabled,
                     ) {
                         Ok(sink) => {
+                            // Stop any existing playback including crossfade only after the
+                            // replacement source has decoded and connected successfully.
+                            if let Some(old_sink) = current_sink.take() {
+                                debug!("Stopping existing sink before starting new track");
+                                old_sink.stop();
+                            }
+                            if let Some(cf_sink) = crossfade_sink.take() {
+                                debug!("Stopping active crossfade sink before starting new track");
+                                cf_sink.stop();
+                            }
+                            crossfade_state = None;
+                            shared_state
+                                .crossfade_initiated
+                                .store(false, Ordering::SeqCst);
+
                             let generation = shared_state.next_generation();
                             shared_state.set_active_request(generation, request);
                             shared_state.mark_playing();
@@ -1222,8 +1224,12 @@ fn run_audio_thread(
                             watchdog.reset(0.0);
                             current_sink = Some(sink);
                             debug!("Playback thread started song");
+                            let _ = ack.send(Ok(()));
                         }
-                        Err(e) => error!("{e}"),
+                        Err(e) => {
+                            error!("{e}");
+                            let _ = ack.send(Err(e));
+                        }
                     }
                 }
                 AudioCommand::Pause { ack } => {
@@ -1414,6 +1420,7 @@ fn run_audio_thread(
                     dynamics_preset,
                     binaural_preset,
                     equalizer_settings,
+                    ack,
                 } => {
                     info!(
                         "Playback thread append gapless: song_id={}, title={:?}, bytes={}, duration={:.3}s",
@@ -1461,13 +1468,20 @@ fn run_audio_thread(
                                             .unwrap_or(0.0);
                                 }
                                 debug!("Playback thread appended gapless segment");
+                                let _ = ack.send(Ok(()));
                             }
                             Err(e) => {
                                 error!("{e}");
+                                let _ = ack.send(Err(e));
                             }
                         }
                     } else {
-                        warn!("Ignoring gapless append because there is no active sink");
+                        let error = AudioError::Playback(
+                            "Cannot append gapless track because there is no active sink"
+                                .to_string(),
+                        );
+                        warn!("{error}");
+                        let _ = ack.send(Err(error));
                     }
                 }
                 AudioCommand::CrossfadePlay {
@@ -1489,14 +1503,6 @@ fn run_audio_thread(
                         duration_secs,
                         crossfade_duration_ms
                     );
-                    // Stop any previous crossfade that's still running
-                    if let Some(old_cf_sink) = crossfade_sink.take() {
-                        debug!("Stopping previous crossfade sink");
-                        old_cf_sink.stop();
-                    }
-                    // Move current sink to crossfade_sink (it keeps playing, fading out)
-                    crossfade_sink = current_sink.take();
-
                     let request = ActiveAudioRequest::new(
                         audio_data,
                         metadata,
@@ -1514,6 +1520,14 @@ fn run_audio_thread(
                         &spectrum_enabled,
                     ) {
                         Ok(new_sink) => {
+                            // Only replace the audible transition state after the new source
+                            // has decoded and connected successfully.
+                            if let Some(old_cf_sink) = crossfade_sink.take() {
+                                debug!("Stopping previous crossfade sink");
+                                old_cf_sink.stop();
+                            }
+                            crossfade_sink = current_sink.take();
+
                             // Update shared state for the new song
                             let generation = shared_state.next_generation();
                             shared_state.set_active_request(generation, request);
@@ -1531,8 +1545,6 @@ fn run_audio_thread(
                         }
                         Err(e) => {
                             error!("{e}");
-                            // Restore original sink if decode fails
-                            current_sink = crossfade_sink.take();
                             shared_state
                                 .crossfade_initiated
                                 .store(false, Ordering::SeqCst);
@@ -1648,6 +1660,66 @@ mod tests {
             None,
             None,
         )
+    }
+
+    fn disconnected_audio_player() -> AudioPlayer {
+        let (command_tx, command_rx) = mpsc::channel::<AudioCommand>();
+        drop(command_rx);
+        let ring_buffer = HeapRb::<f32>::new(SPECTRUM_BUFFER_SIZE);
+        let (_producer, consumer) = ring_buffer.split();
+        AudioPlayer {
+            command_tx,
+            shared_state: Arc::new(SharedState::new()),
+            spectrum_consumer: Arc::new(Mutex::new(consumer)),
+            spectrum_enabled: Arc::new(AtomicBool::new(false)),
+            _audio_thread: thread::spawn(|| {}),
+        }
+    }
+
+    #[test]
+    fn play_returns_error_when_audio_thread_is_disconnected() {
+        let player = disconnected_audio_player();
+        let result = player.play(
+            Arc::<[u8]>::from(vec![0_u8; 4]),
+            SongMetadata {
+                id: "a".to_string(),
+                title: "a".to_string(),
+                artist: "artist".to_string(),
+                album: "album".to_string(),
+                cover_art_id: None,
+            },
+            30.0,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(player.get_status().state, PlaybackLifecycleState::Stopped);
+    }
+
+    #[test]
+    fn append_gapless_returns_error_when_audio_thread_is_disconnected() {
+        let player = disconnected_audio_player();
+        let result = player.append_gapless(
+            Arc::<[u8]>::from(vec![0_u8; 4]),
+            SongMetadata {
+                id: "b".to_string(),
+                title: "b".to_string(),
+                artist: "artist".to_string(),
+                album: "album".to_string(),
+                cover_art_id: None,
+            },
+            30.0,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(player.get_status().state, PlaybackLifecycleState::Stopped);
     }
 
     #[test]

@@ -37,6 +37,9 @@ static PLAYBACK_CALLBACK: Mutex<Option<MobilePlaybackCallback>> = Mutex::new(Non
 type MobileLogCallback = extern "C" fn(*const c_char);
 type MobilePlaybackCallback = extern "C" fn(*const c_char);
 
+const MOBILE_PLAYBACK_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
+const MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD: Duration = Duration::from_secs(2);
+
 struct MobileLogger;
 
 impl log::Log for MobileLogger {
@@ -1299,15 +1302,28 @@ fn start_mobile_playback_monitor(
         let mut last_segment_idx = 0usize;
         let mut last_report: Option<MobileProgressReport> = None;
         let mut last_snapshot_marker: Option<MobilePlaybackMarker> = None;
+        let mut last_tick = Instant::now();
 
         while running.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(MOBILE_PLAYBACK_MONITOR_INTERVAL);
+            let now = Instant::now();
+            let elapsed_since_last_tick = now.duration_since(last_tick);
+            last_tick = now;
+            let suspension_gap = is_mobile_monitor_suspension_gap(elapsed_since_last_tick);
 
             let (state, segment_idx) = state_handle.get_gapless_state();
             let marker = MobilePlaybackMarker::from_state(&state, segment_idx);
             if last_snapshot_marker.as_ref() != Some(&marker) {
                 announcer.emit(&core, &audio);
                 last_snapshot_marker = Some(marker);
+            }
+            if suspension_gap {
+                log::debug!(
+                    target: "stereodrome_ffi",
+                    "Skipping mobile playback monitor transition tick after {:.3}s gap",
+                    elapsed_since_last_tick.as_secs_f64()
+                );
+                continue;
             }
             let Some(song) = state.song.clone() else {
                 last_segment_idx = 0;
@@ -1457,6 +1473,10 @@ impl MobilePlaybackMarker {
             segment_idx,
         }
     }
+}
+
+fn is_mobile_monitor_suspension_gap(elapsed: Duration) -> bool {
+    elapsed >= MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD
 }
 
 fn report_mobile_progress(
@@ -1809,4 +1829,23 @@ fn json_error(message: &str) -> *mut c_char {
 
 fn into_c_string(value: String) -> *mut c_char {
     CString::new(value).map_or(ptr::null_mut(), CString::into_raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mobile_monitor_gap_under_threshold_is_not_suspension() {
+        assert!(!is_mobile_monitor_suspension_gap(
+            MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD - Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn mobile_monitor_gap_at_threshold_is_suspension() {
+        assert!(is_mobile_monitor_suspension_gap(
+            MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD
+        ));
+    }
 }
