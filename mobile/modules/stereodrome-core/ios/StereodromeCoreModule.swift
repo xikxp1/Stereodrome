@@ -427,12 +427,7 @@ public class StereodromeCoreModule: Module {
         return
       }
       setAudioSessionActive(true)
-      let snapshot = parseOkValue(callSync(method: "getPlaybackSnapshot", payload: "null"))
-      if boolValue(snapshot?["audio_loaded"]) {
-        _ = callSync(method: "audioResume", payload: "null")
-      } else {
-        playCurrentFromPersistedPosition()
-      }
+      _ = callSync(method: "audioResume", payload: "null")
     case .pause:
       _ = callSync(method: "audioPause", payload: "null")
     case .toggle:
@@ -441,12 +436,9 @@ public class StereodromeCoreModule: Module {
         _ = callSync(method: "audioPause", payload: "null")
       } else if !canPlayRemoteCommands {
         return
-      } else if boolValue(snapshot?["audio_loaded"]) {
-        setAudioSessionActive(true)
-        _ = callSync(method: "audioResume", payload: "null")
       } else {
         setAudioSessionActive(true)
-        playCurrentFromPersistedPosition()
+        _ = callSync(method: "audioResume", payload: "null")
       }
     case .next:
       guard canPlayRemoteCommands else {
@@ -466,28 +458,6 @@ public class StereodromeCoreModule: Module {
       _ = callSync(method: "audioStop", payload: "null")
       setAudioSessionActive(false)
     }
-  }
-
-  /// Starting playback from a stopped core (e.g. lock-screen play after the
-  /// app restored a paused session) should continue from the persisted
-  /// position instead of restarting the song from the beginning.
-  private func playCurrentFromPersistedPosition() {
-    let snapshot = parseOkValue(callSync(method: "getPlaybackState", payload: "null"))
-    let savedSongId = stringValue(snapshot?["current_song_id"])
-    let savedPosition = doubleValue(snapshot?["position_seconds"])
-
-    let status = parseOkValue(callSync(method: "audioPlayCurrent", payload: "null"))
-    guard
-      let playingSongId = stringValue(status?["current_song_id"]),
-      playingSongId == savedSongId,
-      savedPosition > 0.5
-    else {
-      return
-    }
-
-    let duration = doubleValue(status?["duration"])
-    let target = duration > 0 ? min(savedPosition, max(0.0, duration - 1.0)) : savedPosition
-    _ = callSync(method: "audioSeek", payload: "\(target)")
   }
 
   private func configureCommandAvailability(_ payload: [String: Any]) {

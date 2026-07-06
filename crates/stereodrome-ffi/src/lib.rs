@@ -771,7 +771,9 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(result)
         }
         "audioResume" => {
-            let result = mobile.audio.resume().map(|_| ());
+            let result = runtime
+                .block_on(async { resume_current_playback(mobile).await })
+                .map(|_| ());
             if result.is_ok() {
                 mobile.announcer.emit(core, &mobile.audio);
             }
@@ -1547,6 +1549,65 @@ async fn play_current_queue_item_from(
     }
 
     Ok(audio.get_status())
+}
+
+async fn resume_current_playback(
+    mobile: &MobileCore,
+) -> Result<stereodrome_audio::PlaybackStatus, String> {
+    if mobile.audio.get_status().current_song_id.is_some() {
+        mobile.audio.resume().map_err(|e| e.to_string())?;
+        return Ok(mobile.audio.get_status());
+    }
+
+    let persisted = mobile
+        .core
+        .get_playback_state()
+        .map_err(|e| e.to_string())?;
+    let mut queue = mobile.core.get_queue().map_err(|e| e.to_string())?;
+    if queue.current_index.is_none()
+        && let Some(saved_song_id) = persisted.current_song_id.as_deref()
+        && let Some(index) = queue
+            .items
+            .iter()
+            .position(|item| item.song_id == saved_song_id)
+    {
+        mobile
+            .core
+            .play_queue_item(index)
+            .map_err(|e| e.to_string())?;
+        queue = mobile.core.get_queue().map_err(|e| e.to_string())?;
+    }
+
+    let current_song_id = queue
+        .current_index
+        .and_then(|index| queue.items.get(index))
+        .map(|item| item.song_id.as_str());
+
+    let seek_position = match (persisted.current_song_id.as_deref(), current_song_id) {
+        (Some(saved_song_id), Some(queue_song_id))
+            if saved_song_id == queue_song_id && persisted.position_seconds > 0.5 =>
+        {
+            let duration = if persisted.duration_seconds > 0.0 {
+                persisted.duration_seconds
+            } else {
+                queue
+                    .current_index
+                    .and_then(|index| queue.items.get(index))
+                    .map(|item| item.duration as f64)
+                    .unwrap_or(0.0)
+            };
+            Some(if duration > 1.0 {
+                persisted.position_seconds.clamp(0.0, duration - 1.0)
+            } else {
+                0.0
+            })
+        }
+        _ => None,
+    };
+
+    let status = play_current_queue_item(mobile, seek_position).await?;
+    prepare_next_transition(mobile).await?;
+    Ok(status)
 }
 
 async fn prepare_next_transition(mobile: &MobileCore) -> Result<(), String> {

@@ -465,19 +465,13 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         await reconcilePlaybackSnapshot();
         await persistPlaybackPosition(false);
       } else if (currentIndexRef.current !== null) {
-        if (audioLoadedRef.current) {
-          await stereodromeCore.audioResume();
-          await reconcilePlaybackSnapshot();
-        } else {
-          await playCurrentQueueItem(
-            restoredStartPositionRef.current ?? positionRef.current
-          );
-        }
+        await stereodromeCore.audioResume();
+        restoredStartPositionRef.current = null;
+        await reconcilePlaybackSnapshot();
       }
     });
   }, [
     persistPlaybackPosition,
-    playCurrentQueueItem,
     reconcilePlaybackSnapshot,
     runPlaybackAction,
   ]);
