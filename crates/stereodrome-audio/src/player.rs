@@ -1133,14 +1133,30 @@ fn rebuild_active_output(
 
     let generation = shared_state.next_generation();
     let volume = shared_state.read_inner().volume;
-    let sink = connect_request_sink(
+    let sink = match connect_request_sink(
         &next_stream,
         &request,
         volume,
         spectrum_producer,
         spectrum_enabled,
-    )?;
-    let restored_position = seek_sink_to_position(&sink, position, request.duration_secs)?;
+    ) {
+        Ok(sink) => sink,
+        Err(e) => {
+            if current_sink.is_none() {
+                shared_state.mark_stream_failed();
+            }
+            return Err(e);
+        }
+    };
+    let restored_position = match seek_sink_to_position(&sink, position, request.duration_secs) {
+        Ok(position) => position,
+        Err(e) => {
+            if current_sink.is_none() {
+                shared_state.mark_stream_failed();
+            }
+            return Err(e);
+        }
+    };
 
     if let Some(sink) = current_sink.take() {
         sink.stop();
@@ -1158,6 +1174,28 @@ fn rebuild_active_output(
     shared_state.mark_playing();
     *current_sink = Some(sink);
     Ok((generation, restored_position))
+}
+
+fn should_poll_audio_thread(
+    has_current_sink: bool,
+    has_crossfade_state: bool,
+    lifecycle_state: PlaybackLifecycleState,
+) -> bool {
+    has_current_sink || has_crossfade_state || lifecycle_state == PlaybackLifecycleState::Playing
+}
+
+fn mark_missing_sink_if_playing(
+    shared_state: &SharedState,
+    watchdog: &mut PlaybackWatchdog,
+) -> bool {
+    if shared_state.state() != PlaybackLifecycleState::Playing {
+        return false;
+    }
+
+    warn!("Playback state was playing without an active sink; marking stalled");
+    shared_state.mark_stalled();
+    watchdog.reset(shared_state.get_position());
+    true
 }
 
 /// Main audio thread function
@@ -1188,7 +1226,11 @@ fn run_audio_thread(
     let mut watchdog = PlaybackWatchdog::new();
 
     loop {
-        let event = if current_sink.is_some() || crossfade_state.is_some() {
+        let event = if should_poll_audio_thread(
+            current_sink.is_some(),
+            crossfade_state.is_some(),
+            shared_state.state(),
+        ) {
             match command_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(command) => AudioThreadEvent::Command(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => AudioThreadEvent::Timeout,
@@ -1625,6 +1667,8 @@ fn run_audio_thread(
                     } else {
                         watchdog.observe(observed_position, should_detect_stall, &shared_state);
                     }
+                } else {
+                    mark_missing_sink_if_playing(&shared_state, &mut watchdog);
                 }
 
                 // Crossfade volume ramping (~20Hz with 50ms timeout)
@@ -1828,6 +1872,34 @@ mod tests {
 
         assert_eq!(shared.state(), PlaybackLifecycleState::Playing);
         assert!(shared.is_playing());
+    }
+
+    #[test]
+    fn audio_thread_polls_when_state_is_playing_without_sink() {
+        assert!(should_poll_audio_thread(
+            false,
+            false,
+            PlaybackLifecycleState::Playing
+        ));
+        assert!(!should_poll_audio_thread(
+            false,
+            false,
+            PlaybackLifecycleState::Paused
+        ));
+    }
+
+    #[test]
+    fn missing_sink_guard_marks_playback_stalled() {
+        let shared = SharedState::new();
+        let generation = shared.next_generation();
+        shared.set_active_request(generation, test_request("a", 30.0));
+        shared.mark_playing();
+
+        let mut watchdog = PlaybackWatchdog::new();
+
+        assert!(mark_missing_sink_if_playing(&shared, &mut watchdog));
+        assert_eq!(shared.state(), PlaybackLifecycleState::Stalled);
+        assert!(!shared.is_playing());
     }
 
     #[test]
