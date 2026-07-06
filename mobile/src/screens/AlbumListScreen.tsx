@@ -8,9 +8,7 @@ import { stereodromeCore } from "@/services/stereodromeCore";
 import type { AlbumListEntry } from "@/types/music";
 
 export type RankedAlbumListKind =
-  | "recentlyAdded"
-  | "recentlyPlayed"
-  | "mostPlayed";
+  "recentlyAdded" | "recentlyPlayed" | "mostPlayed";
 
 type RankedAlbumListConfig = {
   empty: string;
