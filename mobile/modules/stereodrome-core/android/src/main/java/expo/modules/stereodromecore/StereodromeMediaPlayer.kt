@@ -43,13 +43,11 @@ class StereodromeMediaPlayer(
   }
 
   fun setNowPlayingInfo(nextInfo: NowPlayingInfo?) {
-    info = nextInfo
-    invalidateOnPlayerLooper()
+    setNowPlayingInfoOnPlayerLooper(nextInfo)
   }
 
   fun clearNowPlayingInfo() {
-    info = null
-    invalidateOnPlayerLooper()
+    setNowPlayingInfoOnPlayerLooper(null)
   }
 
   override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<Any> {
@@ -163,6 +161,18 @@ class StereodromeMediaPlayer(
   }
 
   private fun secondsToMillis(seconds: Double): Long = (seconds * 1000).toLong()
+
+  private fun setNowPlayingInfoOnPlayerLooper(nextInfo: NowPlayingInfo?) {
+    if (Looper.myLooper() == playerLooper) {
+      info = nextInfo
+      invalidateState()
+    } else {
+      handler.post {
+        info = nextInfo
+        invalidateState()
+      }
+    }
+  }
 
   private fun invalidateOnPlayerLooper() {
     if (Looper.myLooper() == playerLooper) {
