@@ -128,7 +128,10 @@ function startNativePlaybackSubscription() {
     "playback-state",
     ({ snapshot }) => {
       try {
-        emitCoreEvent("playback-state", JSON.parse(snapshot) as PlaybackSnapshot);
+        emitCoreEvent(
+          "playback-state",
+          JSON.parse(snapshot) as PlaybackSnapshot
+        );
       } catch (error) {
         emitCoreEvent("error", error);
       }

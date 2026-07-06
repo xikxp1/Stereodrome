@@ -364,14 +364,15 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           });
         }
       );
-    const unsubscribePlayback = stereodromeCore.addEventListener<PlaybackSnapshot>(
-      "playback-state",
-      (snapshot) => {
-        void applyPlaybackSnapshot(snapshot).catch((playbackError) => {
-          setError(errorMessage(playbackError));
-        });
-      }
-    );
+    const unsubscribePlayback =
+      stereodromeCore.addEventListener<PlaybackSnapshot>(
+        "playback-state",
+        (snapshot) => {
+          void applyPlaybackSnapshot(snapshot).catch((playbackError) => {
+            setError(errorMessage(playbackError));
+          });
+        }
+      );
 
     return () => {
       mounted = false;
