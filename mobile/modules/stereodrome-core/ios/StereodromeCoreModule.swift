@@ -56,6 +56,9 @@ public class StereodromeCoreModule: Module {
   private let coreQueue = DispatchQueue(label: "dev.xikxp1.stereodrome.mobile.core")
   private let remoteCommandQueue = DispatchQueue(
     label: "dev.xikxp1.stereodrome.mobile.remote-commands")
+  private let playbackSnapshotQueue = DispatchQueue(
+    label: "dev.xikxp1.stereodrome.mobile.playback-snapshots")
+  private let artworkCache = NSCache<NSString, MPMediaItemArtwork>()
   private var remoteCommandTargets: [Any] = []
   private var audioSessionObservers: [NSObjectProtocol] = []
   private var shouldResumeAfterInterruption = false
@@ -167,7 +170,9 @@ public class StereodromeCoreModule: Module {
   }
 
   fileprivate func handlePlaybackSnapshot(_ snapshot: String) {
-    applyPlaybackSnapshot(snapshot)
+    playbackSnapshotQueue.async { [weak self] in
+      self?.applyPlaybackSnapshot(snapshot)
+    }
     sendEvent("playback-snapshot", ["snapshot": snapshot])
   }
 
@@ -183,7 +188,9 @@ public class StereodromeCoreModule: Module {
       stringValue(snapshot["state"]) != "stopped",
       let song = snapshot["song"] as? [String: Any]
     else {
-      clearNowPlayingInfo()
+      DispatchQueue.main.async { [weak self] in
+        self?.clearNowPlayingInfo()
+      }
       return
     }
 
@@ -208,9 +215,12 @@ public class StereodromeCoreModule: Module {
       info[MPMediaItemPropertyArtwork] = artwork
     }
 
-    MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-    updateNowPlayingPlaybackState(isPlaying: boolValue(snapshot["is_playing"]))
-    configureCommandAvailability(snapshot)
+    let isPlaying = boolValue(snapshot["is_playing"])
+    DispatchQueue.main.async { [weak self] in
+      MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+      self?.updateNowPlayingPlaybackState(isPlaying: isPlaying)
+      self?.configureCommandAvailability(snapshot)
+    }
   }
 
   private func clearNowPlayingInfo() {
@@ -479,6 +489,11 @@ public class StereodromeCoreModule: Module {
       return nil
     }
 
+    let cacheKey = uri as NSString
+    if let artwork = artworkCache.object(forKey: cacheKey) {
+      return artwork
+    }
+
     let url: URL?
     if uri.hasPrefix("file://") {
       url = URL(string: uri)
@@ -490,7 +505,10 @@ public class StereodromeCoreModule: Module {
       return nil
     }
 
-    return MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+    let preparedImage = image.preparingForDisplay() ?? image
+    let artwork = MPMediaItemArtwork(boundsSize: preparedImage.size) { _ in preparedImage }
+    artworkCache.setObject(artwork, forKey: cacheKey)
+    return artwork
   }
 
   private func parseOkValue(_ raw: String) -> [String: Any]? {

@@ -192,7 +192,7 @@ Grouped by symptom. All are constructible from current code.
       "artist": "...",
       "album": "...",
       "duration": 213.4,
-      "artwork_path": "/.../cover_512.jpg"
+      "artwork_uri": "/.../cover_512.jpg"
     },
     "position": 42.1,
     "queue_index": 3,
@@ -205,7 +205,7 @@ Grouped by symptom. All are constructible from current code.
   ```
 - Emitted from one place (a small `PlaybackAnnouncer` in `stereodrome-ffi`) on: transport command applied, monitor transition (advance/crossfade/gapless/end-of-queue), queue mutation affecting the current item, stall/recovery, settings reapply. Deliver the **full snapshot, not an invalidation ping** — a ping requires a read-back that can race the next change; a snapshot with `seq` cannot.
 - Rust computes `can_next`/`can_previous`/`can_seek`/`can_play` from queue + restore state, eliminating the JS-side derivation and the `playbackActivatedThisProcess` process flag (fixes S12 by policy: a restored queue item ⇒ `can_play:true`).
-- `artwork_path` points at the local cover cache (Rust already resolves covers); native loads the image itself. Kills the JS artwork cache in `nativeMediaControls.ts`.
+- `artwork_uri` points at the local cover cache (Rust already resolves covers); native loads the image itself. Kills the JS artwork cache in `nativeMediaControls.ts`.
 - Add one combined `getPlaybackSnapshot` FFI method (same payload) for pull-based reconciliation, replacing the non-atomic `audioGetStatus`+`getQueue` pair (fixes S11).
 
 **R2 — Native-owned media session.**

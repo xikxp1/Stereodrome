@@ -5,23 +5,36 @@ import android.os.Handler
 import android.os.Looper
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.util.concurrent.Executors
 
 class StereodromeCoreModule : Module() {
   private val mainHandler = Handler(Looper.getMainLooper())
+  private val playbackSnapshotExecutor = Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "StereodromePlaybackSnapshots").apply {
+      isDaemon = true
+    }
+  }
   private var applicationContext: Context? = null
 
   override fun definition() = ModuleDefinition {
     Name("StereodromeCore")
     Events("playback-snapshot")
 
+    OnDestroy {
+      StereodromeCoreBridge.setPlaybackSnapshotListener(null)
+      playbackSnapshotExecutor.shutdownNow()
+    }
+
     AsyncFunction("initialize") { dataDir: String ->
       applicationContext = appContext.reactContext?.applicationContext
       StereodromeCoreBridge.setPlaybackSnapshotListener { snapshot ->
-        mainHandler.post {
+        playbackSnapshotExecutor.execute {
           applicationContext?.let { context ->
             StereodromeMediaSessionState.applyPlaybackSnapshot(context, snapshot)
           }
-          sendEvent("playback-snapshot", mapOf("snapshot" to snapshot))
+          mainHandler.post {
+            sendEvent("playback-snapshot", mapOf("snapshot" to snapshot))
+          }
         }
       }
       StereodromeCoreBridge.initialize(dataDir)
