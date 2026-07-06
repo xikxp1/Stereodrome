@@ -109,7 +109,7 @@ Grouped by symptom. All are constructible from current code.
 
 ### B. "Playing, but the OS/UI shows wrong or no state"
 
-**S4 — Auto-advance shows the previous song.** Monitor advances (gapless `lib.rs:965-988` or track end `:1042-1054`); is_playing stays true. No event fires; the native post-transport refresh doesn't apply (the monitor bypasses `call`). The lock screen shows the _previous_ song's title/artwork/duration for up to 1 s (foreground) / 5 s (background) — or, if JS is suspended and tracks are short, the lock screen can run a full track behind indefinitely.
+**S4 — Auto-advance shows the previous song.** Monitor advances (gapless `lib.rs:965-988` or track end `:1042-1054`); is*playing stays true. No event fires; the native post-transport refresh doesn't apply (the monitor bypasses `call`). The lock screen shows the \_previous* song's title/artwork/duration for up to 1 s (foreground) / 5 s (background) — or, if JS is suspended and tracks are short, the lock screen can run a full track behind indefinitely.
 
 **S5 — Android: no media notification after service death.** `serviceStarted` is a process-static boolean (`StereodromeMediaSessionState.kt:11`) that survives the OS killing the actual foreground service. On resume of the same song, `nativeMediaControls` skips `setNowPlayingInfo` (its `infoKey` excludes `is_playing`, `nativeMediaControls.ts:48-61`) and `updateProgress` only restarts the service `if (isPlaying && !serviceStarted)` — false because of the stale flag. Audio plays with no notification/controls.
 
