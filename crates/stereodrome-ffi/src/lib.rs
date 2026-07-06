@@ -744,7 +744,33 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         "getAudioProcessingSettings" => json_result(core.get_audio_processing_settings()),
         "setAudioProcessingSettings" => {
             let settings = parse_payload::<AudioProcessingSettings>(payload)?;
-            json_result(core.set_audio_processing_settings(settings))
+            let result = core
+                .set_audio_processing_settings(settings)
+                .map_err(|e| e.to_string())
+                .and_then(|next_settings| {
+                    runtime
+                        .block_on(async {
+                            apply_audio_settings(mobile).await?;
+                            if let Err(error) = core.prefetch_next().await {
+                                log::warn!(
+                                    target: "stereodrome_ffi",
+                                    "Failed to prefetch next track after audio settings change: {error}"
+                                );
+                            }
+                            if let Err(error) = prepare_next_transition(mobile).await {
+                                log::warn!(
+                                    target: "stereodrome_ffi",
+                                    "Failed to prepare next transition after audio settings change: {error}"
+                                );
+                            }
+                            Ok::<(), String>(())
+                        })
+                        .map(|_| {
+                            mobile.announcer.emit(core, &mobile.audio);
+                            next_settings
+                        })
+                });
+            json_result(result)
         }
         "audioPlayCurrent" => {
             let result = runtime.block_on(async { play_current_queue_item(mobile, None).await });

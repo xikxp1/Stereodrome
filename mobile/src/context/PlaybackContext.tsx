@@ -11,7 +11,6 @@ import { AppState, type AppStateStatus } from "react-native";
 
 import { stereodromeCore } from "@/services/stereodromeCore";
 import type {
-  AudioProcessingSettings,
   PlaybackSnapshot,
   PlaybackStateSnapshot,
   PlayableSong,
@@ -342,15 +341,6 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    const unsubscribeAudioSettings =
-      stereodromeCore.addEventListener<AudioProcessingSettings>(
-        "audio-processing-settings-changed",
-        () => {
-          void applyAudioProcessingSettings().catch((playbackError) => {
-            setError(errorMessage(playbackError));
-          });
-        }
-      );
     const unsubscribePlayback =
       stereodromeCore.addEventListener<PlaybackSnapshot>(
         "playback-snapshot",
@@ -363,7 +353,6 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       mounted = false;
-      unsubscribeAudioSettings();
       unsubscribePlayback();
     };
   }, [
