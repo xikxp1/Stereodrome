@@ -7,8 +7,8 @@ use std::time::SystemTime;
 use filetime::FileTime;
 use log::{debug, warn};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
-use tauri_plugin_store::StoreExt;
+use stereodrome_desktop::DesktopBackend;
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::audio::loudness;
@@ -22,7 +22,6 @@ pub const DEFAULT_MAX_CACHE_SIZE: u64 = 5 * 1024 * 1024 * 1024;
 pub const MIN_CACHE_SIZE: u64 = 500 * 1024 * 1024;
 /// Maximum cache size: 50 GB
 pub const MAX_CACHE_SIZE: u64 = 50 * 1024 * 1024 * 1024;
-pub const STORE_FILE: &str = "settings.json";
 pub const KEY_MAX_CACHE_SIZE: &str = "max_cache_size";
 pub const AUDIO_CACHE_CHANGED_EVENT: &str = "audio-cache-changed";
 
@@ -37,13 +36,14 @@ pub(crate) fn emit_audio_cache_changed(app_handle: &AppHandle, reason: &'static 
 
 /// Read the configured max cache size from settings store
 fn read_max_cache_size(app_handle: &AppHandle) -> u64 {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Some(value) = store.get(KEY_MAX_CACHE_SIZE)
-        && let Some(size) = value.as_u64()
-    {
-        return size.clamp(MIN_CACHE_SIZE, MAX_CACHE_SIZE);
-    }
-    DEFAULT_MAX_CACHE_SIZE
+    app_handle
+        .state::<DesktopBackend>()
+        .settings()
+        .get::<u64>(KEY_MAX_CACHE_SIZE)
+        .ok()
+        .flatten()
+        .map(|size| size.clamp(MIN_CACHE_SIZE, MAX_CACHE_SIZE))
+        .unwrap_or(DEFAULT_MAX_CACHE_SIZE)
 }
 
 /// Statistics about the audio cache

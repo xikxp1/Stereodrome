@@ -40,6 +40,9 @@ pub enum AppError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Desktop backend error: {0}")]
+    Desktop(#[from] stereodrome_desktop::DesktopError),
+
     #[error("Audio playback error: {0}")]
     Audio(String),
 

@@ -10,7 +10,7 @@ mod thread;
 pub use handle::SubsonicClientHandle;
 pub use messages::{AlbumListEntry, AlbumListOrder, ClientError, ServerConfig};
 
-/// Spawn the client thread and return a handle for communication.
-pub fn spawn() -> SubsonicClientHandle {
+/// Spawn the client thread and return its communication and lifecycle handles.
+pub fn spawn() -> (SubsonicClientHandle, std::thread::JoinHandle<()>) {
     thread::spawn()
 }

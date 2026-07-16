@@ -5,7 +5,6 @@ use rusqlite::Connection;
 
 use crate::error::AppResult;
 
-const SCHEMA: &str = include_str!("schema.sql");
 const QUERY_INDEX_MIGRATIONS: &str = "
     CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name);
     CREATE INDEX IF NOT EXISTS idx_albums_artist_id ON albums(artist_id);
@@ -24,7 +23,7 @@ const QUERY_INDEX_MIGRATIONS: &str = "
 ";
 
 pub fn init_db(conn: &Connection) -> AppResult<()> {
-    conn.execute_batch(SCHEMA)?;
+    conn.execute_batch(stereodrome_core::DESKTOP_SCHEMA)?;
     run_migrations(conn)?;
     Ok(())
 }
@@ -74,7 +73,7 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
              DROP TABLE IF EXISTS albums;
              DROP TABLE IF EXISTS artists;",
         )?;
-        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(stereodrome_core::DESKTOP_SCHEMA)?;
     }
 
     // Check if playlists table has all required columns (owner, cover_art_id added for server sync)
@@ -99,7 +98,7 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
             "DROP TABLE IF EXISTS playlist_songs;
              DROP TABLE IF EXISTS playlists;",
         )?;
-        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(stereodrome_core::DESKTOP_SCHEMA)?;
         playlist_columns = conn
             .prepare("PRAGMA table_info(playlists)")?
             .query_map([], |row| row.get::<_, String>(1))?
@@ -172,17 +171,12 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
 }
 
 pub fn get_db_path(app_handle: &tauri::AppHandle) -> AppResult<String> {
-    let app_dir = app_handle.path().app_data_dir().map_err(|e| {
-        crate::error::AppError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            e.to_string(),
-        ))
-    })?;
-
-    std::fs::create_dir_all(&app_dir)?;
-
-    let db_path = app_dir.join("stereodrome.db");
-    Ok(db_path.to_string_lossy().to_string())
+    Ok(app_handle
+        .state::<stereodrome_desktop::DesktopBackend>()
+        .paths()
+        .database
+        .to_string_lossy()
+        .to_string())
 }
 
 use tauri::Manager;
@@ -205,4 +199,36 @@ pub fn save_normalization_result(
         rusqlite::params![song_id, integrated_lufs, true_peak, album_id, now],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_restart_reopens_initialized_database() {
+        let path = std::env::temp_dir().join(format!(
+            "stereodrome-database-restart-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let connection = Connection::open(&path).unwrap();
+            init_db(&connection).unwrap();
+        }
+        {
+            let connection = Connection::open(&path).unwrap();
+            let table_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'songs'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(table_count, 1);
+        }
+
+        std::fs::remove_file(path).unwrap();
+    }
 }

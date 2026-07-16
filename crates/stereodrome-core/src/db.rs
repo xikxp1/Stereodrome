@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use crate::CoreResult;
 use crate::queue::{PlayQueue, QueueItem, QueueState, RepeatMode};
 
-const SCHEMA: &str = include_str!("../../../src-tauri/src/db/schema.sql");
+use crate::DESKTOP_SCHEMA;
 
 pub const SONG_SELECT_WITH_JOINS: &str = "
     SELECT s.id, s.album_id, s.artist_id, s.title, s.track_number, s.disc_number,
@@ -38,7 +38,7 @@ pub const SONG_SELECT_ALL: &str = "
 
 pub fn init(path: &Path) -> CoreResult<()> {
     let conn = Connection::open(path)?;
-    conn.execute_batch(SCHEMA)?;
+    conn.execute_batch(DESKTOP_SCHEMA)?;
     run_migrations(&conn)?;
     Ok(())
 }

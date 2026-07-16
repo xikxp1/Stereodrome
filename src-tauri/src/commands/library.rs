@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -322,16 +322,21 @@ impl Drop for SyncJobGuard {
     }
 }
 
-pub fn start_library_sync_scheduler(app_handle: AppHandle) {
+pub fn start_library_sync_scheduler(
+    app_handle: AppHandle,
+    running: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to create tokio runtime for library sync scheduler");
 
-        loop {
-            thread::sleep(SYNC_SCHEDULER_POLL_INTERVAL);
-
+        while running.load(Ordering::Acquire) {
+            thread::park_timeout(SYNC_SCHEDULER_POLL_INTERVAL);
+            if !running.load(Ordering::Acquire) {
+                break;
+            }
             let state = app_handle.state::<AppState>();
             if crate::commands::settings::manual_offline_enabled(&app_handle)
                 || !state.client.is_connected()
@@ -362,7 +367,7 @@ pub fn start_library_sync_scheduler(app_handle: AppHandle) {
                 warn!("Scheduled {} sync failed: {}", job.as_key(), e);
             }
         }
-    });
+    })
 }
 
 #[tauri::command]
@@ -1214,7 +1219,7 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         conn.execute_batch("PRAGMA foreign_keys = ON;")
             .expect("enable foreign keys");
-        conn.execute_batch(include_str!("../db/schema.sql"))
+        conn.execute_batch(stereodrome_core::DESKTOP_SCHEMA)
             .expect("apply schema");
         conn
     }

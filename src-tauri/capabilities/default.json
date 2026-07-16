@@ -18,7 +18,6 @@
     "core:window:allow-unminimize",
     "core:webview:allow-create-webview-window",
     "opener:default",
-    "store:default",
     "notification:default",
     "log:default",
     "process:default",

@@ -11,12 +11,13 @@ mod search;
 mod state;
 mod tray;
 
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use error::MutexExt as _;
 use log::{LevelFilter, info, warn};
 use media::MediaControlsManager;
 use state::AppState;
+use stereodrome_desktop::{DesktopBackend, DesktopPaths};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_log::{Target, TargetKind};
 use tray::TrayManager;
@@ -54,7 +55,6 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             info!("Second instance detected, focusing existing window");
@@ -68,48 +68,66 @@ pub fn run() {
 
     builder
         .setup(move |app| {
-            let db_path = db::get_db_path(app.handle())?;
-            let index_path = search::get_index_path(app.handle())?;
+            let installed_data_dir = app.path().app_data_dir()?;
+            let paths = DesktopPaths::detect()?;
+            paths.verify_installed_profile(&installed_data_dir)?;
+            let backend = DesktopBackend::open(paths)?;
+            let db_path = backend.paths().database.to_string_lossy().to_string();
+            let index_path = backend.paths().search_index.clone();
+            app.manage(backend);
 
-            // Spawn the submarine client thread
-            let client_handle = client::spawn();
-
+            let (client_handle, client_thread) = client::spawn();
             let app_state = AppState::new(&db_path, index_path, client_handle.clone())?;
-
-            // Initialize database schema
             {
                 let conn = app_state.db.lock_recover();
                 db::init_db(&conn)?;
             }
+            app.manage(app_state);
 
-            // Restore persisted runtime volume before UI starts consuming playback state.
             {
+                let state = app.state::<AppState>();
                 let persisted_volume = commands::read_persisted_volume(app.handle());
-                let audio_player = app_state.audio_player.lock_recover();
+                let audio_player = state.audio_player.lock_recover();
                 if let Err(e) = audio_player.set_volume(persisted_volume) {
                     warn!("Failed to apply persisted runtime volume: {e}");
                 }
             }
 
-            // Start position emitter for audio playback
+            let backend = app.state::<DesktopBackend>();
+            backend.register_thread("subsonic-client", client_thread)?;
             {
-                let audio_player = app_state.audio_player.lock_recover();
-                audio_player.start_position_emitter(app.handle().clone());
-                audio_player.start_spectrum_emitter(app.handle().clone());
+                let state = app.state::<AppState>();
+                let audio_player = state.audio_player.lock_recover();
+                let position = audio_player
+                    .start_position_emitter(app.handle().clone(), backend.worker_running());
+                let spectrum = audio_player
+                    .start_spectrum_emitter(app.handle().clone(), backend.worker_running());
+                drop(audio_player);
+                backend.register_thread("playback-position", position)?;
+                backend.register_thread("spectrum", spectrum)?;
             }
-
-            // Start now playing emitter with the client handle
-            let emitter_running = Arc::clone(&app_state.emitter_running);
-            commands::nowplaying::start_now_playing_emitter(
-                app.handle().clone(),
-                client_handle,
-                emitter_running,
-            );
-
-            app.manage(app_state);
-
-            commands::library::start_library_sync_scheduler(app.handle().clone());
-            lastfm::start_lastfm_retry_scheduler(app.handle().clone());
+            backend.register_thread(
+                "now-playing",
+                commands::nowplaying::start_now_playing_emitter(
+                    app.handle().clone(),
+                    client_handle,
+                    backend.worker_running(),
+                ),
+            )?;
+            backend.register_thread(
+                "library-sync",
+                commands::library::start_library_sync_scheduler(
+                    app.handle().clone(),
+                    backend.worker_running(),
+                ),
+            )?;
+            backend.register_thread(
+                "lastfm-retry",
+                lastfm::start_lastfm_retry_scheduler(
+                    app.handle().clone(),
+                    backend.worker_running(),
+                ),
+            )?;
 
             // Initialize media controls for OS integration (Control Center, media keys)
             if let Some(media_controls) = MediaControlsManager::new(app.handle().clone()) {
@@ -237,10 +255,24 @@ pub fn run() {
                 }
             }
             tauri::RunEvent::Exit => {
-                // Shutdown the client thread gracefully
-                if let Some(state) = app_handle.try_state::<AppState>() {
-                    info!("Shutting down client thread");
-                    state.client.shutdown();
+                if let (Some(backend), Some(state)) = (
+                    app_handle.try_state::<DesktopBackend>(),
+                    app_handle.try_state::<AppState>(),
+                ) {
+                    info!("Shutting down desktop backend");
+                    let result = backend.shutdown(|| {
+                        state.navigating.store(true, Ordering::Release);
+                        let stop_result = state
+                            .audio_player
+                            .lock_recover()
+                            .stop()
+                            .map_err(|error| error.to_string());
+                        state.client.shutdown();
+                        stop_result
+                    });
+                    if let Err(error) = result {
+                        warn!("{error}");
+                    }
                 }
             }
             _ => {}

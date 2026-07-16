@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -148,7 +149,11 @@ impl AudioPlayer {
         self.inner.get_spectrum_consumer()
     }
 
-    pub fn start_spectrum_emitter(&self, app_handle: AppHandle) {
+    pub fn start_spectrum_emitter(
+        &self,
+        app_handle: AppHandle,
+        running: Arc<AtomicBool>,
+    ) -> thread::JoinHandle<()> {
         let consumer = self.inner.get_spectrum_consumer();
         let state = self.inner.state_handle();
 
@@ -158,9 +163,11 @@ impl AudioPlayer {
             let mut analyzer = spectrum::SpectrumAnalyzer::new(DEFAULT_SAMPLE_RATE);
             let mut emitted_idle_state = false;
 
-            loop {
-                thread::sleep(Duration::from_millis(33));
-
+            while running.load(Ordering::Acquire) {
+                thread::park_timeout(Duration::from_millis(33));
+                if !running.load(Ordering::Acquire) {
+                    break;
+                }
                 if !state.is_playing() {
                     if !emitted_idle_state {
                         let _ = app_handle.emit("spectrum-data", spectrum::SpectrumData::default());
@@ -178,10 +185,14 @@ impl AudioPlayer {
                     let _ = app_handle.emit("spectrum-data", spectrum_data);
                 }
             }
-        });
+        })
     }
 
-    pub fn start_position_emitter(&self, app_handle: AppHandle) {
+    pub fn start_position_emitter(
+        &self,
+        app_handle: AppHandle,
+        running: Arc<AtomicBool>,
+    ) -> thread::JoinHandle<()> {
         let state_handle = self.inner.state_handle();
 
         thread::spawn(move || {
@@ -190,9 +201,11 @@ impl AudioPlayer {
             let mut position_update_counter: u8 = 0;
             let mut last_segment_idx: usize = 0;
 
-            loop {
-                thread::sleep(Duration::from_millis(100));
-
+            while running.load(Ordering::Acquire) {
+                thread::park_timeout(Duration::from_millis(100));
+                if !running.load(Ordering::Acquire) {
+                    break;
+                }
                 let (state, segment_idx) = state_handle.get_gapless_state();
 
                 if !state.is_playing && state.song.is_none() {
@@ -378,6 +391,6 @@ impl AudioPlayer {
 
                 let _ = app_handle.emit("playback-state", &state);
             }
-        });
+        })
     }
 }

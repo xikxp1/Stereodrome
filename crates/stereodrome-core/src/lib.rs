@@ -3,6 +3,7 @@ mod error;
 mod lastfm;
 mod models;
 pub mod queue;
+pub mod schema;
 mod subsonic;
 
 use std::collections::{HashMap, HashSet};
@@ -21,6 +22,7 @@ pub use error::{CoreError, CoreResult};
 pub use lastfm::{LastfmAuthStart, LastfmQueueItem, LastfmStatus};
 pub use models::*;
 pub use queue::{QueueItem as SharedQueueItem, QueueState as SharedQueueState};
+pub use schema::DESKTOP_SCHEMA;
 
 const API_VERSION: &str = "1.16.1";
 const CLIENT_NAME: &str = "StereodromeMobile";

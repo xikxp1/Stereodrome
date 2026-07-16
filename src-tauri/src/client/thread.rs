@@ -38,12 +38,12 @@ struct ClientThread {
 
 impl ClientThread {
     /// Spawn the client thread and return a handle for communication
-    pub fn spawn() -> SubsonicClientHandle {
+    pub fn spawn() -> (SubsonicClientHandle, thread::JoinHandle<()>) {
         let (request_tx, request_rx) = mpsc::channel::<ClientRequest>(100);
         let connected = Arc::new(AtomicBool::new(false));
         let connected_clone = Arc::clone(&connected);
 
-        thread::spawn(move || {
+        let thread = thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -60,7 +60,7 @@ impl ClientThread {
             });
         });
 
-        SubsonicClientHandle::new(request_tx, connected)
+        (SubsonicClientHandle::new(request_tx, connected), thread)
     }
 
     /// Main event loop with periodic connection validation
@@ -1006,6 +1006,6 @@ mod tests {
 }
 
 /// Spawn the client thread and return a handle
-pub fn spawn() -> SubsonicClientHandle {
+pub fn spawn() -> (SubsonicClientHandle, thread::JoinHandle<()>) {
     ClientThread::spawn()
 }

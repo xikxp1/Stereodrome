@@ -1,9 +1,9 @@
-use tauri::{AppHandle, State};
-use tauri_plugin_store::StoreExt;
+use stereodrome_desktop::DesktopBackend;
+use tauri::{AppHandle, Manager, State};
 
 use crate::cache::{
     AudioCache, CacheLocationInfo, CacheRootUpdateResult, CacheStats, KEY_MAX_CACHE_SIZE,
-    MAX_CACHE_SIZE, MIN_CACHE_SIZE, STORE_FILE, cache_location_info, emit_audio_cache_changed,
+    MAX_CACHE_SIZE, MIN_CACHE_SIZE, cache_location_info, emit_audio_cache_changed,
     set_cache_root as persist_cache_root,
 };
 use crate::error::{AppResult, MutexExt};
@@ -73,11 +73,10 @@ pub async fn clear_audio_cache(app_handle: AppHandle) -> AppResult<()> {
 pub async fn set_max_cache_size(app_handle: AppHandle, size: u64) -> AppResult<CacheStats> {
     let size = size.clamp(MIN_CACHE_SIZE, MAX_CACHE_SIZE);
 
-    // Save to store
-    if let Ok(store) = app_handle.store(STORE_FILE) {
-        store.set(KEY_MAX_CACHE_SIZE, serde_json::json!(size));
-        let _ = store.save();
-    }
+    app_handle
+        .state::<DesktopBackend>()
+        .settings()
+        .set(KEY_MAX_CACHE_SIZE, size)?;
 
     // Enforce new limit (AudioCache::new reads the size we just saved to the store)
     let cache = AudioCache::new(&app_handle)?;

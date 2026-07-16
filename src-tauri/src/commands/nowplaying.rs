@@ -87,22 +87,18 @@ pub fn start_now_playing_emitter(
     app_handle: AppHandle,
     client: SubsonicClientHandle,
     running: Arc<AtomicBool>,
-) {
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to create tokio runtime for now playing emitter");
 
-        loop {
-            // Check if we should stop
-            if !running.load(Ordering::SeqCst) {
+        while running.load(Ordering::Acquire) {
+            thread::park_timeout(Duration::from_secs(5));
+            if !running.load(Ordering::Acquire) {
                 break;
             }
-
-            // Sleep for 5 seconds between polls
-            thread::sleep(Duration::from_secs(5));
-
             // Check connection without lock
             if crate::commands::settings::manual_offline_enabled(&app_handle)
                 || !client.is_connected()
@@ -138,5 +134,5 @@ pub fn start_now_playing_emitter(
                 }
             }
         }
-    });
+    })
 }

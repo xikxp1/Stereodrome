@@ -551,20 +551,6 @@ impl IndexManager {
     }
 }
 
-/// Get the path for the search index directory
-pub fn get_index_path(app_handle: &tauri::AppHandle) -> AppResult<std::path::PathBuf> {
-    use tauri::Manager;
-
-    let app_dir = app_handle.path().app_data_dir().map_err(|e| {
-        AppError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            e.to_string(),
-        ))
-    })?;
-
-    Ok(app_dir.join("search_index"))
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;

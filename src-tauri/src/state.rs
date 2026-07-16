@@ -23,7 +23,6 @@ pub struct AppState {
     pub queue: Mutex<PlayQueue>,
     pub search_index: Mutex<Option<IndexManager>>,
     pub index_path: PathBuf,
-    pub emitter_running: Arc<AtomicBool>,
     /// Prevents race conditions when rapidly clicking next/previous
     pub navigating: AtomicBool,
     pub lastfm_retry_running: AtomicBool,
@@ -72,7 +71,6 @@ impl AppState {
             queue: Mutex::new(queue),
             search_index: Mutex::new(search_index),
             index_path,
-            emitter_running: Arc::new(AtomicBool::new(true)),
             navigating: AtomicBool::new(false),
             lastfm_retry_running: AtomicBool::new(false),
             lastfm_tracker: Mutex::new(LastfmPlaybackTracker::default()),

@@ -1,12 +1,14 @@
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::Duration;
 
 use chrono::Utc;
 use log::{debug, warn};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use stereodrome_desktop::DesktopBackend;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_store::StoreExt;
 
 use crate::audio::SongMetadata;
 use crate::credentials::{
@@ -19,7 +21,6 @@ const API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 const AUTH_ROOT: &str = "https://www.last.fm/api/auth/";
 const API_KEY: Option<&str> = option_env!("LASTFM_API_KEY");
 const SHARED_SECRET: Option<&str> = option_env!("LASTFM_SHARED_SECRET");
-const STORE_FILE: &str = "settings.json";
 const KEY_LASTFM: &str = "lastfm";
 const MAX_BATCH_SIZE: usize = 50;
 
@@ -170,25 +171,20 @@ fn credentials() -> AppResult<(String, String)> {
 }
 
 fn read_settings(app_handle: &AppHandle) -> LastfmSettings {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Some(value) = store.get(KEY_LASTFM)
-        && let Ok(settings) = serde_json::from_value(value.clone())
-    {
-        return settings;
-    }
-    LastfmSettings::default()
+    app_handle
+        .state::<DesktopBackend>()
+        .settings()
+        .get(KEY_LASTFM)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 fn write_settings(app_handle: &AppHandle, settings: &LastfmSettings) -> AppResult<()> {
-    let store = app_handle
-        .store(STORE_FILE)
-        .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
-    let value = serde_json::to_value(settings)
-        .map_err(|e| AppError::Lastfm(format!("failed to serialize Last.fm settings: {e}")))?;
-    store.set(KEY_LASTFM, value);
-    store
-        .save()
-        .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
+    app_handle
+        .state::<DesktopBackend>()
+        .settings()
+        .set(KEY_LASTFM, settings)?;
     Ok(())
 }
 
@@ -658,21 +654,25 @@ pub async fn retry_lastfm_queue_inner(
     result
 }
 
-pub fn start_lastfm_retry_scheduler(app_handle: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+pub fn start_lastfm_retry_scheduler(
+    app_handle: AppHandle,
+    running: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create Tokio runtime for Last.fm retry scheduler");
 
-        loop {
-            interval.tick().await;
-            if crate::commands::settings::manual_offline_enabled(&app_handle) {
-                continue;
-            }
-            if let Err(e) = retry_lastfm_queue_inner(&app_handle, false).await {
+        while running.load(Ordering::Acquire) {
+            if !crate::commands::settings::manual_offline_enabled(&app_handle)
+                && let Err(e) = runtime.block_on(retry_lastfm_queue_inner(&app_handle, false))
+            {
                 warn!("Last.fm queue retry failed: {e}");
             }
+            thread::park_timeout(Duration::from_secs(60));
         }
-    });
+    })
 }
 
 pub fn lastfm_status(app_handle: &AppHandle, state: &AppState) -> LastfmStatus {

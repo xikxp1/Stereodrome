@@ -1,6 +1,8 @@
 use log::warn;
-use tauri::{AppHandle, Emitter, State};
-use tauri_plugin_store::StoreExt;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use stereodrome_desktop::DesktopBackend;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::audio::binaural::BinauralPreset;
 use crate::audio::compressor::DynamicsPreset;
@@ -8,7 +10,24 @@ use crate::audio::equalizer::{default_bands_db, sanitize_bands_db};
 use crate::error::AppResult;
 use crate::state::AppState;
 
-const STORE_FILE: &str = "settings.json";
+fn read_setting<T: DeserializeOwned + Default>(app_handle: &AppHandle, key: &str) -> T {
+    match app_handle.state::<DesktopBackend>().settings().get(key) {
+        Ok(Some(value)) => value,
+        Ok(None) => T::default(),
+        Err(error) => {
+            warn!("Failed to read setting {key}: {error}");
+            T::default()
+        }
+    }
+}
+
+fn write_setting<T: Serialize>(app_handle: &AppHandle, key: &str, value: &T) -> AppResult<()> {
+    app_handle
+        .state::<DesktopBackend>()
+        .settings()
+        .set(key, value)?;
+    Ok(())
+}
 const KEY_NORMALIZATION: &str = "normalization";
 const KEY_PLAYBACK: &str = "playback";
 const KEY_NOTIFICATION: &str = "notification";
@@ -55,23 +74,15 @@ impl Default for NormalizationSettings {
 
 /// Read normalization settings from settings.json
 pub fn read_normalization_settings(app_handle: &AppHandle) -> NormalizationSettings {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Some(value) = store.get(KEY_NORMALIZATION)
-        && let Ok(settings) = serde_json::from_value(value.clone())
-    {
-        return settings;
-    }
-    NormalizationSettings::default()
+    read_setting(app_handle, KEY_NORMALIZATION)
 }
 
 /// Write normalization settings to settings.json
-fn write_normalization_settings(app_handle: &AppHandle, settings: &NormalizationSettings) {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Ok(value) = serde_json::to_value(settings)
-    {
-        store.set(KEY_NORMALIZATION, value);
-        let _ = store.save();
-    }
+fn write_normalization_settings(
+    app_handle: &AppHandle,
+    settings: &NormalizationSettings,
+) -> AppResult<()> {
+    write_setting(app_handle, KEY_NORMALIZATION, settings)
 }
 
 #[tauri::command]
@@ -87,7 +98,7 @@ pub async fn set_normalization_settings(
 ) -> AppResult<()> {
     settings.target_lufs = settings.target_lufs.clamp(-30.0, 0.0);
     settings.pre_amp_db = settings.pre_amp_db.clamp(-10.0, 10.0);
-    write_normalization_settings(&app_handle, &settings);
+    write_normalization_settings(&app_handle, &settings)?;
 
     if let Err(e) =
         crate::commands::playback::reapply_settings_to_current_song(&app_handle, &state).await
@@ -129,22 +140,14 @@ impl Default for NotificationSettings {
 }
 
 pub fn read_notification_settings(app_handle: &AppHandle) -> NotificationSettings {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Some(value) = store.get(KEY_NOTIFICATION)
-        && let Ok(settings) = serde_json::from_value(value.clone())
-    {
-        return settings;
-    }
-    NotificationSettings::default()
+    read_setting(app_handle, KEY_NOTIFICATION)
 }
 
-fn write_notification_settings(app_handle: &AppHandle, settings: &NotificationSettings) {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Ok(value) = serde_json::to_value(settings)
-    {
-        store.set(KEY_NOTIFICATION, value);
-        let _ = store.save();
-    }
+fn write_notification_settings(
+    app_handle: &AppHandle,
+    settings: &NotificationSettings,
+) -> AppResult<()> {
+    write_setting(app_handle, KEY_NOTIFICATION, settings)
 }
 
 #[tauri::command]
@@ -157,8 +160,7 @@ pub fn set_notification_settings(
     app_handle: AppHandle,
     settings: NotificationSettings,
 ) -> AppResult<()> {
-    write_notification_settings(&app_handle, &settings);
-    Ok(())
+    write_notification_settings(&app_handle, &settings)
 }
 
 // --- Playback Settings ---
@@ -222,22 +224,11 @@ impl Default for PlaybackSettings {
 }
 
 pub fn read_playback_settings(app_handle: &AppHandle) -> PlaybackSettings {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Some(value) = store.get(KEY_PLAYBACK)
-        && let Ok(settings) = serde_json::from_value(value.clone())
-    {
-        return settings;
-    }
-    PlaybackSettings::default()
+    read_setting(app_handle, KEY_PLAYBACK)
 }
 
-fn write_playback_settings(app_handle: &AppHandle, settings: &PlaybackSettings) {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Ok(value) = serde_json::to_value(settings)
-    {
-        store.set(KEY_PLAYBACK, value);
-        let _ = store.save();
-    }
+fn write_playback_settings(app_handle: &AppHandle, settings: &PlaybackSettings) -> AppResult<()> {
+    write_setting(app_handle, KEY_PLAYBACK, settings)
 }
 
 #[tauri::command]
@@ -253,7 +244,7 @@ pub async fn set_playback_settings(
 ) -> AppResult<()> {
     settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(1000, 12000);
     settings.equalizer_bands_db = sanitize_bands_db(&settings.equalizer_bands_db);
-    write_playback_settings(&app_handle, &settings);
+    write_playback_settings(&app_handle, &settings)?;
     let _ = app_handle.emit("playback-settings-changed", &settings);
 
     if let Err(e) =
@@ -274,22 +265,14 @@ pub struct ConnectivitySettings {
 }
 
 pub fn read_connectivity_settings(app_handle: &AppHandle) -> ConnectivitySettings {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Some(value) = store.get(KEY_CONNECTIVITY)
-        && let Ok(settings) = serde_json::from_value(value.clone())
-    {
-        return settings;
-    }
-    ConnectivitySettings::default()
+    read_setting(app_handle, KEY_CONNECTIVITY)
 }
 
-fn write_connectivity_settings(app_handle: &AppHandle, settings: &ConnectivitySettings) {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Ok(value) = serde_json::to_value(settings)
-    {
-        store.set(KEY_CONNECTIVITY, value);
-        let _ = store.save();
-    }
+fn write_connectivity_settings(
+    app_handle: &AppHandle,
+    settings: &ConnectivitySettings,
+) -> AppResult<()> {
+    write_setting(app_handle, KEY_CONNECTIVITY, settings)
 }
 
 pub fn manual_offline_enabled(app_handle: &AppHandle) -> bool {
@@ -306,7 +289,7 @@ pub fn set_connectivity_settings(
     app_handle: AppHandle,
     settings: ConnectivitySettings,
 ) -> AppResult<ConnectivitySettings> {
-    write_connectivity_settings(&app_handle, &settings);
+    write_connectivity_settings(&app_handle, &settings)?;
     let _ = app_handle.emit("connectivity-settings-changed", &settings);
     Ok(settings)
 }
@@ -345,22 +328,11 @@ impl Default for SyncSettings {
 }
 
 pub fn read_sync_settings(app_handle: &AppHandle) -> SyncSettings {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Some(value) = store.get(KEY_SYNC)
-        && let Ok(settings) = serde_json::from_value(value.clone())
-    {
-        return settings;
-    }
-    SyncSettings::default()
+    read_setting(app_handle, KEY_SYNC)
 }
 
-fn write_sync_settings(app_handle: &AppHandle, settings: &SyncSettings) {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Ok(value) = serde_json::to_value(settings)
-    {
-        store.set(KEY_SYNC, value);
-        let _ = store.save();
-    }
+fn write_sync_settings(app_handle: &AppHandle, settings: &SyncSettings) -> AppResult<()> {
+    write_setting(app_handle, KEY_SYNC, settings)
 }
 
 #[tauri::command]
@@ -373,7 +345,7 @@ pub fn set_sync_settings(app_handle: AppHandle, mut settings: SyncSettings) -> A
     settings.incremental_interval_minutes = settings.incremental_interval_minutes.clamp(5, 720);
     settings.full_reconcile_interval_hours = settings.full_reconcile_interval_hours.clamp(1, 168);
 
-    write_sync_settings(&app_handle, &settings);
+    write_sync_settings(&app_handle, &settings)?;
     let _ = app_handle.emit("sync-settings-changed", &settings);
     Ok(())
 }

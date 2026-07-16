@@ -4,16 +4,14 @@ use std::path::{Path, PathBuf};
 
 use log::warn;
 use serde::Serialize;
+use stereodrome_desktop::DesktopBackend;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_store::StoreExt;
 
 use crate::error::{AppError, AppResult};
 
 pub const AUDIO_CACHE_DIR_NAME: &str = "audio_cache";
 pub const COVER_CACHE_DIR_NAME: &str = "cover_cache";
 pub const KEY_CACHE_ROOT: &str = "cache_root";
-
-use super::STORE_FILE;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CacheLocationInfo {
@@ -39,16 +37,18 @@ pub struct CacheRootUpdateResult {
 }
 
 pub fn default_cache_root(app_handle: &AppHandle) -> AppResult<PathBuf> {
-    app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Io(io::Error::new(io::ErrorKind::NotFound, e)))
+    Ok(app_handle
+        .state::<DesktopBackend>()
+        .paths()
+        .default_cache_root
+        .clone())
 }
 
 pub fn current_cache_root(app_handle: &AppHandle) -> AppResult<PathBuf> {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Some(value) = store.get(KEY_CACHE_ROOT)
-        && let Some(path) = value.as_str()
+    if let Some(path) = app_handle
+        .state::<DesktopBackend>()
+        .settings()
+        .get::<String>(KEY_CACHE_ROOT)?
     {
         let path = PathBuf::from(path);
         if path.is_absolute() {
@@ -136,25 +136,14 @@ fn write_cache_root(
     next_root: &Path,
     default_root: &Path,
 ) -> AppResult<()> {
-    let store = app_handle.store(STORE_FILE).map_err(|e| {
-        AppError::Io(io::Error::other(format!(
-            "failed to open settings store: {e}"
-        )))
-    })?;
-
+    let store = app_handle.state::<DesktopBackend>();
     if paths_refer_to_same_location(next_root, default_root) {
-        let _ = store.delete(KEY_CACHE_ROOT);
+        store.settings().remove(KEY_CACHE_ROOT)?;
     } else {
-        store.set(
-            KEY_CACHE_ROOT,
-            serde_json::json!(next_root.to_string_lossy().to_string()),
-        );
+        store
+            .settings()
+            .set(KEY_CACHE_ROOT, next_root.to_string_lossy().to_string())?;
     }
-    store.save().map_err(|e| {
-        AppError::Io(io::Error::other(format!(
-            "failed to save settings store: {e}"
-        )))
-    })?;
     Ok(())
 }
 
