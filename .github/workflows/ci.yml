@@ -203,3 +203,56 @@ jobs:
             echo "::endgroup::"
             exit 1
           fi
+
+  gpui-native:
+    name: GPUI native (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, windows-2025, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy, rustfmt
+
+      - name: Init Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          prefix-key: v1-gpui
+          cache-bin: false
+
+      - name: Install native dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libdbus-1-dev \
+            libfontconfig1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxdo-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            pkg-config \
+            xdg-desktop-portal \
+            xdg-desktop-portal-gtk
+
+      - name: Build GPUI desktop (debug)
+        run: cargo build -p stereodrome-desktop --features gpui-ui --bin stereodrome
+
+      - name: Build GPUI desktop (release)
+        run: cargo build -p stereodrome-desktop --release --features gpui-ui --bin stereodrome

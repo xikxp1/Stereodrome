@@ -1,0 +1,64 @@
+[package]
+name = "stereodrome-desktop"
+version = "0.2.0"
+description = "Native desktop shell and backend for Stereodrome"
+authors = ["Ivan Kachalkin<xikxp1@gmail.com>"]
+edition = "2024"
+publish = false
+
+[lib]
+name = "stereodrome_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "stereodrome"
+path = "src/main.rs"
+required-features = ["gpui-ui"]
+
+[features]
+default = []
+gpui-ui = [
+    "dep:async-channel",
+    "dep:cargo-packager-updater",
+    "dep:gpui",
+    "dep:gpui-component",
+    "dep:gpui-component-assets",
+    "dep:gpui_platform",
+    "dep:gtk",
+    "dep:interprocess",
+    "dep:notify-rust",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:raw-window-handle",
+    "dep:single-instance",
+    "dep:souvlaki",
+    "dep:tokio",
+    "dep:tray-icon",
+]
+
+[dependencies]
+async-channel = { version = "2.5.0", optional = true }
+cargo-packager-updater = { version = "0.2.3", optional = true }
+# Keep this URL unqualified so gpui-component resolves the same source; Cargo.lock pins 1a246efd.
+gpui = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "031555662e99a1b5a549990b47f246d475b8288a", optional = true }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "031555662e99a1b5a549990b47f246d475b8288a", optional = true }
+gpui_platform = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false }
+interprocess = { version = "2.4.2", optional = true }
+notify-rust = { version = "4.18.0", optional = true }
+raw-window-handle = { version = "0.6.2", optional = true }
+single-instance = { version = "0.3.3", optional = true }
+souvlaki = { version = "0.8.3", optional = true }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "time"], optional = true }
+tray-icon = { version = "0.24.1", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false, features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false, features = ["font-kit"] }
+objc2 = { version = "0.6.4", optional = true }
+objc2-app-kit = { version = "0.3.2", features = ["NSPanel", "NSView", "NSWindow"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false, features = ["wayland", "x11"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false, features = ["wayland", "x11"] }
+gtk = { version = "0.18.2", optional = true }

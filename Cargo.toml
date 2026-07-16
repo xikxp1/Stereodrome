@@ -3,9 +3,11 @@ members = [
     "crates/stereodrome-audio",
     "crates/stereodrome-core",
     "crates/stereodrome-ffi",
+    "crates/stereodrome-desktop",
     "src-tauri",
 ]
 resolver = "3"
+
 
 [profile.dev.package.ebur128]
 opt-level = 3
