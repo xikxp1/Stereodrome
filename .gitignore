@@ -5,6 +5,7 @@ mobile/node_modules
 mobile/.expo
 mobile/android
 mobile/ios
+mobile/modules/stereodrome-core/android/build
 mobile/modules/stereodrome-core/android/rust-libs
 mobile/modules/stereodrome-core/ios/rust-libs
 /build

@@ -1,6 +1,6 @@
 # Mobile Playback State Sync: Problems and Refactor Plan
 
-Status: proposal. Investigated against branch `feat/cef` on 2026-07-06. Line numbers are point-in-time; treat them as anchors, not contracts.
+Status: historical proposal, investigated against branch `feat/cef` on 2026-07-06. The Rust snapshot announcer and direct native OS projection are now implemented. As of 2026-07-16, snapshot callbacks also apply OS state synchronously and native teardown clears it deterministically; line numbers below remain point-in-time anchors, not contracts.
 
 This document explains why mobile playback state diverges between the Rust audio core, the OS media session (lock screen / notification / Control Center), and the React Native UI — "music is playing but the app or OS says it is not, and vice versa" — and proposes a refactor to eliminate the divergence class rather than continuing to patch instances of it.
 

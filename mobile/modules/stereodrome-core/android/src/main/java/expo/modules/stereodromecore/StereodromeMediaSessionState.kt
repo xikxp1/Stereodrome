@@ -19,10 +19,13 @@ object StereodromeMediaSessionState {
   fun attachService(
     service: StereodromeMediaSessionService,
     player: StereodromeMediaPlayer,
-  ) = synchronized(lock) {
-    this.service = WeakReference(service)
-    this.player = player
-    player.setNowPlayingInfo(nowPlayingInfo)
+  ) {
+    val info = synchronized(lock) {
+      this.service = WeakReference(service)
+      this.player = player
+      nowPlayingInfo
+    }
+    player.setNowPlayingInfo(info)
   }
 
   fun detachService(service: StereodromeMediaSessionService) = synchronized(lock) {
@@ -32,32 +35,30 @@ object StereodromeMediaSessionState {
     }
   }
 
-  fun applyPlaybackSnapshot(context: Context, snapshot: String) = synchronized(lock) {
+  fun applyPlaybackSnapshot(context: Context, snapshot: String) {
     val info = NowPlayingInfo.fromSnapshotJson(snapshot)
     if (info == null) {
-      clearLocked(context)
-      return@synchronized
+      clear(context)
+      return
     }
 
-    nowPlayingInfo = info
-    if (!isServiceRunningLocked()) {
+    val (currentPlayer, shouldStartService) = synchronized(lock) {
+      nowPlayingInfo = info
+      player to (service?.get() == null)
+    }
+    if (shouldStartService) {
       startService(context, foreground = info.isPlaying)
     }
-    player?.setNowPlayingInfo(info)
+    currentPlayer?.setNowPlayingInfo(info)
   }
 
-  fun clear(context: Context) = synchronized(lock) {
-    clearLocked(context)
-  }
-
-  private fun clearLocked(context: Context) {
-    nowPlayingInfo = null
-    player?.clearNowPlayingInfo()
+  fun clear(context: Context) {
+    val currentPlayer = synchronized(lock) {
+      nowPlayingInfo = null
+      player
+    }
+    currentPlayer?.clearNowPlayingInfo()
     context.stopService(Intent(context, StereodromeMediaSessionService::class.java))
-  }
-
-  private fun isServiceRunningLocked(): Boolean {
-    return service?.get() != null
   }
 
   private fun startService(context: Context, foreground: Boolean = false) {

@@ -1,26 +1,34 @@
 package expo.modules.stereodromecore
 
+import android.content.Context
 import org.json.JSONObject
 
 object StereodromeCoreBridge {
   private val jni = StereodromeCoreJni()
   private val lock = Any()
-  private var handle: Long = 0
+  @Volatile private var handle: Long = 0
+  private var applicationContext: Context? = null
   @Volatile private var playbackSnapshotListener: ((String) -> Unit)? = null
 
-  fun initialize(dataDir: String): Boolean = synchronized(lock) {
+  fun initialize(context: Context, dataDir: String): Boolean = synchronized(lock) {
+    applicationContext = context.applicationContext
     if (handle != 0L) {
-      jni.destroy(handle)
+      return@synchronized true
     }
     handle = jni.initialize(dataDir)
     handle != 0L
   }
 
-  fun destroy() = synchronized(lock) {
-    if (handle != 0L) {
-      jni.destroy(handle)
+  fun destroy() {
+    val context = synchronized(lock) {
+      val currentHandle = handle
       handle = 0
+      if (currentHandle != 0L) {
+        jni.destroy(currentHandle)
+      }
+      applicationContext
     }
+    context?.let(StereodromeMediaSessionState::clear)
   }
 
   fun setPlaybackSnapshotListener(listener: ((String) -> Unit)?) {
@@ -29,6 +37,16 @@ object StereodromeCoreBridge {
 
   @JvmStatic
   fun onRustPlaybackSnapshot(snapshot: String) {
+    // destroy() clears handle before joining Rust's monitor thread. Do not take
+    // lock here or teardown can wait on a callback that is waiting on teardown.
+    if (handle == 0L) {
+      return
+    }
+    // Apply the OS projection before returning through JNI; the Rust command
+    // completes as soon as this callback returns.
+    applicationContext?.let { context ->
+      StereodromeMediaSessionState.applyPlaybackSnapshot(context, snapshot)
+    }
     playbackSnapshotListener?.invoke(snapshot)
   }
 

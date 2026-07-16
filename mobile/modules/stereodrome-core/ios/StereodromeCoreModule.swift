@@ -29,6 +29,51 @@ private func stereodromeCoreSetLogCallback(_ callback: StereodromeRustLogCallbac
 private func stereodromeCoreSetPlaybackCallback(_ callback: StereodromePlaybackCallback?)
 
 private weak var activeStereodromeCoreModule: StereodromeCoreModule?
+private let activeStereodromeCoreModuleLock = NSLock()
+
+private func getActiveStereodromeCoreModule() -> StereodromeCoreModule? {
+  activeStereodromeCoreModuleLock.lock()
+  defer { activeStereodromeCoreModuleLock.unlock() }
+  return activeStereodromeCoreModule
+}
+
+private func setActiveStereodromeCoreModule(_ module: StereodromeCoreModule) {
+  activeStereodromeCoreModuleLock.lock()
+  activeStereodromeCoreModule = module
+  activeStereodromeCoreModuleLock.unlock()
+}
+
+private func clearActiveStereodromeCoreModule(_ module: StereodromeCoreModule) -> Bool {
+  activeStereodromeCoreModuleLock.lock()
+  defer { activeStereodromeCoreModuleLock.unlock() }
+  guard activeStereodromeCoreModule === module else {
+    return false
+  }
+  activeStereodromeCoreModule = nil
+  return true
+}
+
+
+private func performOnMainSync<T>(_ action: () -> T) -> T {
+  if Thread.isMainThread {
+    return action()
+  }
+  return DispatchQueue.main.sync(execute: action)
+}
+
+private func clearSystemNowPlayingInfo() {
+  let center = MPNowPlayingInfoCenter.default()
+  center.nowPlayingInfo = nil
+  center.playbackState = .stopped
+  let commandCenter = MPRemoteCommandCenter.shared()
+  commandCenter.nextTrackCommand.isEnabled = false
+  commandCenter.previousTrackCommand.isEnabled = false
+  commandCenter.changePlaybackPositionCommand.isEnabled = false
+  commandCenter.playCommand.isEnabled = false
+  commandCenter.pauseCommand.isEnabled = false
+  commandCenter.togglePlayPauseCommand.isEnabled = false
+  commandCenter.stopCommand.isEnabled = false
+}
 
 private func stereodromeRustLogCallback(_ message: UnsafePointer<CChar>?) {
   guard let message else {
@@ -37,7 +82,7 @@ private func stereodromeRustLogCallback(_ message: UnsafePointer<CChar>?) {
   let logMessage = String(cString: message)
   NSLog("%@", logMessage)
   DispatchQueue.main.async {
-    activeStereodromeCoreModule?.emitRustLog(logMessage)
+    getActiveStereodromeCoreModule()?.emitRustLog(logMessage)
   }
 }
 
@@ -46,9 +91,20 @@ private func stereodromePlaybackCallback(_ snapshot: UnsafePointer<CChar>?) {
     return
   }
   let rawSnapshot = String(cString: snapshot)
-  DispatchQueue.main.async {
-    activeStereodromeCoreModule?.handlePlaybackSnapshot(rawSnapshot)
+  // Holding the module through the synchronous hop prevents deinit from joining
+  // a Rust monitor thread that is itself waiting for this callback on main.
+  guard let module = getActiveStereodromeCoreModule() else {
+    return
   }
+  // Rust treats the snapshot callback return as transport completion. Keep the
+  // scalar OS projection inside that boundary so suspension cannot preserve stale state.
+  let artworkUri: String? = performOnMainSync {
+    guard getActiveStereodromeCoreModule() === module else {
+      return nil
+    }
+    return module.applyPlaybackSnapshot(rawSnapshot)
+  }
+  module.enqueueDeferredPlaybackSnapshotUpdates(rawSnapshot, artworkUri: artworkUri)
 }
 
 public class StereodromeCoreModule: Module {
@@ -56,9 +112,10 @@ public class StereodromeCoreModule: Module {
   private let coreQueue = DispatchQueue(label: "dev.xikxp1.stereodrome.mobile.core")
   private let remoteCommandQueue = DispatchQueue(
     label: "dev.xikxp1.stereodrome.mobile.remote-commands")
-  private let playbackSnapshotQueue = DispatchQueue(
-    label: "dev.xikxp1.stereodrome.mobile.playback-snapshots")
   private let artworkCache = NSCache<NSString, MPMediaItemArtwork>()
+  private let artworkQueue = DispatchQueue(
+    label: "dev.xikxp1.stereodrome.mobile.artwork", qos: .utility)
+  private var currentArtworkUri: String?
   private let remoteCommandStateLock = NSLock()
   private var remoteCommandTargets: [Any] = []
   private var audioSessionObservers: [NSObjectProtocol] = []
@@ -68,9 +125,12 @@ public class StereodromeCoreModule: Module {
   deinit {
     clearRemoteCommandHandlers()
     clearAudioSessionObservers()
-    if activeStereodromeCoreModule === self {
+    if clearActiveStereodromeCoreModule(self) {
       stereodromeCoreSetPlaybackCallback(nil)
-      activeStereodromeCoreModule = nil
+      setCanPlayRemoteCommands(false)
+      performOnMainSync {
+        clearSystemNowPlayingInfo()
+      }
     }
     coreQueue.sync {
       stereodromeCoreDestroy(core)
@@ -81,17 +141,14 @@ public class StereodromeCoreModule: Module {
     Name("StereodromeCore")
 
     AsyncFunction("initialize") { (_ dataDir: String) -> Bool in
-      activeStereodromeCoreModule = self
+      setActiveStereodromeCoreModule(self)
       stereodromeCoreSetLogCallback(stereodromeRustLogCallback)
       stereodromeCoreSetPlaybackCallback(stereodromePlaybackCallback)
       self.configureAudioSession()
-      if let existing = self.core {
-        self.coreQueue.sync {
-          stereodromeCoreDestroy(existing)
+      if self.core == nil {
+        self.core = self.coreQueue.sync {
+          dataDir.withCString { stereodromeCoreNew($0) }
         }
-      }
-      self.core = self.coreQueue.sync {
-        dataDir.withCString { stereodromeCoreNew($0) }
       }
       self.configureRemoteCommandCenter()
       self.configureAudioSessionObservers()
@@ -170,29 +227,53 @@ public class StereodromeCoreModule: Module {
     }
   }
 
-  fileprivate func handlePlaybackSnapshot(_ snapshot: String) {
-    playbackSnapshotQueue.async { [weak self] in
-      self?.applyPlaybackSnapshot(snapshot)
+  fileprivate func enqueueDeferredPlaybackSnapshotUpdates(
+    _ snapshot: String,
+    artworkUri: String?
+  ) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self, getActiveStereodromeCoreModule() === self else {
+        return
+      }
+      self.sendEvent("playback-snapshot", ["snapshot": snapshot])
     }
-    sendEvent("playback-snapshot", ["snapshot": snapshot])
+
+    guard let artworkUri else {
+      return
+    }
+    artworkQueue.async { [weak self] in
+      guard let self, let artwork = self.artworkValue(artworkUri) else {
+        return
+      }
+      DispatchQueue.main.async { [weak self] in
+        guard
+          let self,
+          getActiveStereodromeCoreModule() === self,
+          self.currentArtworkUri == artworkUri,
+          var info = MPNowPlayingInfoCenter.default().nowPlayingInfo
+        else {
+          return
+        }
+        info[MPMediaItemPropertyArtwork] = artwork
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+      }
+    }
   }
 
-  private func applyPlaybackSnapshot(_ snapshotJson: String) {
+  fileprivate func applyPlaybackSnapshot(_ snapshotJson: String) -> String? {
     guard
       let data = snapshotJson.data(using: .utf8),
       let snapshot = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else {
-      return
+      return nil
     }
 
     guard
       stringValue(snapshot["state"]) != "stopped",
       let song = snapshot["song"] as? [String: Any]
     else {
-      DispatchQueue.main.async { [weak self] in
-        self?.clearNowPlayingInfo()
-      }
-      return
+      clearNowPlayingInfo()
+      return nil
     }
 
     let duration = doubleValue(snapshot["duration_seconds"]) > 0
@@ -212,31 +293,25 @@ public class StereodromeCoreModule: Module {
       info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = queueIndex
     }
 
-    if let artwork = artworkValue(stringValue(song["artwork_uri"])) {
+    let artworkUri = stringValue(song["artwork_uri"])
+    if let artworkUri,
+      let artwork = artworkCache.object(forKey: artworkUri as NSString)
+    {
       info[MPMediaItemPropertyArtwork] = artwork
     }
 
+    currentArtworkUri = artworkUri
     let isPlaying = boolValue(snapshot["is_playing"])
-    DispatchQueue.main.async { [weak self] in
-      MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-      self?.updateNowPlayingPlaybackState(isPlaying: isPlaying)
-      self?.configureCommandAvailability(snapshot)
-    }
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    updateNowPlayingPlaybackState(isPlaying: isPlaying)
+    configureCommandAvailability(snapshot)
+    return artworkUri
   }
 
   private func clearNowPlayingInfo() {
-    let center = MPNowPlayingInfoCenter.default()
-    center.nowPlayingInfo = nil
-    center.playbackState = .stopped
+    currentArtworkUri = nil
     setCanPlayRemoteCommands(false)
-    let commandCenter = MPRemoteCommandCenter.shared()
-    commandCenter.nextTrackCommand.isEnabled = false
-    commandCenter.previousTrackCommand.isEnabled = false
-    commandCenter.changePlaybackPositionCommand.isEnabled = false
-    commandCenter.playCommand.isEnabled = false
-    commandCenter.pauseCommand.isEnabled = false
-    commandCenter.togglePlayPauseCommand.isEnabled = false
-    commandCenter.stopCommand.isEnabled = false
+    clearSystemNowPlayingInfo()
   }
 
   private func configureRemoteCommandCenter() {
@@ -497,11 +572,7 @@ public class StereodromeCoreModule: Module {
     commandCenter.stopCommand.isEnabled = true
   }
 
-  private func artworkValue(_ uri: String?) -> MPMediaItemArtwork? {
-    guard let uri else {
-      return nil
-    }
-
+  private func artworkValue(_ uri: String) -> MPMediaItemArtwork? {
     let cacheKey = uri as NSString
     if let artwork = artworkCache.object(forKey: cacheKey) {
       return artwork

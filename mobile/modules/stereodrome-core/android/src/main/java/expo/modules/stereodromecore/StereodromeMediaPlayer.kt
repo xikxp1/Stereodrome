@@ -12,6 +12,7 @@ import androidx.media3.common.SimpleBasePlayer.MediaItemData
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import java.util.concurrent.FutureTask
 import kotlin.math.max
 
 class StereodromeMediaPlayer(
@@ -166,12 +167,17 @@ class StereodromeMediaPlayer(
     if (Looper.myLooper() == playerLooper) {
       info = nextInfo
       invalidateState()
-    } else {
-      handler.post {
-        info = nextInfo
-        invalidateState()
-      }
+      return
     }
+    // Snapshot delivery must not return until Media3 observes the new state.
+    val task = FutureTask<Unit> {
+      info = nextInfo
+      invalidateState()
+    }
+    check(handler.post(task)) {
+      "Failed to schedule media-session state on the player looper"
+    }
+    task.get()
   }
 
   private fun invalidateOnPlayerLooper() {
