@@ -7,21 +7,28 @@ use rusqlite::Connection;
 
 use crate::audio::{AudioPlayer, PlayQueue};
 use crate::client::SubsonicClientHandle;
-use crate::commands::normalization::AnalysisProgress;
+use crate::db;
 use crate::db::queue::{load_queue_items, load_queue_state};
 use crate::error::AppResult;
+use crate::events::DesktopEvents;
 use crate::lastfm::LastfmPlaybackTracker;
+use crate::operations::normalization::AnalysisProgress;
 use crate::search::IndexManager;
+use crate::{DesktopPaths, JsonStore};
 
 // Re-export ServerConfig from client module for backward compatibility
 pub use crate::client::ServerConfig;
 
-pub struct AppState {
+pub struct DesktopState {
+    pub paths: DesktopPaths,
+    pub settings: JsonStore,
+    pub ui_state: JsonStore,
     pub client: SubsonicClientHandle,
     pub db: Mutex<Connection>,
     pub audio_player: Mutex<AudioPlayer>,
     pub queue: Mutex<PlayQueue>,
     pub search_index: Mutex<Option<IndexManager>>,
+    pub events: DesktopEvents,
     pub index_path: PathBuf,
     /// Prevents race conditions when rapidly clicking next/previous
     pub navigating: AtomicBool,
@@ -31,14 +38,18 @@ pub struct AppState {
     pub analysis_progress: Arc<Mutex<Option<AnalysisProgress>>>,
 }
 
-impl AppState {
+impl DesktopState {
     pub fn new(
-        db_path: &str,
-        index_path: PathBuf,
+        paths: DesktopPaths,
+        settings: JsonStore,
+        ui_state: JsonStore,
         client_handle: SubsonicClientHandle,
     ) -> AppResult<Self> {
-        let conn = Connection::open(db_path)?;
+        let conn = Connection::open(&paths.database)?;
+        db::init_db(&conn)?;
+        let index_path = paths.search_index.clone();
         let audio_player = AudioPlayer::new()?;
+        let events = DesktopEvents::new(&audio_player);
 
         // Try to create search index, but don't fail if it errors
         let search_index = match IndexManager::new(&index_path) {
@@ -65,11 +76,15 @@ impl AppState {
         };
 
         Ok(Self {
+            paths,
+            settings,
+            ui_state,
             client: client_handle,
             db: Mutex::new(conn),
             audio_player: Mutex::new(audio_player),
             queue: Mutex::new(queue),
             search_index: Mutex::new(search_index),
+            events,
             index_path,
             navigating: AtomicBool::new(false),
             lastfm_retry_running: AtomicBool::new(false),

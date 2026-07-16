@@ -311,20 +311,3 @@ export type MiniPlayerMode = "mini" | "nano";
 export interface MiniPlayerHoverState {
   hovered: boolean;
 }
-
-// Now Playing types
-export interface NowPlayingEntry {
-  id: string;
-  title: string;
-  artist: string | null;
-  album: string | null;
-  duration: number | null;
-  cover_art: string | null;
-  username: string;
-  minutes_ago: number;
-  player_name: string | null;
-}
-
-export interface NowPlayingEvent {
-  entries: NowPlayingEntry[];
-}

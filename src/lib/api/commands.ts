@@ -258,11 +258,6 @@ export async function setMaxCacheSize(size: number): Promise<CacheStats> {
   return invoke<CacheStats>("set_max_cache_size", { size });
 }
 
-// Scrobbling commands
-export async function scrobbleSubmit(songId: string): Promise<void> {
-  return invoke("scrobble_submit", { songId });
-}
-
 // Scan commands
 export async function getScanStatus(): Promise<ScanStatus> {
   return invoke<ScanStatus>("get_scan_status");

@@ -1,12 +1,23 @@
 //! Native desktop backend primitives shared by the Tauri and GPUI shells.
 
+pub mod audio;
 mod backend;
+pub mod cache;
+pub mod client;
+pub mod credentials;
+pub mod db;
 mod error;
+pub mod events;
+pub mod lastfm;
+pub mod operations;
 mod paths;
+pub mod search;
+pub mod state;
 mod store;
 
 pub use backend::{DesktopBackend, WorkerHandle};
-pub use error::DesktopError;
+pub use error::{AppError, AppResult, DesktopError, MutexExt};
+pub use events::{DesktopEvent, DesktopEvents};
 pub use paths::DesktopPaths;
 pub use store::JsonStore;
 

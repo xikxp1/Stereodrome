@@ -88,7 +88,7 @@ pub enum AlbumListOrder {
 }
 
 impl AlbumListOrder {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "newest" => Some(Self::Newest),
             "recent" => Some(Self::Recent),
@@ -138,32 +138,6 @@ pub struct AlbumListEntry {
 pub struct ScanStatusInfo {
     pub scanning: bool,
     pub count: Option<i64>,
-}
-
-/// Now playing entry
-#[derive(Debug, Clone)]
-pub struct NowPlayingInfo {
-    pub entry: Vec<NowPlayingEntryInfo>,
-}
-
-/// Single now playing entry
-#[derive(Debug, Clone)]
-pub struct NowPlayingEntryInfo {
-    pub child: NowPlayingChild,
-    pub username: String,
-    pub minutes_ago: i32,
-    pub player_name: Option<String>,
-}
-
-/// Child element in now playing entry
-#[derive(Debug, Clone)]
-pub struct NowPlayingChild {
-    pub id: String,
-    pub title: String,
-    pub artist: Option<String>,
-    pub album: Option<String>,
-    pub duration: Option<i32>,
-    pub cover_art: Option<String>,
 }
 
 /// Result type for client operations
@@ -289,17 +263,13 @@ pub enum ClientRequest {
         response_tx: oneshot::Sender<ClientResult<Vec<u8>>>,
     },
 
-    // === Now Playing / Scrobbling ===
+    // === Scrobbling ===
     /// Scrobble a song (now playing or submit)
     Scrobble {
         song_id: String,
         time: Option<usize>,
         submission: Option<bool>,
         response_tx: oneshot::Sender<ClientResult<()>>,
-    },
-    /// Get now playing list from server
-    GetNowPlaying {
-        response_tx: oneshot::Sender<ClientResult<NowPlayingInfo>>,
     },
 
     // === Playlists ===

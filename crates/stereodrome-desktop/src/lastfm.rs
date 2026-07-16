@@ -3,19 +3,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use crate::JsonStore;
 use chrono::Utc;
 use log::{debug, warn};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use stereodrome_desktop::DesktopBackend;
-use tauri::{AppHandle, Manager};
 
 use crate::audio::SongMetadata;
 use crate::credentials::{
     LastfmSession, delete_lastfm_session, load_lastfm_session, save_lastfm_session,
 };
 use crate::error::{AppError, AppResult, MutexExt};
-use crate::state::AppState;
+use crate::operations::settings::manual_offline_enabled;
+use crate::state::DesktopState;
 
 const API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 const AUTH_ROOT: &str = "https://www.last.fm/api/auth/";
@@ -170,21 +170,16 @@ fn credentials() -> AppResult<(String, String)> {
     }
 }
 
-fn read_settings(app_handle: &AppHandle) -> LastfmSettings {
-    app_handle
-        .state::<DesktopBackend>()
-        .settings()
+fn read_settings(settings_store: &JsonStore) -> LastfmSettings {
+    settings_store
         .get(KEY_LASTFM)
         .ok()
         .flatten()
         .unwrap_or_default()
 }
 
-fn write_settings(app_handle: &AppHandle, settings: &LastfmSettings) -> AppResult<()> {
-    app_handle
-        .state::<DesktopBackend>()
-        .settings()
-        .set(KEY_LASTFM, settings)?;
+fn write_settings(settings_store: &JsonStore, settings: &LastfmSettings) -> AppResult<()> {
+    settings_store.set(KEY_LASTFM, settings)?;
     Ok(())
 }
 
@@ -349,12 +344,12 @@ async fn get_session(api_key: &str, secret: &str, token: &str) -> AppResult<Last
 }
 
 pub async fn report_now_playing(
-    app_handle: AppHandle,
+    settings_store: &JsonStore,
     song: SongMetadata,
     duration: f64,
 ) -> AppResult<()> {
     let (api_key, secret) = credentials()?;
-    let settings = read_settings(&app_handle);
+    let settings = read_settings(settings_store);
     if !settings.enabled {
         return Ok(());
     }
@@ -387,41 +382,31 @@ pub async fn report_now_playing(
 }
 
 pub fn handle_playback_progress(
-    app_handle: &AppHandle,
-    state: &AppState,
+    state: &DesktopState,
     song: &SongMetadata,
     position: f64,
     duration: f64,
-) {
+) -> bool {
     let queued = {
         let mut tracker = state.lastfm_tracker.lock_recover();
         tracker.update(song, position, duration)
     };
 
     let Some(scrobble) = queued else {
-        return;
+        return false;
     };
 
     if scrobble.title.trim().is_empty() || scrobble.artist.trim().is_empty() {
-        return;
+        return false;
     }
 
-    let inserted = {
-        let conn = state.db.lock_recover();
-        match enqueue_scrobble(&conn, &scrobble) {
-            Ok(inserted) => inserted,
-            Err(e) => {
-                warn!("Failed to queue Last.fm scrobble: {e}");
-                false
-            }
+    let conn = state.db.lock_recover();
+    match enqueue_scrobble(&conn, &scrobble) {
+        Ok(inserted) => inserted,
+        Err(e) => {
+            warn!("Failed to queue Last.fm scrobble: {e}");
+            false
         }
-    };
-
-    if inserted {
-        let app = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ = retry_lastfm_queue_inner(&app, false).await;
-        });
     }
 }
 
@@ -602,10 +587,10 @@ async fn submit_scrobble_batch(
 }
 
 pub async fn retry_lastfm_queue_inner(
-    app_handle: &AppHandle,
+    settings_store: &JsonStore,
+    state: &DesktopState,
     include_not_due: bool,
 ) -> AppResult<usize> {
-    let state: tauri::State<'_, AppState> = app_handle.state();
     if state
         .lastfm_retry_running
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -615,7 +600,7 @@ pub async fn retry_lastfm_queue_inner(
     }
 
     let result = async {
-        let settings = read_settings(app_handle);
+        let settings = read_settings(settings_store);
         if !settings.enabled {
             return Ok(0);
         }
@@ -655,7 +640,7 @@ pub async fn retry_lastfm_queue_inner(
 }
 
 pub fn start_lastfm_retry_scheduler(
-    app_handle: AppHandle,
+    state: Arc<DesktopState>,
     running: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -665,8 +650,9 @@ pub fn start_lastfm_retry_scheduler(
             .expect("Failed to create Tokio runtime for Last.fm retry scheduler");
 
         while running.load(Ordering::Acquire) {
-            if !crate::commands::settings::manual_offline_enabled(&app_handle)
-                && let Err(e) = runtime.block_on(retry_lastfm_queue_inner(&app_handle, false))
+            if !manual_offline_enabled(&state.settings)
+                && let Err(e) =
+                    runtime.block_on(retry_lastfm_queue_inner(&state.settings, &state, false))
             {
                 warn!("Last.fm queue retry failed: {e}");
             }
@@ -675,9 +661,9 @@ pub fn start_lastfm_retry_scheduler(
     })
 }
 
-pub fn lastfm_status(app_handle: &AppHandle, state: &AppState) -> LastfmStatus {
+pub fn lastfm_status(settings_store: &JsonStore, state: &DesktopState) -> LastfmStatus {
     let available = credentials().is_ok();
-    let settings = read_settings(app_handle);
+    let settings = read_settings(settings_store);
     let session = load_lastfm_session().ok().flatten();
     let (queue_count, queue_error) = {
         let conn = state.db.lock_recover();
@@ -702,22 +688,25 @@ pub fn lastfm_status(app_handle: &AppHandle, state: &AppState) -> LastfmStatus {
     }
 }
 
-pub async fn begin_auth(app_handle: &AppHandle) -> AppResult<LastfmAuthStart> {
+pub async fn begin_auth(settings_store: &JsonStore) -> AppResult<LastfmAuthStart> {
     let (api_key, secret) = credentials()?;
     let token = get_token(&api_key, &secret).await?;
-    let mut settings = read_settings(app_handle);
+    let mut settings = read_settings(settings_store);
     settings.enabled = true;
     settings.pending_token = Some(token.clone());
-    write_settings(app_handle, &settings)?;
+    write_settings(settings_store, &settings)?;
 
     Ok(LastfmAuthStart {
         auth_url: format!("{AUTH_ROOT}?api_key={api_key}&token={token}"),
     })
 }
 
-pub async fn complete_auth(app_handle: &AppHandle, state: &AppState) -> AppResult<LastfmStatus> {
+pub async fn complete_auth(
+    settings_store: &JsonStore,
+    state: &DesktopState,
+) -> AppResult<LastfmStatus> {
     let (api_key, secret) = credentials()?;
-    let mut settings = read_settings(app_handle);
+    let mut settings = read_settings(settings_store);
     let token = settings
         .pending_token
         .clone()
@@ -726,28 +715,28 @@ pub async fn complete_auth(app_handle: &AppHandle, state: &AppState) -> AppResul
     save_lastfm_session(&session)?;
     settings.enabled = true;
     settings.pending_token = None;
-    write_settings(app_handle, &settings)?;
+    write_settings(settings_store, &settings)?;
 
-    let _ = retry_lastfm_queue_inner(app_handle, true).await;
+    let _ = retry_lastfm_queue_inner(settings_store, state, true).await;
 
-    Ok(lastfm_status(app_handle, state))
+    Ok(lastfm_status(settings_store, state))
 }
 
-pub fn disconnect(app_handle: &AppHandle, state: &AppState) -> AppResult<LastfmStatus> {
+pub fn disconnect(settings_store: &JsonStore, state: &DesktopState) -> AppResult<LastfmStatus> {
     delete_lastfm_session()?;
-    let mut settings = read_settings(app_handle);
+    let mut settings = read_settings(settings_store);
     settings.pending_token = None;
-    write_settings(app_handle, &settings)?;
-    Ok(lastfm_status(app_handle, state))
+    write_settings(settings_store, &settings)?;
+    Ok(lastfm_status(settings_store, state))
 }
 
-pub fn queue(state: &AppState) -> AppResult<Vec<LastfmQueueItem>> {
+pub fn queue(state: &DesktopState) -> AppResult<Vec<LastfmQueueItem>> {
     let conn = state.db.lock_recover();
     list_queue(&conn)
 }
 
-pub async fn retry_queue(app_handle: &AppHandle) -> AppResult<usize> {
-    retry_lastfm_queue_inner(app_handle, true).await
+pub async fn retry_queue(settings_store: &JsonStore, state: &DesktopState) -> AppResult<usize> {
+    retry_lastfm_queue_inner(settings_store, state, true).await
 }
 
 #[cfg(test)]

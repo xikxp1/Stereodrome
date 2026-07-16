@@ -477,7 +477,7 @@ pub struct AudioPlayer {
     shared_state: Arc<SharedState>,
     spectrum_consumer: Arc<Mutex<HeapCons<f32>>>,
     spectrum_enabled: Arc<AtomicBool>,
-    _audio_thread: JoinHandle<()>,
+    audio_thread: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone)]
@@ -558,7 +558,7 @@ impl AudioPlayer {
             shared_state,
             spectrum_consumer,
             spectrum_enabled,
-            _audio_thread: audio_thread,
+            audio_thread: Some(audio_thread),
         })
     }
 
@@ -717,6 +717,13 @@ impl AudioPlayer {
     }
 
     pub fn stop(&self) -> AudioResult<()> {
+        {
+            let lifecycle = self.shared_state.state();
+            let state = self.shared_state.read_inner();
+            if lifecycle == PlaybackLifecycleState::Stopped && state.current_song.is_none() {
+                return Ok(());
+            }
+        }
         self.send_transport_command("stop", |ack| AudioCommand::Stop { ack })
     }
 
@@ -812,6 +819,9 @@ impl AudioPlayer {
 impl Drop for AudioPlayer {
     fn drop(&mut self) {
         let _ = self.command_tx.send(AudioCommand::Shutdown);
+        if let Some(audio_thread) = self.audio_thread.take() {
+            let _ = audio_thread.join();
+        }
     }
 }
 
@@ -1763,7 +1773,7 @@ mod tests {
             shared_state: Arc::new(SharedState::new()),
             spectrum_consumer: Arc::new(Mutex::new(consumer)),
             spectrum_enabled: Arc::new(AtomicBool::new(false)),
-            _audio_thread: thread::spawn(|| {}),
+            audio_thread: Some(thread::spawn(|| {})),
         }
     }
 

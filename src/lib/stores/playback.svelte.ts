@@ -51,10 +51,6 @@ class PlaybackStore {
   // Current track info from backend (for TransportBar display)
   currentTrack = $state<CurrentTrack | null>(null);
 
-  // Scrobble tracking - prevents duplicate scrobbles within the same playback
-  private scrobbledSongId: string | null = null;
-  private lastPosition: number = 0;
-
   // Event listeners
   private unlistenState: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
@@ -103,16 +99,7 @@ class PlaybackStore {
         if (state.song) {
           const nextTrack = this.toCurrentTrack(state.song);
 
-          // Reset scrobble tracking when song changes or restarts (for repeat mode)
           const songChanged = state.song.id !== this.currentTrack?.id;
-          const songRestarted =
-            state.song.id === this.scrobbledSongId &&
-            state.position < this.lastPosition &&
-            state.position < 5; // Position jumped back to near start
-
-          if (songChanged || songRestarted) {
-            this.scrobbledSongId = null;
-          }
 
           // Notify song change when app is not focused
           if (songChanged && this.shouldHandleSideEffects) {
@@ -126,24 +113,6 @@ class PlaybackStore {
           if (!this.sameTrackMetadata(this.currentTrack, nextTrack)) {
             this.currentTrack = nextTrack;
           }
-
-          // Check scrobble threshold (50% of song played)
-          if (this.shouldHandleSideEffects && state.duration > 0) {
-            const threshold = state.duration * 0.5;
-            if (
-              state.position >= threshold &&
-              this.scrobbledSongId !== state.song.id
-            ) {
-              this.scrobbledSongId = state.song.id;
-              invoke("scrobble_submit", { songId: state.song.id }).catch(
-                (e) => {
-                  error(`Failed to submit scrobble: ${e}`);
-                }
-              );
-            }
-          }
-
-          this.lastPosition = state.position;
         } else {
           if (this.currentTrack !== null) {
             this.currentTrack = null;
@@ -158,8 +127,6 @@ class PlaybackStore {
       this.position = 0;
       this.duration = 0;
       this.currentTrack = null;
-      this.scrobbledSongId = null;
-      this.lastPosition = 0;
     });
 
     // Sync startup UI state with backend-applied runtime values (e.g. restored volume).

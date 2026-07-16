@@ -1,18 +1,11 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { error } from "@tauri-apps/plugin-log";
-import { queryClient } from "$lib/db/queryClient";
 import type { LibraryContentUpdatedEvent } from "$lib/types";
 
 export const LIBRARY_REFRESHED_EVENT = "library-refreshed";
 
-export async function refreshLibraryViews(): Promise<void> {
-  await Promise.all([
-    queryClient.invalidateQueries({ queryKey: ["artists"] }),
-    queryClient.invalidateQueries({ queryKey: ["albums"] }),
-    queryClient.invalidateQueries({ queryKey: ["songs"] }),
-  ]);
-
+export function refreshLibraryViews(): void {
   window.dispatchEvent(new CustomEvent(LIBRARY_REFRESHED_EVENT));
 }
 

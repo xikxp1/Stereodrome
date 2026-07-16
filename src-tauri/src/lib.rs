@@ -1,24 +1,19 @@
 mod audio;
 mod cache;
-mod client;
 mod commands;
-mod credentials;
-mod db;
 mod error;
-mod lastfm;
 mod media;
-mod search;
-mod state;
 mod tray;
 
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
 
-use error::MutexExt as _;
 use log::{LevelFilter, info, warn};
 use media::MediaControlsManager;
-use state::AppState;
-use stereodrome_desktop::{DesktopBackend, DesktopPaths};
-use tauri::{AppHandle, Manager};
+use stereodrome_desktop::{DesktopBackend, DesktopEvent, DesktopPaths};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_log::{Target, TargetKind};
 use tray::TrayManager;
 
@@ -32,6 +27,53 @@ fn focus_main_window(app: &AppHandle) {
         // Bring to front and focus
         let _ = window.set_focus();
     }
+}
+
+fn start_backend_event_forwarder(
+    app_handle: AppHandle,
+    mut receiver: tokio::sync::mpsc::UnboundedReceiver<DesktopEvent>,
+    running: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        while running.load(Ordering::Acquire) {
+            match receiver.try_recv() {
+                Ok(DesktopEvent::AudioCacheChanged(payload)) => {
+                    let _ = app_handle.emit("audio-cache-changed", payload);
+                }
+                Ok(DesktopEvent::LibrarySyncStatusChanged(payload)) => {
+                    let _ = app_handle.emit("library-sync-status-changed", payload);
+                }
+                Ok(DesktopEvent::LibraryContentUpdated(payload)) => {
+                    let _ = app_handle.emit("library-content-updated", payload);
+                }
+                Ok(DesktopEvent::NormalizationProgress(payload)) => {
+                    let _ = app_handle.emit("normalization-progress", payload);
+                }
+                Ok(DesktopEvent::QueueChanged(payload)) => {
+                    let _ = app_handle.emit("queue-changed", payload);
+                }
+                Ok(DesktopEvent::QueueEnded) => {
+                    let _ = app_handle.emit("queue-ended", ());
+                }
+                Ok(DesktopEvent::PlaybackEnded) => {
+                    let _ = app_handle.emit("playback-ended", ());
+                }
+                Ok(DesktopEvent::PlaybackSettingsChanged(payload)) => {
+                    let _ = app_handle.emit("playback-settings-changed", payload);
+                }
+                Ok(DesktopEvent::ConnectivitySettingsChanged(payload)) => {
+                    let _ = app_handle.emit("connectivity-settings-changed", payload);
+                }
+                Ok(DesktopEvent::SyncSettingsChanged(payload)) => {
+                    let _ = app_handle.emit("sync-settings-changed", payload);
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    thread::park_timeout(Duration::from_millis(50));
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            }
+        }
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -72,62 +114,32 @@ pub fn run() {
             let paths = DesktopPaths::detect()?;
             paths.verify_installed_profile(&installed_data_dir)?;
             let backend = DesktopBackend::open(paths)?;
-            let db_path = backend.paths().database.to_string_lossy().to_string();
-            let index_path = backend.paths().search_index.clone();
             app.manage(backend);
 
-            let (client_handle, client_thread) = client::spawn();
-            let app_state = AppState::new(&db_path, index_path, client_handle.clone())?;
-            {
-                let conn = app_state.db.lock_recover();
-                db::init_db(&conn)?;
-            }
-            app.manage(app_state);
-
-            {
-                let state = app.state::<AppState>();
-                let persisted_volume = commands::read_persisted_volume(app.handle());
-                let audio_player = state.audio_player.lock_recover();
-                if let Err(e) = audio_player.set_volume(persisted_volume) {
-                    warn!("Failed to apply persisted runtime volume: {e}");
-                }
-            }
-
             let backend = app.state::<DesktopBackend>();
-            backend.register_thread("subsonic-client", client_thread)?;
-            {
-                let state = app.state::<AppState>();
-                let audio_player = state.audio_player.lock_recover();
-                let position = audio_player
-                    .start_position_emitter(app.handle().clone(), backend.worker_running());
-                let spectrum = audio_player
-                    .start_spectrum_emitter(app.handle().clone(), backend.worker_running());
-                drop(audio_player);
-                backend.register_thread("playback-position", position)?;
-                backend.register_thread("spectrum", spectrum)?;
-            }
+            let event_receiver = backend
+                .take_event_receiver()
+                .expect("backend event receiver already taken");
             backend.register_thread(
-                "now-playing",
-                commands::nowplaying::start_now_playing_emitter(
+                "tauri-event-forwarder",
+                start_backend_event_forwarder(
                     app.handle().clone(),
-                    client_handle,
+                    event_receiver,
                     backend.worker_running(),
                 ),
             )?;
-            backend.register_thread(
-                "library-sync",
-                commands::library::start_library_sync_scheduler(
-                    app.handle().clone(),
-                    backend.worker_running(),
-                ),
-            )?;
-            backend.register_thread(
-                "lastfm-retry",
-                lastfm::start_lastfm_retry_scheduler(
-                    app.handle().clone(),
-                    backend.worker_running(),
-                ),
-            )?;
+            let position = audio::player::start_position_emitter(
+                &backend,
+                app.handle().clone(),
+                backend.worker_running(),
+            );
+            let spectrum = audio::player::start_spectrum_emitter(
+                &backend,
+                app.handle().clone(),
+                backend.worker_running(),
+            );
+            backend.register_thread("tauri-playback-events", position)?;
+            backend.register_thread("tauri-spectrum-events", spectrum)?;
 
             // Initialize media controls for OS integration (Control Center, media keys)
             if let Some(media_controls) = MediaControlsManager::new(app.handle().clone()) {
@@ -195,8 +207,6 @@ pub fn run() {
             commands::set_playlist_saved_offline,
             commands::reconcile_saved_playlists_offline,
             commands::search_library,
-            commands::scrobble_now_playing,
-            commands::scrobble_submit,
             commands::get_cover_art,
             commands::get_cover_art_path,
             commands::get_song_cover_art,
@@ -255,22 +265,9 @@ pub fn run() {
                 }
             }
             tauri::RunEvent::Exit => {
-                if let (Some(backend), Some(state)) = (
-                    app_handle.try_state::<DesktopBackend>(),
-                    app_handle.try_state::<AppState>(),
-                ) {
+                if let Some(backend) = app_handle.try_state::<DesktopBackend>() {
                     info!("Shutting down desktop backend");
-                    let result = backend.shutdown(|| {
-                        state.navigating.store(true, Ordering::Release);
-                        let stop_result = state
-                            .audio_player
-                            .lock_recover()
-                            .stop()
-                            .map_err(|error| error.to_string());
-                        state.client.shutdown();
-                        stop_result
-                    });
-                    if let Err(error) = result {
+                    if let Err(error) = backend.shutdown() {
                         warn!("{error}");
                     }
                 }

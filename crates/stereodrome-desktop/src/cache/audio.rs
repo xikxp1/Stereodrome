@@ -4,17 +4,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use crate::JsonStore;
 use filetime::FileTime;
 use log::{debug, warn};
 use serde::Serialize;
-use stereodrome_desktop::DesktopBackend;
-use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::audio::loudness;
 use crate::client::SubsonicClientHandle;
 use crate::db;
 use crate::error::{AppError, AppResult};
+use crate::operations::settings::manual_offline_enabled;
+use crate::state::DesktopState;
 
 /// Default maximum cache size: 5 GB
 pub const DEFAULT_MAX_CACHE_SIZE: u64 = 5 * 1024 * 1024 * 1024;
@@ -23,22 +24,15 @@ pub const MIN_CACHE_SIZE: u64 = 500 * 1024 * 1024;
 /// Maximum cache size: 50 GB
 pub const MAX_CACHE_SIZE: u64 = 50 * 1024 * 1024 * 1024;
 pub const KEY_MAX_CACHE_SIZE: &str = "max_cache_size";
-pub const AUDIO_CACHE_CHANGED_EVENT: &str = "audio-cache-changed";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AudioCacheChangedEvent {
     pub reason: &'static str,
 }
 
-pub(crate) fn emit_audio_cache_changed(app_handle: &AppHandle, reason: &'static str) {
-    let _ = app_handle.emit(AUDIO_CACHE_CHANGED_EVENT, AudioCacheChangedEvent { reason });
-}
-
 /// Read the configured max cache size from settings store
-fn read_max_cache_size(app_handle: &AppHandle) -> u64 {
-    app_handle
-        .state::<DesktopBackend>()
-        .settings()
+fn read_max_cache_size(settings: &JsonStore) -> u64 {
+    settings
         .get::<u64>(KEY_MAX_CACHE_SIZE)
         .ok()
         .flatten()
@@ -64,25 +58,25 @@ static PREFETCH_IN_PROGRESS: std::sync::LazyLock<
 
 /// Audio file cache with LRU eviction
 pub struct AudioCache {
-    app_handle: AppHandle,
+    state: Arc<DesktopState>,
     cache_dir: PathBuf,
     max_size: u64,
 }
 
 impl AudioCache {
     /// Create a new AudioCache instance, reading max size from settings
-    pub fn new(app_handle: &AppHandle) -> AppResult<Self> {
-        let max_size = read_max_cache_size(app_handle);
-        let cache_dir = crate::cache::audio_cache_dir(app_handle)?;
+    pub fn new(state: Arc<DesktopState>) -> AppResult<Self> {
+        let max_size = read_max_cache_size(&state.settings);
+        let cache_dir = crate::cache::audio_cache_dir(&state.paths, &state.settings)?;
         Ok(Self {
-            app_handle: app_handle.clone(),
+            state,
             cache_dir,
             max_size,
         })
     }
 
-    pub(crate) fn emit_changed(&self, reason: &'static str) {
-        emit_audio_cache_changed(&self.app_handle, reason);
+    pub fn emit_changed(&self, reason: &'static str) {
+        self.state.events.audio_cache_changed(reason);
     }
 
     /// Get the cache file path for a song
@@ -126,7 +120,7 @@ impl AudioCache {
             }
         }
 
-        if crate::commands::settings::manual_offline_enabled(&self.app_handle) {
+        if manual_offline_enabled(&self.state.settings) {
             return Err(AppError::OfflineMode);
         }
 
@@ -273,8 +267,7 @@ impl AudioCache {
     }
 
     fn protected_cache_paths(&self) -> AppResult<HashSet<PathBuf>> {
-        let db_path = db::get_db_path(&self.app_handle)?;
-        let conn = rusqlite::Connection::open(db_path)?;
+        let conn = rusqlite::Connection::open(&self.state.paths.database)?;
         let mut stmt = conn.prepare(
             "SELECT DISTINCT s.id, COALESCE(s.suffix, '')
              FROM playlist_songs ps
@@ -299,13 +292,15 @@ impl AudioCache {
     /// Skips if the song is already cached or currently being prefetched.
     /// If `album_id` is provided, also runs loudness analysis for normalization.
     pub fn prefetch(
-        app_handle: AppHandle,
+        runtime: &tokio::runtime::Handle,
+        state: Arc<DesktopState>,
         client: SubsonicClientHandle,
         song_id: String,
         suffix: String,
         album_id: Option<String>,
     ) {
-        tauri::async_runtime::spawn(async move {
+        let task_runtime = runtime.clone();
+        runtime.spawn(async move {
             // Check if already being prefetched
             {
                 let mut in_progress = PREFETCH_IN_PROGRESS.lock().await;
@@ -316,7 +311,7 @@ impl AudioCache {
             }
 
             // Create cache instance
-            let cache = match AudioCache::new(&app_handle) {
+            let cache = match AudioCache::new(Arc::clone(&state)) {
                 Ok(c) => c,
                 Err(_) => {
                     // Remove from in-progress on error
@@ -354,23 +349,21 @@ impl AudioCache {
 
                 if let Some(data) = data_for_analysis {
                     let song_id_clone = song_id.clone();
-                    let app_handle_clone = app_handle.clone();
-                    let _ = tauri::async_runtime::spawn_blocking(move || {
-                        match loudness::analyze_loudness(data) {
+                    let db_path = state.paths.database.clone();
+                    let _ = task_runtime
+                        .spawn_blocking(move || match loudness::analyze_loudness(data) {
                             Ok(result) => {
-                                if let Ok(db_path) = db::get_db_path(&app_handle_clone) {
-                                    let _ = db::save_normalization_result(
-                                        std::path::Path::new(&db_path),
-                                        &song_id_clone,
-                                        &album_id,
-                                        result.integrated_lufs,
-                                        result.true_peak,
-                                    );
-                                    debug!(
-                                        "Prefetch normalization complete: {} ({:.1} LUFS)",
-                                        song_id_clone, result.integrated_lufs
-                                    );
-                                }
+                                let _ = db::save_normalization_result(
+                                    &db_path,
+                                    &song_id_clone,
+                                    &album_id,
+                                    result.integrated_lufs,
+                                    result.true_peak,
+                                );
+                                debug!(
+                                    "Prefetch normalization complete: {} ({:.1} LUFS)",
+                                    song_id_clone, result.integrated_lufs
+                                );
                             }
                             Err(e) => {
                                 warn!(
@@ -378,9 +371,8 @@ impl AudioCache {
                                     song_id_clone, e
                                 );
                             }
-                        }
-                    })
-                    .await;
+                        })
+                        .await;
                 }
             }
 

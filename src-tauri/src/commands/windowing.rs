@@ -7,6 +7,7 @@ use tauri::WebviewWindowBuilder;
 use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Position, Size, WebviewUrl};
 
 use crate::error::{AppError, AppResult};
+pub use stereodrome_desktop::operations::settings::MiniPlayerPosition;
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const MINI_PLAYER_LABEL: &str = "mini-player";
@@ -17,12 +18,6 @@ const MINI_PLAYER_HEIGHT: f64 = 72.0;
 const NANO_PLAYER_SIZE: f64 = 30.0;
 #[cfg(target_os = "macos")]
 const MINI_PLAYER_HOVER_EVENT: &str = "mini-player-hover-state";
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct MiniPlayerPosition {
-    pub x: f64,
-    pub y: f64,
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

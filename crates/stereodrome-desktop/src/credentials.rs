@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
+use crate::client::ServerConfig;
 use crate::error::{AppError, AppResult};
-use crate::state::ServerConfig;
 use keyring_core::{Entry, Error as KeyringError};
 
 const SERVICE_NAME: &str = "stereodrome";

@@ -260,10 +260,6 @@ impl ClientThread {
                 let result = self.handle_scrobble(&song_id, time, submission).await;
                 let _ = response_tx.send(result);
             }
-            ClientRequest::GetNowPlaying { response_tx } => {
-                let result = self.handle_get_now_playing().await;
-                let _ = response_tx.send(result);
-            }
 
             // === Playlists ===
             ClientRequest::GetPlaylists { response_tx } => {
@@ -715,44 +711,6 @@ impl ClientThread {
         }
     }
 
-    async fn handle_get_now_playing(&self) -> ClientResult<NowPlayingInfo> {
-        debug!("Getting now playing");
-        let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
-
-        let now_playing = match timeout(API_TIMEOUT, client.get_now_playing()).await {
-            Ok(Ok(np)) => np,
-            Ok(Err(e)) => {
-                error!("Get now playing API error: {}", e);
-                return Err(ClientError::ApiError(e.to_string()));
-            }
-            Err(_) => {
-                error!("Get now playing timeout after {:?}", API_TIMEOUT);
-                return Err(ClientError::Timeout);
-            }
-        };
-
-        debug!("Got {} now playing entries", now_playing.entry.len());
-        Ok(NowPlayingInfo {
-            entry: now_playing
-                .entry
-                .into_iter()
-                .map(|e| NowPlayingEntryInfo {
-                    child: NowPlayingChild {
-                        id: e.child.id,
-                        title: e.child.title,
-                        artist: e.child.artist,
-                        album: e.child.album,
-                        duration: e.child.duration,
-                        cover_art: e.child.cover_art,
-                    },
-                    username: e.username,
-                    minutes_ago: e.minutes_ago,
-                    player_name: e.player_name,
-                })
-                .collect(),
-        })
-    }
-
     // === Playlist handlers ===
 
     async fn handle_get_playlists(&self) -> ClientResult<Vec<PlaylistInfo>> {
@@ -958,6 +916,10 @@ impl ClientThread {
         }
     }
 }
+/// Spawn the client thread and return a handle
+pub fn spawn() -> (SubsonicClientHandle, thread::JoinHandle<()>) {
+    ClientThread::spawn()
+}
 
 #[cfg(test)]
 mod tests {
@@ -1003,9 +965,4 @@ mod tests {
         assert!(thread.server_config.is_none());
         assert!(!thread.connected.load(Ordering::SeqCst));
     }
-}
-
-/// Spawn the client thread and return a handle
-pub fn spawn() -> (SubsonicClientHandle, thread::JoinHandle<()>) {
-    ClientThread::spawn()
 }

@@ -32,29 +32,41 @@ gpui-ui = [
     "dep:raw-window-handle",
     "dep:single-instance",
     "dep:souvlaki",
-    "dep:tokio",
     "dep:tray-icon",
 ]
 
 [dependencies]
 async-channel = { version = "2.5.0", optional = true }
+base64 = "0.22.1"
 cargo-packager-updater = { version = "0.2.3", optional = true }
+chrono = { version = "0.4.45", features = ["serde"] }
 directories = "6"
+filetime = "0.2.29"
 # Keep this URL unqualified so gpui-component resolves the same source; Cargo.lock pins 1a246efd.
 gpui = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "031555662e99a1b5a549990b47f246d475b8288a", optional = true }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "031555662e99a1b5a549990b47f246d475b8288a", optional = true }
 gpui_platform = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false }
 interprocess = { version = "2.4.2", optional = true }
+keyring = { version = "4.1.4", features = ["cli"] }
+keyring-core = "1.0.0"
 log = "0.4"
+md5 = "0.8.0"
 notify-rust = { version = "4.18.0", optional = true }
 raw-window-handle = { version = "0.6.2", optional = true }
+reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls", "system-proxy"] }
+ringbuf = "0.5.0"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = "1"
 serde_json = "1"
 single-instance = { version = "0.3.3", optional = true }
 souvlaki = { version = "0.8.3", optional = true }
+stereodrome-audio = { version = "0.2.0", path = "../stereodrome-audio" }
+stereodrome-core = { version = "0.2.0", path = "../stereodrome-core" }
+submarine = "0.1.1"
+tantivy = "0.26.1"
 thiserror = "2"
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "time"], optional = true }
+tokio = { version = "1.52.3", features = ["full"] }
 tray-icon = { version = "0.24.1", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -70,3 +82,6 @@ gtk = { version = "0.18.2", optional = true }
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+uuid = { version = "1.23.4", features = ["v4"] }

@@ -170,17 +170,6 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
-pub fn get_db_path(app_handle: &tauri::AppHandle) -> AppResult<String> {
-    Ok(app_handle
-        .state::<stereodrome_desktop::DesktopBackend>()
-        .paths()
-        .database
-        .to_string_lossy()
-        .to_string())
-}
-
-use tauri::Manager;
-
 /// Save normalization analysis result to the database.
 /// Used by playback (background analysis), prefetch, and batch analysis.
 pub fn save_normalization_result(

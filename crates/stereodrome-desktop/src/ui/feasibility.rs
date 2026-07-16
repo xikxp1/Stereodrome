@@ -340,7 +340,6 @@ impl Render for Feasibility {
                     .track_focus(&input_focus)
                     .child(
                         Input::new(&self.input)
-                            .role(Role::GenericContainer)
                             .cleanable(true),
                     ),
             )

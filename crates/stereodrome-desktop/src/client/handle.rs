@@ -251,18 +251,6 @@ impl SubsonicClientHandle {
         response_rx.await.map_err(|_| ClientError::ChannelClosed)?
     }
 
-    /// Get now playing list from server
-    pub async fn get_now_playing(&self) -> ClientResult<NowPlayingInfo> {
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.request_tx
-            .send(ClientRequest::GetNowPlaying { response_tx })
-            .await
-            .map_err(|_| ClientError::ChannelClosed)?;
-
-        response_rx.await.map_err(|_| ClientError::ChannelClosed)?
-    }
-
     // === Playlists ===
 
     /// Get all playlists from server
