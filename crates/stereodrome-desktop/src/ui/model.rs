@@ -82,6 +82,17 @@ impl AuthState {
     fn accepts(&self, generation: u64) -> bool {
         self.generation == generation
     }
+    fn apply_status(&mut self, mut status: ConnectionStatus) {
+        if status.server_version.is_none()
+            && status.server_url == self.status.server_url
+            && status.username == self.status.username
+        {
+            status
+                .server_version
+                .clone_from(&self.status.server_version);
+        }
+        self.status = status;
+    }
 
     fn visible_surface(&self) -> VisibleSurface {
         if self.initializing && !self.initialized {
@@ -329,7 +340,7 @@ impl DesktopModel {
                 model.auth.initialized = true;
                 match result {
                     Ok(status) => {
-                        model.auth.status = status;
+                        model.auth.apply_status(status);
                         model.auth.error = None;
                     }
                     Err(error) => model.auth.error = Some(error),
@@ -385,7 +396,7 @@ impl DesktopModel {
                 model.auth.initialized = true;
                 match result {
                     Ok(status) => {
-                        model.auth.status = status;
+                        model.auth.apply_status(status);
                         model.auth.error = None;
                     }
                     Err(error) => model.auth.error = Some(error),
@@ -424,7 +435,7 @@ impl DesktopModel {
                 model.auth.connecting = false;
                 match result {
                     Ok(()) => {
-                        model.auth.status = empty_connection_status();
+                        model.auth.apply_status(empty_connection_status());
                         model.auth.error = None;
                         model.selection = SelectionState::default();
                     }
@@ -699,6 +710,27 @@ mod tests {
         let current = auth.next_generation();
         assert!(!auth.accepts(stale));
         assert!(auth.accepts(current));
+    }
+
+    #[test]
+    fn status_refresh_preserves_version_for_the_same_account() {
+        let mut auth = AuthState::empty();
+        auth.apply_status(super::ConnectionStatus {
+            connected: true,
+            server_url: Some("https://music.example".to_string()),
+            username: Some("listener".to_string()),
+            server_version: Some("1.2.3".to_string()),
+        });
+        auth.apply_status(super::ConnectionStatus {
+            connected: false,
+            server_url: Some("https://music.example".to_string()),
+            username: Some("listener".to_string()),
+            server_version: None,
+        });
+        assert_eq!(auth.status.server_version.as_deref(), Some("1.2.3"));
+
+        auth.apply_status(super::empty_connection_status());
+        assert_eq!(auth.status.server_version, None);
     }
 
     #[test]

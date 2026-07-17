@@ -47,23 +47,13 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("d", RerollNext, Some(APP_CONTEXT)),
         KeyBinding::new("escape", ClearFocus, Some("Stereodrome")),
     ];
-    #[cfg(target_os = "macos")]
     bindings.extend([
-        KeyBinding::new("cmd-left", PreviousTrack, Some(APP_CONTEXT)),
-        KeyBinding::new("cmd-right", NextTrack, Some(APP_CONTEXT)),
-        KeyBinding::new("cmd-up", VolumeUp, Some(APP_CONTEXT)),
-        KeyBinding::new("cmd-down", VolumeDown, Some(APP_CONTEXT)),
-        KeyBinding::new("cmd-k", FocusSearch, Some(APP_CONTEXT)),
-        KeyBinding::new("cmd-,", OpenSettings, Some(APP_CONTEXT)),
-    ]);
-    #[cfg(not(target_os = "macos"))]
-    bindings.extend([
-        KeyBinding::new("ctrl-left", PreviousTrack, Some(APP_CONTEXT)),
-        KeyBinding::new("ctrl-right", NextTrack, Some(APP_CONTEXT)),
-        KeyBinding::new("ctrl-up", VolumeUp, Some(APP_CONTEXT)),
-        KeyBinding::new("ctrl-down", VolumeDown, Some(APP_CONTEXT)),
-        KeyBinding::new("ctrl-k", FocusSearch, Some(APP_CONTEXT)),
-        KeyBinding::new("ctrl-,", OpenSettings, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-left", PreviousTrack, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-right", NextTrack, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-up", VolumeUp, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-down", VolumeDown, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-k", FocusSearch, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-,", OpenSettings, Some(APP_CONTEXT)),
     ]);
     cx.bind_keys(bindings);
 }
