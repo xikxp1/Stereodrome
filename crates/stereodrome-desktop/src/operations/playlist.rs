@@ -427,15 +427,20 @@ pub async fn remove_songs_from_playlist(
         return Err(AppError::OfflineMode);
     }
 
-    let mut positions_to_remove: Vec<i64> = positions
+    let positions_to_remove = playlist_positions_to_remove(positions);
+
+    remove_playlist_positions(state, &playlist_id, positions_to_remove).await
+}
+
+fn playlist_positions_to_remove(positions: Vec<i32>) -> Vec<i64> {
+    let mut positions = positions
         .into_iter()
         .filter(|position| *position >= 0)
         .map(i64::from)
-        .collect();
-    positions_to_remove.sort_unstable();
-    positions_to_remove.dedup();
-
-    remove_playlist_positions(state, &playlist_id, positions_to_remove).await
+        .collect::<Vec<_>>();
+    positions.sort_unstable();
+    positions.dedup();
+    positions
 }
 
 async fn remove_playlist_positions(
@@ -817,7 +822,8 @@ fn remove_unprotected_cached_songs(
 #[cfg(test)]
 mod tests {
     use super::{
-        distinct_nonempty_cover_art_ids, playlist_offline_cover_art_ids, playlist_song_ids_to_add,
+        distinct_nonempty_cover_art_ids, playlist_offline_cover_art_ids,
+        playlist_positions_to_remove, playlist_song_ids_to_add,
     };
     use rusqlite::Connection;
     use std::collections::HashSet;
@@ -834,6 +840,12 @@ mod tests {
         );
 
         assert_eq!(song_ids, ["song-a", "song-b"]);
+    }
+
+    #[test]
+    fn duplicate_occurrences_are_removed_by_selected_positions() {
+        assert_eq!(playlist_positions_to_remove(vec![4]), [4]);
+        assert_eq!(playlist_positions_to_remove(vec![4, 1, 4, -1]), [1, 4]);
     }
 
     #[test]

@@ -686,3 +686,64 @@ pub fn write_mini_player_position(
     store.set(KEY_MINI_PLAYER_POSITION, position)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DesktopBackend, DesktopPaths};
+
+    #[test]
+    fn preserves_defaults_and_clamps_persisted_settings() {
+        let data_dir =
+            std::env::temp_dir().join(format!("stereodrome-settings-{}", uuid::Uuid::new_v4()));
+        let backend = DesktopBackend::open(DesktopPaths::from_data_dir(data_dir.clone())).unwrap();
+        let state = backend.state();
+
+        let playback = set_playback_settings(
+            &state,
+            PlaybackSettings {
+                crossfade_duration_ms: 0,
+                ..PlaybackSettings::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(playback.crossfade_duration_ms, 1_000);
+
+        let sync = set_sync_settings(
+            &state,
+            SyncSettings {
+                incremental_interval_minutes: 0,
+                full_reconcile_interval_hours: u32::MAX,
+                ..SyncSettings::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(sync.incremental_interval_minutes, 5);
+        assert_eq!(sync.full_reconcile_interval_hours, 168);
+
+        set_normalization_settings(
+            &state.settings,
+            NormalizationSettings {
+                target_lufs: -100.0,
+                pre_amp_db: 100.0,
+                ..NormalizationSettings::default()
+            },
+        )
+        .unwrap();
+        let normalization = read_normalization_settings(&state.settings);
+        assert_eq!(normalization.target_lufs, -30.0);
+        assert_eq!(normalization.pre_amp_db, 10.0);
+
+        state
+            .settings
+            .set(KEY_NOTIFICATION, serde_json::json!({ "enabled": false }))
+            .unwrap();
+        let notifications = read_notification_settings(&state.settings);
+        assert!(!notifications.enabled);
+        assert!(!notifications.notify_when_focused);
+        assert!(notifications.notify_when_miniplayer_open);
+
+        backend.shutdown().unwrap();
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+}

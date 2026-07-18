@@ -1,10 +1,10 @@
 version: 2
 updates:
-  - package-ecosystem: "bun" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  - package-ecosystem: "bun"
+    directory: "/mobile"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "cargo" # See documentation for possible values
-    directory: "/src-tauri" # Location of package manifests
+  - package-ecosystem: "cargo"
+    directory: "/"
     schedule:
       interval: "weekly"

@@ -102,6 +102,7 @@ impl JsonStore {
                 }
                 Err(error)
             }
+            #[cfg(unix)]
             Err(SaveError::Committed(error)) => Err(error),
         }
     }
@@ -109,6 +110,7 @@ impl JsonStore {
 
 enum SaveError {
     Uncommitted(DesktopError),
+    #[cfg(unix)]
     Committed(DesktopError),
 }
 

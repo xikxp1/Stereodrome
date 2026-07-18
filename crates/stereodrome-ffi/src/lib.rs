@@ -2,8 +2,7 @@
 //!
 //! The first mobile implementation uses JSON-over-FFI so the Swift/Kotlin Expo
 //! module can remain thin while the Rust API stabilizes. The crate is isolated
-//! so a UniFFI surface can be generated here without touching the desktop
-//! Tauri adapter.
+//! so a UniFFI surface can be generated here without touching desktop code.
 
 use std::ffi::{CStr, CString, c_char};
 use std::panic::{self, AssertUnwindSafe};

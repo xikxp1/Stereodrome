@@ -42,9 +42,7 @@ pub enum DesktopError {
     Lastfm(String),
     #[error("no desktop data directory is available")]
     NoDataDirectory,
-    #[error(
-        "desktop profile mismatch: candidate {candidate:?}, installed Tauri profile {installed:?}"
-    )]
+    #[error("desktop profile mismatch: candidate {candidate:?}, installed profile {installed:?}")]
     ProfileMismatch {
         candidate: PathBuf,
         installed: PathBuf,

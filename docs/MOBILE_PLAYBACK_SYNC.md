@@ -215,7 +215,7 @@ Grouped by symptom. All are constructible from current code.
 - Remote commands keep calling Rust directly (as today), but no longer need bespoke refresh logic afterward.
 - JS's `nativeMediaControls.ts` (sync, dedup keys, artwork cache, clear) is deleted; `setNowPlayingInfo`/`updateNowPlayingProgress`/`clearNowPlayingInfo` module methods are removed from the JS API surface.
 
-**R3 — Device-grounded engine state (`crates/stereodrome-audio`; shared with desktop — changes must keep `src-tauri` green, and desktop gets the same robustness for free).**
+**R3 — Device-grounded engine state (`crates/stereodrome-audio`; shared with desktop — changes must keep `stereodrome-desktop` green, and desktop gets the same robustness for free).**
 
 - Position: derive from the sink's consumed-samples position (rodio exposes the played position on the sink), keeping wall clock only as interpolation between reads. Segment selection for gapless (`get_gapless_state`) keys off consumed samples, not `Instant`.
 - Stall watchdog: `is_playing && position not advancing across N ticks` ⇒ `state = stalled`, emit snapshot, stop the wall-clock. This single mechanism catches dead streams, silenced output, and suspension skew (defuses S2/S3 and P6's phantom scrobbles — scrobble/advance logic requires _consumed_ progress, not elapsed time).
@@ -237,7 +237,7 @@ Grouped by symptom. All are constructible from current code.
 
 ### 4.4 Explicit non-goals
 
-- No change to desktop behavior (`src-tauri` keeps its own event system; engine changes in `stereodrome-audio` must be additive/compatible).
+- No change to desktop behavior (`stereodrome-desktop` keeps its typed event system; engine changes in `stereodrome-audio` must be additive/compatible).
 - No change to DSP, caching, sync, scrobble policy (only _when_ scrobble progress is counted becomes consumption-based).
 - No attempt to keep JS runtime alive in background; the design assumes JS is dead whenever inconvenient.
 

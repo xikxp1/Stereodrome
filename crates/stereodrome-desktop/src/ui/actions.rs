@@ -25,6 +25,10 @@ actions!(
         OpenSettings,
         ClearFocus,
         ShowMainWindow,
+        OpenMiniPlayer,
+        OpenNanoPlayer,
+        CheckForUpdates,
+        InstallUpdate,
         Quit,
     ]
 );

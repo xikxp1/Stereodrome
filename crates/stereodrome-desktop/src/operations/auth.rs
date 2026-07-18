@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult};
 use crate::operations::settings::manual_offline_enabled;
 use crate::state::{DesktopState, ServerConfig};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionStatus {
     pub connected: bool,
     pub server_url: Option<String>,

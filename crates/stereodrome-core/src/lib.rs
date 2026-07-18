@@ -3431,6 +3431,81 @@ fn is_mobile_playback_cache_path(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case(MOBILE_PLAYBACK_FORMAT))
 }
 
+struct PlaybackMarkers {
+    app_volume: f64,
+    now_playing_song_id: Option<String>,
+    scrobbled_song_id: Option<String>,
+}
+
+struct GaplessTrackInfo {
+    album_id: String,
+    disc_number: i32,
+    track_number: i32,
+}
+
+fn gapless_track_info(conn: &Connection, song_id: &str) -> CoreResult<Option<GaplessTrackInfo>> {
+    let info = conn
+        .query_row(
+            "SELECT album_id, disc_number, track_number FROM songs WHERE id = ?1",
+            [song_id],
+            |row| {
+                Ok(GaplessTrackInfo {
+                    album_id: row.get(0)?,
+                    disc_number: row.get::<_, Option<i32>>(1)?.unwrap_or(1),
+                    track_number: row.get::<_, Option<i32>>(2)?.unwrap_or(0),
+                })
+            },
+        )
+        .optional()?;
+    Ok(info)
+}
+
+struct DownloadRecord<'a> {
+    entity_type: &'a str,
+    entity_id: &'a str,
+    song_id: &'a str,
+    status: &'a str,
+    path: Option<&'a Path>,
+    bytes: u64,
+    error: Option<&'a str>,
+}
+
+struct PlaybackStateWrite {
+    song_id: Option<String>,
+    position_seconds: f64,
+    duration_seconds: f64,
+    was_playing: bool,
+    app_volume: f64,
+    now_playing_song_id: Option<String>,
+    scrobbled_song_id: Option<String>,
+}
+
+fn clamp_audio_processing_settings(settings: &mut AudioProcessingSettings) {
+    if settings.normalization_mode != "album" {
+        settings.normalization_mode = "track".to_string();
+    }
+    settings.target_lufs = settings.target_lufs.clamp(-24.0, -8.0);
+    settings.preamp_db = settings.preamp_db.clamp(-12.0, 12.0);
+    settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(500, 15_000);
+    if !matches!(
+        settings.dynamics_preset.as_str(),
+        "light" | "medium" | "heavy"
+    ) {
+        settings.dynamics_preset = "light".to_string();
+    }
+    if !matches!(
+        settings.binaural_preset.as_str(),
+        "light" | "medium" | "strong"
+    ) {
+        settings.binaural_preset = "medium".to_string();
+    }
+    settings.equalizer_bands_db.resize(12, 0.0);
+    settings.equalizer_bands_db.truncate(12);
+    for band in &mut settings.equalizer_bands_db {
+        *band = band.clamp(-12.0, 12.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -4349,80 +4424,5 @@ mod tests {
             |row| row.get(0),
         )
         .expect("count rows")
-    }
-}
-
-struct PlaybackMarkers {
-    app_volume: f64,
-    now_playing_song_id: Option<String>,
-    scrobbled_song_id: Option<String>,
-}
-
-struct GaplessTrackInfo {
-    album_id: String,
-    disc_number: i32,
-    track_number: i32,
-}
-
-fn gapless_track_info(conn: &Connection, song_id: &str) -> CoreResult<Option<GaplessTrackInfo>> {
-    let info = conn
-        .query_row(
-            "SELECT album_id, disc_number, track_number FROM songs WHERE id = ?1",
-            [song_id],
-            |row| {
-                Ok(GaplessTrackInfo {
-                    album_id: row.get(0)?,
-                    disc_number: row.get::<_, Option<i32>>(1)?.unwrap_or(1),
-                    track_number: row.get::<_, Option<i32>>(2)?.unwrap_or(0),
-                })
-            },
-        )
-        .optional()?;
-    Ok(info)
-}
-
-struct DownloadRecord<'a> {
-    entity_type: &'a str,
-    entity_id: &'a str,
-    song_id: &'a str,
-    status: &'a str,
-    path: Option<&'a Path>,
-    bytes: u64,
-    error: Option<&'a str>,
-}
-
-struct PlaybackStateWrite {
-    song_id: Option<String>,
-    position_seconds: f64,
-    duration_seconds: f64,
-    was_playing: bool,
-    app_volume: f64,
-    now_playing_song_id: Option<String>,
-    scrobbled_song_id: Option<String>,
-}
-
-fn clamp_audio_processing_settings(settings: &mut AudioProcessingSettings) {
-    if settings.normalization_mode != "album" {
-        settings.normalization_mode = "track".to_string();
-    }
-    settings.target_lufs = settings.target_lufs.clamp(-24.0, -8.0);
-    settings.preamp_db = settings.preamp_db.clamp(-12.0, 12.0);
-    settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(500, 15_000);
-    if !matches!(
-        settings.dynamics_preset.as_str(),
-        "light" | "medium" | "heavy"
-    ) {
-        settings.dynamics_preset = "light".to_string();
-    }
-    if !matches!(
-        settings.binaural_preset.as_str(),
-        "light" | "medium" | "strong"
-    ) {
-        settings.binaural_preset = "medium".to_string();
-    }
-    settings.equalizer_bands_db.resize(12, 0.0);
-    settings.equalizer_bands_db.truncate(12);
-    for band in &mut settings.equalizer_bands_db {
-        *band = band.clamp(-12.0, 12.0);
     }
 }

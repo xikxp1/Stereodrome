@@ -23,20 +23,26 @@ pub enum AcquireResult {
 
 pub struct SingleInstanceService {
     _instance: SingleInstance,
+    ipc_name: String,
     stop: Arc<AtomicBool>,
     listener_thread: Option<JoinHandle<()>>,
 }
 
 impl SingleInstanceService {
     pub fn acquire() -> Result<AcquireResult, String> {
-        let instance = SingleInstance::new(&lock_name()).map_err(|error| error.to_string())?;
+        Self::acquire_named(IPC_NAME)
+    }
+
+    fn acquire_named(ipc_name: &str) -> Result<AcquireResult, String> {
+        let instance =
+            SingleInstance::new(&lock_name(ipc_name)).map_err(|error| error.to_string())?;
         if !instance.is_single() {
-            notify_existing()?;
+            notify_existing(ipc_name)?;
             return Ok(AcquireResult::Secondary);
         }
 
         let listener = ListenerOptions::new()
-            .name(socket_name().map_err(|error| error.to_string())?)
+            .name(socket_name(ipc_name).map_err(|error| error.to_string())?)
             .try_overwrite(true)
             .create_sync()
             .map_err(|error| format!("Failed to start single-instance listener: {error}"))?;
@@ -65,6 +71,7 @@ impl SingleInstanceService {
         Ok(AcquireResult::Primary(
             Self {
                 _instance: instance,
+                ipc_name: ipc_name.to_string(),
                 stop,
                 listener_thread: Some(listener_thread),
             },
@@ -76,7 +83,7 @@ impl SingleInstanceService {
         if self.stop.swap(true, Ordering::AcqRel) {
             return;
         }
-        if let Err(error) = wake_listener() {
+        if let Err(error) = wake_listener(&self.ipc_name) {
             warn!("Failed to wake single-instance listener during shutdown: {error}");
         }
         if let Some(thread) = self.listener_thread.take()
@@ -93,32 +100,32 @@ impl Drop for SingleInstanceService {
     }
 }
 
-fn lock_name() -> String {
+fn lock_name(ipc_name: &str) -> String {
     #[cfg(target_os = "macos")]
     {
         std::env::temp_dir()
-            .join(format!("{IPC_NAME}.lock"))
+            .join(format!("{ipc_name}.lock"))
             .to_string_lossy()
             .into_owned()
     }
     #[cfg(not(target_os = "macos"))]
-    IPC_NAME.to_string()
+    format!("{ipc_name}.lock")
 }
 
-fn socket_name() -> io::Result<Name<'static>> {
+fn socket_name(ipc_name: &str) -> io::Result<Name<'static>> {
     if GenericNamespaced::is_supported() {
-        IPC_NAME.to_string().to_ns_name::<GenericNamespaced>()
+        ipc_name.to_string().to_ns_name::<GenericNamespaced>()
     } else {
         std::env::temp_dir()
-            .join(format!("{IPC_NAME}.sock"))
+            .join(format!("{ipc_name}.sock"))
             .to_fs_name::<GenericFilePath>()
     }
 }
 
-fn notify_existing() -> Result<(), String> {
+fn notify_existing(ipc_name: &str) -> Result<(), String> {
     let mut last_error = None;
     for _ in 0..20 {
-        match Stream::connect(socket_name().map_err(|error| error.to_string())?) {
+        match Stream::connect(socket_name(ipc_name).map_err(|error| error.to_string())?) {
             Ok(mut stream) => {
                 stream
                     .write_all(b"show\n")
@@ -140,7 +147,29 @@ fn notify_existing() -> Result<(), String> {
     ))
 }
 
-fn wake_listener() -> io::Result<()> {
-    let mut stream = Stream::connect(socket_name()?)?;
+fn wake_listener(ipc_name: &str) -> io::Result<()> {
+    let mut stream = Stream::connect(socket_name(ipc_name)?)?;
     stream.write_all(b"stop\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn second_instance_notifies_primary() {
+        let name = format!("{IPC_NAME}.test.{}", std::process::id());
+        let AcquireResult::Primary(mut primary, receiver) =
+            SingleInstanceService::acquire_named(&name).unwrap()
+        else {
+            panic!("first test instance must be primary");
+        };
+
+        assert!(matches!(
+            SingleInstanceService::acquire_named(&name).unwrap(),
+            AcquireResult::Secondary
+        ));
+        assert_eq!(receiver.recv_blocking(), Ok(()));
+        primary.shutdown();
+    }
 }

@@ -5,7 +5,7 @@
     "scheme": "stereodrome",
     "version": "0.2.0",
     "orientation": "portrait",
-    "icon": "../src-tauri/icons/icon.png",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "plugins": ["expo-dev-client", "./modules/stereodrome-core/app.plugin.js"],
     "ios": {
@@ -27,7 +27,7 @@
     "android": {
       "package": "dev.xikxp1.stereodrome.mobile",
       "adaptiveIcon": {
-        "foregroundImage": "../src-tauri/icons/android/mipmap-xxxhdpi/ic_launcher_foreground.png",
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#111111"
       }
     }

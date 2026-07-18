@@ -388,3 +388,47 @@ struct CacheEntry {
     size: u64,
     accessed: SystemTime,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs::OpenOptions;
+
+    use super::*;
+    use crate::{DesktopBackend, DesktopPaths};
+
+    #[test]
+    fn preserves_suffixes_and_evicts_the_oldest_file() {
+        let data_dir =
+            std::env::temp_dir().join(format!("stereodrome-cache-{}", uuid::Uuid::new_v4()));
+        let backend = DesktopBackend::open(DesktopPaths::from_data_dir(data_dir.clone())).unwrap();
+        backend
+            .state()
+            .settings
+            .set(KEY_MAX_CACHE_SIZE, MIN_CACHE_SIZE)
+            .unwrap();
+        let cache = AudioCache::new(backend.state()).unwrap();
+
+        let old = cache.get_cache_path("old/song", "flac");
+        let recent = cache.get_cache_path("recent", "mp3");
+        assert_eq!(old.file_name().unwrap(), "old_song.flac");
+        for path in [&old, &recent] {
+            OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_len(300 * 1024 * 1024)
+                .unwrap();
+        }
+        filetime::set_file_atime(&old, FileTime::from_unix_time(1, 0)).unwrap();
+        filetime::set_file_atime(&recent, FileTime::from_unix_time(2, 0)).unwrap();
+
+        assert!(cache.enforce_size_limit().unwrap());
+        assert!(!old.exists());
+        assert!(recent.exists());
+
+        backend.shutdown().unwrap();
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+}

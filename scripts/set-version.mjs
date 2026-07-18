@@ -79,7 +79,7 @@ await Promise.all([
   updateJsonVersion("mobile/modules/stereodrome-core/package.json"),
   updateTextFile("Cargo.lock", (text, path) =>
     [
-      "stereodrome",
+      "stereodrome-desktop",
       "stereodrome-core",
       "stereodrome-ffi",
       "stereodrome-audio",
@@ -101,7 +101,10 @@ await Promise.all([
     "crates/stereodrome-audio/Cargo.toml",
     updateCargoPackageVersion
   ),
-  updateTextFile("src-tauri/Cargo.toml", updateCargoPackageVersion),
+  updateTextFile(
+    "crates/stereodrome-desktop/Cargo.toml",
+    updateCargoPackageVersion
+  ),
   updateTextFile(
     "mobile/modules/stereodrome-core/android/build.gradle",
     (text, path) => {

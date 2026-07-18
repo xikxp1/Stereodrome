@@ -101,7 +101,7 @@ jobs:
           }
 
           [
-            "src-tauri/Cargo.toml",
+            "crates/stereodrome-desktop/Cargo.toml",
             "crates/stereodrome-audio/Cargo.toml",
             "crates/stereodrome-core/Cargo.toml",
             "crates/stereodrome-ffi/Cargo.toml",
@@ -124,7 +124,7 @@ jobs:
 
   prepare_release:
     name: Prepare GitHub release
-    needs: [version, validate_release_version]
+    needs: [version, validate_release_version, release_notes]
     runs-on: ubuntu-latest
 
     steps:
@@ -132,6 +132,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: v${{ needs.version.outputs.release_version }}
+          RELEASE_BODY: ${{ needs.release_notes.outputs.release_body }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release delete "$RELEASE_TAG" --yes
@@ -139,6 +140,10 @@ jobs:
           else
             echo "No existing release $RELEASE_TAG found."
           fi
+          gh release create "$RELEASE_TAG" \
+            --draft \
+            --title "Stereodrome $RELEASE_TAG" \
+            --notes "$RELEASE_BODY"
 
   release_notes:
     name: Compose release notes
@@ -193,117 +198,196 @@ jobs:
           echo 'EOF' >> $GITHUB_OUTPUT
 
   build:
-    needs: [version, validate_release_version, prepare_release, release_notes]
+    name: Native desktop package (${{ matrix.name }})
+    needs: [version, validate_release_version, prepare_release]
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            args: --target universal-apple-darwin
-          - platform: ubuntu-latest
-            args: ""
-          - platform: windows-latest
-            args: ""
-
-    runs-on: ${{ matrix.platform }}
+          - name: macOS universal
+            os: macos-26
+            formats: app,dmg
+            artifact: macos
+          - name: Windows x64
+            os: windows-2025
+            formats: wix,nsis
+            artifact: windows
+          - name: Linux x64
+            os: ubuntu-24.04
+            formats: appimage,deb
+            artifact: linux
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
-          fetch-depth: 0
-          fetch-tags: true
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Init Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          prefix-key: v1-gpui-package
+          cache-bin: false
+
+      - name: Install native dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libdbus-1-dev \
+            libfontconfig1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxdo-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            patchelf \
+            pkg-config
+
+      - name: Install native packaging tools
+        shell: bash
+        run: |
+          cargo install cargo-packager --version 0.11.8 --locked
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cargo install cargo-generate-rpm --version 0.21.0 --locked
+          fi
+
+      - name: Import Apple Developer Certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" gpui-build.keychain
+          security default-keychain -s gpui-build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" gpui-build.keychain
+          security set-keychain-settings -t 3600 -u gpui-build.keychain
+          security import certificate.p12 -k gpui-build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" gpui-build.keychain
+          CERT_INFO="$(security find-identity -v -p codesigning gpui-build.keychain | grep 'Developer ID Application')"
+          CERT_ID="$(echo "$CERT_INFO" | awk -F'"' '{print $2}')"
+          test -n "$CERT_ID"
+          echo "CARGO_PACKAGER_MACOS_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+
+      - name: Build universal macOS binary
+        if: runner.os == 'macOS'
+        run: |
+          cargo build -p stereodrome-desktop --release --bin stereodrome --target aarch64-apple-darwin
+          cargo build -p stereodrome-desktop --release --bin stereodrome --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/stereodrome \
+            target/x86_64-apple-darwin/release/stereodrome \
+            -output target/universal-apple-darwin/release/stereodrome
+
+      - name: Package native desktop
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cargo packager \
+              --release \
+              -p stereodrome-desktop \
+              --target universal-apple-darwin \
+              --binaries-dir target/universal-apple-darwin/release \
+              -f "${{ matrix.formats }}"
+          else
+            cargo packager --release -p stereodrome-desktop -f "${{ matrix.formats }}"
+          fi
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cargo generate-rpm \
+              -p crates/stereodrome-desktop \
+              -o "target/packages/Stereodrome-${{ needs.version.outputs.release_version }}-1.x86_64.rpm"
+          fi
+
+      - name: Notarize macOS package
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG="$(find target/packages -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$DMG"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+
+      - name: Upload desktop package
+        uses: actions/upload-artifact@v7
+        with:
+          name: stereodrome-desktop-${{ matrix.artifact }}
+          path: |
+            target/packages/*.dmg
+            target/packages/*.tar.gz
+            target/packages/*.sig
+            target/packages/*.msi
+            target/packages/*.exe
+            target/packages/*.zip
+            target/packages/*.AppImage
+            target/packages/*.deb
+            target/packages/*.rpm
+          if-no-files-found: error
+
+  publish-desktop:
+    name: Publish desktop packages and updater
+    needs: [version, build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Download desktop packages
+        uses: actions/download-artifact@v8
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          pattern: stereodrome-desktop-*
+          path: desktop-package-input
 
-      - name: Init Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          prefix-key: v1-rust
-          cache-bin: false
-
-      - name: Verify Rust toolchain
-        shell: bash
+      - name: Generate updater manifest
         run: |
-          toolchain_cargo="$(rustup which cargo)"
-          if [ -x "$HOME/.cargo/bin/cargo" ] && "$HOME/.cargo/bin/cargo" --help 2>&1 | grep -q rustup-init; then
-            rm -f "$HOME/.cargo/bin/cargo"
-          fi
-          if command -v cygpath >/dev/null; then
-            toolchain_bin="$(dirname "$(cygpath -u "$toolchain_cargo")")"
-            echo "$(cygpath -w "$HOME/.cargo/bin")" >> "$GITHUB_PATH"
-            echo "$(cygpath -w "$toolchain_bin")" >> "$GITHUB_PATH"
-          else
-            toolchain_bin="$(dirname "$toolchain_cargo")"
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            echo "$toolchain_bin" >> "$GITHUB_PATH"
-          fi
-          export PATH="$toolchain_bin:$HOME/.cargo/bin:$PATH"
-          which rustc
-          rustc --version
-          which cargo
-          cargo --version
-          cargo metadata --format-version 1 --no-deps >/dev/null
+          bun scripts/generate-update-manifest.mjs \
+            desktop-package-input \
+            desktop-release \
+            "${{ github.repository }}" \
+            "${{ needs.version.outputs.release_version }}"
 
-      - name: Install dependencies (Ubuntu)
-        if: matrix.platform == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libasound2-dev
-
-      - name: Import Apple Developer Certificate (MacOS)
-        if: matrix.platform == 'macos-latest'
+      - name: Upload desktop packages and manifest
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo $APPLE_CERTIFICATE | base64 --decode > certificate.p12
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security set-keychain-settings -t 3600 -u build.keychain
-          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          security find-identity -v -p codesigning build.keychain
-
-      - name: Verify Certificate (MacOS)
-        if: matrix.platform == 'macos-latest'
-        run: |
-          CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
-          CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
-          echo "CERT_ID=$CERT_ID" >> $GITHUB_ENV
-          echo "Certificate imported."
-
-      - name: Install frontend dependencies
-        shell: bash
-        run: scripts/bun-install-with-retry.sh install
-
-      - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ env.CERT_ID }}
-        with:
-          tagName: v${{ needs.version.outputs.release_version }}
-          releaseName: "Stereodrome v${{ needs.version.outputs.release_version }}"
-          releaseBody: ${{ needs.release_notes.outputs.release_body }}
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
+          gh release upload \
+            "v${{ needs.version.outputs.release_version }}" \
+            desktop-release/* \
+            --clobber
 
   mobile-android:
     needs: [version, build]
@@ -329,7 +413,6 @@ jobs:
         with:
           workspaces: |
             .
-            src-tauri
           prefix-key: v1-rust
           cache-bin: false
 
@@ -469,7 +552,6 @@ jobs:
         with:
           workspaces: |
             .
-            src-tauri
           prefix-key: v1-rust
           cache-bin: false
 

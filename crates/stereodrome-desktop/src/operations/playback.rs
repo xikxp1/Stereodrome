@@ -1006,8 +1006,8 @@ fn get_normalization_gain(
 
 #[cfg(test)]
 mod tests {
-    use super::SubsonicScrobbleTracker;
-
+    use super::{SubsonicScrobbleTracker, is_gapless_eligible};
+    use rusqlite::{Connection, params};
     #[test]
     fn subsonic_scrobble_submits_once_at_half_duration() {
         let mut tracker = SubsonicScrobbleTracker::default();
@@ -1023,5 +1023,40 @@ mod tests {
         assert!(!tracker.update("song", 2.0, 100.0));
         assert!(tracker.update("song", 50.0, 100.0));
         assert!(tracker.update("next", 50.0, 100.0));
+    }
+
+    #[test]
+    fn gapless_requires_consecutive_tracks_on_the_same_album() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE songs (
+                    id TEXT PRIMARY KEY,
+                    album_id TEXT NOT NULL,
+                    disc_number INTEGER,
+                    track_number INTEGER
+                );",
+            )
+            .unwrap();
+        for (id, album, disc, track) in [
+            ("a1", "album-a", 1, 1),
+            ("a2", "album-a", 1, 2),
+            ("a3", "album-a", 2, 1),
+            ("a4", "album-a", 1, 4),
+            ("b1", "album-b", 1, 1),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO songs (id, album_id, disc_number, track_number)
+                     VALUES (?, ?, ?, ?)",
+                    params![id, album, disc, track],
+                )
+                .unwrap();
+        }
+
+        assert!(is_gapless_eligible(&connection, "a1", "a2"));
+        assert!(is_gapless_eligible(&connection, "a2", "a3"));
+        assert!(!is_gapless_eligible(&connection, "a1", "a4"));
+        assert!(!is_gapless_eligible(&connection, "a1", "b1"));
     }
 }

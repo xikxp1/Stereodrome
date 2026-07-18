@@ -11,6 +11,7 @@ use stereodrome_desktop::operations::auth::ConnectParams;
 
 use crate::ui::model::{DesktopModel, VisibleSurface};
 
+#[derive(Clone)]
 pub struct AuthInputs {
     pub url: Entity<InputState>,
     pub username: Entity<InputState>,
@@ -29,6 +30,15 @@ impl AuthInputs {
             }),
         }
     }
+}
+
+pub fn submit(inputs: &AuthInputs, model: &Entity<DesktopModel>, cx: &mut gpui::App) {
+    let params = ConnectParams {
+        url: inputs.url.read(cx).value().to_string(),
+        username: inputs.username.read(cx).value().to_string(),
+        password: inputs.password.read(cx).value().to_string(),
+    };
+    model.update(cx, |model, cx| model.connect(params, cx));
 }
 
 pub fn render(
@@ -97,9 +107,7 @@ fn login_form(
     let username_focus = inputs.username.focus_handle(cx);
     let password_focus = inputs.password.focus_handle(cx);
     let model_for_connect = model.clone();
-    let url = inputs.url.clone();
-    let username = inputs.username.clone();
-    let password = inputs.password.clone();
+    let inputs_for_connect = inputs.clone();
 
     div()
         .w_full()
@@ -159,12 +167,7 @@ fn login_form(
                 .label(if disabled { "Connecting…" } else { "Connect" })
                 .disabled(disabled)
                 .on_click(move |_, _, cx| {
-                    let params = ConnectParams {
-                        url: url.read(cx).value().to_string(),
-                        username: username.read(cx).value().to_string(),
-                        password: password.read(cx).value().to_string(),
-                    };
-                    model_for_connect.update(cx, |model, cx| model.connect(params, cx));
+                    submit(&inputs_for_connect, &model_for_connect, cx);
                 }),
         )
         .into_any_element()

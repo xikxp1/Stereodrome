@@ -1194,6 +1194,14 @@ fn should_poll_audio_thread(
     has_current_sink || has_crossfade_state || lifecycle_state == PlaybackLifecycleState::Playing
 }
 
+fn crossfade_volumes(progress: f64, user_volume: f32) -> (f32, f32) {
+    let angle = progress * std::f64::consts::FRAC_PI_2;
+    (
+        user_volume * angle.cos() as f32,
+        user_volume * angle.sin() as f32,
+    )
+}
+
 fn mark_missing_sink_if_playing(
     shared_state: &SharedState,
     watchdog: &mut PlaybackWatchdog,
@@ -1686,11 +1694,7 @@ fn run_audio_thread(
                     let progress = cf_state.progress();
                     let user_vol = shared_state.read_inner().volume;
 
-                    // Equal-power crossfade curves
-                    let fade_out_vol =
-                        user_vol * ((progress * std::f64::consts::FRAC_PI_2).cos() as f32);
-                    let fade_in_vol =
-                        user_vol * ((progress * std::f64::consts::FRAC_PI_2).sin() as f32);
+                    let (fade_out_vol, fade_in_vol) = crossfade_volumes(progress, user_vol);
 
                     if let Some(ref old_sink) = crossfade_sink {
                         if old_sink.empty() {
@@ -1910,6 +1914,18 @@ mod tests {
         assert!(mark_missing_sink_if_playing(&shared, &mut watchdog));
         assert_eq!(shared.state(), PlaybackLifecycleState::Stalled);
         assert!(!shared.is_playing());
+    }
+
+    #[test]
+    fn crossfade_uses_equal_power_endpoints_and_midpoint() {
+        let volume = 0.8;
+        assert_eq!(crossfade_volumes(0.0, volume), (volume, 0.0));
+        let (finished_out, finished_in) = crossfade_volumes(1.0, volume);
+        assert!(finished_out.abs() < f32::EPSILON);
+        assert!((finished_in - volume).abs() < f32::EPSILON);
+
+        let (mid_out, mid_in) = crossfade_volumes(0.5, volume);
+        assert!((mid_out * mid_out + mid_in * mid_in - volume * volume).abs() < 0.000_001);
     }
 
     #[test]

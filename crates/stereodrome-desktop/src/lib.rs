@@ -1,4 +1,4 @@
-//! Native desktop backend primitives shared by the Tauri and GPUI shells.
+//! Native desktop backend and GPUI shell primitives.
 
 pub mod audio;
 mod backend;
@@ -21,7 +21,7 @@ pub use events::{DesktopEvent, DesktopEvents};
 pub use paths::DesktopPaths;
 pub use store::JsonStore;
 
-/// Stable desktop application identifier shared with the shipping Tauri app.
+/// Stable desktop application identifier.
 pub const APPLICATION_ID: &str = "dev.xikxp1.stereodrome";
 
 #[cfg(test)]

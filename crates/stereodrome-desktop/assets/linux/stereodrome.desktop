@@ -1,0 +1,12 @@
+[Desktop Entry]
+Categories=AudioVideo;Audio;Music;
+Comment=Desktop music player for Subsonic-compatible music servers
+GenericName=Music Player
+Keywords=music;audio;player;subsonic;navidrome;streaming;
+Exec=stereodrome
+StartupWMClass=stereodrome
+StartupNotify=true
+Icon=stereodrome
+Name=Stereodrome
+Terminal=false
+Type=Application

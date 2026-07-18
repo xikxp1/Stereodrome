@@ -5,6 +5,7 @@ description = "Native desktop shell and backend for Stereodrome"
 authors = ["Ivan Kachalkin<xikxp1@gmail.com>"]
 edition = "2024"
 publish = false
+license = "MIT"
 
 [lib]
 name = "stereodrome_desktop"
@@ -13,72 +14,95 @@ path = "src/lib.rs"
 [[bin]]
 name = "stereodrome"
 path = "src/main.rs"
-required-features = ["gpui-ui"]
 
-[features]
-default = []
-gpui-ui = [
-    "dep:async-channel",
-    "dep:cargo-packager-updater",
-    "dep:gpui",
-    "dep:gpui-component",
-    "dep:gpui-component-assets",
-    "dep:gpui_platform",
-    "dep:gtk",
-    "dep:interprocess",
-    "dep:notify-rust",
-    "dep:objc2",
-    "dep:objc2-app-kit",
-    "dep:raw-window-handle",
-    "dep:single-instance",
-    "dep:souvlaki",
-    "dep:tray-icon",
+[package.metadata.packager]
+product-name = "Stereodrome"
+identifier = "dev.xikxp1.stereodrome"
+before-packaging-command = "cargo build -p stereodrome-desktop --release --bin stereodrome"
+binaries-dir = "../../target/release"
+out-dir = "../../target/packages"
+description = "Desktop music player for Subsonic-compatible music servers"
+long-description = "Stereodrome is a desktop music player for Subsonic-compatible servers with library sync, full-text search, and rich playback controls. It integrates with system media controls and tray workflows, supports local audio caching, and includes gapless playback and crossfade. Advanced audio features include normalization, equalization, dynamic compression, and binaural processing."
+homepage = "https://github.com/xikxp1/Stereodrome"
+authors = ["Ivan Kachalkin <xikxp1@gmail.com>"]
+publisher = "Ivan Kachalkin"
+category = "Music"
+icons = [
+    "assets/icons/32x32.png",
+    "assets/icons/128x128.png",
+    "assets/icons/128x128@2x.png",
+    "assets/icons/icon.icns",
+    "assets/icons/icon.ico",
 ]
 
+[[package.metadata.packager.binaries]]
+path = "stereodrome"
+main = true
+
+[package.metadata.packager.deb]
+section = "sound"
+desktop-template = "assets/linux/main.desktop.hbs"
+
+[package.metadata.generate-rpm]
+name = "stereodrome"
+release = "1"
+summary = "Desktop music player for Subsonic-compatible music servers"
+url = "https://github.com/xikxp1/Stereodrome"
+vendor = "Ivan Kachalkin"
+assets = [
+    { source = "target/release/stereodrome", dest = "/usr/bin/stereodrome", mode = "755" },
+    { source = "assets/linux/stereodrome.desktop", dest = "/usr/share/applications/stereodrome.desktop", mode = "644" },
+    { source = "assets/icons/32x32.png", dest = "/usr/share/icons/hicolor/32x32/apps/stereodrome.png", mode = "644" },
+    { source = "assets/icons/128x128.png", dest = "/usr/share/icons/hicolor/128x128/apps/stereodrome.png", mode = "644" },
+]
+
+
 [dependencies]
-async-channel = { version = "2.5.0", optional = true }
+async-channel = "2.5.0"
 base64 = "0.22.1"
-cargo-packager-updater = { version = "0.2.3", optional = true }
+cargo-packager-updater = "0.2.3"
 chrono = { version = "0.4.45", features = ["serde"] }
 directories = "6"
 filetime = "0.2.29"
 # Keep this URL unqualified so gpui-component resolves the same source; Cargo.lock pins 1a246efd.
-gpui = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "031555662e99a1b5a549990b47f246d475b8288a", optional = true }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "031555662e99a1b5a549990b47f246d475b8288a", optional = true }
-gpui_platform = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false }
-interprocess = { version = "2.4.2", optional = true }
+gpui = { git = "https://github.com/zed-industries/zed", default-features = false }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "031555662e99a1b5a549990b47f246d475b8288a" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "031555662e99a1b5a549990b47f246d475b8288a" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", default-features = false }
+interprocess = "2.4.2"
 keyring = { version = "4.1.4", features = ["cli"] }
 keyring-core = "1.0.0"
 log = "0.4"
 md5 = "0.8.0"
-notify-rust = { version = "4.18.0", optional = true }
-raw-window-handle = { version = "0.6.2", optional = true }
+raw-window-handle = "0.6.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls", "system-proxy"] }
 ringbuf = "0.5.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = "1"
 serde_json = "1"
-single-instance = { version = "0.3.3", optional = true }
-souvlaki = { version = "0.8.3", optional = true }
+single-instance = "0.3.3"
+souvlaki = "0.8.3"
 stereodrome-audio = { version = "0.2.0", path = "../stereodrome-audio" }
 stereodrome-core = { version = "0.2.0", path = "../stereodrome-core" }
 submarine = "0.1.1"
 tantivy = "0.26.1"
 thiserror = "2"
 tokio = { version = "1.52.3", features = ["full"] }
-tray-icon = { version = "0.24.1", optional = true }
+tray-icon = "0.24.1"
+
+[target.'cfg(unix)'.dependencies]
+notify-rust = "4.18.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false, features = ["font-kit"] }
-gpui_platform = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false, features = ["font-kit"] }
-objc2 = { version = "0.6.4", optional = true }
-objc2-app-kit = { version = "0.3.2", features = ["NSPanel", "NSView", "NSWindow"], optional = true }
+gpui = { git = "https://github.com/zed-industries/zed", default-features = false, features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", default-features = false, features = ["font-kit"] }
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", features = ["NSPanel", "NSView", "NSWindow"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false, features = ["wayland", "x11"] }
-gpui_platform = { git = "https://github.com/zed-industries/zed", optional = true, default-features = false, features = ["wayland", "x11"] }
-gtk = { version = "0.18.2", optional = true }
+gpui = { git = "https://github.com/zed-industries/zed", default-features = false, features = ["wayland", "x11"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", default-features = false, features = ["wayland", "x11"] }
+gtk = "0.18.2"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

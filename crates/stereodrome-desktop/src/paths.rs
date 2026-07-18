@@ -76,6 +76,28 @@ mod tests {
     }
 
     #[test]
+    fn detects_the_shipping_platform_profile_directory() {
+        let detected = DesktopPaths::detect().unwrap().data_dir;
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let base_dirs = directories::BaseDirs::new().unwrap();
+        #[cfg(target_os = "macos")]
+        let expected = base_dirs
+            .home_dir()
+            .join("Library/Application Support")
+            .join(APPLICATION_ID);
+        #[cfg(target_os = "windows")]
+        let expected = PathBuf::from(std::env::var_os("APPDATA").unwrap()).join(APPLICATION_ID);
+        #[cfg(target_os = "linux")]
+        let expected = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| base_dirs.home_dir().join(".local/share"))
+            .join(APPLICATION_ID);
+
+        assert_eq!(detected, expected);
+    }
+
+    #[test]
     fn refuses_a_second_profile() {
         let paths = DesktopPaths::from_data_dir(PathBuf::from("candidate"));
         assert!(paths.verify_installed_profile(Path::new("legacy")).is_err());

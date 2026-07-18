@@ -2,9 +2,6 @@
 
 Desktop and mobile music player for Subsonic-compatible servers, inspired by classic iTunes-era library browsing.
 
-<p align="center">
-  <img src="docs/assets/main.png" alt="Main screen">
-</p>
 
 ## Features
 
@@ -16,10 +13,6 @@ Desktop and mobile music player for Subsonic-compatible servers, inspired by cla
 - Mini player and desktop notifications
 - Gapless playback and crossfade
 - 12-band equalizer, audio normalization with dynamic compression, binaural audio
-
-## Screenshots
-
-_Coming soon_
 
 ## Requirements
 
@@ -37,7 +30,7 @@ Stereodrome works with Subsonic API-compatible servers, including:
 
 - **macOS** 10.15 (Catalina) or later
 - **Windows** 10 or later
-- **Linux** with GTK 3 and WebKit2GTK
+- **Linux** with GTK 3
 - **iOS** 15 or later
 - **Android** 8 or later
 
@@ -54,10 +47,11 @@ Download the latest build for your platform from [Releases](https://github.com/x
 
 ## Development
 
-- `bun install` - Install dependencies (from root directory for desktop or from `mobile` for iOS/Android)
-- `bun run tauri dev` - Tauri development server
-- `bun run rust:ios` or `bun run rust:android` from `mobile` directory - Cross-compile Rust dependencies for your platform
-- `bun run ios` or `bun run android` - Build and run the mobile app
+- `cargo run -p stereodrome-desktop --bin stereodrome` - Run the native desktop app
+- `cargo test -p stereodrome-desktop` - Test the desktop backend and shell
+- `bun install` from `mobile` - Install mobile dependencies
+- `bun run rust:ios` or `bun run rust:android` from `mobile` - Cross-compile Rust for mobile
+- `bun run ios` or `bun run android` from `mobile` - Build and run the mobile app
 
 ## License
 

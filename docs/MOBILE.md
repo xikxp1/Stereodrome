@@ -1,29 +1,21 @@
 # Mobile Client Feature Parity Plan
 
-This document describes a plan to bring the React Native mobile client to feature parity with the mature desktop Svelte/Tauri client without copying the desktop UX directly. The goal is capability parity: the mobile app should provide the same music, playback, sync, cache, server, and settings behavior through mobile-native interaction patterns.
+This document describes a plan to bring the React Native mobile client to feature parity with the native GPUI desktop client without copying the desktop UX directly. The goal is capability parity: the mobile app should provide the same music, playback, sync, cache, server, and settings behavior through mobile-native interaction patterns.
 
 ## Current State
 
 ### Desktop
 
-The desktop app is a Svelte SPA hosted by Tauri. The frontend calls Tauri commands from `src/lib/api/commands.ts`, while most behavior lives in `src-tauri/src`.
+The desktop app is a native GPUI application in `crates/stereodrome-desktop`.
 
-Key desktop backend surfaces:
+Key desktop surfaces:
 
-- Authentication and Subsonic session restore: `src-tauri/src/commands/auth.rs`, `src-tauri/src/client/*`.
-- Local SQLite library and migrations: `src-tauri/src/db/schema.sql`, `src-tauri/src/db/mod.rs`.
-- Full, incremental, and reconcile library sync with scheduler/status events: `src-tauri/src/commands/library.rs`.
-- Local search index with Tantivy: `src-tauri/src/search/mod.rs`.
-- Playlist sync and playlist mutation: `src-tauri/src/commands/playlist.rs`.
-- Rust playback engine: `src-tauri/src/audio/player.rs`.
-- Queue model, persistence, shuffle, repeat, reroll, next/previous semantics: `src-tauri/src/audio/queue.rs`, `src-tauri/src/commands/queue.rs`, `src-tauri/src/db/queue.rs`.
-- Audio cache with LRU size limit and prefetch: `src-tauri/src/cache/audio.rs`, `src-tauri/src/commands/cache.rs`.
-- Cover art cache: `src-tauri/src/commands/coverart.rs`.
-- Loudness analysis, normalization, dynamics, binaural crossfeed, equalizer, spectrum: `src-tauri/src/audio/*`, `src-tauri/src/commands/normalization.rs`, `src-tauri/src/commands/settings.rs`.
-- Now playing and scrobble integration: `src-tauri/src/commands/nowplaying.rs`.
-- Media keys, desktop notifications, tray, mini/nano player: `src-tauri/src/media/*`, `src-tauri/src/tray/*`, `src-tauri/src/commands/windowing.rs`.
+- Shared database schema and Subsonic models: `crates/stereodrome-core`.
+- Authentication, sync, search, playlists, queue, cache, and Last.fm operations: `crates/stereodrome-desktop/src`.
+- Reusable decoding and DSP: `crates/stereodrome-audio`.
+- Native UI, media controls, notifications, tray, settings, and player windows: `crates/stereodrome-desktop/src/ui`.
 
-Desktop frontend surfaces include dense library browsing, queue management, settings for server/sync/playback/cache/normalization, playlist editing, context menus, keyboard shortcuts, notifications, and mini-player modes.
+Desktop UI surfaces include dense library browsing, queue management, settings for server/sync/playback/cache/normalization, playlist editing, context menus, keyboard shortcuts, notifications, and mini-player modes.
 
 ### Mobile
 
@@ -64,17 +56,17 @@ Mobile should not mirror the desktop layout. It should preserve the same capabil
 
 ### Shared Core
 
-Move parity-critical behavior out of the Tauri adapter and into shared crates so desktop and mobile cannot drift.
+Keep parity-critical behavior in shared Rust crates so desktop and mobile cannot drift.
 
-Recommended crate split:
+Crate split:
 
-- `stereodrome-core`: platform-neutral Subsonic client orchestration, database, sync, search, playlists, queue model, settings models, cache policy, scrobble policy.
+- `stereodrome-core`: platform-neutral Subsonic models, database schema, migrations, and shared queue rules.
 - `stereodrome-audio`: reusable decoding/DSP pipeline: loudness analysis, normalization gain calculation, dynamics, binaural crossfeed, equalizer, spectrum analysis, gapless/crossfade planning.
 - `stereodrome-ffi`: mobile API boundary. It can keep JSON-over-FFI short term, but should move toward a typed surface, preferably UniFFI, once the API stabilizes.
-- `src-tauri`: desktop adapter only. Owns Tauri commands/events, windowing, tray, desktop notifications, media key wiring.
-- `mobile/modules/stereodrome-core`: iOS/Android adapter only. Owns background service integration, event emission to JS, and platform permission/media-session plumbing.
+- `stereodrome-desktop`: GPUI desktop app and desktop-only operations, windowing, tray, notifications, and media controls.
+- `mobile/modules/stereodrome-core`: iOS/Android adapter. Owns background service integration, event emission to JS, and platform permission/media-session plumbing.
 
-The desktop code already has partial sharing via `crates/stereodrome-core`, but that crate currently implements only a subset and duplicates simplified behavior. The next phase should move desktop implementations into shared crates rather than reimplementing mobile features separately.
+Move additional behavior into `stereodrome-core` only when desktop and mobile genuinely share the same policy.
 
 ### Mobile Native Service
 
@@ -95,7 +87,7 @@ The largest open technical decision is how to combine Rust DSP parity with mobil
 Recommended path:
 
 1. Keep `react-native-track-player` only as a transitional playback adapter while backend parity is moved into Rust.
-2. Extract desktop playback policy and DSP from `src-tauri/src/audio/*` into a mobile-usable crate.
+2. Reuse playback policy and DSP from `crates/stereodrome-audio` through a mobile-capable output adapter.
 3. Build or choose a mobile audio output adapter that can feed processed PCM through platform-native audio sessions/services.
 4. Keep platform media session control native, even if the audio pipeline is Rust-owned.
 
@@ -151,10 +143,9 @@ Goal: make mobile consume the same non-audio rules as desktop.
 
 Tasks:
 
-- Move database migration handling from `src-tauri/src/db/mod.rs` into `crates/stereodrome-core`.
-- Keep `src-tauri/src/db/schema.sql` as the canonical schema or move it into the core crate and include it from desktop.
-- Add a shared settings model for playback, normalization, sync, notification/mobile controls, and cache settings.
-- Move `PlayQueue` and queue persistence into the shared crate.
+- Keep database schema and migration handling in `crates/stereodrome-core`.
+- Add shared settings models for playback, normalization, sync, notification/mobile controls, and cache settings where policy is identical.
+- Move additional queue persistence rules into the shared crate as mobile parity requires them.
 - Add mobile FFI methods for:
   - `getQueue`
   - `playSongWithQueue`
@@ -212,7 +203,7 @@ Goal: mobile playback and browsing should not depend on repeatedly streaming rem
 
 Tasks:
 
-- Move audio cache policy from `src-tauri/src/cache/audio.rs` into shared core with platform-provided data/cache directories.
+- Move reusable audio cache policy from `crates/stereodrome-desktop/src/cache` into shared core with platform-provided data/cache directories.
 - Add mobile cache commands:
   - `getAudioCacheStats`
   - `setMaxCacheSize`
@@ -432,8 +423,7 @@ Medium-term requirements:
 
 Shared database rules:
 
-- `src-tauri/src/db/schema.sql` is currently reused by `crates/stereodrome-core/src/db.rs`. Keep one canonical schema.
-- Move migration version tracking into shared core so desktop and mobile apply the same migrations.
+- Keep `crates/stereodrome-core/src/schema.sql` canonical and apply its migrations on desktop and mobile.
 - Any schema additions for playback state, downloads, cache metadata, or settings must include migration steps for existing desktop and mobile databases.
 
 Likely schema additions:
