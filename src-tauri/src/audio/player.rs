@@ -109,6 +109,10 @@ impl AudioPlayer {
             .map_err(|error| AppError::Audio(error.to_string()))
     }
 
+    pub fn shutdown(&mut self) {
+        self.inner.shutdown();
+    }
+
     pub fn set_volume(&self, volume: f32) -> AppResult<()> {
         self.inner
             .set_volume(volume)

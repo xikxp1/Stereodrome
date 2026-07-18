@@ -477,7 +477,7 @@ pub struct AudioPlayer {
     shared_state: Arc<SharedState>,
     spectrum_consumer: Arc<Mutex<HeapCons<f32>>>,
     spectrum_enabled: Arc<AtomicBool>,
-    _audio_thread: JoinHandle<()>,
+    audio_thread: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone)]
@@ -558,7 +558,7 @@ impl AudioPlayer {
             shared_state,
             spectrum_consumer,
             spectrum_enabled,
-            _audio_thread: audio_thread,
+            audio_thread: Some(audio_thread),
         })
     }
 
@@ -807,11 +807,19 @@ impl AudioPlayer {
     pub fn get_shared_is_playing(&self) -> &AtomicBool {
         &self.shared_state.is_playing
     }
+    pub fn shutdown(&mut self) {
+        if let Some(audio_thread) = self.audio_thread.take() {
+            let _ = self.command_tx.send(AudioCommand::Shutdown);
+            if audio_thread.join().is_err() {
+                error!("Audio playback thread panicked during shutdown");
+            }
+        }
+    }
 }
 
 impl Drop for AudioPlayer {
     fn drop(&mut self) {
-        let _ = self.command_tx.send(AudioCommand::Shutdown);
+        self.shutdown();
     }
 }
 
@@ -1763,8 +1771,33 @@ mod tests {
             shared_state: Arc::new(SharedState::new()),
             spectrum_consumer: Arc::new(Mutex::new(consumer)),
             spectrum_enabled: Arc::new(AtomicBool::new(false)),
-            _audio_thread: thread::spawn(|| {}),
+            audio_thread: Some(thread::spawn(|| {})),
         }
+    }
+
+    #[test]
+    fn shutdown_waits_for_audio_thread_and_is_idempotent() {
+        let (command_tx, command_rx) = mpsc::channel::<AudioCommand>();
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited_clone = Arc::clone(&exited);
+        let audio_thread = thread::spawn(move || {
+            assert!(matches!(command_rx.recv(), Ok(AudioCommand::Shutdown)));
+            thread::sleep(Duration::from_millis(25));
+            exited_clone.store(true, Ordering::SeqCst);
+        });
+        let ring_buffer = HeapRb::<f32>::new(SPECTRUM_BUFFER_SIZE);
+        let (_producer, consumer) = ring_buffer.split();
+        let mut player = AudioPlayer {
+            command_tx,
+            shared_state: Arc::new(SharedState::new()),
+            spectrum_consumer: Arc::new(Mutex::new(consumer)),
+            spectrum_enabled: Arc::new(AtomicBool::new(false)),
+            audio_thread: Some(audio_thread),
+        };
+
+        player.shutdown();
+        assert!(exited.load(Ordering::SeqCst));
+        player.shutdown();
     }
 
     #[test]

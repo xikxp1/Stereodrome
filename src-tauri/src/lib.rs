@@ -12,7 +12,7 @@ mod search;
 mod state;
 mod tray;
 
-use std::sync::Arc;
+use std::sync::{Arc, atomic::Ordering};
 
 use error::MutexExt as _;
 use log::{LevelFilter, info, warn};
@@ -238,10 +238,11 @@ pub fn run() {
                     info!("Window hidden to tray");
                 }
             }
-            tauri::RunEvent::Exit => {
-                // Shutdown the client thread gracefully
+            tauri::RunEvent::ExitRequested { .. } => {
                 if let Some(state) = app_handle.try_state::<AppState>() {
-                    info!("Shutting down client thread");
+                    info!("Shutting down audio and client threads");
+                    state.emitter_running.store(false, Ordering::SeqCst);
+                    state.audio_player.lock_recover().shutdown();
                     state.client.shutdown();
                 }
             }
