@@ -9,14 +9,15 @@ import { useViewStack } from "@/context/ViewContext";
 import { songFileState, visibleSongs } from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
-export function SongsScreen() {
+export function SongsScreen({ artistId }: { artistId?: string }) {
   const playback = usePlayback();
   const { clearActiveSongTarget, setActiveSongTarget } = useSongActions();
   const stereodrome = useStereodrome();
   const view = useViewStack();
   const songs = useQuery({
-    queryKey: ["songs"],
-    queryFn: () => stereodromeCore.getSongs(),
+    queryKey:
+      artistId === undefined ? ["songs"] : ["artist-songs", artistId],
+    queryFn: () => stereodromeCore.getSongs(undefined, artistId),
   });
   const shownSongs = visibleSongs(
     songs.data ?? [],

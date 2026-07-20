@@ -9,6 +9,7 @@ import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function ArtistScreen({
   artistId,
+  title,
 }: {
   artistId: string;
   title: string;
@@ -48,6 +49,19 @@ export function ArtistScreen({
     }
   }
 
+  async function playAllSongs() {
+    const artistSongs = visibleSongs(
+      await stereodromeCore.getSongs(undefined, artistId),
+      stereodrome.offlineMode,
+      stereodrome.offlineSongIds
+    );
+    const firstSong = artistSongs[0];
+    if (firstSong) {
+      await playback.playSong(firstSong, artistSongs);
+      view.showNowPlaying();
+    }
+  }
+
   return (
     <SelectableList
       empty={
@@ -57,20 +71,33 @@ export function ArtistScreen({
             ? "No offline albums"
             : "No albums"
       }
-      options={shownAlbums.map((album) => ({
-        label: album.name,
-        ...(album.year !== null && album.year !== 0
-          ? { sublabel: String(album.year) }
-          : {}),
-        onSelect: () => {
-          view.push({
-            name: "album",
-            title: album.name,
-            params: { albumId: album.id, title: album.name },
-          });
+      options={[
+        {
+          label: "All Songs",
+          onSelect: () => {
+            view.push({
+              name: "songs",
+              title,
+              params: { artistId },
+            });
+          },
+          onLongSelect: playAllSongs,
         },
-        onLongSelect: () => playAlbum(album.id),
-      }))}
+        ...shownAlbums.map((album) => ({
+          label: album.name,
+          ...(album.year !== null && album.year !== 0
+            ? { sublabel: String(album.year) }
+            : {}),
+          onSelect: () => {
+            view.push({
+              name: "album",
+              title: album.name,
+              params: { albumId: album.id, title: album.name },
+            });
+          },
+          onLongSelect: () => playAlbum(album.id),
+        })),
+      ]}
     />
   );
 }

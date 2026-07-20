@@ -56,8 +56,12 @@ export function renderView(view: ViewInstance) {
           title={view.params?.["title"] ?? "Album"}
         />
       );
-    case "songs":
-      return <SongsScreen />;
+    case "songs": {
+      const artistId = view.params?.["artistId"];
+      return (
+        <SongsScreen {...(artistId === undefined ? {} : { artistId })} />
+      );
+    }
     case "playlists":
       return <PlaylistsScreen />;
     case "playlist":
