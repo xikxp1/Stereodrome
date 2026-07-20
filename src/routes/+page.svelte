@@ -600,11 +600,20 @@
     selectedSong = song;
   }
 
+  function getActiveSongQueueContext(): Song[] | null {
+    if (selectedPlaylistData) return filteredPlaylistSongs;
+    if (detailView) return detailSongs;
+    if (activeView === "music") return filteredSongs;
+    return null;
+  }
+
   async function handleSongPlay(song: Song) {
     if (searchStore.isSearching) return;
+    const songContext = getActiveSongQueueContext();
+    if (!songContext?.some((entry) => entry.id === song.id)) return;
+
     try {
-      // Play with queue context - use filtered songs as the queue
-      await queue.playSongWithQueue(song, filteredSongs);
+      await queue.playSongWithQueue(song, songContext);
     } catch (e) {
       error(`Failed to play song: ${e}`);
     }
@@ -669,14 +678,6 @@
       albumDetailBackArtist = null;
     } else {
       playlistStore.selectPlaylist(null);
-    }
-  }
-
-  async function handlePlaylistSongPlay(song: Song) {
-    try {
-      await queue.playSongWithQueue(song, filteredPlaylistSongs);
-    } catch (e) {
-      error(`Failed to play song: ${e}`);
     }
   }
 
@@ -776,15 +777,6 @@
 
     detailView = null;
     albumDetailBackArtist = null;
-  }
-
-  async function handleDetailSongPlay(song: Song) {
-    try {
-      // Play with detail view songs as queue context
-      await queue.playSongWithQueue(song, detailSongs);
-    } catch (e) {
-      error(`Failed to play song: ${e}`);
-    }
   }
 
   function handleQueueToggle() {
@@ -1067,25 +1059,26 @@
 
   // Navigate up/down in the song list
   function navigateSongList(direction: number) {
-    if (filteredSongs.length === 0) return;
+    const songContext = getActiveSongQueueContext();
+    if (!songContext || songContext.length === 0) return;
 
     const selected = selectedSong;
     const currentIndex = selected
-      ? filteredSongs.findIndex((s) => s.id === selected.id)
+      ? songContext.findIndex((s) => s.id === selected.id)
       : -1;
 
     let newIndex: number;
     if (currentIndex === -1) {
       // No selection - select first or last based on direction
-      newIndex = direction > 0 ? 0 : filteredSongs.length - 1;
+      newIndex = direction > 0 ? 0 : songContext.length - 1;
     } else {
       newIndex = currentIndex + direction;
       // Clamp to valid range
       if (newIndex < 0) newIndex = 0;
-      if (newIndex >= filteredSongs.length) newIndex = filteredSongs.length - 1;
+      if (newIndex >= songContext.length) newIndex = songContext.length - 1;
     }
 
-    const newSong = filteredSongs[newIndex];
+    const newSong = songContext[newIndex];
     if (newSong) {
       selectedSong = newSong;
       scrollToSongId = newSong.id;
@@ -1174,7 +1167,7 @@
               downloadedSongIds={offlineSongIds}
               {downloadingSongIds}
               onSelect={handleSongSelect}
-              onPlay={handlePlaylistSongPlay}
+              onPlay={handleSongPlay}
               onNavigateToArtist={handleSongNavigateToArtist}
               onNavigateToAlbum={handleSongNavigateToAlbum}
             />
@@ -1251,7 +1244,7 @@
                 downloadedSongIds={offlineSongIds}
                 {downloadingSongIds}
                 onSelect={handleSongSelect}
-                onPlay={handleDetailSongPlay}
+                onPlay={handleSongPlay}
                 onNavigateToArtist={handleSongNavigateToArtist}
                 onNavigateToAlbum={handleSongNavigateToAlbum}
               />
@@ -1300,7 +1293,7 @@
                 downloadedSongIds={offlineSongIds}
                 {downloadingSongIds}
                 onSelect={handleSongSelect}
-                onPlay={handleDetailSongPlay}
+                onPlay={handleSongPlay}
                 onNavigateToArtist={handleSongNavigateToArtist}
                 onNavigateToAlbum={handleSongNavigateToAlbum}
               />
@@ -1350,7 +1343,7 @@
                 downloadedSongIds={offlineSongIds}
                 {downloadingSongIds}
                 onSelect={handleSongSelect}
-                onPlay={handleDetailSongPlay}
+                onPlay={handleSongPlay}
                 onNavigateToArtist={handleSongNavigateToArtist}
                 onNavigateToAlbum={handleSongNavigateToAlbum}
               />
