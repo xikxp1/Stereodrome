@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::SystemTime;
 
@@ -63,6 +65,62 @@ static PREFETCH_IN_PROGRESS: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| Arc::new(TokioMutex::new(std::collections::HashSet::new())));
 static DOWNLOADS_IN_PROGRESS: std::sync::LazyLock<StdMutex<HashMap<String, usize>>> =
     std::sync::LazyLock::new(|| StdMutex::new(HashMap::new()));
+static NEXT_CACHE_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(0);
+
+fn create_cache_temp_file(destination: &Path) -> io::Result<(PathBuf, File)> {
+    let parent = destination.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cache destination has no parent directory",
+        )
+    })?;
+    let file_name = destination.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cache destination has no file name",
+        )
+    })?;
+
+    loop {
+        let id = NEXT_CACHE_TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed);
+        let temp_name = format!(
+            ".{}.{}.{}.part",
+            file_name.to_string_lossy(),
+            std::process::id(),
+            id
+        );
+        let temp_path = parent.join(temp_name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn write_cache_file_atomically(destination: &Path, bytes: &[u8]) -> io::Result<()> {
+    let (temp_path, mut temp_file) = create_cache_temp_file(destination)?;
+    let write_result = temp_file
+        .write_all(bytes)
+        .and_then(|()| temp_file.sync_all());
+    drop(temp_file);
+
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    if let Err(error) = fs::rename(&temp_path, destination) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    Ok(())
+}
 
 struct DownloadInProgressGuard {
     app_handle: AppHandle,
@@ -191,8 +249,9 @@ impl AudioCache {
             .await
             .map_err(|e| AppError::Audio(format!("Failed to fetch audio: {e}")))?;
 
-        // Write to cache (fire-and-forget, don't fail playback if caching fails)
-        if let Err(e) = fs::write(&cache_path, &bytes) {
+        // Publish the cache entry only after the complete file has reached disk.
+        // Caching remains best-effort so a write failure does not stop playback.
+        if let Err(e) = write_cache_file_atomically(&cache_path, &bytes) {
             warn!("Failed to cache audio: {e}");
         } else {
             // Enforce size limit after successful write
@@ -445,4 +504,59 @@ struct CacheEntry {
     path: PathBuf,
     size: u64,
     accessed: SystemTime,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_cache_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "stereodrome-audio-cache-{name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn interrupted_cache_write_does_not_publish_destination() {
+        let cache_dir = test_cache_dir("interrupted-write");
+        fs::create_dir_all(&cache_dir).expect("create test cache directory");
+        let destination = cache_dir.join("song.flac");
+
+        let (temp_path, mut temp_file) =
+            create_cache_temp_file(&destination).expect("create cache temp file");
+        temp_file
+            .write_all(b"partial audio")
+            .expect("write partial cache file");
+        drop(temp_file);
+
+        assert!(!destination.exists());
+        assert!(temp_path.exists());
+
+        fs::remove_dir_all(cache_dir).expect("remove test cache directory");
+    }
+
+    #[test]
+    fn completed_cache_write_is_atomically_published() {
+        let cache_dir = test_cache_dir("completed-write");
+        fs::create_dir_all(&cache_dir).expect("create test cache directory");
+        let destination = cache_dir.join("song.flac");
+        let bytes = b"complete audio";
+
+        write_cache_file_atomically(&destination, bytes).expect("write cache file atomically");
+
+        assert_eq!(fs::read(&destination).expect("read cache file"), bytes);
+        assert_eq!(
+            fs::read_dir(&cache_dir)
+                .expect("read test cache directory")
+                .count(),
+            1
+        );
+
+        fs::remove_dir_all(cache_dir).expect("remove test cache directory");
+    }
 }
