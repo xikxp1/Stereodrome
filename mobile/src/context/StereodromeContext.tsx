@@ -259,7 +259,7 @@ export function StereodromeProvider({
   const refreshLibraryAfterSync = useCallback(async () => {
     await Promise.all(
       libraryQueryKeys.map((queryKey) =>
-        queryClient.invalidateQueries({ queryKey })
+        queryClient.invalidateQueries({ queryKey, refetchType: "all" })
       )
     );
     if (status.connected && !manualOfflineEnabled) {
