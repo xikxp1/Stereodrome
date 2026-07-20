@@ -873,59 +873,7 @@ mod tests {
         let backup = export_from_connection(&mut source, preferences).expect("export backup");
 
         let mut destination = Connection::open(&destination_path).expect("open destination");
-        seed_library(&destination, "destination");
-        destination
-            .execute(
-                "INSERT OR REPLACE INTO server_config (id, url, username)
-                 VALUES (1, 'https://server', 'user')",
-                [],
-            )
-            .expect("seed server config");
-        destination
-            .execute(
-                "INSERT INTO artists (id, name, synced_at)
-                 VALUES ('source-artist', 'Artist', 'now')",
-                [],
-            )
-            .expect("seed matching local artist");
-        destination
-            .execute(
-                "INSERT INTO albums (id, artist_id, name, synced_at)
-                 VALUES ('source-album', 'source-artist', 'Album', 'now')",
-                [],
-            )
-            .expect("seed matching local album");
-        destination
-            .execute(
-                "INSERT INTO songs (id, album_id, artist_id, title, synced_at)
-                 VALUES ('source-song', 'source-album', 'source-artist', 'Song', 'now')",
-                [],
-            )
-            .expect("seed matching local song");
-        destination
-            .execute(
-                "INSERT INTO playlists
-                 (id, name, created_at, changed_at, offline_saved_at, synced_at)
-                 VALUES ('source-playlist', 'Existing Offline Save', 'now', 'now', 'now', 'now')",
-                [],
-            )
-            .expect("seed local offline playlist state");
-        destination
-            .execute(
-                "INSERT INTO playlist_songs (playlist_id, song_id, position)
-                 VALUES ('source-playlist', 'source-song', 0)",
-                [],
-            )
-            .expect("seed local offline playlist membership");
-        destination
-            .execute(
-                "INSERT INTO download_items
-                 (entity_type, entity_id, song_id, status, path, updated_at)
-                 VALUES ('song', 'source-song', 'source-song', 'downloaded', '/cache/song', 'now')",
-                [],
-            )
-            .expect("seed local downloaded song");
-        write_sync_value(&destination, "lastfm_session", "secret-session").expect("seed secret");
+        seed_round_trip_destination(&destination);
 
         let summary =
             import_into_connection(&mut destination, &backup).expect("import portable backup");
@@ -966,16 +914,14 @@ mod tests {
                 .expect("read imported sync timestamp")
                 .is_some()
         );
-        assert_eq!(
-            destination
-                .query_row(
-                    "SELECT app_volume FROM playback_state WHERE id = 1",
-                    [],
-                    |row| row.get::<_, f64>(0)
-                )
-                .expect("read imported volume"),
-            0.35
-        );
+        let imported_volume = destination
+            .query_row(
+                "SELECT app_volume FROM playback_state WHERE id = 1",
+                [],
+                |row| row.get::<_, f64>(0),
+            )
+            .expect("read imported volume");
+        assert!((imported_volume - 0.35).abs() < f64::EPSILON);
 
         drop(source);
         drop(destination);
@@ -1070,6 +1016,62 @@ mod tests {
 
         drop(conn);
         std::fs::remove_file(path).ok();
+    }
+
+    fn seed_round_trip_destination(destination: &Connection) {
+        seed_library(destination, "destination");
+        destination
+            .execute(
+                "INSERT OR REPLACE INTO server_config (id, url, username)
+                 VALUES (1, 'https://server', 'user')",
+                [],
+            )
+            .expect("seed server config");
+        destination
+            .execute(
+                "INSERT INTO artists (id, name, synced_at)
+                 VALUES ('source-artist', 'Artist', 'now')",
+                [],
+            )
+            .expect("seed matching local artist");
+        destination
+            .execute(
+                "INSERT INTO albums (id, artist_id, name, synced_at)
+                 VALUES ('source-album', 'source-artist', 'Album', 'now')",
+                [],
+            )
+            .expect("seed matching local album");
+        destination
+            .execute(
+                "INSERT INTO songs (id, album_id, artist_id, title, synced_at)
+                 VALUES ('source-song', 'source-album', 'source-artist', 'Song', 'now')",
+                [],
+            )
+            .expect("seed matching local song");
+        destination
+            .execute(
+                "INSERT INTO playlists
+                 (id, name, created_at, changed_at, offline_saved_at, synced_at)
+                 VALUES ('source-playlist', 'Existing Offline Save', 'now', 'now', 'now', 'now')",
+                [],
+            )
+            .expect("seed local offline playlist state");
+        destination
+            .execute(
+                "INSERT INTO playlist_songs (playlist_id, song_id, position)
+                 VALUES ('source-playlist', 'source-song', 0)",
+                [],
+            )
+            .expect("seed local offline playlist membership");
+        destination
+            .execute(
+                "INSERT INTO download_items
+                 (entity_type, entity_id, song_id, status, path, updated_at)
+                 VALUES ('song', 'source-song', 'source-song', 'downloaded', '/cache/song', 'now')",
+                [],
+            )
+            .expect("seed local downloaded song");
+        write_sync_value(destination, "lastfm_session", "secret-session").expect("seed secret");
     }
 
     fn seed_library(conn: &Connection, prefix: &str) {
