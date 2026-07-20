@@ -5,6 +5,14 @@ export type ConnectionStatus = {
   server_version: string | null;
 };
 
+export type BackupSummary = {
+  artists: number;
+  albums: number;
+  songs: number;
+  playlists: number;
+  queue_items: number;
+};
+
 export type ConnectivitySettings = {
   manual_offline_enabled: boolean;
 };

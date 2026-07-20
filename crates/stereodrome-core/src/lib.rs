@@ -1,3 +1,4 @@
+pub mod backup;
 mod db;
 mod error;
 mod lastfm;
@@ -9,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, Once, Weak};
 
+use backup::{BackupSummary, PortablePreferences};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use log::{debug, info, warn};
 use queue::{PlayQueue, QueueItem, QueueState, RepeatMode};
@@ -1756,6 +1758,45 @@ impl StereodromeCore {
             &serde_json::to_string(&settings)?,
         )?;
         Ok(settings)
+    }
+
+    /// Writes a portable metadata backup without credentials or cached media.
+    ///
+    /// # Errors
+    /// Returns an error if persisted data cannot be read, validated, or written.
+    pub fn export_portable_backup(&self, path: impl AsRef<Path>) -> CoreResult<BackupSummary> {
+        let _queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
+        let mut conn = Connection::open(&self.db_path)?;
+        let backup = backup::export_from_connection(
+            &mut conn,
+            PortablePreferences {
+                sync: Some(self.get_sync_settings()?),
+                connectivity: Some(self.get_connectivity_settings()?),
+                audio_processing: Some(self.get_audio_processing_settings()?),
+                volume: Some(self.get_playback_state()?.app_volume),
+            },
+        )?;
+        backup::write_to_file(path.as_ref(), &backup)?;
+        Ok(backup.summary())
+    }
+
+    /// Replaces portable metadata with a validated backup while retaining local credentials and caches.
+    ///
+    /// # Errors
+    /// Returns an error if the backup is invalid or persisted state cannot be replaced.
+    pub fn import_portable_backup(&self, path: impl AsRef<Path>) -> CoreResult<BackupSummary> {
+        let backup = backup::read_from_file(path.as_ref())?;
+        let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
+        let mut conn = Connection::open(&self.db_path)?;
+        let summary = backup::import_into_connection(&mut conn, &backup)?;
+        *queue = PlayQueue::load_with_original_order(
+            backup.queue.items.clone(),
+            backup.queue.original_items.clone(),
+            backup.queue.current_index,
+            backup.queue.shuffle,
+            backup.queue.repeat_mode,
+        );
+        Ok(summary)
     }
 
     /// # Errors
@@ -3775,7 +3816,7 @@ struct PlaybackStateWrite {
     scrobbled_song_id: Option<String>,
 }
 
-fn clamp_audio_processing_settings(settings: &mut AudioProcessingSettings) {
+pub(crate) fn clamp_audio_processing_settings(settings: &mut AudioProcessingSettings) {
     if settings.normalization_mode != "album" {
         settings.normalization_mode = "track".to_string();
     }

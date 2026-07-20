@@ -61,6 +61,9 @@ pub enum AppError {
 
     #[error("Last.fm error: {0}")]
     Lastfm(String),
+
+    #[error("Backup error: {0}")]
+    Backup(String),
 }
 
 impl From<ClientError> for AppError {

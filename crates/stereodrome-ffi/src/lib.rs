@@ -699,6 +699,25 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(runtime.block_on(async { core.update_server_settings(update).await }))
         }
         "restoreSession" => json_result(runtime.block_on(async { core.restore_session().await })),
+        "exportPortableBackup" => {
+            ensure_backup_jobs_idle(mobile)?;
+            let path = parse_payload::<String>(payload)?;
+            json_result(core.export_portable_backup(path))
+        }
+        "importPortableBackup" => {
+            ensure_backup_jobs_idle(mobile)?;
+            let path = parse_payload::<String>(payload)?;
+            mobile.audio.stop().map_err(|error| error.to_string())?;
+            let result = core.import_portable_backup(path);
+            if result.is_ok()
+                && let Ok(playback) = core.get_playback_state()
+            {
+                #[allow(clippy::cast_possible_truncation)]
+                let volume = playback.app_volume as f32;
+                let _ = mobile.audio.set_volume(volume);
+            }
+            json_result(result)
+        }
         "disconnectServer" => {
             json_result(runtime.block_on(async { core.disconnect_server().await }))
         }
@@ -1043,7 +1062,8 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
 fn should_refresh_file_state(method: &str) -> bool {
     matches!(
         method,
-        "setMaxCacheSize"
+        "importPortableBackup"
+            | "setMaxCacheSize"
             | "clearAudioCache"
             | "downloadSong"
             | "removeCachedSong"
@@ -1064,7 +1084,8 @@ fn should_refresh_file_state(method: &str) -> bool {
 fn should_emit_playback_snapshot(method: &str) -> bool {
     matches!(
         method,
-        "setAudioProcessingSettings"
+        "importPortableBackup"
+            | "setAudioProcessingSettings"
             | "audioPlayCurrent"
             | "audioPlayQueueItem"
             | "audioPlayNext"
@@ -1231,6 +1252,35 @@ fn start_sync_job(mobile: &MobileCore, job: MobileSyncJob) -> Result<(), String>
         }
     });
 
+    Ok(())
+}
+
+fn ensure_backup_jobs_idle(mobile: &MobileCore) -> Result<(), String> {
+    let sync_running = mobile
+        .sync_state
+        .lock()
+        .map_err(|_| "sync state lock is poisoned".to_string())?
+        .active_job
+        .is_some();
+    let playlist_job_running = mobile
+        .saved_playlist_offline_state
+        .lock()
+        .map_err(|_| "saved playlist state lock is poisoned".to_string())?
+        .running;
+    let prefetch_running = {
+        let prefetch = mobile
+            .prefetch_state
+            .lock()
+            .map_err(|_| "background prefetch state lock is poisoned".to_string())?;
+        prefetch.running || prefetch.requested
+    };
+    let downloads_running = !mobile.core.get_downloading_song_ids().is_empty();
+    if sync_running || playlist_job_running || prefetch_running || downloads_running {
+        return Err(
+            "wait for background library or download jobs to finish before using backups"
+                .to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -2386,6 +2436,7 @@ mod tests {
     #[test]
     fn playback_snapshot_policy_includes_dispatch_mutations_that_emit() {
         let emitting_methods = [
+            "importPortableBackup",
             "setAudioProcessingSettings",
             "audioPlayCurrent",
             "audioPlayQueueItem",

@@ -21,6 +21,7 @@ import { useViewStack } from "@/context/ViewContext";
 import { configureLibrarySyncBackgroundTask } from "@/services/librarySyncScheduler";
 import { stereodromeCore } from "@/services/stereodromeCore";
 import { settingsScreenStyles as styles } from "@/screens/SettingsScreen.styles";
+import { backupSettingsOptions } from "@/screens/backupSettingsOptions";
 import type {
   AudioProcessingSettings,
   LastfmQueueItem,
@@ -72,6 +73,7 @@ type SettingsCategory =
   | "interface"
   | "playback"
   | "normalization"
+  | "backup"
   | "cache";
 
 const settingsCategories: {
@@ -88,6 +90,11 @@ const settingsCategories: {
     id: "normalization",
     label: "Normalization",
     sublabel: "Loudness and dynamics",
+  },
+  {
+    id: "backup",
+    label: "Backup & Transfer",
+    sublabel: "Move library data between devices",
   },
   { id: "cache", label: "Audio Cache", sublabel: "Downloaded audio storage" },
 ];
@@ -277,6 +284,22 @@ export function SettingsScreen({ category }: { category?: string }) {
         return playbackOptions(settings, updateAudioSetting, openTextEdit);
       case "normalization":
         return normalizationOptions(settings, updateAudioSetting, openTextEdit);
+      case "backup":
+        return backupSettingsOptions({
+          busyAction,
+          protectedActionRows,
+          runBusy,
+          setMessage,
+          onImported: async (summary) => {
+            queryClient.clear();
+            await stereodrome.refreshStatus();
+            await stereodrome.refreshOfflineSongIds();
+            const importedSyncSettings =
+              await stereodromeCore.getSyncSettings();
+            await configureLibrarySyncBackgroundTask(importedSyncSettings);
+            setMessage(`Imported ${summary.songs.toLocaleString()} songs`);
+          },
+        });
       case "cache":
         return cacheOptions();
       default:

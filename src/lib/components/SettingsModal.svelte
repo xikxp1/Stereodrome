@@ -57,6 +57,7 @@
   import { refreshLibraryViews } from "$lib/services/libraryRefresh.svelte";
   import { spectrum } from "$lib/stores/spectrum.svelte";
   import SettingsAudioSections from "./SettingsAudioSections.svelte";
+  import SettingsBackupSection from "./SettingsBackupSection.svelte";
   import {
     EQ_MAX_DB,
     EQ_MIN_DB,
@@ -312,6 +313,16 @@
     } finally {
       clearing = false;
     }
+  }
+
+  async function handleBackupImported() {
+    await Promise.all([
+      loadNormalization(),
+      loadPlaybackSettings(),
+      loadConnectivitySettings(),
+      loadSyncSettings(),
+      loadSyncStatus(),
+    ]);
   }
 
   async function loadScanStatus() {
@@ -1155,6 +1166,8 @@
             </div>
           {/if}
         </div>
+
+        <SettingsBackupSection onImported={handleBackupImported} />
 
         <!-- Display Section -->
         <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">

@@ -147,6 +147,26 @@ export async function getPlaybackStatus(): Promise<PlaybackState> {
   return invoke<PlaybackState>("get_playback_status");
 }
 
+export interface BackupSummary {
+  artists: number;
+  albums: number;
+  songs: number;
+  playlists: number;
+  queue_items: number;
+}
+
+export async function exportPortableBackup(
+  path: string
+): Promise<BackupSummary> {
+  return invoke<BackupSummary>("export_portable_backup", { path });
+}
+
+export async function importPortableBackup(
+  path: string
+): Promise<BackupSummary> {
+  return invoke<BackupSummary>("import_portable_backup", { path });
+}
+
 // Queue commands
 export async function playSongWithQueue(
   songId: string,

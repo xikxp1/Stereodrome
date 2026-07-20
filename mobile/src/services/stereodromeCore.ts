@@ -8,6 +8,7 @@ import type {
   AlbumListEntry,
   AudioProcessingSettings,
   AudioPlaybackStatus,
+  BackupSummary,
   CacheStats,
   DownloadStatus,
   LibrarySyncStatus,
@@ -122,6 +123,17 @@ function isConnectionStatus(value: unknown): value is ConnectionStatus {
     isNullableString(value["server_url"]) &&
     isNullableString(value["username"]) &&
     isNullableString(value["server_version"])
+  );
+}
+
+function isBackupSummary(value: unknown): value is BackupSummary {
+  return (
+    isRecord(value) &&
+    typeof value["artists"] === "number" &&
+    typeof value["albums"] === "number" &&
+    typeof value["songs"] === "number" &&
+    typeof value["playlists"] === "number" &&
+    typeof value["queue_items"] === "number"
   );
 }
 
@@ -705,6 +717,12 @@ export const stereodromeCore = {
   },
   restoreSession(): Promise<ConnectionStatus> {
     return invokeJson("restoreSession", isConnectionStatus);
+  },
+  exportPortableBackup(path: string): Promise<BackupSummary> {
+    return invokeJson("exportPortableBackup", isBackupSummary, path);
+  },
+  importPortableBackup(path: string): Promise<BackupSummary> {
+    return invokeJson("importPortableBackup", isBackupSummary, path);
   },
   disconnectServer(): Promise<void> {
     return invokeJson("disconnectServer", isNull).then(() => undefined);

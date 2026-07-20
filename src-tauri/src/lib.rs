@@ -134,6 +134,8 @@ pub fn run() {
             commands::disconnect_server,
             commands::get_connection_status,
             commands::restore_session,
+            commands::export_portable_backup,
+            commands::import_portable_backup,
             commands::sync_library,
             commands::reconcile_library_state,
             commands::get_library_sync_status,

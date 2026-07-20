@@ -3,8 +3,9 @@ use rand::prelude::IndexedRandom;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RepeatMode {
+    #[default]
     Off,
     All,
     One,

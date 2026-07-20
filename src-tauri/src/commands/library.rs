@@ -265,6 +265,23 @@ fn sync_job_lock() -> &'static AtomicBool {
     LOCK.get_or_init(|| AtomicBool::new(false))
 }
 
+pub(crate) struct LibraryMutationGuard;
+
+impl LibraryMutationGuard {
+    pub(crate) fn acquire() -> Option<Self> {
+        sync_job_lock()
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+            .then_some(Self)
+    }
+}
+
+impl Drop for LibraryMutationGuard {
+    fn drop(&mut self) {
+        sync_job_lock().store(false, Ordering::SeqCst);
+    }
+}
+
 fn active_sync_job_state() -> &'static Mutex<Option<SyncJobKind>> {
     static ACTIVE_JOB: OnceLock<Mutex<Option<SyncJobKind>>> = OnceLock::new();
     ACTIVE_JOB.get_or_init(|| Mutex::new(None))
@@ -1888,7 +1905,7 @@ fn update_search_index_for_incremental_sync(
 }
 
 /// Rebuild the search index from current database state.
-fn rebuild_search_index_from_db(state: &AppState) -> AppResult<()> {
+pub(crate) fn rebuild_search_index_from_db(state: &AppState) -> AppResult<()> {
     let (artists, albums, songs) = {
         let db = state.db.lock_recover();
 

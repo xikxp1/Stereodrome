@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod backup;
 pub mod cache;
 pub mod coverart;
 pub mod lastfm;
@@ -16,6 +17,7 @@ pub mod updater;
 pub mod windowing;
 
 pub use auth::*;
+pub use backup::*;
 pub use cache::*;
 pub use coverart::*;
 pub use lastfm::*;
