@@ -138,7 +138,11 @@ export function IpodShell() {
           pop();
         }
         if (input === "menu_long" && playback.currentSong) {
-          showNowPlaying();
+          if (current.name === "nowPlaying") {
+            songActions.openSongContextMenu();
+          } else {
+            showNowPlaying();
+          }
         }
         if (input === "play_pause") {
           void playback.toggle();
@@ -156,7 +160,15 @@ export function IpodShell() {
           void playback.seekBy(-5);
         }
       }),
-    [current.name, playback, pop, showNowPlaying, stereodrome.ready, subscribe]
+    [
+      current.name,
+      playback,
+      pop,
+      showNowPlaying,
+      songActions,
+      stereodrome.ready,
+      subscribe,
+    ]
   );
 
   return (
