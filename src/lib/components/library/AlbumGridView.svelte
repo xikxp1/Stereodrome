@@ -3,7 +3,6 @@
   import LazyImage from "$lib/components/LazyImage.svelte";
   import { getSongs } from "$lib/api/commands";
   import { queue } from "$lib/stores/queue.svelte";
-  import { albumListStore } from "$lib/stores/albumList.svelte";
   import { showQueueableContextMenu } from "$lib/services/contextMenu";
   import { untrack } from "svelte";
   import { on } from "svelte/events";
@@ -17,6 +16,9 @@
   interface Props {
     albums: AlbumGridItem[];
     totalCount?: number;
+    hasMore?: boolean;
+    isLoadingMore?: boolean;
+    onLoadMore?: () => void | Promise<void>;
     onSelect?: (album: AlbumGridItem) => void;
     onNavigateToArtist?: (album: AlbumGridItem) => void;
     restoreScrollOffset?: number | null;
@@ -26,6 +28,9 @@
   let {
     albums,
     totalCount = 0,
+    hasMore = false,
+    isLoadingMore = false,
+    onLoadMore,
     onSelect,
     onNavigateToArtist,
     restoreScrollOffset = null,
@@ -88,18 +93,13 @@
 
   // Infinite scroll: load more albums when near the end of loaded data
   $effect(() => {
-    if (
-      !albumListStore.currentListType ||
-      albumListStore.isLoadingMore ||
-      !albumListStore.hasMore
-    )
-      return;
+    if (!onLoadMore || isLoadingMore || !hasMore) return;
 
     const range = $virtualizer.range;
     if (!range || albums.length === 0) return;
 
     if (range.endIndex >= loadedRowCount - 2) {
-      albumListStore.loadMore();
+      void onLoadMore();
     }
   });
 
@@ -239,7 +239,7 @@
         </div>
       {/each}
 
-      {#if albumListStore.isLoadingMore}
+      {#if isLoadingMore}
         <div
           class="absolute left-0 right-0 flex justify-center py-4"
           style="transform: translateY({totalSize}px);"

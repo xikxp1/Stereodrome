@@ -491,6 +491,24 @@
       : baseAlbums;
   });
 
+  const visibleRankedAlbums = $derived.by(() => {
+    if (!isOfflineConfiguredSession) {
+      return albumListStore.entries;
+    }
+
+    const playableAlbumIds = new Set(
+      offlineVisibleSongs.map((song) => song.album_id)
+    );
+    return albumListStore.entries.filter((album) =>
+      playableAlbumIds.has(album.id)
+    );
+  });
+  const visibleRankedAlbumCount = $derived(
+    isOfflineConfiguredSession
+      ? visibleRankedAlbums.length
+      : albumListStore.totalCount
+  );
+
   // Songs for detail view
   const detailSongs = $derived.by(() => {
     const detail = detailView;
@@ -1335,8 +1353,8 @@
             <div class="flex-1 overflow-hidden">
               <SongList
                 songs={detailSongs}
-                isLoading={albumListStore.isLoading}
-                error={albumListStore.error}
+                {isLoading}
+                error={loadError}
                 selectedSongId={selectedSong?.id ?? null}
                 playingSongId={playback.currentTrack?.id ?? null}
                 {scrollToSongId}
@@ -1357,8 +1375,11 @@
           {:else}
             <!-- Album List Grid -->
             <AlbumGridView
-              albums={albumListStore.entries}
-              totalCount={albumListStore.totalCount}
+              albums={visibleRankedAlbums}
+              totalCount={visibleRankedAlbumCount}
+              hasMore={!isOfflineConfiguredSession && albumListStore.hasMore}
+              isLoadingMore={albumListStore.isLoadingMore}
+              onLoadMore={() => albumListStore.loadMore()}
               onSelect={handleAlbumListEntrySelect}
               onNavigateToArtist={handleAlbumListEntryNavigateToArtist}
               restoreScrollOffset={albumGridScrollOffset}
@@ -1368,8 +1389,8 @@
             />
 
             <StatusBar
-              itemCount={albumListStore.entries.length}
-              totalCount={albumListStore.totalCount}
+              itemCount={visibleRankedAlbums.length}
+              totalCount={visibleRankedAlbumCount}
               itemType="albums"
             />
           {/if}
