@@ -11,6 +11,11 @@ type CoverArtState = {
   uri: string | null;
 };
 
+const wideLayoutAspectRatio = 1.35;
+const wideCoverWidthRatio = 0.42;
+const wideCoverVerticalInset = 8;
+const stackedDetailsHeight = 66;
+
 function useCoverArtUri(songId: string | null, size: number) {
   const [coverArt, setCoverArt] = useState<CoverArtState | null>(null);
 
@@ -43,6 +48,10 @@ function useCoverArtUri(songId: string | null, size: number) {
 
 export function NowPlayingScreen() {
   const playback = usePlayback();
+  const [currentRegionSize, setCurrentRegionSize] = useState({
+    height: 0,
+    width: 0,
+  });
   const song = playback.currentSong;
   const nextSong = playback.nextSong;
   const songId = song?.id ?? null;
@@ -55,39 +64,98 @@ export function NowPlayingScreen() {
     song !== null && duration > 0
       ? Math.min(1, playback.position / duration)
       : 0;
+  const usesWideLayout =
+    currentRegionSize.width > 0 &&
+    currentRegionSize.width >= currentRegionSize.height * wideLayoutAspectRatio;
+  const coverSize =
+    currentRegionSize.width > 0
+      ? Math.max(
+          0,
+          Math.min(
+            currentRegionSize.width *
+              (usesWideLayout ? wideCoverWidthRatio : 0.8),
+            usesWideLayout
+              ? currentRegionSize.height - wideCoverVerticalInset
+              : currentRegionSize.height - stackedDetailsHeight
+          )
+        )
+      : null;
+  const measuredCoverStyle =
+    coverSize === null ? null : { height: coverSize, width: coverSize };
 
   return (
     <View style={styles.container}>
-      <View style={styles.currentRegion}>
+      <View
+        onLayout={(event) => {
+          const { height, width } = event.nativeEvent.layout;
+          setCurrentRegionSize((current) =>
+            current.height === height && current.width === width
+              ? current
+              : { height, width }
+          );
+        }}
+        style={[
+          styles.currentRegion,
+          usesWideLayout && styles.currentRegionWide,
+        ]}
+      >
         {coverUri !== null && coverUri.length > 0 ? (
-          <Image source={{ uri: coverUri }} style={styles.cover} />
-        ) : (
-          <View style={styles.coverPlaceholder} />
-        )}
-        <SyncedMarqueeText
-          group="mobile-now-playing"
-          text={song?.title ?? "Nothing Playing"}
-          style={styles.title}
-        />
-        <SyncedMarqueeText
-          group="mobile-now-playing"
-          text={[song?.artist, song?.album].filter(Boolean).join(" - ")}
-          style={styles.subtitle}
-        />
-        <View
-          accessibilityLabel="Playback position"
-          accessibilityRole="progressbar"
-          accessibilityValue={{
-            min: 0,
-            max: Math.max(0, duration),
-            now: Math.max(0, Math.min(playback.position, duration)),
-          }}
-          pointerEvents="none"
-          style={styles.progressTrack}
-        >
-          <View
-            style={[styles.progressFill, { width: `${progressRatio * 100}%` }]}
+          <Image
+            source={{ uri: coverUri }}
+            style={[
+              styles.cover,
+              measuredCoverStyle,
+              usesWideLayout && styles.coverWide,
+            ]}
           />
+        ) : (
+          <View
+            style={[
+              styles.coverPlaceholder,
+              measuredCoverStyle,
+              usesWideLayout && styles.coverWide,
+            ]}
+          />
+        )}
+        <View
+          style={[
+            styles.currentDetails,
+            usesWideLayout && styles.currentDetailsWide,
+          ]}
+        >
+          <SyncedMarqueeText
+            align={usesWideLayout ? "left" : "center"}
+            group="mobile-now-playing"
+            text={song?.title ?? "Nothing Playing"}
+            style={styles.title}
+          />
+          <SyncedMarqueeText
+            align={usesWideLayout ? "left" : "center"}
+            group="mobile-now-playing"
+            text={[song?.artist, song?.album].filter(Boolean).join(" - ")}
+            style={styles.subtitle}
+          />
+          <View
+            accessibilityLabel="Playback position"
+            accessibilityRole="progressbar"
+            accessibilityValue={{
+              min: 0,
+              max: Math.max(0, duration),
+              now: Math.max(0, Math.min(playback.position, duration)),
+            }}
+            pointerEvents="none"
+            style={[
+              styles.progressTrack,
+              usesWideLayout && styles.progressTrackWide,
+            ]}
+          >
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${progressRatio * 100}%` },
+              ]}
+            />
+          </View>
         </View>
       </View>
       <View style={styles.nextSlot}>
@@ -140,6 +208,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: "100%",
   },
+  currentRegionWide: {
+    flexDirection: "row",
+    gap: 12,
+  },
   cover: {
     aspectRatio: 1,
     borderRadius: 4,
@@ -152,6 +224,18 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     marginBottom: 12,
     width: "80%",
+  },
+  coverWide: {
+    marginBottom: 0,
+  },
+  currentDetails: {
+    alignItems: "center",
+    width: "100%",
+  },
+  currentDetailsWide: {
+    flex: 1,
+    minWidth: 0,
+    width: 0,
   },
   title: {
     color: colors.text,
@@ -178,6 +262,9 @@ const styles = StyleSheet.create({
     marginTop: 8,
     overflow: "hidden",
     width: "72%",
+  },
+  progressTrackWide: {
+    width: "100%",
   },
   nextCover: {
     borderRadius: 3,
