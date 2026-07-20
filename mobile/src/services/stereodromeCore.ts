@@ -928,6 +928,15 @@ export const stereodromeCore = {
   audioPlayCurrent(): Promise<AudioPlaybackStatus> {
     return invokeJson("audioPlayCurrent", isAudioPlaybackStatus);
   },
+  audioPlayQueueItem(index: number): Promise<AudioPlaybackStatus> {
+    return invokeJson("audioPlayQueueItem", isAudioPlaybackStatus, index);
+  },
+  audioPlayNext(force = true): Promise<AudioPlaybackStatus> {
+    return invokeJson("audioPlayNext", isAudioPlaybackStatus, force);
+  },
+  audioPlayPrevious(): Promise<AudioPlaybackStatus> {
+    return invokeJson("audioPlayPrevious", isAudioPlaybackStatus);
+  },
   audioApplySettings(): Promise<AudioPlaybackStatus> {
     return invokeJson("audioApplySettings", isAudioPlaybackStatus);
   },

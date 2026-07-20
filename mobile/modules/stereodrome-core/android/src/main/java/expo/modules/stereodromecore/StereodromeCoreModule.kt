@@ -39,7 +39,13 @@ class StereodromeCoreModule : Module() {
     }
 
     AsyncFunction("call") { method: String, payload: String ->
-      if (method == "audioPlayCurrent" || method == "audioResume") {
+      if (
+        method == "audioPlayCurrent" ||
+        method == "audioPlayQueueItem" ||
+        method == "audioPlayNext" ||
+        method == "audioPlayPrevious" ||
+        method == "audioResume"
+      ) {
         requestAudioFocus()
       }
       val result = callCore(method, payload)

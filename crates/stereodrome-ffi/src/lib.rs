@@ -895,6 +895,25 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             let result = runtime.block_on(async { play_current_queue_item(mobile, None).await });
             json_result(result)
         }
+        "audioPlayQueueItem" => {
+            let index = parse_payload::<usize>(payload)?;
+            let result = runtime.block_on(async {
+                play_queue_navigation(mobile, QueueNavigation::Index(index)).await
+            });
+            json_result(result)
+        }
+        "audioPlayNext" => {
+            let force = parse_payload::<Option<bool>>(payload)?.unwrap_or(false);
+            let result = runtime.block_on(async {
+                play_queue_navigation(mobile, QueueNavigation::Next(force)).await
+            });
+            json_result(result)
+        }
+        "audioPlayPrevious" => {
+            let result = runtime
+                .block_on(async { play_queue_navigation(mobile, QueueNavigation::Previous).await });
+            json_result(result)
+        }
         "audioApplySettings" => {
             let result = runtime.block_on(async { apply_audio_settings(mobile).await });
             json_result(result)
@@ -1035,6 +1054,9 @@ fn should_refresh_file_state(method: &str) -> bool {
             | "prefetchNext"
             | "setAudioProcessingSettings"
             | "audioPlayCurrent"
+            | "audioPlayQueueItem"
+            | "audioPlayNext"
+            | "audioPlayPrevious"
             | "audioPrepareNextTransition"
     )
 }
@@ -1044,6 +1066,9 @@ fn should_emit_playback_snapshot(method: &str) -> bool {
         method,
         "setAudioProcessingSettings"
             | "audioPlayCurrent"
+            | "audioPlayQueueItem"
+            | "audioPlayNext"
+            | "audioPlayPrevious"
             | "audioApplySettings"
             | "audioPause"
             | "audioResume"
@@ -1707,16 +1732,10 @@ fn start_mobile_playback_monitor(
                 last_segment_idx = 0;
                 last_report = None;
 
-                match core.play_next(Some(false)) {
-                    Ok(Some(_)) => {
-                        if let Err(error) = runtime.block_on(async {
-                            play_current_queue_item_from(&core, &audio, None).await
-                        }) {
-                            log::warn!(
-                                target: "stereodrome_ffi",
-                                "Failed to advance mobile playback after track ended: {error}"
-                            );
-                        }
+                match runtime.block_on(async {
+                    play_queue_navigation_from(&core, &audio, QueueNavigation::Next(false)).await
+                }) {
+                    Ok(status) if status.current_song_id.is_some() => {
                         let prepared = runtime
                             .block_on(async { prepare_next_transition_from(&core, &audio).await })
                             .unwrap_or(false);
@@ -1728,7 +1747,7 @@ fn start_mobile_playback_monitor(
                         );
                         announcer.emit(&core, &audio);
                     }
-                    Ok(None) => {
+                    Ok(_) => {
                         let _ = core.save_playback_position(PlaybackProgress {
                             song_id: song.id,
                             position_seconds: 0.0,
@@ -1740,7 +1759,7 @@ fn start_mobile_playback_monitor(
                     Err(error) => {
                         log::warn!(
                             target: "stereodrome_ffi",
-                            "Failed to advance mobile queue after track ended: {error}"
+                            "Failed to prepare mobile playback after track ended: {error}"
                         );
                     }
                 }
@@ -1839,23 +1858,89 @@ async fn play_current_queue_item_from(
 
     let prepared = prepare_queue_item_audio_from(core, item).await?;
 
-    audio
-        .play(
-            prepared.audio_data,
-            prepared.metadata,
-            prepared.duration_secs,
-            prepared.processing.normalization_gain,
-            prepared.processing.dynamics_preset,
-            prepared.processing.binaural_preset,
-            prepared.processing.equalizer_settings,
-        )
-        .map_err(|e| e.to_string())?;
+    let status = play_prepared_audio(audio, prepared)?;
 
     if let Some(position) = seek_position {
         audio.seek(position).map_err(|e| e.to_string())?;
     }
 
-    Ok(audio.get_status())
+    Ok(if seek_position.is_some() {
+        audio.get_status()
+    } else {
+        status
+    })
+}
+
+#[derive(Clone, Copy)]
+enum QueueNavigation {
+    Index(usize),
+    Next(bool),
+    Previous,
+}
+
+impl QueueNavigation {
+    fn preview(self, core: &StereodromeCore) -> Result<Option<QueueItem>, String> {
+        match self {
+            Self::Index(index) => core
+                .get_queue()
+                .map_err(|error| error.to_string())?
+                .items
+                .get(index)
+                .cloned()
+                .map(Some)
+                .ok_or_else(|| format!("queue index {index} is out of range")),
+            Self::Next(force) => core
+                .preview_next_queue_item(Some(force))
+                .map_err(|error| error.to_string()),
+            Self::Previous => core
+                .preview_previous_queue_item()
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    fn commit(self, core: &StereodromeCore) -> Result<Option<QueueItem>, String> {
+        match self {
+            Self::Index(index) => core.play_queue_item(index),
+            Self::Next(force) => core.play_next(Some(force)),
+            Self::Previous => core.play_previous(),
+        }
+        .map_err(|error| error.to_string())
+    }
+}
+
+async fn play_queue_navigation(
+    mobile: &MobileCore,
+    navigation: QueueNavigation,
+) -> Result<stereodrome_audio::PlaybackStatus, String> {
+    play_queue_navigation_from(&mobile.core, &mobile.audio, navigation).await
+}
+
+async fn play_queue_navigation_from(
+    core: &StereodromeCore,
+    audio: &AudioPlayer,
+    navigation: QueueNavigation,
+) -> Result<stereodrome_audio::PlaybackStatus, String> {
+    let preview = navigation.preview(core)?;
+
+    let Some(item) = preview else {
+        audio.stop().map_err(|error| error.to_string())?;
+        let committed = navigation.commit(core)?;
+        if committed.is_some() {
+            return Err("queue navigation changed while playback was being prepared".to_string());
+        }
+        return Ok(audio.get_status());
+    };
+
+    let expected_song_id = item.song_id.clone();
+    let prepared = prepare_queue_item_audio_from(core, item).await?;
+    let status = play_prepared_audio(audio, prepared)?;
+    let committed = navigation.commit(core)?;
+
+    if committed.as_ref().map(|item| item.song_id.as_str()) != Some(expected_song_id.as_str()) {
+        return Err("queue navigation changed while playback was being prepared".to_string());
+    }
+
+    Ok(status)
 }
 
 async fn resume_current_playback(
@@ -2051,6 +2136,24 @@ struct PreparedAudioItem {
     processing: AudioProcessing,
 }
 
+fn play_prepared_audio(
+    audio: &AudioPlayer,
+    prepared: PreparedAudioItem,
+) -> Result<stereodrome_audio::PlaybackStatus, String> {
+    audio
+        .play(
+            prepared.audio_data,
+            prepared.metadata,
+            prepared.duration_secs,
+            prepared.processing.normalization_gain,
+            prepared.processing.dynamics_preset,
+            prepared.processing.binaural_preset,
+            prepared.processing.equalizer_settings,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(audio.get_status())
+}
+
 async fn prepare_queue_item_audio_from(
     core: &StereodromeCore,
     item: QueueItem,
@@ -2207,6 +2310,56 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
     use std::sync::mpsc::{self, RecvTimeoutError};
 
+    fn test_queue_item(id: &str) -> QueueItem {
+        QueueItem {
+            song_id: id.to_string(),
+            title: format!("Song {id}"),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration: 180,
+        }
+    }
+
+    #[test]
+    fn failed_navigation_preparation_does_not_advance_queue() {
+        static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+        let test_id = NEXT_TEST_ID.fetch_add(1, AtomicOrdering::Relaxed);
+        let data_dir = std::env::temp_dir().join(format!(
+            "stereodrome-ffi-navigation-{}-{test_id}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        core.add_to_queue(test_queue_item("a"))
+            .expect("first queue item is added");
+        core.add_to_queue(test_queue_item("b"))
+            .expect("second queue item is added");
+        core.play_queue_item(0)
+            .expect("initial queue item is selected");
+        let audio = AudioPlayer::new_with_spectrum(false).expect("audio player initializes");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime initializes");
+
+        let result = runtime.block_on(async {
+            play_queue_navigation_from(&core, &audio, QueueNavigation::Next(true)).await
+        });
+
+        assert!(
+            result.is_err(),
+            "uncached playback without a server must fail"
+        );
+        assert_eq!(
+            core.get_queue()
+                .expect("queue remains readable")
+                .current_index,
+            Some(0)
+        );
+
+        drop(audio);
+        drop(core);
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
     #[test]
     fn mobile_monitor_gap_under_threshold_is_not_suspension() {
         assert!(!is_mobile_monitor_suspension_gap(
@@ -2228,6 +2381,9 @@ mod tests {
         let emitting_methods = [
             "setAudioProcessingSettings",
             "audioPlayCurrent",
+            "audioPlayQueueItem",
+            "audioPlayNext",
+            "audioPlayPrevious",
             "audioApplySettings",
             "audioPause",
             "audioResume",

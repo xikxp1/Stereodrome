@@ -109,16 +109,14 @@ object StereodromeCoreBridge {
     if (!hasCore()) {
       return
     }
-    call("playNext", "true")
-    call("audioPlayCurrent", "null")
+    call("audioPlayNext", "true")
   }
 
   fun previous() {
     if (!hasCore()) {
       return
     }
-    call("playPrevious", "null")
-    call("audioPlayCurrent", "null")
+    call("audioPlayPrevious", "null")
   }
 
   fun seekTo(positionSeconds: Double) {

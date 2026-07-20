@@ -1519,6 +1519,20 @@ impl StereodromeCore {
     }
 
     /// # Errors
+    /// Returns an error if queue state cannot be locked.
+    pub fn preview_next_queue_item(&self, force: Option<bool>) -> CoreResult<Option<QueueItem>> {
+        let queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
+        Ok(queue.preview_next(force.unwrap_or(false)))
+    }
+
+    /// # Errors
+    /// Returns an error if queue state cannot be locked.
+    pub fn preview_previous_queue_item(&self) -> CoreResult<Option<QueueItem>> {
+        let queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
+        Ok(queue.preview_previous())
+    }
+
+    /// # Errors
     /// Returns an error if either song's playback metadata cannot be read.
     pub fn songs_are_gapless_eligible(
         &self,

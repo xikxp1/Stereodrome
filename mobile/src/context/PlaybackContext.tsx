@@ -224,9 +224,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     await stereodromeCore.audioPrepareNextTransition();
   }, []);
 
-  const playCurrentQueueItem = useCallback(
+  const finalizePlaybackStart = useCallback(
     async (startPositionSeconds?: number) => {
-      await stereodromeCore.audioPlayCurrent();
       await reconcilePlaybackSnapshot();
 
       if (
@@ -248,6 +247,14 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       });
     },
     [prepareNextPlayback, reconcilePlaybackSnapshot]
+  );
+
+  const playCurrentQueueItem = useCallback(
+    async (startPositionSeconds?: number) => {
+      await stereodromeCore.audioPlayCurrent();
+      await finalizePlaybackStart(startPositionSeconds);
+    },
+    [finalizePlaybackStart]
   );
 
   const persistPlaybackPosition = useCallback(async (playing: boolean) => {
@@ -525,27 +532,28 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const next = useCallback(async () => {
     await runPlaybackAction("transport", async () => {
       await ensurePlayerReady();
-      await stereodromeCore.playNext(true);
-      await playCurrentQueueItem();
+      await stereodromeCore.audioPlayNext(true);
+      await finalizePlaybackStart();
     });
-  }, [playCurrentQueueItem, runPlaybackAction]);
+  }, [finalizePlaybackStart, runPlaybackAction]);
 
   const previous = useCallback(async () => {
     await runPlaybackAction("transport", async () => {
       await ensurePlayerReady();
-      await stereodromeCore.playPrevious();
-      await playCurrentQueueItem();
+      await stereodromeCore.audioPlayPrevious();
+      await finalizePlaybackStart();
     });
-  }, [playCurrentQueueItem, runPlaybackAction]);
+  }, [finalizePlaybackStart, runPlaybackAction]);
 
   const playQueueIndex = useCallback(
     async (index: number) => {
       await runPlaybackAction("transport", async () => {
-        await stereodromeCore.playQueueItem(index);
-        await playCurrentQueueItem();
+        await ensurePlayerReady();
+        await stereodromeCore.audioPlayQueueItem(index);
+        await finalizePlaybackStart();
       });
     },
-    [playCurrentQueueItem, runPlaybackAction]
+    [finalizePlaybackStart, runPlaybackAction]
   );
 
   const removeQueueIndex = useCallback(

@@ -157,7 +157,9 @@ public class StereodromeCoreModule: Module {
     }
 
     AsyncFunction("call") { (_ method: String, _ payload: String) -> String in
-      if method == "audioPlayCurrent" || method == "audioResume" {
+      if method == "audioPlayCurrent" || method == "audioPlayQueueItem"
+        || method == "audioPlayNext" || method == "audioPlayPrevious"
+        || method == "audioResume" {
         self.setAudioSessionActive(true)
       }
       let result = self.callSync(method: method, payload: payload)
@@ -512,7 +514,7 @@ public class StereodromeCoreModule: Module {
   }
 
   /// Remote command handlers run on the main thread, but the underlying core
-  /// calls can block (e.g. audioPlayCurrent downloads the song). Acknowledge
+  /// calls can block (e.g. audioPlayNext downloads the song). Acknowledge
   /// the command immediately and run it on a serial background queue.
   private func enqueueRemoteCommand(_ action: RemoteCommandAction) -> MPRemoteCommandHandlerStatus {
     remoteCommandQueue.async {
@@ -553,15 +555,13 @@ public class StereodromeCoreModule: Module {
         return
       }
       setAudioSessionActive(true)
-      _ = callSync(method: "playNext", payload: "true")
-      _ = callSync(method: "audioPlayCurrent", payload: "null")
+      _ = callSync(method: "audioPlayNext", payload: "true")
     case .previous:
       guard canPlayRemoteCommands() else {
         return
       }
       setAudioSessionActive(true)
-      _ = callSync(method: "playPrevious", payload: "null")
-      _ = callSync(method: "audioPlayCurrent", payload: "null")
+      _ = callSync(method: "audioPlayPrevious", payload: "null")
     case .stop:
       _ = callSync(method: "audioStop", payload: "null")
       setAudioSessionActive(false)

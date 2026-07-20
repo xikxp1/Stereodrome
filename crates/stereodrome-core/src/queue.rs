@@ -43,7 +43,7 @@ impl QueueState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PlayQueue {
     items: Vec<QueueItem>,
     current_index: Option<usize>,
@@ -316,6 +316,12 @@ impl PlayQueue {
         }
     }
 
+    #[must_use]
+    pub fn preview_next(&self, force: bool) -> Option<QueueItem> {
+        let mut preview = self.clone();
+        preview.next(force).cloned()
+    }
+
     fn manual_next_index(&self) -> Option<usize> {
         if self.items.is_empty() {
             return None;
@@ -446,6 +452,12 @@ impl PlayQueue {
                 prev_idx.and_then(|i| self.items.get(i))
             }
         }
+    }
+
+    #[must_use]
+    pub fn preview_previous(&self) -> Option<QueueItem> {
+        let mut preview = self.clone();
+        preview.previous().cloned()
     }
 
     pub fn toggle_shuffle(&mut self) {
@@ -719,6 +731,41 @@ mod tests {
         let mut auto_queue = shuffled_repeat_all_queue();
         let auto_preview = auto_queue.peek_next().unwrap().song_id.clone();
         assert_eq!(auto_queue.next(false).unwrap().song_id, auto_preview);
+    }
+
+    #[test]
+    fn navigation_previews_match_commits_without_advancing_queue() {
+        let mut queue = PlayQueue::load(
+            vec![queue_item("a"), queue_item("b"), queue_item("c")],
+            Some(1),
+            false,
+            RepeatMode::Off,
+        );
+
+        let next_preview = queue.preview_next(true).unwrap();
+        assert_eq!(next_preview.song_id, "c");
+        assert_eq!(queue.current_index(), Some(1));
+        assert_eq!(queue.next(true).unwrap().song_id, next_preview.song_id);
+
+        let previous_preview = queue.preview_previous().unwrap();
+        assert_eq!(previous_preview.song_id, "b");
+        assert_eq!(queue.current_index(), Some(2));
+        assert_eq!(queue.previous().unwrap().song_id, previous_preview.song_id);
+    }
+
+    #[test]
+    fn forced_next_preview_respects_repeat_one_manual_navigation() {
+        let mut queue = PlayQueue::load(
+            vec![queue_item("a"), queue_item("b")],
+            Some(0),
+            false,
+            RepeatMode::One,
+        );
+
+        let preview = queue.preview_next(true).unwrap();
+        assert_eq!(preview.song_id, "b");
+        assert_eq!(queue.current_index(), Some(0));
+        assert_eq!(queue.next(true).unwrap().song_id, preview.song_id);
     }
 
     #[test]
