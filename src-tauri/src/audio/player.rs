@@ -14,7 +14,7 @@ use crate::error::{AppError, AppResult, MutexExt};
 use crate::media::MediaControlsManager;
 use crate::tray::TrayManager;
 
-pub use stereodrome_audio::{CrossfadePlayRequest, PlaybackStatus, SongMetadata};
+pub use stereodrome_audio::{CrossfadePlayRequest, PlaybackIdentity, PlaybackStatus, SongMetadata};
 
 pub struct AudioPlayer {
     inner: stereodrome_audio::AudioPlayer,
@@ -55,6 +55,7 @@ impl AudioPlayer {
     #[allow(clippy::too_many_arguments)]
     pub fn append_gapless(
         &self,
+        expected_playback: PlaybackIdentity,
         audio_data: Arc<[u8]>,
         metadata: SongMetadata,
         duration_secs: f64,
@@ -65,6 +66,7 @@ impl AudioPlayer {
     ) -> AppResult<()> {
         self.inner
             .append_gapless(
+                expected_playback,
                 audio_data,
                 metadata,
                 duration_secs,
@@ -74,6 +76,10 @@ impl AudioPlayer {
                 equalizer_settings,
             )
             .map_err(|error| AppError::Audio(error.to_string()))
+    }
+
+    pub fn current_playback_identity(&self) -> Option<PlaybackIdentity> {
+        self.inner.current_playback_identity()
     }
 
     pub fn crossfade_play(&self, request: CrossfadePlayRequest) -> AppResult<()> {

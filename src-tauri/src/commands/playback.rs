@@ -698,6 +698,17 @@ fn check_and_queue_gapless(app_handle: &AppHandle, state: &AppState) {
         return;
     }
 
+    let expected_playback = {
+        let audio_player = state.audio_player.lock_recover();
+        let Some(identity) = audio_player.current_playback_identity() else {
+            return;
+        };
+        if identity.song_id() != current_song_id {
+            return;
+        }
+        identity
+    };
+
     info!("Gapless eligible: queuing next song {next_song_id}");
 
     // Spawn async task to fetch audio and send AppendGapless command
@@ -716,6 +727,7 @@ fn check_and_queue_gapless(app_handle: &AppHandle, state: &AppState) {
         // Append to existing Sink for gapless transition
         let audio_player = state.audio_player.lock_recover();
         if let Err(e) = audio_player.append_gapless(
+            expected_playback,
             data.audio_data,
             data.metadata,
             data.duration,

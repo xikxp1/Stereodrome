@@ -70,6 +70,21 @@ pub struct PlaybackState {
     pub song: Option<SongMetadata>,
 }
 
+/// Identifies the exact source and song that were active when asynchronous
+/// playback work was started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaybackIdentity {
+    generation: u64,
+    song_id: String,
+}
+
+impl PlaybackIdentity {
+    #[must_use]
+    pub fn song_id(&self) -> &str {
+        &self.song_id
+    }
+}
+
 /// Commands sent to the audio thread
 enum AudioCommand {
     Play {
@@ -102,13 +117,7 @@ enum AudioCommand {
     /// Append a song to the existing player for gapless playback.
     /// Unlike Play, this does NOT create a new player.
     AppendGapless {
-        audio_data: Arc<[u8]>,
-        metadata: SongMetadata,
-        duration_secs: f64,
-        normalization_gain: Option<f32>,
-        dynamics_preset: Option<DynamicsPreset>,
-        binaural_preset: Option<BinauralPreset>,
-        equalizer_settings: Option<EqualizerSettings>,
+        request: Box<GaplessAppendRequest>,
         ack: Sender<AudioResult<()>>,
     },
     /// Crossfade to a new song: keep the current sink fading out
@@ -137,6 +146,17 @@ pub struct CrossfadePlayRequest {
     pub binaural_preset: Option<BinauralPreset>,
     pub equalizer_settings: Option<EqualizerSettings>,
     pub crossfade_duration_ms: u32,
+}
+
+struct GaplessAppendRequest {
+    expected_playback: PlaybackIdentity,
+    audio_data: Arc<[u8]>,
+    metadata: SongMetadata,
+    duration_secs: f64,
+    normalization_gain: Option<f32>,
+    dynamics_preset: Option<DynamicsPreset>,
+    binaural_preset: Option<BinauralPreset>,
+    equalizer_settings: Option<EqualizerSettings>,
 }
 
 #[derive(Debug, Clone)]
@@ -473,6 +493,21 @@ impl SharedState {
             volume: state.volume,
         }
     }
+
+    fn playback_identity(&self) -> Option<PlaybackIdentity> {
+        let inner = self.read_inner();
+        let song_id = if inner.gapless_segments.is_empty() {
+            inner.current_song.as_ref().map(|song| song.id.clone())
+        } else {
+            let segment_idx = Self::segment_index_for_current_position(&inner);
+            Some(inner.gapless_segments[segment_idx].metadata.id.clone())
+        }?;
+
+        Some(PlaybackIdentity {
+            generation: inner.source_generation,
+            song_id,
+        })
+    }
 }
 
 pub struct AudioPlayer {
@@ -623,6 +658,7 @@ impl AudioPlayer {
     #[allow(clippy::too_many_arguments)]
     pub fn append_gapless(
         &self,
+        expected_playback: PlaybackIdentity,
         audio_data: Arc<[u8]>,
         metadata: SongMetadata,
         duration_secs: f64,
@@ -632,13 +668,16 @@ impl AudioPlayer {
         equalizer_settings: Option<EqualizerSettings>,
     ) -> AudioResult<()> {
         self.send_result_command("append gapless", |ack| AudioCommand::AppendGapless {
-            audio_data,
-            metadata,
-            duration_secs,
-            normalization_gain,
-            dynamics_preset,
-            binaural_preset,
-            equalizer_settings,
+            request: Box::new(GaplessAppendRequest {
+                expected_playback,
+                audio_data,
+                metadata,
+                duration_secs,
+                normalization_gain,
+                dynamics_preset,
+                binaural_preset,
+                equalizer_settings,
+            }),
             ack,
         })
     }
@@ -835,6 +874,12 @@ impl AudioPlayer {
     #[must_use]
     pub fn get_gapless_state(&self) -> (PlaybackState, usize) {
         self.shared_state.get_gapless_state()
+    }
+
+    /// Returns an identity token for the exact source and song currently active.
+    #[must_use]
+    pub fn current_playback_identity(&self) -> Option<PlaybackIdentity> {
+        self.shared_state.playback_identity()
     }
 
     #[must_use]
@@ -1295,6 +1340,15 @@ struct AudioThread<'a> {
     watchdog: PlaybackWatchdog,
 }
 
+fn matches_expected_playback(
+    shared_state: &SharedState,
+    current_generation: u64,
+    expected_playback: &PlaybackIdentity,
+) -> bool {
+    current_generation == expected_playback.generation
+        && shared_state.playback_identity().as_ref() == Some(expected_playback)
+}
+
 impl<'a> AudioThread<'a> {
     fn new(
         shared_state: &'a Arc<SharedState>,
@@ -1374,17 +1428,9 @@ impl<'a> AudioThread<'a> {
             AudioCommand::Stop { ack } => self.stop(&ack),
             AudioCommand::SetVolume(volume) => self.set_volume(volume),
             AudioCommand::Seek { position_secs, ack } => self.seek(position_secs, &ack),
-            AudioCommand::AppendGapless {
-                audio_data,
-                metadata,
-                duration_secs,
-                normalization_gain,
-                dynamics_preset,
-                binaural_preset,
-                equalizer_settings,
-                ack,
-            } => self.append_gapless(
-                ActiveAudioRequest::new(
+            AudioCommand::AppendGapless { request, ack } => {
+                let GaplessAppendRequest {
+                    expected_playback,
                     audio_data,
                     metadata,
                     duration_secs,
@@ -1392,9 +1438,21 @@ impl<'a> AudioThread<'a> {
                     dynamics_preset,
                     binaural_preset,
                     equalizer_settings,
-                ),
-                &ack,
-            ),
+                } = *request;
+                self.append_gapless(
+                    &expected_playback,
+                    ActiveAudioRequest::new(
+                        audio_data,
+                        metadata,
+                        duration_secs,
+                        normalization_gain,
+                        dynamics_preset,
+                        binaural_preset,
+                        equalizer_settings,
+                    ),
+                    &ack,
+                );
+            }
             AudioCommand::CrossfadePlay {
                 audio_data,
                 metadata,
@@ -1640,7 +1698,12 @@ impl<'a> AudioThread<'a> {
         }
     }
 
-    fn append_gapless(&self, request: ActiveAudioRequest, ack: &Sender<AudioResult<()>>) {
+    fn append_gapless(
+        &self,
+        expected_playback: &PlaybackIdentity,
+        request: ActiveAudioRequest,
+        ack: &Sender<AudioResult<()>>,
+    ) {
         info!(
             "Playback thread append gapless: song_id={}, title={:?}, bytes={}, duration={:.3}s",
             request.metadata.id,
@@ -1648,6 +1711,20 @@ impl<'a> AudioThread<'a> {
             request.audio_data.len(),
             request.duration_secs
         );
+        if !matches_expected_playback(
+            self.shared_state,
+            self.current_generation,
+            expected_playback,
+        ) {
+            let error = AudioError::Playback(format!(
+                "Cannot append gapless track {} because playback changed",
+                request.metadata.id
+            ));
+            debug!("{error}");
+            let _ = ack.send(Err(error));
+            return;
+        }
+
         let Some(ref sink) = self.current_sink else {
             let error = AudioError::Playback(
                 "Cannot append gapless track because there is no active sink".to_string(),
@@ -1957,6 +2034,10 @@ mod tests {
     fn append_gapless_returns_error_when_audio_thread_is_disconnected() {
         let player = disconnected_audio_player();
         let result = player.append_gapless(
+            PlaybackIdentity {
+                generation: 1,
+                song_id: "a".to_string(),
+            },
             Arc::<[u8]>::from(vec![0_u8; 4]),
             SongMetadata {
                 id: "b".to_string(),
@@ -1974,6 +2055,37 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(player.get_status().state, PlaybackLifecycleState::Stopped);
+    }
+
+    #[test]
+    fn stale_gapless_playback_identity_is_rejected() {
+        let shared = SharedState::new();
+        let first_generation = shared.next_generation();
+        shared.set_active_request(first_generation, test_request("a", 30.0));
+        let expected = shared
+            .playback_identity()
+            .expect("active playback should have an identity");
+
+        assert!(matches_expected_playback(
+            &shared,
+            first_generation,
+            &expected
+        ));
+
+        let next_generation = shared.next_generation();
+        shared.set_active_request(next_generation, test_request("c", 30.0));
+        assert!(!matches_expected_playback(
+            &shared,
+            next_generation,
+            &expected
+        ));
+
+        shared.set_active_request(next_generation, test_request("a", 30.0));
+        assert!(!matches_expected_playback(
+            &shared,
+            next_generation,
+            &expected
+        ));
     }
 
     #[test]
