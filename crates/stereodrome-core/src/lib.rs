@@ -328,11 +328,13 @@ impl StereodromeCore {
         };
 
         let Some(config) = config else {
+            *self.client.lock().await = None;
             debug!("No saved Subsonic session to restore");
             return Ok(ConnectionStatus::disconnected());
         };
 
         if self.manual_offline_enabled()? {
+            *self.client.lock().await = None;
             return Ok(ConnectionStatus {
                 connected: false,
                 server_url: Some(config.url),
@@ -354,6 +356,7 @@ impl StereodromeCore {
                 })
             }
             Err(error) => {
+                *self.client.lock().await = None;
                 warn!("Failed to restore Subsonic session: {error}");
                 Ok(ConnectionStatus {
                     connected: false,
@@ -3803,11 +3806,12 @@ fn clamp_audio_processing_settings(settings: &mut AudioProcessingSettings) {
 mod tests {
     use super::{
         ConnectivitySettings, CoreError, DueSyncJob, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT,
-        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, Song, StereodromeCore,
-        SyncSettings, compute_next_run_at, cover_art_filename_matches, cover_cache_filename,
-        distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete, is_job_due,
-        path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
-        scan_newest_album_page, should_prefetch_large_cover_art, write_sync_value,
+        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, ServerConfig, Song,
+        StereodromeCore, SyncSettings, build_client, compute_next_run_at,
+        cover_art_filename_matches, cover_cache_filename, distinct_nonempty_cover_art_ids,
+        ensure_incremental_albums_complete, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
+        prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
+        write_sync_value,
     };
     use chrono::{Duration as ChronoDuration, Utc};
     use rusqlite::Connection;
@@ -3919,6 +3923,32 @@ mod tests {
             .expect("cached cover uri works offline");
 
         assert_eq!(uri, path_to_file_uri(&large_path));
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn failed_session_restore_discards_stale_client() {
+        let data_dir = unique_temp_dir("failed-restore-clears-client");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let config = ServerConfig {
+            url: "http://127.0.0.1:1".to_string(),
+            username: "user".to_string(),
+            password: "password".to_string(),
+        };
+        *core.server_config.lock().expect("server config lock") = Some(config.clone());
+        *core.client.lock().await = Some(build_client(
+            &config.url,
+            &config.username,
+            &config.password,
+        ));
+
+        let status = core
+            .restore_session()
+            .await
+            .expect("restore returns status");
+
+        assert!(!status.connected);
+        assert!(core.client.lock().await.is_none());
         std::fs::remove_dir_all(data_dir).ok();
     }
 

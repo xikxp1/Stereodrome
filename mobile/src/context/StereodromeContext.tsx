@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import * as Network from "expo-network";
 import { AppState, type AppStateStatus } from "react-native";
 import {
   createContext,
@@ -84,6 +85,7 @@ export function StereodromeProvider({
   const [error, setError] = useState<string | null>(null);
   const syncWasActive = useRef(false);
   const lastCompletedSyncKey = useRef<string | null>(null);
+  const statusRefreshGeneration = useRef(0);
   const savedPlaylistOfflinePoll = useRef<ReturnType<
     typeof setInterval
   > | null>(null);
@@ -156,11 +158,18 @@ export function StereodromeProvider({
   }, [startSavedPlaylistOfflinePolling]);
 
   const refreshStatus = useCallback(async () => {
+    const generation = ++statusRefreshGeneration.current;
     try {
       const connectivitySettings =
         await stereodromeCore.getConnectivitySettings();
+      if (generation !== statusRefreshGeneration.current) {
+        return;
+      }
       setManualOfflineEnabledState(connectivitySettings.manual_offline_enabled);
       const next = await stereodromeCore.restoreSession();
+      if (generation !== statusRefreshGeneration.current) {
+        return;
+      }
       setStatus(next);
       setError(null);
       if (next.server_url !== null && next.server_url.length > 0) {
@@ -181,12 +190,35 @@ export function StereodromeProvider({
         setDownloadingSongIds(new Set());
       }
     } catch (e) {
+      if (generation !== statusRefreshGeneration.current) {
+        return;
+      }
       setStatus(disconnected);
       setOfflineSongIds(new Set());
       setDownloadingSongIds(new Set());
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [reconcileSavedPlaylistsOfflineInBackground, refreshOfflineSongIds]);
+
+  const refreshStatusForNetworkState = useCallback(
+    async (networkState: Network.NetworkState) => {
+      const unavailable =
+        networkState.isConnected === false ||
+        networkState.isInternetReachable === false;
+
+      if (unavailable) {
+        ++statusRefreshGeneration.current;
+        setStatus((current) => ({
+          ...current,
+          connected: false,
+          server_version: null,
+        }));
+      }
+
+      await refreshStatus();
+    },
+    [refreshStatus]
+  );
 
   const connect = useCallback(
     async (params: { url: string; username: string; password: string }) => {
@@ -363,8 +395,34 @@ export function StereodromeProvider({
   );
 
   useEffect(() => {
+    const subscription = Network.addNetworkStateListener((networkState) => {
+      refreshStatusForNetworkState(networkState).catch(
+        (refreshError: unknown) => {
+          setError(
+            refreshError instanceof Error
+              ? refreshError.message
+              : String(refreshError)
+          );
+        }
+      );
+    });
+    return () => {
+      subscription.remove();
+    };
+  }, [refreshStatusForNetworkState]);
+
+  useEffect(() => {
     function handleAppStateChange(nextState: AppStateStatus) {
       if (nextState === "active") {
+        Network.getNetworkStateAsync()
+          .then(refreshStatusForNetworkState)
+          .catch((refreshError: unknown) => {
+            setError(
+              refreshError instanceof Error
+                ? refreshError.message
+                : String(refreshError)
+            );
+          });
         refreshSyncStatusAfterForeground().catch((refreshError: unknown) => {
           setError(
             refreshError instanceof Error
@@ -393,7 +451,11 @@ export function StereodromeProvider({
     return () => {
       subscription.remove();
     };
-  }, [manualOfflineEnabled, refreshSyncStatusAfterForeground]);
+  }, [
+    manualOfflineEnabled,
+    refreshStatusForNetworkState,
+    refreshSyncStatusAfterForeground,
+  ]);
 
   const setManualOfflineEnabled = useCallback(
     async (enabled: boolean) => {
