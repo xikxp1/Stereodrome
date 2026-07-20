@@ -1,10 +1,13 @@
 import { SelectableList } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
 import { usePlayback } from "@/context/PlaybackContext";
+import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
+import { songFileState } from "@/services/offlineLibrary";
 
 export function QueueScreen() {
   const playback = usePlayback();
+  const stereodrome = useStereodrome();
   const view = useViewStack();
   const { protectedActionRows } = useProtectedSelectableAction(
     `queue:${playback.queue.length}:${playback.currentSong?.id ?? ""}`
@@ -27,6 +30,11 @@ export function QueueScreen() {
             })
           : []),
         ...playback.queue.map((song, index) => ({
+          fileState: songFileState(
+            song.id,
+            stereodrome.offlineSongIds,
+            stereodrome.downloadingSongIds
+          ),
           label:
             playback.currentSong?.id === song.id
               ? `Now: ${song.title}`

@@ -115,9 +115,9 @@ impl PlayQueue {
     }
 
     pub fn prepared_next_item(&self) -> Option<&QueueItem> {
-        self.prepared_shuffle_cycle
-            .as_ref()
-            .and_then(|items| items.first())
+        self.should_prepare_wrap_shuffle()
+            .then(|| self.prepared_shuffle_cycle.as_ref()?.first())
+            .flatten()
     }
 
     pub fn add(&mut self, item: QueueItem) {
@@ -279,7 +279,6 @@ impl PlayQueue {
                     }
                 }
 
-                self.invalidate_prepared_shuffle_cycle();
                 let next_idx = match effective_index {
                     Some(i) if self.current_index.is_some() => (i + 1) % self.items.len(),
                     Some(i) => i.min(self.items.len() - 1),
@@ -519,27 +518,95 @@ impl PlayQueue {
         }
     }
 
+    /// Return upcoming queue items in playback order without advancing the queue.
+    /// At most one queue cycle is returned, so repeat modes never produce duplicates
+    /// solely to fill `limit`.
+    pub fn peek_upcoming(&mut self, limit: usize) -> Vec<QueueItem> {
+        if limit == 0 || self.items.is_empty() {
+            return Vec::new();
+        }
+
+        self.prepare_next_cycle_if_needed();
+        let max_items = limit.min(self.items.len());
+
+        if self.repeat_mode == RepeatMode::One {
+            return self
+                .current_item()
+                .or_else(|| {
+                    self.pending_navigation_index
+                        .and_then(|index| self.items.get(index.min(self.items.len() - 1)))
+                })
+                .cloned()
+                .into_iter()
+                .collect();
+        }
+
+        let start_index = match (self.current_index, self.pending_navigation_index) {
+            (Some(index), _) => index + 1,
+            (None, Some(index)) => index.min(self.items.len() - 1),
+            (None, None) => 0,
+        };
+
+        match self.repeat_mode {
+            RepeatMode::Off => self
+                .items
+                .iter()
+                .skip(start_index)
+                .take(max_items)
+                .cloned()
+                .collect(),
+            RepeatMode::All if self.shuffle && start_index + max_items > self.items.len() => {
+                let before_wrap = self.items.len().saturating_sub(start_index);
+                self.prepare_shuffle_cycle_after_wrap();
+                let mut upcoming = self
+                    .items
+                    .iter()
+                    .skip(start_index)
+                    .take(max_items)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if let Some(next_cycle) = &self.prepared_shuffle_cycle {
+                    upcoming.extend(next_cycle.iter().take(max_items - before_wrap).cloned());
+                }
+                upcoming
+            }
+            RepeatMode::All => (0..max_items)
+                .map(|offset| self.items[(start_index + offset) % self.items.len()].clone())
+                .collect(),
+            RepeatMode::One => unreachable!("repeat-one handled above"),
+        }
+    }
+
     pub fn prepare_next_cycle_if_needed(&mut self) {
-        if !self.should_prepare_wrap_shuffle() {
+        if !self.shuffle
+            || self.repeat_mode != RepeatMode::All
+            || self.items.len() <= 1
+            || self.pending_navigation_index.is_some()
+        {
             self.prepared_shuffle_cycle = None;
             return;
         }
 
-        if self.prepared_shuffle_cycle.is_some() {
+        if self.should_prepare_wrap_shuffle() {
+            self.prepare_shuffle_cycle_after_wrap();
+        }
+    }
+
+    fn prepare_shuffle_cycle_after_wrap(&mut self) {
+        if self.prepared_shuffle_cycle.is_some() || self.items.len() <= 1 {
             return;
         }
 
-        let Some(current_song_id) = self.current_item().map(|item| item.song_id.clone()) else {
+        let Some(wrapping_song_id) = self.items.last().map(|item| item.song_id.clone()) else {
             return;
         };
-
         let mut next_cycle = self.items.clone();
         let mut rng = rand::rng();
         next_cycle.shuffle(&mut rng);
 
         if next_cycle
             .first()
-            .is_some_and(|item| item.song_id == current_song_id)
+            .is_some_and(|item| item.song_id == wrapping_song_id)
         {
             let swap_idx = rng.random_range(1..next_cycle.len());
             next_cycle.swap(0, swap_idx);
@@ -815,6 +882,105 @@ mod tests {
         assert!(repeat_off.peek_next().is_none());
         assert!(repeat_off.next(false).is_none());
         assert!(repeat_off.prepared_shuffle_cycle.is_none());
+    }
+
+    #[test]
+    fn peek_upcoming_returns_multiple_items_without_advancing() {
+        let mut queue = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(0),
+            false,
+            RepeatMode::Off,
+        );
+
+        assert_eq!(song_ids(&queue.peek_upcoming(3)), vec!["b", "c", "d"]);
+        assert_eq!(queue.current_index(), Some(0));
+    }
+
+    #[test]
+    fn peek_upcoming_wraps_once_for_repeat_all() {
+        let mut queue = PlayQueue::load(
+            vec![queue_item("a"), queue_item("b"), queue_item("c")],
+            Some(1),
+            false,
+            RepeatMode::All,
+        );
+
+        assert_eq!(song_ids(&queue.peek_upcoming(10)), vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn peek_upcoming_uses_stable_shuffled_wrap_cycle() {
+        let mut queue = shuffled_repeat_all_queue();
+        let preview = queue.peek_upcoming(3);
+
+        assert_eq!(preview.len(), 3);
+        assert_eq!(
+            preview.first().map(|item| item.song_id.as_str()),
+            queue.peek_next().map(|item| item.song_id.as_str())
+        );
+        assert_eq!(song_ids(&preview), song_ids(&queue.peek_upcoming(3)));
+    }
+
+    #[test]
+    fn shuffled_lookahead_persists_the_prepared_wrap_cycle() {
+        let mut queue = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(1),
+            true,
+            RepeatMode::All,
+        );
+
+        let upcoming = queue.peek_upcoming(4);
+        assert_eq!(song_ids(&upcoming[..2]), vec!["c", "d"]);
+        let expected_after_wrap = upcoming[2].song_id.clone();
+        assert!(queue.prepared_next_item().is_none());
+
+        queue.next(false);
+        queue.next(false);
+        assert_eq!(
+            queue.peek_next().map(|item| item.song_id.as_str()),
+            Some(expected_after_wrap.as_str())
+        );
+    }
+
+    #[test]
+    fn peek_upcoming_respects_pending_navigation_and_repeat_one() {
+        let mut pending = PlayQueue::load(
+            vec![queue_item("a"), queue_item("b"), queue_item("c")],
+            Some(1),
+            false,
+            RepeatMode::Off,
+        );
+        pending.remove(1);
+        assert_eq!(song_ids(&pending.peek_upcoming(2)), vec!["c"]);
+
+        let mut pending_last = PlayQueue::load(
+            vec![queue_item("a"), queue_item("b"), queue_item("c")],
+            Some(2),
+            false,
+            RepeatMode::Off,
+        );
+        pending_last.remove(2);
+        assert_eq!(song_ids(&pending_last.peek_upcoming(2)), vec!["b"]);
+
+        let mut repeat_one = PlayQueue::load(
+            vec![queue_item("a"), queue_item("b"), queue_item("c")],
+            Some(1),
+            false,
+            RepeatMode::One,
+        );
+        assert_eq!(song_ids(&repeat_one.peek_upcoming(5)), vec!["b"]);
     }
 
     #[test]

@@ -7,7 +7,7 @@ mod subsonic;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, Once};
+use std::sync::{Arc, LazyLock, Mutex, Once, Weak};
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use log::{debug, info, warn};
@@ -40,6 +40,53 @@ const ARTIST_FETCH_CONCURRENCY: usize = 8;
 const ALBUM_FETCH_CONCURRENCY: usize = 12;
 
 static INIT_RUSTLS_CRYPTO_PROVIDER: Once = Once::new();
+static DOWNLOADS_IN_PROGRESS: LazyLock<Mutex<HashMap<String, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static SONG_DOWNLOAD_LOCKS: LazyLock<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn song_download_lock(song_id: &str) -> Arc<AsyncMutex<()>> {
+    SONG_DOWNLOAD_LOCKS
+        .lock()
+        .map(|mut locks| {
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(song_id).and_then(Weak::upgrade) {
+                return lock;
+            }
+            let lock = Arc::new(AsyncMutex::new(()));
+            locks.insert(song_id.to_string(), Arc::downgrade(&lock));
+            lock
+        })
+        .unwrap_or_else(|_| Arc::new(AsyncMutex::new(())))
+}
+
+struct DownloadInProgressGuard {
+    song_id: String,
+}
+
+impl DownloadInProgressGuard {
+    fn new(song_id: &str) -> Self {
+        if let Ok(mut downloads) = DOWNLOADS_IN_PROGRESS.lock() {
+            *downloads.entry(song_id.to_string()).or_default() += 1;
+        }
+        Self {
+            song_id: song_id.to_string(),
+        }
+    }
+}
+
+impl Drop for DownloadInProgressGuard {
+    fn drop(&mut self) {
+        if let Ok(mut downloads) = DOWNLOADS_IN_PROGRESS.lock()
+            && let Some(count) = downloads.get_mut(&self.song_id)
+        {
+            *count -= 1;
+            if *count == 0 {
+                downloads.remove(&self.song_id);
+            }
+        }
+    }
+}
 
 fn init_rustls_crypto_provider() {
     INIT_RUSTLS_CRYPTO_PROVIDER.call_once(|| {
@@ -1125,6 +1172,9 @@ impl StereodromeCore {
     }
 
     pub async fn download_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
+        let download_lock = song_download_lock(&song_id);
+        let _download_lock = download_lock.lock().await;
+
         if let Some(path) = self.cached_song_path(&song_id)? {
             let bytes = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
             self.preserve_cached_song_cover_art_if_connected(&song_id)
@@ -1141,6 +1191,7 @@ impl StereodromeCore {
             return Err(CoreError::OfflineMode);
         }
 
+        let _download_guard = DownloadInProgressGuard::new(&song_id);
         let client = self.connected_client().await?;
         let path = self.audio_cache_path(&song_id, MOBILE_PLAYBACK_FORMAT)?;
         if let Some(parent) = path.parent() {
@@ -1367,15 +1418,57 @@ impl StereodromeCore {
         Ok(results)
     }
 
-    pub async fn prefetch_next(&self) -> CoreResult<Option<DownloadStatus>> {
-        let next = {
-            let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
-            queue.peek_next().cloned()
-        };
-        match next {
-            Some(item) => self.download_song(item.song_id).await.map(Some),
-            None => Ok(None),
+    pub fn get_downloading_song_ids(&self) -> Vec<String> {
+        let mut song_ids = DOWNLOADS_IN_PROGRESS
+            .lock()
+            .map(|downloads| downloads.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        song_ids.sort_unstable();
+        song_ids
+    }
+
+    pub async fn prefetch_next(&self) -> CoreResult<Vec<DownloadStatus>> {
+        let prefetch_count = self.get_audio_processing_settings()?.prefetch_count as usize;
+        self.prefetch_upcoming(prefetch_count).await
+    }
+
+    pub async fn prefetch_upcoming(
+        &self,
+        prefetch_count: usize,
+    ) -> CoreResult<Vec<DownloadStatus>> {
+        if prefetch_count == 0 {
+            return Ok(Vec::new());
         }
+        let upcoming = {
+            let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
+            let queue_length = queue.items().len();
+            queue.peek_upcoming(queue_length)
+        };
+        let mut seen = HashSet::new();
+        let mut accounted_for = 0usize;
+        let mut statuses = Vec::new();
+
+        for item in upcoming {
+            if !seen.insert(item.song_id.clone()) || self.cached_song_path(&item.song_id)?.is_some()
+            {
+                continue;
+            }
+            if self
+                .get_downloading_song_ids()
+                .into_iter()
+                .any(|song_id| song_id == item.song_id)
+            {
+                accounted_for += 1;
+            } else {
+                statuses.push(self.download_song(item.song_id).await?);
+                accounted_for += 1;
+            }
+            if accounted_for >= prefetch_count {
+                break;
+            }
+        }
+
+        Ok(statuses)
     }
 
     pub fn peek_next_queue_item(&self) -> CoreResult<Option<QueueItem>> {
@@ -4406,6 +4499,7 @@ fn clamp_audio_processing_settings(settings: &mut AudioProcessingSettings) {
     settings.target_lufs = settings.target_lufs.clamp(-24.0, -8.0);
     settings.preamp_db = settings.preamp_db.clamp(-12.0, 12.0);
     settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(500, 15_000);
+    settings.prefetch_count = settings.prefetch_count.clamp(1, 10);
     if !matches!(
         settings.dynamics_preset.as_str(),
         "light" | "medium" | "heavy"

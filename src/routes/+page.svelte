@@ -26,6 +26,7 @@
     getCoverArt,
     getMiniPlayerPosition,
     getOfflineSongIds,
+    getDownloadingSongIds,
     openMiniPlayer,
   } from "$lib/api/commands";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -101,6 +102,7 @@
   let lastCoverArtId = $state<string | null>(null);
   let loadedLibraryAccountKey = $state<string | null>(null);
   let offlineSongIds = $state<Set<string>>(new Set());
+  let downloadingSongIds = $state<Set<string>>(new Set());
   let offlineSongIdsRefreshTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const MINI_PLAYER_WIDTH = 320;
@@ -109,7 +111,7 @@
   const OFFLINE_SONG_IDS_REFRESH_DEBOUNCE_MS = 200;
 
   interface AudioCacheChangedEvent {
-    reason: "updated" | "cleared" | "evicted";
+    reason: string;
   }
 
   interface LogicalMonitorBounds {
@@ -229,6 +231,7 @@
       albums = [];
       songs = [];
       offlineSongIds = new Set();
+      downloadingSongIds = new Set();
       selectedGenre = null;
       selectedArtist = null;
       selectedAlbum = null;
@@ -263,17 +266,24 @@
     isLoading = true;
     loadError = null;
     try {
-      const [artistsData, albumsData, songsData, offlineSongIdData] =
-        await Promise.all([
-          getArtists(),
-          getAlbums(),
-          getSongs(),
-          getOfflineSongIds(),
-        ]);
+      const [
+        artistsData,
+        albumsData,
+        songsData,
+        offlineSongIdData,
+        downloadingSongIdData,
+      ] = await Promise.all([
+        getArtists(),
+        getAlbums(),
+        getSongs(),
+        getOfflineSongIds(),
+        getDownloadingSongIds(),
+      ]);
       artists = artistsData;
       albums = albumsData;
       songs = songsData;
       offlineSongIds = new Set(offlineSongIdData);
+      downloadingSongIds = new Set(downloadingSongIdData);
       if (connection.status.connected && !connection.manualOfflineEnabled) {
         void playlistStore
           .reconcileSavedPlaylistsOffline()
@@ -303,13 +313,18 @@
     const accountKey = configuredAccountKey;
     if (!accountKey) {
       offlineSongIds = new Set();
+      downloadingSongIds = new Set();
       return;
     }
 
     try {
-      const offlineSongIdData = await getOfflineSongIds();
+      const [offlineSongIdData, downloadingSongIdData] = await Promise.all([
+        getOfflineSongIds(),
+        getDownloadingSongIds(),
+      ]);
       if (configuredAccountKey === accountKey) {
         offlineSongIds = new Set(offlineSongIdData);
+        downloadingSongIds = new Set(downloadingSongIdData);
       }
     } catch (e) {
       error(`Failed to refresh offline song IDs: ${e}`);
@@ -1158,6 +1173,7 @@
               {scrollToSongId}
               playlistId={selectedPlaylist?.id}
               downloadedSongIds={offlineSongIds}
+              {downloadingSongIds}
               onSelect={handleSongSelect}
               onPlay={handlePlaylistSongPlay}
               onNavigateToArtist={handleSongNavigateToArtist}
@@ -1194,6 +1210,7 @@
               playingSongId={playback.currentTrack?.id ?? null}
               {scrollToSongId}
               downloadedSongIds={offlineSongIds}
+              {downloadingSongIds}
               onSelect={handleSongSelect}
               onPlay={handleSongPlay}
               onNavigateToArtist={handleSongNavigateToArtist}
@@ -1233,6 +1250,7 @@
                 playingSongId={playback.currentTrack?.id ?? null}
                 {scrollToSongId}
                 downloadedSongIds={offlineSongIds}
+                {downloadingSongIds}
                 onSelect={handleSongSelect}
                 onPlay={handleDetailSongPlay}
                 onNavigateToArtist={handleSongNavigateToArtist}
@@ -1281,6 +1299,7 @@
                 playingSongId={playback.currentTrack?.id ?? null}
                 {scrollToSongId}
                 downloadedSongIds={offlineSongIds}
+                {downloadingSongIds}
                 onSelect={handleSongSelect}
                 onPlay={handleDetailSongPlay}
                 onNavigateToArtist={handleSongNavigateToArtist}
@@ -1330,6 +1349,7 @@
                 playingSongId={playback.currentTrack?.id ?? null}
                 {scrollToSongId}
                 downloadedSongIds={offlineSongIds}
+                {downloadingSongIds}
                 onSelect={handleSongSelect}
                 onPlay={handleDetailSongPlay}
                 onNavigateToArtist={handleSongNavigateToArtist}

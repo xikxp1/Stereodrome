@@ -196,6 +196,7 @@ export interface PlaybackSettings {
   equalizer_enabled: boolean;
   equalizer_bands_db: number[];
   show_next_song_in_miniplayer: boolean;
+  prefetch_count: number;
 }
 
 export interface NotificationSettings {

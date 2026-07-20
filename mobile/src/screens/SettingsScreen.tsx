@@ -32,6 +32,7 @@ import type {
 
 const lufsPresets = [-18, -16, -14, -12, -10];
 const crossfadePresets = [1000, 3000, 5000, 8000, 12000];
+const prefetchCountPresets = [1, 2, 3, 5, 10];
 const cacheSizePresetsGb = [0.5, 1, 2, 5, 10, 20, 50];
 const incrementalSyncIntervals = [5, 15, 30, 60, 120, 360, 720];
 const fullReconcileIntervals = [1, 6, 12, 24, 48, 72, 168];
@@ -1010,6 +1011,31 @@ function playbackOptions(
       sublabel: onOff(settings.gapless_enabled),
       onSelect: () =>
         updateAudioSetting({ gapless_enabled: !settings.gapless_enabled }),
+    },
+    {
+      kind: "editable",
+      label: "Files to Prefetch",
+      sublabel: `${settings.prefetch_count} upcoming`,
+      onSelect: () =>
+        openTextEdit({
+          title: "Files to Prefetch",
+          value: String(settings.prefetch_count),
+          keyboardType: "number-pad",
+          onSubmit: async (value) => {
+            const count = parseNumberInput(value, "Files to prefetch");
+            await updateAudioSetting({
+              prefetch_count: Math.round(clamp(count, 1, 10)),
+            });
+          },
+        }),
+      onLongSelect: () =>
+        updateAudioSetting({
+          prefetch_count: cycleNumber(
+            prefetchCountPresets,
+            settings.prefetch_count,
+            1
+          ),
+        }),
     },
     {
       kind: "editable",

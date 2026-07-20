@@ -218,7 +218,6 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   }, [applyPlaybackSnapshot]);
 
   const prepareNextPlayback = useCallback(async () => {
-    await stereodromeCore.prefetchNext();
     await stereodromeCore.audioPrepareNextTransition();
   }, []);
 

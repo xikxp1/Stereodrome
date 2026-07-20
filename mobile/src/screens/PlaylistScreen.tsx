@@ -10,7 +10,7 @@ import { usePlayback } from "@/context/PlaybackContext";
 import { useSongActions } from "@/context/SongActionContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
-import { visibleSongs } from "@/services/offlineLibrary";
+import { songFileState, visibleSongs } from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function PlaylistScreen({
@@ -110,6 +110,11 @@ export function PlaylistScreen({
     ...actionOptions,
     ...shownSongs.map((song) => ({
       label: song.title,
+      fileState: songFileState(
+        song.id,
+        stereodrome.offlineSongIds,
+        stereodrome.downloadingSongIds
+      ),
       sublabel: song.artist ?? undefined,
       onSelect: async () => {
         await playback.playSong(song, shownSongs.length ? shownSongs : [song]);

@@ -1,4 +1,5 @@
 use log::{info, warn};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -124,71 +125,84 @@ async fn fetch_song_data(
     })
 }
 
-/// Prefetch the next song in the queue for gapless playback.
-/// Also triggers normalization analysis if enabled and no data exists.
+/// Prefetch upcoming uncached songs in queue order for gapless playback.
+/// The configured count applies to cache misses; cached songs are skipped so
+/// prefetching can continue farther into the queue.
 fn prefetch_next_song(app_handle: &AppHandle, state: &AppState) {
-    if crate::commands::settings::manual_offline_enabled(app_handle) {
+    if crate::commands::settings::manual_offline_enabled(app_handle) || !state.client.is_connected()
+    {
         return;
     }
 
-    // Check if connected
-    if !state.client.is_connected() {
-        return;
-    }
-
-    // Get next song info from queue
-    let next_song_id: Option<String> = {
+    let prefetch_count = read_playback_settings(app_handle).prefetch_count as usize;
+    let upcoming = {
         let mut queue = state.queue.lock_recover();
-        queue.peek_next().map(|item| item.song_id.clone())
+        let queue_length = queue.items().len();
+        queue.peek_upcoming(queue_length)
     };
+    let Ok(cache) = AudioCache::new(app_handle) else {
+        return;
+    };
+    let norm_settings = read_normalization_settings(app_handle);
+    let conn = state.db.lock_recover();
+    let mut seen = HashSet::new();
+    let mut cache_misses = 0usize;
 
-    let next_song_info: Option<(String, String, Option<String>)> =
-        next_song_id.and_then(|song_id| {
-            let conn = state.db.lock_recover();
+    for (index, item) in upcoming.into_iter().enumerate() {
+        if !seen.insert(item.song_id.clone()) {
+            continue;
+        }
 
-            // Get suffix and album_id from database
-            let (suffix, album_id): (String, String) = conn
+        let Ok((suffix, album_id)) = conn.query_row(
+            "SELECT suffix, album_id FROM songs WHERE id = ?",
+            [&item.song_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    row.get::<_, String>(1)?,
+                ))
+            },
+        ) else {
+            continue;
+        };
+
+        let is_cached = cache.is_cached(&item.song_id, &suffix);
+        let needs_analysis = norm_settings.enabled
+            && conn
                 .query_row(
-                    "SELECT suffix, album_id FROM songs WHERE id = ?",
-                    [&song_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                            row.get::<_, String>(1)?,
-                        ))
-                    },
+                    "SELECT COUNT(*) FROM normalization_data WHERE song_id = ?",
+                    [&item.song_id],
+                    |row| row.get::<_, i64>(0),
                 )
-                .ok()?;
+                .map(|count| count == 0)
+                .unwrap_or(false);
 
-            // Check if normalization analysis is needed
-            let norm_settings = read_normalization_settings(app_handle);
-            let needs_analysis = if norm_settings.enabled {
-                let has_data: bool = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM normalization_data WHERE song_id = ?",
-                        [&song_id],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .map(|count| count > 0)
-                    .unwrap_or(false);
-                !has_data
-            } else {
-                false
-            };
+        // Preserve the previous behavior of analyzing an already-cached immediate
+        // next song, but do not analyze every cached song found during lookahead.
+        if is_cached {
+            if index == 0 && needs_analysis {
+                AudioCache::prefetch(
+                    app_handle.clone(),
+                    state.client.clone(),
+                    item.song_id,
+                    suffix,
+                    Some(album_id),
+                );
+            }
+            continue;
+        }
 
-            let album_id_for_analysis = if needs_analysis { Some(album_id) } else { None };
-
-            Some((song_id, suffix, album_id_for_analysis))
-        });
-
-    if let Some((song_id, suffix, album_id)) = next_song_info {
         AudioCache::prefetch(
             app_handle.clone(),
             state.client.clone(),
-            song_id,
+            item.song_id,
             suffix,
-            album_id,
+            needs_analysis.then_some(album_id),
         );
+        cache_misses += 1;
+        if cache_misses >= prefetch_count {
+            break;
+        }
     }
 }
 

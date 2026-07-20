@@ -11,7 +11,11 @@ import {
 
 import { syncLibraryBackgroundRegistration } from "@/services/librarySyncScheduler";
 import { stereodromeCore } from "@/services/stereodromeCore";
-import type { ConnectionStatus, LibrarySyncStatus } from "@/types/music";
+import type {
+  ConnectionStatus,
+  LibrarySyncStatus,
+  PlaybackSnapshot,
+} from "@/types/music";
 
 type StereodromeContextValue = {
   ready: boolean;
@@ -20,6 +24,7 @@ type StereodromeContextValue = {
   offlineMode: boolean;
   manualOfflineEnabled: boolean;
   offlineSongIds: Set<string>;
+  downloadingSongIds: Set<string>;
   error: string | null;
   refreshStatus(): Promise<void>;
   refreshOfflineSongIds(): Promise<void>;
@@ -72,6 +77,9 @@ export function StereodromeProvider({
   const [status, setStatus] = useState(disconnected);
   const [manualOfflineEnabled, setManualOfflineEnabledState] = useState(false);
   const [offlineSongIds, setOfflineSongIds] = useState<Set<string>>(new Set());
+  const [downloadingSongIds, setDownloadingSongIds] = useState<Set<string>>(
+    new Set()
+  );
   const [error, setError] = useState<string | null>(null);
   const syncWasActive = useRef(false);
   const lastCompletedSyncKey = useRef<string | null>(null);
@@ -87,7 +95,6 @@ export function StereodromeProvider({
       const songIds = await stereodromeCore.getOfflineSongIds();
       setOfflineSongIds(new Set(songIds));
     } catch (e) {
-      setOfflineSongIds(new Set());
       setError(e instanceof Error ? e.message : String(e));
     }
   }
@@ -154,10 +161,12 @@ export function StereodromeProvider({
         }
       } else {
         setOfflineSongIds(new Set());
+        setDownloadingSongIds(new Set());
       }
     } catch (e) {
       setStatus(disconnected);
       setOfflineSongIds(new Set());
+      setDownloadingSongIds(new Set());
       setError(e instanceof Error ? e.message : String(e));
     }
   }
@@ -282,6 +291,16 @@ export function StereodromeProvider({
   }, []);
 
   useEffect(() => {
+    return stereodromeCore.addEventListener<PlaybackSnapshot>(
+      "playback-snapshot",
+      (snapshot) => {
+        setOfflineSongIds(new Set(snapshot.downloaded_song_ids ?? []));
+        setDownloadingSongIds(new Set(snapshot.downloading_song_ids ?? []));
+      }
+    );
+  }, []);
+
+  useEffect(() => {
     return stereodromeCore.addEventListener<LibrarySyncStatus>(
       "sync-status-changed",
       (syncStatus) => {
@@ -333,6 +352,7 @@ export function StereodromeProvider({
       offlineMode,
       manualOfflineEnabled,
       offlineSongIds,
+      downloadingSongIds,
       error,
       refreshStatus,
       refreshOfflineSongIds,
@@ -350,6 +370,7 @@ export function StereodromeProvider({
       manualOfflineEnabled,
       offlineMode,
       offlineSongIds,
+      downloadingSongIds,
       ready,
       status,
     ]

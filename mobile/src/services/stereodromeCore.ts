@@ -376,8 +376,8 @@ export const stereodromeCore = {
   getSavedPlaylistsOfflineReconcileStatus(): Promise<SavedPlaylistOfflineStatus> {
     return invokeJson("getSavedPlaylistsOfflineReconcileStatus");
   },
-  prefetchNext(): Promise<DownloadStatus | null> {
-    return invokeJson("prefetchNext");
+  prefetchNext(reserveFirst = false): Promise<void> {
+    return invokeJson("prefetchNext", { reserve_first: reserveFirst });
   },
   getPlaybackState(): Promise<PlaybackStateSnapshot> {
     return invokeJson("getPlaybackState");

@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::SystemTime;
 
 use filetime::FileTime;
@@ -61,6 +61,65 @@ pub struct CacheStats {
 static PREFETCH_IN_PROGRESS: std::sync::LazyLock<
     Arc<TokioMutex<std::collections::HashSet<String>>>,
 > = std::sync::LazyLock::new(|| Arc::new(TokioMutex::new(std::collections::HashSet::new())));
+static DOWNLOADS_IN_PROGRESS: std::sync::LazyLock<StdMutex<HashMap<String, usize>>> =
+    std::sync::LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+struct DownloadInProgressGuard {
+    app_handle: AppHandle,
+    song_id: String,
+}
+
+impl DownloadInProgressGuard {
+    fn new(app_handle: &AppHandle, song_id: &str) -> Self {
+        let should_emit = DOWNLOADS_IN_PROGRESS
+            .lock()
+            .map(|mut downloads| {
+                let count = downloads.entry(song_id.to_string()).or_default();
+                *count += 1;
+                *count == 1
+            })
+            .unwrap_or(false);
+        if should_emit {
+            emit_audio_cache_changed(app_handle, "download_started");
+        }
+        Self {
+            app_handle: app_handle.clone(),
+            song_id: song_id.to_string(),
+        }
+    }
+}
+
+impl Drop for DownloadInProgressGuard {
+    fn drop(&mut self) {
+        let should_emit = DOWNLOADS_IN_PROGRESS
+            .lock()
+            .map(|mut downloads| {
+                let Some(count) = downloads.get_mut(&self.song_id) else {
+                    return false;
+                };
+                *count -= 1;
+                if *count == 0 {
+                    downloads.remove(&self.song_id);
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+        if should_emit {
+            emit_audio_cache_changed(&self.app_handle, "download_finished");
+        }
+    }
+}
+
+pub fn downloading_song_ids() -> Vec<String> {
+    let mut song_ids = DOWNLOADS_IN_PROGRESS
+        .lock()
+        .map(|downloads| downloads.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    song_ids.sort_unstable();
+    song_ids
+}
 
 /// Audio file cache with LRU eviction
 pub struct AudioCache {
@@ -129,6 +188,8 @@ impl AudioCache {
         if crate::commands::settings::manual_offline_enabled(&self.app_handle) {
             return Err(AppError::OfflineMode);
         }
+
+        let _download_guard = DownloadInProgressGuard::new(&self.app_handle, song_id);
 
         // Fetch from server via client handle
         let bytes = client

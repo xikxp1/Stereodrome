@@ -38,6 +38,8 @@ type MobileLogCallback = extern "C" fn(*const c_char);
 type MobilePlaybackCallback = extern "C" fn(*const c_char);
 
 const MOBILE_PLAYBACK_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
+const MOBILE_FILE_STATE_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
+const MOBILE_FILE_STATE_FULL_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD: Duration = Duration::from_secs(2);
 
 struct MobileLogger;
@@ -120,12 +122,20 @@ pub struct MobileCore {
     data_dir: PathBuf,
     sync_state: Arc<Mutex<MobileSyncState>>,
     saved_playlist_offline_state: Arc<Mutex<SavedPlaylistOfflineState>>,
+    prefetch_state: Arc<Mutex<BackgroundPrefetchState>>,
     monitor_running: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
 struct PlaybackAnnouncer {
     sequencer: Arc<Mutex<PlaybackSnapshotSequencer>>,
+    file_state: Arc<Mutex<MobileFileStateSnapshot>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MobileFileStateSnapshot {
+    downloaded_song_ids: Vec<String>,
+    downloading_song_ids: Vec<String>,
 }
 
 struct PlaybackSnapshotSequencer {
@@ -145,10 +155,56 @@ impl PlaybackSnapshotSequencer {
 }
 
 impl PlaybackAnnouncer {
-    fn new() -> Self {
-        Self {
+    fn new(core: &StereodromeCore) -> Self {
+        let announcer = Self {
             sequencer: Arc::new(Mutex::new(PlaybackSnapshotSequencer::new())),
-        }
+            file_state: Arc::new(Mutex::new(MobileFileStateSnapshot::default())),
+        };
+        announcer.refresh_file_state(core);
+        announcer
+    }
+
+    fn refresh_file_state(&self, core: &StereodromeCore) -> bool {
+        let mut downloaded_song_ids = match core.get_offline_song_ids() {
+            Ok(song_ids) => song_ids,
+            Err(error) => {
+                log::warn!(
+                    target: "stereodrome_ffi",
+                    "Failed to refresh mobile downloaded song state: {error}"
+                );
+                return false;
+            }
+        };
+        downloaded_song_ids.sort_unstable();
+        let next = MobileFileStateSnapshot {
+            downloaded_song_ids,
+            downloading_song_ids: core.get_downloading_song_ids(),
+        };
+        self.file_state
+            .lock()
+            .map(|mut current| {
+                if *current == next {
+                    false
+                } else {
+                    *current = next;
+                    true
+                }
+            })
+            .unwrap_or(false)
+    }
+
+    fn downloading_state_changed(&self, song_ids: &[String]) -> bool {
+        self.file_state
+            .lock()
+            .map(|current| current.downloading_song_ids != song_ids)
+            .unwrap_or(false)
+    }
+
+    fn file_state_snapshot(&self) -> MobileFileStateSnapshot {
+        self.file_state
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_default()
     }
 
     fn snapshot(
@@ -156,12 +212,14 @@ impl PlaybackAnnouncer {
         core: &StereodromeCore,
         audio: &AudioPlayer,
     ) -> Result<PlaybackSnapshot, String> {
-        self.sequence_snapshot(|seq| build_playback_snapshot(seq, core, audio))
+        self.sequence_snapshot(|seq| {
+            build_playback_snapshot(seq, core, audio, self.file_state_snapshot())
+        })
     }
 
     fn emit(&self, core: &StereodromeCore, audio: &AudioPlayer) {
         let result = self.sequence_snapshot(|seq| {
-            let snapshot = build_playback_snapshot(seq, core, audio)?;
+            let snapshot = build_playback_snapshot(seq, core, audio, self.file_state_snapshot())?;
             let json = serde_json::to_string(&snapshot)
                 .map_err(|_| "Failed to serialize playback snapshot".to_string())?;
 
@@ -230,6 +288,8 @@ struct PlaybackSnapshot {
     can_next: bool,
     can_previous: bool,
     can_seek: bool,
+    downloaded_song_ids: Vec<String>,
+    downloading_song_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,6 +306,7 @@ fn build_playback_snapshot(
     seq: u64,
     core: &StereodromeCore,
     audio: &AudioPlayer,
+    file_state: MobileFileStateSnapshot,
 ) -> Result<PlaybackSnapshot, String> {
     let queue = core.get_queue().map_err(|e| e.to_string())?;
     let audio_state = audio.get_playback_state();
@@ -326,6 +387,8 @@ fn build_playback_snapshot(
         can_next,
         can_previous,
         can_seek,
+        downloaded_song_ids: file_state.downloaded_song_ids,
+        downloading_song_ids: file_state.downloading_song_ids,
     })
 }
 
@@ -485,12 +548,20 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
             (Ok(core), Ok(audio), Ok(runtime)) => {
                 let core = Arc::new(core);
                 let audio = Arc::new(audio);
-                let announcer = PlaybackAnnouncer::new();
+                let announcer = PlaybackAnnouncer::new(&core);
+                let prefetch_state = Arc::new(Mutex::new(BackgroundPrefetchState::default()));
                 let monitor_running = Arc::new(AtomicBool::new(true));
+                start_mobile_file_state_monitor(
+                    Arc::clone(&core),
+                    Arc::clone(&audio),
+                    announcer.clone(),
+                    Arc::clone(&monitor_running),
+                );
                 start_mobile_playback_monitor(
                     Arc::clone(&core),
                     Arc::clone(&audio),
                     announcer.clone(),
+                    Arc::clone(&prefetch_state),
                     Arc::clone(&monitor_running),
                 );
 
@@ -504,6 +575,7 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
                     saved_playlist_offline_state: Arc::new(Mutex::new(
                         SavedPlaylistOfflineState::default(),
                     )),
+                    prefetch_state,
                     monitor_running,
                 }))
             }
@@ -766,7 +838,14 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         "getSavedPlaylistsOfflineReconcileStatus" => {
             json_result(get_saved_playlist_offline_status(mobile))
         }
-        "prefetchNext" => json_result(runtime.block_on(async { core.prefetch_next().await })),
+        "prefetchNext" => {
+            let args = if payload.is_null() {
+                PrefetchPayload::default()
+            } else {
+                parse_payload::<PrefetchPayload>(payload)?
+            };
+            json_result(start_queue_prefetch(mobile, args.reserve_first))
+        }
         "getPlaybackState" => json_result(core.get_playback_state()),
         "getPlaybackSnapshot" => json_result(mobile.announcer.snapshot(core, &mobile.audio)),
         "savePlaybackPosition" => {
@@ -795,20 +874,18 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
                     runtime
                         .block_on(async {
                             apply_audio_settings(mobile).await?;
-                            if let Err(error) = core.prefetch_next().await {
-                                log::warn!(
-                                    target: "stereodrome_ffi",
-                                    "Failed to prefetch next track after audio settings change: {error}"
-                                );
+                            match prepare_next_transition(mobile).await {
+                                Ok(prepared) => Ok(prepared),
+                                Err(error) => {
+                                    log::warn!(
+                                        target: "stereodrome_ffi",
+                                        "Failed to prepare next transition after audio settings change: {error}"
+                                    );
+                                    Ok(false)
+                                }
                             }
-                            if let Err(error) = prepare_next_transition(mobile).await {
-                                log::warn!(
-                                    target: "stereodrome_ffi",
-                                    "Failed to prepare next transition after audio settings change: {error}"
-                                );
-                            }
-                            Ok::<(), String>(())
                         })
+                        .and_then(|prepared| start_queue_prefetch(mobile, prepared))
                         .map(|_| next_settings)
                 });
             json_result(result)
@@ -822,7 +899,10 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(result)
         }
         "audioPrepareNextTransition" => {
-            json_result(runtime.block_on(async { prepare_next_transition(mobile).await }))
+            let result = runtime
+                .block_on(async { prepare_next_transition(mobile).await })
+                .and_then(|prepared| start_queue_prefetch(mobile, prepared));
+            json_result(result)
         }
         "audioPause" => {
             let result = mobile.audio.pause().map(|_| ());
@@ -929,11 +1009,33 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         other => Err(format!("unknown method: {other}")),
     };
 
-    if response.is_ok() && should_emit_playback_snapshot(method) {
-        mobile.announcer.emit(core, &mobile.audio);
+    if response.is_ok() {
+        let file_state_changed =
+            should_refresh_file_state(method) && mobile.announcer.refresh_file_state(core);
+        if file_state_changed || should_emit_playback_snapshot(method) {
+            mobile.announcer.emit(core, &mobile.audio);
+        }
     }
 
     response
+}
+
+fn should_refresh_file_state(method: &str) -> bool {
+    matches!(
+        method,
+        "setMaxCacheSize"
+            | "clearAudioCache"
+            | "downloadSong"
+            | "removeCachedSong"
+            | "downloadAlbum"
+            | "downloadPlaylist"
+            | "setPlaylistSavedOffline"
+            | "reconcileSavedPlaylistsOffline"
+            | "prefetchNext"
+            | "setAudioProcessingSettings"
+            | "audioPlayCurrent"
+            | "audioPrepareNextTransition"
+    )
 }
 
 fn should_emit_playback_snapshot(method: &str) -> bool {
@@ -964,6 +1066,12 @@ fn should_emit_playback_snapshot(method: &str) -> bool {
             | "cycleRepeatMode"
             | "rerollNext"
     )
+}
+
+#[derive(Default, Deserialize)]
+struct PrefetchPayload {
+    #[serde(default)]
+    reserve_first: bool,
 }
 
 #[derive(Deserialize)]
@@ -1122,6 +1230,114 @@ fn run_sync_job(data_dir: PathBuf, job: MobileSyncJob) -> Result<(), String> {
             .map(|_| ())
             .map_err(|error| error.to_string()),
     }
+}
+
+#[derive(Default)]
+struct BackgroundPrefetchState {
+    running: bool,
+    requested: bool,
+    reserve_first: bool,
+}
+
+struct BackgroundPrefetchGuard {
+    state: Arc<Mutex<BackgroundPrefetchState>>,
+}
+
+impl Drop for BackgroundPrefetchGuard {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.running = false;
+        }
+    }
+}
+
+fn start_queue_prefetch(mobile: &MobileCore, reserve_first: bool) -> Result<(), String> {
+    spawn_queue_prefetch(
+        &mobile.runtime,
+        Arc::clone(&mobile.core),
+        Arc::clone(&mobile.prefetch_state),
+        reserve_first,
+    )
+}
+
+fn spawn_queue_prefetch(
+    runtime: &tokio::runtime::Runtime,
+    core: Arc<StereodromeCore>,
+    state: Arc<Mutex<BackgroundPrefetchState>>,
+    reserve_first: bool,
+) -> Result<(), String> {
+    let should_spawn = {
+        let mut state = state
+            .lock()
+            .map_err(|_| "background prefetch state lock is poisoned".to_string())?;
+        if state.requested {
+            state.reserve_first &= reserve_first;
+        } else {
+            state.reserve_first = reserve_first;
+        }
+        state.requested = true;
+        if state.running {
+            false
+        } else {
+            state.running = true;
+            true
+        }
+    };
+    if !should_spawn {
+        return Ok(());
+    }
+
+    runtime.spawn(async move {
+        let _guard = BackgroundPrefetchGuard {
+            state: Arc::clone(&state),
+        };
+        loop {
+            let reserve_first = {
+                let Ok(mut state) = state.lock() else {
+                    return;
+                };
+                state.requested = false;
+                let reserve_first = state.reserve_first;
+                state.reserve_first = false;
+                reserve_first
+            };
+
+            match core.get_audio_processing_settings() {
+                Ok(settings) => {
+                    let prefetch_count = (settings.prefetch_count as usize)
+                        .saturating_sub(usize::from(reserve_first));
+                    if let Err(error) = core.prefetch_upcoming(prefetch_count).await {
+                        log::warn!(
+                            target: "stereodrome_ffi",
+                            "Failed to prefetch upcoming queue tracks: {error}"
+                        );
+                    }
+                }
+                Err(error) => {
+                    log::warn!(
+                        target: "stereodrome_ffi",
+                        "Failed to read settings for queue prefetch: {error}"
+                    );
+                }
+            }
+
+            let should_continue = {
+                let Ok(mut state) = state.lock() else {
+                    return;
+                };
+                if state.requested {
+                    true
+                } else {
+                    state.running = false;
+                    false
+                }
+            };
+            if !should_continue {
+                break;
+            }
+        }
+    });
+    Ok(())
 }
 
 fn start_saved_playlist_offline_job(
@@ -1307,10 +1523,39 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     "non-string panic payload".to_string()
 }
 
+fn start_mobile_file_state_monitor(
+    core: Arc<StereodromeCore>,
+    audio: Arc<AudioPlayer>,
+    announcer: PlaybackAnnouncer,
+    running: Arc<AtomicBool>,
+) {
+    thread::spawn(move || {
+        let mut last_full_refresh = Instant::now();
+        while running.load(Ordering::SeqCst) {
+            thread::sleep(MOBILE_FILE_STATE_MONITOR_INTERVAL);
+            if !running.load(Ordering::SeqCst) {
+                break;
+            }
+
+            let downloading_song_ids = core.get_downloading_song_ids();
+            let downloading_changed = announcer.downloading_state_changed(&downloading_song_ids);
+            let full_refresh_due =
+                last_full_refresh.elapsed() >= MOBILE_FILE_STATE_FULL_REFRESH_INTERVAL;
+            if downloading_changed || full_refresh_due {
+                last_full_refresh = Instant::now();
+                if announcer.refresh_file_state(&core) {
+                    announcer.emit(&core, &audio);
+                }
+            }
+        }
+    });
+}
+
 fn start_mobile_playback_monitor(
     core: Arc<StereodromeCore>,
     audio: Arc<AudioPlayer>,
     announcer: PlaybackAnnouncer,
+    prefetch_state: Arc<Mutex<BackgroundPrefetchState>>,
     running: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
@@ -1378,8 +1623,15 @@ fn start_mobile_playback_monitor(
                         };
                         let _ = runtime
                             .block_on(async { core.report_playback_progress(progress).await });
-                        let _ = runtime
-                            .block_on(async { prepare_next_transition_from(&core, &audio).await });
+                        let prepared = runtime
+                            .block_on(async { prepare_next_transition_from(&core, &audio).await })
+                            .unwrap_or(false);
+                        let _ = spawn_queue_prefetch(
+                            &runtime,
+                            Arc::clone(&core),
+                            Arc::clone(&prefetch_state),
+                            prepared,
+                        );
                         announcer.emit(&core, &audio);
                     }
                     Ok(None) => {}
@@ -1409,9 +1661,17 @@ fn start_mobile_playback_monitor(
                                 .block_on(async { crossfade_next_from(&core, &audio).await })
                             {
                                 Ok(Some(_)) => {
-                                    let _ = runtime.block_on(async {
-                                        prepare_next_transition_from(&core, &audio).await
-                                    });
+                                    let prepared = runtime
+                                        .block_on(async {
+                                            prepare_next_transition_from(&core, &audio).await
+                                        })
+                                        .unwrap_or(false);
+                                    let _ = spawn_queue_prefetch(
+                                        &runtime,
+                                        Arc::clone(&core),
+                                        Arc::clone(&prefetch_state),
+                                        prepared,
+                                    );
                                     announcer.emit(&core, &audio);
                                 }
                                 Ok(None) => state_handle.set_crossfade_initiated(false),
@@ -1455,8 +1715,15 @@ fn start_mobile_playback_monitor(
                                 "Failed to advance mobile playback after track ended: {error}"
                             );
                         }
-                        let _ = runtime
-                            .block_on(async { prepare_next_transition_from(&core, &audio).await });
+                        let prepared = runtime
+                            .block_on(async { prepare_next_transition_from(&core, &audio).await })
+                            .unwrap_or(false);
+                        let _ = spawn_queue_prefetch(
+                            &runtime,
+                            Arc::clone(&core),
+                            Arc::clone(&prefetch_state),
+                            prepared,
+                        );
                         announcer.emit(&core, &audio);
                     }
                     Ok(None) => {
@@ -1648,43 +1915,43 @@ async fn resume_current_playback(
     Ok(status)
 }
 
-async fn prepare_next_transition(mobile: &MobileCore) -> Result<(), String> {
+async fn prepare_next_transition(mobile: &MobileCore) -> Result<bool, String> {
     prepare_next_transition_from(&mobile.core, &mobile.audio).await
 }
 
 async fn prepare_next_transition_from(
     core: &StereodromeCore,
     audio: &AudioPlayer,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let settings = core
         .get_audio_processing_settings()
         .map_err(|e| e.to_string())?;
     if !settings.gapless_enabled {
-        return Ok(());
+        return Ok(false);
     }
     if audio.get_status().current_song_id.is_none() {
-        return Ok(());
+        return Ok(false);
     }
 
     let queue = core.get_queue().map_err(|e| e.to_string())?;
     if queue.repeat_mode == RepeatMode::One {
-        return Ok(());
+        return Ok(false);
     }
     let Some(current_index) = queue.current_index else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(current) = queue.items.get(current_index) else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(next) = core.peek_next_queue_item().map_err(|e| e.to_string())? else {
-        return Ok(());
+        return Ok(false);
     };
     if current.song_id == next.song_id
         || !core
             .songs_are_gapless_eligible(&current.song_id, &next.song_id)
             .map_err(|e| e.to_string())?
     {
-        return Ok(());
+        return Ok(false);
     }
 
     let prepared = prepare_queue_item_audio_from(core, next).await?;
@@ -1698,6 +1965,7 @@ async fn prepare_next_transition_from(
             prepared.processing.binaural_preset,
             prepared.processing.equalizer_settings,
         )
+        .map(|_| true)
         .map_err(|e| e.to_string())
 }
 

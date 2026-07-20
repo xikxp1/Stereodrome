@@ -186,6 +186,7 @@ pub fn run() {
             commands::set_cache_root,
             commands::get_audio_cache_stats,
             commands::get_offline_song_ids,
+            commands::get_downloading_song_ids,
             commands::clear_audio_cache,
             commands::set_max_cache_size,
             commands::get_scan_status,

@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 
 import { SelectableList } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
@@ -15,6 +16,14 @@ export function DownloadsScreen() {
   const { protectedActionRows } = useProtectedSelectableAction(
     `downloads:${cacheStats.data?.file_count ?? 0}:${cacheStats.data?.total_size ?? 0}`
   );
+
+  useEffect(() => {
+    void queryClient.invalidateQueries({ queryKey: ["audio-cache-stats"] });
+  }, [
+    queryClient,
+    stereodrome.downloadingSongIds.size,
+    stereodrome.offlineSongIds.size,
+  ]);
 
   async function refreshCache() {
     await queryClient.invalidateQueries({ queryKey: ["audio-cache-stats"] });
@@ -35,8 +44,8 @@ export function DownloadsScreen() {
           ? []
           : [
               {
-                label: "Prefetch Next",
-                sublabel: "Download upcoming queue item",
+                label: "Prefetch Queue",
+                sublabel: "Download upcoming uncached queue items",
                 onSelect: async () => {
                   await stereodromeCore.prefetchNext();
                   await refreshCache();

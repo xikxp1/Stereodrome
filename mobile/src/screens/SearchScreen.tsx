@@ -8,7 +8,11 @@ import { usePlayback } from "@/context/PlaybackContext";
 import { useSongActions } from "@/context/SongActionContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
-import { visibleSearchResults, visibleSongs } from "@/services/offlineLibrary";
+import {
+  songFileState,
+  visibleSearchResults,
+  visibleSongs,
+} from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function SearchScreen() {
@@ -95,6 +99,11 @@ export function SearchScreen() {
   const options = [
     ...resultSongs.map((song) => ({
       label: song.title,
+      fileState: songFileState(
+        song.id,
+        stereodrome.offlineSongIds,
+        stereodrome.downloadingSongIds
+      ),
       sublabel: song.artist ?? undefined,
       onSelect: async () => {
         await playback.playSong(song);

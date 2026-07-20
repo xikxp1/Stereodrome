@@ -3,7 +3,13 @@
   import { playlistStore } from "$lib/stores/playlist.svelte";
   import { queue } from "$lib/stores/queue.svelte";
   import { createVirtualizer } from "@tanstack/svelte-virtual";
-  import { CircleAlert, Download, Music, Volume2 } from "lucide-svelte";
+  import {
+    CircleAlert,
+    Download,
+    LoaderCircle,
+    Music,
+    Volume2,
+  } from "lucide-svelte";
   import { showSongContextMenu } from "$lib/services/contextMenu";
 
   type SongRowKey = string;
@@ -18,6 +24,7 @@
     scrollToSongId?: string | null;
     playlistId?: string | null;
     downloadedSongIds?: ReadonlySet<string>;
+    downloadingSongIds?: ReadonlySet<string>;
     onSelect?: (song: Song) => void;
     onPlay?: (song: Song) => void;
     onNavigateToArtist?: (song: Song) => void;
@@ -33,6 +40,7 @@
     scrollToSongId = null,
     playlistId = null,
     downloadedSongIds = new Set(),
+    downloadingSongIds = new Set(),
     onSelect,
     onPlay,
     onNavigateToArtist,
@@ -469,7 +477,12 @@
                 {song.track_number || index + 1}
               </div>
               <div class="cell-download">
-                {#if downloadedSongIds.has(song.id)}
+                {#if downloadingSongIds.has(song.id)}
+                  <span class="downloading-icon" title="Downloading">
+                    <LoaderCircle class="h-3 w-3 animate-spin" />
+                  </span>
+                  <span class="sr-only">Downloading</span>
+                {:else if downloadedSongIds.has(song.id)}
                   <span class="downloaded-icon">
                     <Download class="h-3 w-3" />
                   </span>
@@ -701,12 +714,17 @@
     color: oklch(58% 0.16 150);
   }
 
+  .downloading-icon {
+    color: oklch(60% 0.14 240);
+  }
+
   .not-downloaded {
     color: oklch(65% 0.01 250);
     font-size: 0.6875rem;
   }
 
   .song-grid-row.selected .downloaded-icon,
+  .song-grid-row.selected .downloading-icon,
   .song-grid-row.selected .not-downloaded {
     color: currentColor;
   }

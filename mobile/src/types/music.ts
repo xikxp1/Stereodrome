@@ -168,6 +168,8 @@ export type CacheStats = {
   max_size: number;
 };
 
+export type SongFileState = "downloaded" | "downloading" | "not_downloaded";
+
 export type DownloadStatus = {
   song_id: string;
   cached: boolean;
@@ -222,6 +224,8 @@ export type PlaybackSnapshot = {
   can_next: boolean;
   can_previous: boolean;
   can_seek: boolean;
+  downloaded_song_ids: string[];
+  downloading_song_ids: string[];
 };
 
 export type PlaybackProgress = {
@@ -284,4 +288,5 @@ export type AudioProcessingSettings = {
   gapless_enabled: boolean;
   crossfade_enabled: boolean;
   crossfade_duration_ms: number;
+  prefetch_count: number;
 };

@@ -183,6 +183,8 @@ pub struct PlaybackSettings {
     pub equalizer_bands_db: Vec<f32>,
     #[serde(default = "default_show_next_song_in_miniplayer")]
     pub show_next_song_in_miniplayer: bool,
+    #[serde(default = "default_prefetch_count")]
+    pub prefetch_count: u32,
 }
 
 fn default_crossfade_duration() -> u32 {
@@ -205,6 +207,10 @@ fn default_show_next_song_in_miniplayer() -> bool {
     true
 }
 
+fn default_prefetch_count() -> u32 {
+    3
+}
+
 impl Default for PlaybackSettings {
     fn default() -> Self {
         Self {
@@ -217,6 +223,7 @@ impl Default for PlaybackSettings {
             equalizer_enabled: false,
             equalizer_bands_db: default_bands_db(),
             show_next_song_in_miniplayer: true,
+            prefetch_count: default_prefetch_count(),
         }
     }
 }
@@ -252,6 +259,7 @@ pub async fn set_playback_settings(
     mut settings: PlaybackSettings,
 ) -> AppResult<()> {
     settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(1000, 12000);
+    settings.prefetch_count = settings.prefetch_count.clamp(1, 10);
     settings.equalizer_bands_db = sanitize_bands_db(&settings.equalizer_bands_db);
     write_playback_settings(&app_handle, &settings);
     let _ = app_handle.emit("playback-settings-changed", &settings);

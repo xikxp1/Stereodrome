@@ -1,4 +1,21 @@
-import type { Album, Artist, SearchResults, Song } from "@/types/music";
+import type {
+  Album,
+  Artist,
+  SearchResults,
+  Song,
+  SongFileState,
+} from "@/types/music";
+
+export function songFileState(
+  songId: string,
+  offlineSongIds: Set<string>,
+  downloadingSongIds: Set<string>
+): SongFileState {
+  if (downloadingSongIds.has(songId)) {
+    return "downloading";
+  }
+  return offlineSongIds.has(songId) ? "downloaded" : "not_downloaded";
+}
 
 export function visibleSongs(
   songs: Song[],

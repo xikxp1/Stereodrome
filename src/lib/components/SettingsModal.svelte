@@ -1611,6 +1611,32 @@
                 Seamless transitions between consecutive album tracks.
               </p>
 
+              <div>
+                <div class="mb-2 flex items-center justify-between text-sm">
+                  <span class="text-base-content/60">Files to prefetch</span>
+                  <span class="text-xs text-base-content/50"
+                    >{playbackSettings.prefetch_count}</span
+                  >
+                </div>
+                <div class="flex flex-wrap gap-1">
+                  {#each [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as count (count)}
+                    <button
+                      class="btn btn-xs h-6 min-h-0 px-2 {playbackSettings.prefetch_count ===
+                      count
+                        ? 'btn-primary'
+                        : 'btn-ghost'}"
+                      onclick={() =>
+                        handlePlaybackSettingChange({ prefetch_count: count })}
+                    >
+                      {count}
+                    </button>
+                  {/each}
+                </div>
+                <p class="mt-2 text-xs text-base-content/50">
+                  Download this many upcoming uncached songs in the background.
+                </p>
+              </div>
+
               <div class="border-t border-base-300 pt-3"></div>
 
               <label class="flex cursor-pointer items-center justify-between">

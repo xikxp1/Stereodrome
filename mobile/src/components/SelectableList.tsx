@@ -9,7 +9,16 @@ import {
   View,
   type ListRenderItemInfo,
 } from "react-native";
-import { ChevronRight, Info, Pencil } from "lucide-react-native";
+import {
+  ChevronRight,
+  CircleCheck,
+  Download,
+  Info,
+  LoaderCircle,
+  Pencil,
+} from "lucide-react-native";
+
+import type { SongFileState } from "@/types/music";
 
 import { useInputBus } from "@/context/InputContext";
 import { colors } from "@/components/theme";
@@ -21,6 +30,7 @@ export type SelectableOption = {
   disabled?: boolean;
   label: string;
   kind?: "action" | "editable" | "info";
+  fileState?: SongFileState;
   sublabel?: string;
   wheelOnly?: boolean;
   onSelect(): void | Promise<void>;
@@ -57,6 +67,9 @@ const SelectableRow = memo(
           item.disabled && styles.disabled,
         ]}
       >
+        {item.fileState ? (
+          <FileStateIcon state={item.fileState} selected={selected} />
+        ) : null}
         <View style={styles.labelGroup}>
           <Text
             numberOfLines={1}
@@ -91,10 +104,36 @@ const SelectableRow = memo(
     previous.item.disabled === next.item.disabled &&
     previous.item.label === next.item.label &&
     previous.item.kind === next.item.kind &&
+    previous.item.fileState === next.item.fileState &&
     previous.item.sublabel === next.item.sublabel &&
     previous.item.wheelOnly === next.item.wheelOnly &&
     previous.selected === next.selected
 );
+
+function FileStateIcon({
+  state,
+  selected,
+}: {
+  state: SongFileState;
+  selected: boolean;
+}) {
+  const color = selected
+    ? colors.selectedText
+    : state === "downloaded"
+      ? "#16803a"
+      : state === "downloading"
+        ? "#2563eb"
+        : colors.muted;
+  const style = styles.fileStateIcon;
+
+  if (state === "downloaded") {
+    return <CircleCheck color={color} size={13} style={style} />;
+  }
+  if (state === "downloading") {
+    return <LoaderCircle color={color} size={13} style={style} />;
+  }
+  return <Download color={color} size={13} style={style} />;
+}
 
 function RowAccessory({
   kind,
@@ -391,6 +430,9 @@ const styles = StyleSheet.create({
   },
   labelGroup: {
     flex: 1,
+  },
+  fileStateIcon: {
+    marginRight: 6,
   },
   accessory: {
     marginLeft: 6,

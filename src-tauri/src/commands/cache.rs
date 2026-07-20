@@ -3,7 +3,8 @@ use tauri_plugin_store::StoreExt;
 
 use crate::cache::{
     AudioCache, CacheLocationInfo, CacheRootUpdateResult, CacheStats, KEY_MAX_CACHE_SIZE,
-    MAX_CACHE_SIZE, MIN_CACHE_SIZE, STORE_FILE, cache_location_info, emit_audio_cache_changed,
+    MAX_CACHE_SIZE, MIN_CACHE_SIZE, STORE_FILE, cache_location_info,
+    downloading_song_ids as current_downloading_song_ids, emit_audio_cache_changed,
     set_cache_root as persist_cache_root,
 };
 use crate::error::{AppResult, MutexExt};
@@ -59,6 +60,12 @@ pub fn get_offline_song_ids(
     }
 
     Ok(song_ids)
+}
+
+/// Get song IDs whose audio files are currently being downloaded.
+#[tauri::command]
+pub fn get_downloading_song_ids() -> Vec<String> {
+    current_downloading_song_ids()
 }
 
 /// Clear all cached audio files

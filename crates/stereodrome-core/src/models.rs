@@ -338,6 +338,12 @@ pub struct AudioProcessingSettings {
     pub gapless_enabled: bool,
     pub crossfade_enabled: bool,
     pub crossfade_duration_ms: u32,
+    #[serde(default = "default_prefetch_count")]
+    pub prefetch_count: u32,
+}
+
+fn default_prefetch_count() -> u32 {
+    3
 }
 
 impl Default for AudioProcessingSettings {
@@ -357,6 +363,7 @@ impl Default for AudioProcessingSettings {
             gapless_enabled: true,
             crossfade_enabled: false,
             crossfade_duration_ms: 5000,
+            prefetch_count: default_prefetch_count(),
         }
     }
 }
