@@ -340,7 +340,7 @@ pub async fn handle_playback_finished(app_handle: &AppHandle) -> AppResult<bool>
             queue.next(false).map(|item| item.song_id.clone())
         };
 
-        persist_and_emit(&state, app_handle);
+        persist_and_emit(&state, app_handle)?;
 
         if let Some(song_id) = next_song {
             play_song_by_id(app_handle, &state, &song_id).await?;
@@ -419,7 +419,10 @@ pub async fn crossfade_play_by_id(
 
 /// Initiate a crossfade transition to the next song in the queue.
 /// Called by the position emitter when playback enters the crossfade window.
-pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u32) {
+pub async fn initiate_crossfade(
+    app_handle: &AppHandle,
+    crossfade_duration_ms: u32,
+) -> AppResult<()> {
     let state: State<'_, AppState> = app_handle.state();
 
     // Get current and next song IDs
@@ -431,7 +434,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
             (curr, next)
         } else {
             reset_crossfade_initiated(&state);
-            return;
+            return Ok(());
         }
     };
 
@@ -444,7 +447,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
         };
         if eligible {
             reset_crossfade_initiated(&state);
-            return;
+            return Ok(());
         }
     }
 
@@ -455,7 +458,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
     };
     if repeat_mode == RepeatMode::One {
         reset_crossfade_initiated(&state);
-        return;
+        return Ok(());
     }
 
     info!("Initiating crossfade to song {next_song_id}");
@@ -465,7 +468,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
         Err(e) => {
             warn!("Crossfade: failed to fetch song data: {e}");
             reset_crossfade_initiated(&state);
-            return;
+            return Ok(());
         }
     };
     let lastfm_metadata = data.metadata.clone();
@@ -486,7 +489,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
         }) {
             warn!("Crossfade: failed to start: {e}");
             reset_crossfade_initiated(&state);
-            return;
+            return Ok(());
         }
     }
 
@@ -495,7 +498,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
         let mut queue = state.queue.lock_recover();
         queue.next(false);
     }
-    persist_and_emit(&state, app_handle);
+    persist_and_emit(&state, app_handle)?;
 
     // Scrobble the new song
     if !crate::commands::settings::manual_offline_enabled(app_handle) {
@@ -516,6 +519,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
     // Prefetch next-next and check gapless eligibility
     prefetch_next_song(app_handle, &state);
     check_and_queue_gapless(app_handle, &state);
+    Ok(())
 }
 
 fn reset_crossfade_initiated(state: &AppState) {

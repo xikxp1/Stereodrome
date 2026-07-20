@@ -34,24 +34,24 @@ impl QueueState {
 }
 
 /// Save queue to database and emit queue-changed event
-pub(crate) fn persist_and_emit(state: &AppState, app_handle: &AppHandle) {
+pub(crate) fn persist_and_emit(state: &AppState, app_handle: &AppHandle) -> AppResult<()> {
     let mut queue = state.queue.lock_recover();
     queue.prepare_next_cycle_if_needed();
     let queue_state = QueueState::from_queue(&queue);
 
     // Save to database in a single transaction
-    if let Ok(db) = state.db.try_lock() {
-        let _ = save_queue(
-            &db,
-            queue_state.items.as_slice(),
-            queue_state.current_index,
-            queue_state.shuffle,
-            queue_state.repeat_mode,
-        );
-    }
+    let db = state.db.lock_recover();
+    save_queue(
+        &db,
+        queue_state.items.as_slice(),
+        queue_state.current_index,
+        queue_state.shuffle,
+        queue_state.repeat_mode,
+    )?;
 
     // Emit event to frontend
     let _ = app_handle.emit("queue-changed", &queue_state);
+    Ok(())
 }
 
 fn load_queue_items_for_song_ids(
@@ -143,7 +143,7 @@ pub async fn play_song_with_queue(
             *queue = PlayQueue::load(queue_items, Some(current_index), false, RepeatMode::Off);
         }
 
-        persist_and_emit(&state, &app_handle);
+        persist_and_emit(&state, &app_handle)?;
         crate::commands::playback::play_song_by_id(&app_handle, &state, &song_id).await
     }
     .await;
@@ -163,7 +163,7 @@ pub fn add_to_queue(
         let mut queue = state.queue.lock_recover();
         queue.add(item);
     }
-    persist_and_emit(&state, &app_handle);
+    persist_and_emit(&state, &app_handle)?;
     Ok(())
 }
 
@@ -178,7 +178,7 @@ pub fn add_songs_to_queue(
         let mut queue = state.queue.lock_recover();
         queue.add_many(items);
     }
-    persist_and_emit(&state, &app_handle);
+    persist_and_emit(&state, &app_handle)?;
     Ok(())
 }
 
@@ -193,7 +193,7 @@ pub fn insert_next_in_queue(
         let mut queue = state.queue.lock_recover();
         queue.insert_next(item);
     }
-    persist_and_emit(&state, &app_handle);
+    persist_and_emit(&state, &app_handle)?;
     Ok(())
 }
 
@@ -208,7 +208,7 @@ pub fn insert_next_songs_in_queue(
         let mut queue = state.queue.lock_recover();
         queue.insert_many_next(items);
     }
-    persist_and_emit(&state, &app_handle);
+    persist_and_emit(&state, &app_handle)?;
     Ok(())
 }
 
@@ -223,7 +223,7 @@ pub fn remove_from_queue(
         let mut queue = state.queue.lock_recover();
         queue.remove(index)
     };
-    persist_and_emit(&state, &app_handle);
+    persist_and_emit(&state, &app_handle)?;
     Ok(result)
 }
 
@@ -234,7 +234,7 @@ pub fn clear_queue(state: State<'_, AppState>, app_handle: AppHandle) -> AppResu
         let mut queue = state.queue.lock_recover();
         queue.clear();
     }
-    persist_and_emit(&state, &app_handle);
+    persist_and_emit(&state, &app_handle)?;
     Ok(())
 }
 
@@ -250,7 +250,7 @@ pub fn move_queue_item(
         let mut queue = state.queue.lock_recover();
         queue.move_item(from, to);
     }
-    persist_and_emit(&state, &app_handle);
+    persist_and_emit(&state, &app_handle)?;
     Ok(())
 }
 
@@ -266,7 +266,7 @@ pub fn reroll_next_queue_item(
     };
 
     if swapped {
-        persist_and_emit(&state, &app_handle);
+        persist_and_emit(&state, &app_handle)?;
     }
 
     Ok(swapped)
@@ -294,7 +294,7 @@ pub async fn play_queue_item(
         };
 
         // Persist current index change
-        persist_and_emit(&state, &app_handle);
+        persist_and_emit(&state, &app_handle)?;
 
         if let Some(song_id) = song_id {
             crate::commands::play_song(app_handle, state.clone(), song_id).await?;
@@ -333,7 +333,7 @@ pub async fn play_next(
         };
 
         // Persist current index change
-        persist_and_emit(&state, &app_handle);
+        persist_and_emit(&state, &app_handle)?;
 
         if let Some(song_id) = next_song {
             // Check if crossfade should be used (only when currently playing)
@@ -391,7 +391,7 @@ pub async fn play_previous(state: State<'_, AppState>, app_handle: AppHandle) ->
         };
 
         // Persist current index change
-        persist_and_emit(&state, &app_handle);
+        persist_and_emit(&state, &app_handle)?;
 
         if let Some(song_id) = prev_song {
             crate::commands::play_song(app_handle, state.clone(), song_id).await?;
@@ -409,14 +409,14 @@ pub async fn play_previous(state: State<'_, AppState>, app_handle: AppHandle) ->
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn toggle_shuffle(state: State<'_, AppState>, app_handle: AppHandle) -> bool {
+pub fn toggle_shuffle(state: State<'_, AppState>, app_handle: AppHandle) -> AppResult<bool> {
     let shuffle = {
         let mut queue = state.queue.lock_recover();
         queue.toggle_shuffle();
         queue.is_shuffle()
     };
-    persist_and_emit(&state, &app_handle);
-    shuffle
+    persist_and_emit(&state, &app_handle)?;
+    Ok(shuffle)
 }
 
 #[tauri::command]
@@ -430,17 +430,20 @@ pub fn set_repeat_mode(
         let mut queue = state.queue.lock_recover();
         queue.set_repeat_mode(mode);
     }
-    persist_and_emit(&state, &app_handle);
+    persist_and_emit(&state, &app_handle)?;
     Ok(())
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn cycle_repeat_mode(state: State<'_, AppState>, app_handle: AppHandle) -> RepeatMode {
+pub fn cycle_repeat_mode(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+) -> AppResult<RepeatMode> {
     let mode = {
         let mut queue = state.queue.lock_recover();
         queue.cycle_repeat_mode()
     };
-    persist_and_emit(&state, &app_handle);
-    mode
+    persist_and_emit(&state, &app_handle)?;
+    Ok(mode)
 }

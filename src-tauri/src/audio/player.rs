@@ -233,7 +233,11 @@ impl AudioPlayer {
                             let mut q = app_state.queue.lock_recover();
                             q.next(false).map(|item| item.song_id.clone())
                         };
-                        crate::commands::queue::persist_and_emit(&app_state, &app_handle);
+                        if let Err(error) =
+                            crate::commands::queue::persist_and_emit(&app_state, &app_handle)
+                        {
+                            warn!("Failed to persist queue after gapless transition: {error}");
+                        }
                         song_id
                     };
 
@@ -260,8 +264,14 @@ impl AudioPlayer {
                             let app = app_handle.clone();
                             let cf_duration_ms = settings.crossfade_duration_ms;
                             tauri::async_runtime::spawn(async move {
-                                crate::commands::playback::initiate_crossfade(&app, cf_duration_ms)
-                                    .await;
+                                if let Err(error) = crate::commands::playback::initiate_crossfade(
+                                    &app,
+                                    cf_duration_ms,
+                                )
+                                .await
+                                {
+                                    warn!("Failed to persist queue after crossfade: {error}");
+                                }
                             });
                         }
                     }
