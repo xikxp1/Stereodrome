@@ -137,6 +137,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const restoredStartPositionRef = useRef<number | null>(null);
   const lastSnapshotSeqRef = useRef(0);
   const actionLocksRef = useRef(new Set<string>());
+  const pendingSeekDeltasRef = useRef<number[]>([]);
+  const seekDrainRef = useRef<Promise<void> | null>(null);
 
   const runPlaybackAction = useCallback(
     async (key: string, action: () => Promise<void>) => {
@@ -501,32 +503,58 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     });
   }, [reconcilePlaybackSnapshot, runPlaybackAction]);
 
+  const drainPendingSeeks = useCallback(async () => {
+    await ensurePlayerReady();
+
+    do {
+      const deltas = pendingSeekDeltasRef.current.splice(0);
+      const seekDuration = durationRef.current;
+      let nextPosition = positionRef.current;
+
+      for (const delta of deltas) {
+        nextPosition = Math.max(
+          0,
+          seekDuration > 0
+            ? Math.min(seekDuration, nextPosition + delta)
+            : nextPosition + delta
+        );
+      }
+
+      positionRef.current = nextPosition;
+      setPosition(nextPosition);
+      if (audioLoadedRef.current) {
+        // eslint-disable-next-line no-await-in-loop -- Serialize coalesced native seeks.
+        await stereodromeCore.audioSeek(nextPosition);
+        // eslint-disable-next-line no-await-in-loop -- Base the next batch on authoritative state.
+        await reconcilePlaybackSnapshot();
+      } else {
+        restoredStartPositionRef.current = nextPosition;
+      }
+
+      // eslint-disable-next-line no-await-in-loop -- Persist each coalesced batch before draining the next.
+      await persistPlaybackPosition(isPlayingRef.current);
+    } while (pendingSeekDeltasRef.current.length > 0);
+  }, [persistPlaybackPosition, reconcilePlaybackSnapshot]);
+
   const seekBy = useCallback(
     async (seconds: number) => {
-      try {
-        await ensurePlayerReady();
-        const basePosition = positionRef.current;
-        const baseDuration = durationRef.current;
-        const nextPosition = Math.max(
-          0,
-          baseDuration > 0
-            ? Math.min(baseDuration, basePosition + seconds)
-            : basePosition + seconds
-        );
-        if (audioLoadedRef.current) {
-          await stereodromeCore.audioSeek(nextPosition);
-          await reconcilePlaybackSnapshot();
-        } else {
-          restoredStartPositionRef.current = nextPosition;
-          positionRef.current = nextPosition;
-          setPosition(nextPosition);
-        }
-        await persistPlaybackPosition(isPlayingRef.current);
-      } catch (playbackError) {
-        setError(errorMessage(playbackError));
+      if (!Number.isFinite(seconds) || seconds === 0) {
+        return;
       }
+
+      pendingSeekDeltasRef.current.push(seconds);
+      seekDrainRef.current ??= drainPendingSeeks()
+        .catch((playbackError: unknown) => {
+          pendingSeekDeltasRef.current = [];
+          setError(errorMessage(playbackError));
+        })
+        .finally(() => {
+          seekDrainRef.current = null;
+        });
+
+      await seekDrainRef.current;
     },
-    [persistPlaybackPosition, reconcilePlaybackSnapshot]
+    [drainPendingSeeks]
   );
 
   const next = useCallback(async () => {
