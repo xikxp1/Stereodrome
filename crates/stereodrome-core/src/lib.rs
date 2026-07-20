@@ -227,6 +227,7 @@ pub struct StereodromeCore {
     server_config: Mutex<Option<ServerConfig>>,
     client: AsyncMutex<Option<Client>>,
     queue: Mutex<PlayQueue>,
+    lastfm_retry_lock: AsyncMutex<()>,
 }
 
 impl StereodromeCore {
@@ -256,6 +257,7 @@ impl StereodromeCore {
             server_config: Mutex::new(server_config),
             client: AsyncMutex::new(None),
             queue: Mutex::new(queue),
+            lastfm_retry_lock: AsyncMutex::new(()),
         })
     }
 
@@ -1628,7 +1630,7 @@ impl StereodromeCore {
                 progress.duration_seconds,
             )?;
             if inserted && !manual_offline_enabled {
-                let _ = lastfm::retry_queue(&self.db_path, false).await;
+                let _ = self.retry_lastfm_queue_inner(false).await;
             }
         }
 
@@ -1697,7 +1699,9 @@ impl StereodromeCore {
             return Err(CoreError::OfflineMode);
         }
 
-        lastfm::complete_auth(&self.db_path).await
+        let _ = lastfm::complete_auth(&self.db_path).await?;
+        let _ = self.retry_lastfm_queue_inner(true).await;
+        Ok(lastfm::status(&self.db_path))
     }
 
     /// # Errors
@@ -1719,7 +1723,7 @@ impl StereodromeCore {
             return Err(CoreError::OfflineMode);
         }
 
-        lastfm::retry_queue(&self.db_path, true).await
+        self.retry_lastfm_queue_inner(true).await
     }
 
     /// # Errors
@@ -2828,6 +2832,11 @@ impl StereodromeCore {
             ],
         )?;
         self.get_playback_state()
+    }
+
+    async fn retry_lastfm_queue_inner(&self, include_not_due: bool) -> CoreResult<usize> {
+        let _retry_guard = self.lastfm_retry_lock.lock().await;
+        lastfm::retry_queue(&self.db_path, include_not_due).await
     }
 
     fn with_queue_state(

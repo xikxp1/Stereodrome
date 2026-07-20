@@ -26,7 +26,7 @@ pub struct AppState {
     pub emitter_running: Arc<AtomicBool>,
     /// Prevents race conditions when rapidly clicking next/previous
     pub navigating: AtomicBool,
-    pub lastfm_retry_running: AtomicBool,
+    pub lastfm_retry_lock: tokio::sync::Mutex<()>,
     pub lastfm_tracker: Mutex<LastfmPlaybackTracker>,
     /// Current analysis progress (set by `analyze_all_songs`, cleared on completion)
     pub analysis_progress: Arc<Mutex<Option<AnalysisProgress>>>,
@@ -83,7 +83,7 @@ impl AppState {
             index_path,
             emitter_running: Arc::new(AtomicBool::new(true)),
             navigating: AtomicBool::new(false),
-            lastfm_retry_running: AtomicBool::new(false),
+            lastfm_retry_lock: tokio::sync::Mutex::new(()),
             lastfm_tracker: Mutex::new(LastfmPlaybackTracker::default()),
             analysis_progress: Arc::new(Mutex::new(None)),
         })

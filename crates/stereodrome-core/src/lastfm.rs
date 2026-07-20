@@ -298,7 +298,6 @@ pub async fn complete_auth(db_path: &Path) -> CoreResult<LastfmStatus> {
     write_sync_value(db_path, KEY_SESSION, &serde_json::to_string(&session)?)?;
     write_sync_value(db_path, KEY_PENDING_TOKEN, "")?;
     write_sync_value(db_path, KEY_ENABLED, "true")?;
-    let _ = retry_queue(db_path, true).await;
     Ok(status(db_path))
 }
 

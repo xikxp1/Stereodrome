@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -616,52 +615,40 @@ pub async fn retry_lastfm_queue_inner(
     include_not_due: bool,
 ) -> AppResult<usize> {
     let state: tauri::State<'_, AppState> = app_handle.state();
-    if state
-        .lastfm_retry_running
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let _retry_guard = state.lastfm_retry_lock.lock().await;
+
+    let settings = read_settings(app_handle);
+    if !settings.enabled {
         return Ok(0);
     }
 
-    let result = async {
-        let settings = read_settings(app_handle);
-        if !settings.enabled {
-            return Ok(0);
-        }
+    let Some(session) = load_lastfm_session()? else {
+        return Ok(0);
+    };
 
-        let Some(session) = load_lastfm_session()? else {
-            return Ok(0);
-        };
+    let items = {
+        let conn = state.db.lock_recover();
+        due_queue(&conn, include_not_due)?
+    };
+    if items.is_empty() {
+        return Ok(0);
+    }
 
-        let items = {
+    let count = items.len();
+    match submit_scrobble_batch(&items, &session).await {
+        Ok(()) => {
             let conn = state.db.lock_recover();
-            due_queue(&conn, include_not_due)?
-        };
-        if items.is_empty() {
-            return Ok(0);
+            mark_batch_success(&conn, &items)?;
+            debug!("Submitted {count} queued Last.fm scrobbles");
+            Ok(count)
         }
-
-        let count = items.len();
-        match submit_scrobble_batch(&items, &session).await {
-            Ok(()) => {
-                let conn = state.db.lock_recover();
-                mark_batch_success(&conn, &items)?;
-                debug!("Submitted {count} queued Last.fm scrobbles");
-                Ok(count)
-            }
-            Err(e) => {
-                let conn = state.db.lock_recover();
-                let message = e.to_string();
-                mark_batch_failure(&conn, &items, &message)?;
-                Err(e)
-            }
+        Err(e) => {
+            let conn = state.db.lock_recover();
+            let message = e.to_string();
+            mark_batch_failure(&conn, &items, &message)?;
+            Err(e)
         }
     }
-    .await;
-
-    state.lastfm_retry_running.store(false, Ordering::SeqCst);
-    result
 }
 
 pub fn start_lastfm_retry_scheduler(app_handle: AppHandle) {
