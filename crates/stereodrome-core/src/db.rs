@@ -54,17 +54,35 @@ fn run_migrations(conn: &Connection) -> CoreResult<()> {
         conn.execute("ALTER TABLE playlists ADD COLUMN offline_saved_at TEXT", [])?;
     }
 
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS queue_original_items (
+            position INTEGER PRIMARY KEY,
+            song_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            album TEXT NOT NULL,
+            duration INTEGER NOT NULL
+        );",
+    )?;
+
     Ok(())
 }
 
 pub fn load_queue(path: &Path) -> CoreResult<PlayQueue> {
     let conn = Connection::open(path)?;
     let items = load_queue_items(&conn)?;
+    let original_order = load_queue_original_items(&conn)?;
     let (current_index, shuffle, repeat_mode) = load_queue_state(&conn)?;
-    Ok(PlayQueue::load(items, current_index, shuffle, repeat_mode))
+    Ok(PlayQueue::load_with_original_order(
+        items,
+        original_order,
+        current_index,
+        shuffle,
+        repeat_mode,
+    ))
 }
 
-pub fn save_queue(path: &Path, state: &QueueState) -> CoreResult<()> {
+pub fn save_queue(path: &Path, state: &QueueState, original_order: &[QueueItem]) -> CoreResult<()> {
     let mut conn = Connection::open(path)?;
     let tx = conn.transaction()?;
 
@@ -76,6 +94,29 @@ pub fn save_queue(path: &Path, state: &QueueState) -> CoreResult<()> {
         )?;
 
         for (pos, item) in state.items.iter().enumerate() {
+            let pos = i64::try_from(pos).map_err(|_| {
+                crate::CoreError::InvalidInput("queue position exceeds SQLite range".to_string())
+            })?;
+            stmt.execute((
+                pos,
+                &item.song_id,
+                &item.title,
+                &item.artist,
+                &item.album,
+                item.duration,
+            ))?;
+        }
+    }
+
+    tx.execute("DELETE FROM queue_original_items", [])?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO queue_original_items
+             (position, song_id, title, artist, album, duration)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+
+        for (pos, item) in original_order.iter().enumerate() {
             let pos = i64::try_from(pos).map_err(|_| {
                 crate::CoreError::InvalidInput("queue position exceeds SQLite range".to_string())
             })?;
@@ -114,8 +155,17 @@ pub fn save_queue(path: &Path, state: &QueueState) -> CoreResult<()> {
 }
 
 fn load_queue_items(conn: &Connection) -> CoreResult<Vec<QueueItem>> {
+    load_ordered_queue_items(conn, "queue_items")
+}
+
+fn load_queue_original_items(conn: &Connection) -> CoreResult<Vec<QueueItem>> {
+    load_ordered_queue_items(conn, "queue_original_items")
+}
+
+fn load_ordered_queue_items(conn: &Connection, table: &str) -> CoreResult<Vec<QueueItem>> {
     let mut stmt = conn.prepare(
-        "SELECT song_id, title, artist, album, duration FROM queue_items ORDER BY position",
+        format!("SELECT song_id, title, artist, album, duration FROM {table} ORDER BY position")
+            .as_str(),
     )?;
 
     let items = stmt
@@ -164,5 +214,59 @@ fn load_queue_state(conn: &Connection) -> CoreResult<(Option<usize>, bool, Repea
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok((None, false, RepeatMode::Off)),
         Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn queue_item(id: &str) -> QueueItem {
+        QueueItem {
+            song_id: id.to_string(),
+            title: format!("Song {id}"),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration: 180,
+        }
+    }
+
+    #[test]
+    fn shuffled_queue_restores_canonical_order_after_reload() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "stereodrome-queue-persistence-{}-{nonce}.db",
+            std::process::id()
+        ));
+        init(&path).expect("initialize test database");
+
+        let mut queue = PlayQueue::load_with_original_order(
+            vec![queue_item("c"), queue_item("a"), queue_item("b")],
+            vec![queue_item("a"), queue_item("b"), queue_item("c")],
+            Some(0),
+            true,
+            RepeatMode::Off,
+        );
+        let state = QueueState::from_queue(&mut queue);
+        save_queue(&path, &state, queue.original_order()).expect("save shuffled queue");
+
+        let mut restored = load_queue(&path).expect("reload shuffled queue");
+        restored.toggle_shuffle();
+
+        assert_eq!(
+            restored
+                .items()
+                .iter()
+                .map(|item| item.song_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+        assert_eq!(restored.current_index(), Some(2));
+
+        std::fs::remove_file(path).expect("remove test database");
     }
 }

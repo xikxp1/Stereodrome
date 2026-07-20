@@ -44,6 +44,7 @@ pub(crate) fn persist_and_emit(state: &AppState, app_handle: &AppHandle) -> AppR
     save_queue(
         &db,
         queue_state.items.as_slice(),
+        queue.original_order(),
         queue_state.current_index,
         queue_state.shuffle,
         queue_state.repeat_mode,

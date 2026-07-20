@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use crate::audio::{AudioPlayer, PlayQueue};
 use crate::client::SubsonicClientHandle;
 use crate::commands::normalization::AnalysisProgress;
-use crate::db::queue::{load_queue_items, load_queue_state};
+use crate::db::queue::{load_queue_items, load_queue_original_items, load_queue_state};
 use crate::error::AppResult;
 use crate::lastfm::LastfmPlaybackTracker;
 use crate::search::IndexManager;
@@ -39,6 +39,7 @@ impl AppState {
         client_handle: SubsonicClientHandle,
     ) -> AppResult<Self> {
         let conn = Connection::open(db_path)?;
+        crate::db::init_db(&conn)?;
         let audio_player = AudioPlayer::new()?;
 
         // Try to create search index, but don't fail if it errors
@@ -54,15 +55,24 @@ impl AppState {
         };
 
         // Load persisted queue
-        let queue = if let (Ok(items), Ok((current_index, shuffle, repeat_mode))) =
-            (load_queue_items(&conn), load_queue_state(&conn))
-        {
-            debug!("Loaded queue with {} items from database", items.len());
-            PlayQueue::load(items, current_index, shuffle, repeat_mode)
-        } else {
-            debug!("No persisted queue found, starting fresh");
-            PlayQueue::new()
-        };
+        let queue =
+            if let (Ok(items), Ok(original_order), Ok((current_index, shuffle, repeat_mode))) = (
+                load_queue_items(&conn),
+                load_queue_original_items(&conn),
+                load_queue_state(&conn),
+            ) {
+                debug!("Loaded queue with {} items from database", items.len());
+                PlayQueue::load_with_original_order(
+                    items,
+                    original_order,
+                    current_index,
+                    shuffle,
+                    repeat_mode,
+                )
+            } else {
+                debug!("No persisted queue found, starting fresh");
+                PlayQueue::new()
+            };
 
         Ok(Self {
             client: client_handle,

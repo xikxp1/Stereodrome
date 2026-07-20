@@ -2039,10 +2039,17 @@ async fn prepare_next_transition_from(
     {
         return Ok(false);
     }
+    let Some(expected_playback) = audio.current_playback_identity() else {
+        return Ok(false);
+    };
+    if expected_playback.song_id() != current.song_id {
+        return Ok(false);
+    }
 
     let prepared = prepare_queue_item_audio_from(core, next).await?;
     audio
         .append_gapless(
+            expected_playback,
             prepared.audio_data,
             prepared.metadata,
             prepared.duration_secs,

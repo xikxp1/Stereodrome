@@ -2848,7 +2848,7 @@ impl StereodromeCore {
         let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
         let result = mutate(&mut queue)?;
         let state = QueueState::from_queue(&mut queue);
-        db::save_queue(&self.db_path, &state)?;
+        db::save_queue(&self.db_path, &state, queue.original_order())?;
         Ok((result, state))
     }
 }

@@ -82,12 +82,6 @@ pub fn run() {
 
             let app_state = AppState::new(&db_path, index_path, client_handle.clone())?;
 
-            // Initialize database schema
-            {
-                let conn = app_state.db.lock_recover();
-                db::init_db(&conn)?;
-            }
-
             // Restore persisted runtime volume before UI starts consuming playback state.
             {
                 let persisted_volume = commands::read_persisted_volume(app.handle());

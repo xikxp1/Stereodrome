@@ -80,6 +80,15 @@ CREATE TABLE IF NOT EXISTS queue_items (
     duration INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS queue_original_items (
+    position INTEGER PRIMARY KEY,
+    song_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    artist TEXT NOT NULL,
+    album TEXT NOT NULL,
+    duration INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS queue_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     current_index INTEGER,

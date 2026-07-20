@@ -81,8 +81,25 @@ impl PlayQueue {
         shuffle: bool,
         repeat_mode: RepeatMode,
     ) -> Self {
+        Self::load_with_original_order(items.clone(), items, current_index, shuffle, repeat_mode)
+    }
+
+    #[must_use]
+    pub fn load_with_original_order(
+        items: Vec<QueueItem>,
+        original_order: Vec<QueueItem>,
+        current_index: Option<usize>,
+        shuffle: bool,
+        repeat_mode: RepeatMode,
+    ) -> Self {
+        let original_order = if original_order.len() == items.len() {
+            original_order
+        } else {
+            items.clone()
+        };
+
         Self {
-            original_order: items.clone(),
+            original_order,
             items,
             current_index,
             shuffle,
@@ -95,6 +112,11 @@ impl PlayQueue {
     #[must_use]
     pub fn items(&self) -> &[QueueItem] {
         &self.items
+    }
+
+    #[must_use]
+    pub fn original_order(&self) -> &[QueueItem] {
+        &self.original_order
     }
 
     #[must_use]
@@ -1049,6 +1071,23 @@ mod tests {
         assert!(!queue.is_shuffle());
         assert_eq!(song_ids(queue.items()), original_order);
         assert!(queue.prepared_shuffle_cycle.is_none());
+    }
+
+    #[test]
+    fn loaded_shuffle_restores_persisted_original_order() {
+        let mut queue = PlayQueue::load_with_original_order(
+            vec![queue_item("c"), queue_item("a"), queue_item("b")],
+            vec![queue_item("a"), queue_item("b"), queue_item("c")],
+            Some(0),
+            true,
+            RepeatMode::Off,
+        );
+
+        queue.toggle_shuffle();
+
+        assert!(!queue.is_shuffle());
+        assert_eq!(song_ids(queue.items()), vec!["a", "b", "c"]);
+        assert_eq!(queue.current_index(), Some(2));
     }
 
     #[test]

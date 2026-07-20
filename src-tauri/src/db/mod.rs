@@ -143,6 +143,14 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
             scrobbled_song_id TEXT,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS queue_original_items (
+            position INTEGER PRIMARY KEY,
+            song_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            album TEXT NOT NULL,
+            duration INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS lastfm_scrobble_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             song_id TEXT NOT NULL,

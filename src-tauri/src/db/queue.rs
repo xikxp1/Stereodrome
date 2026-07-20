@@ -7,6 +7,7 @@ use crate::error::AppResult;
 pub fn save_queue(
     conn: &Connection,
     items: &[QueueItem],
+    original_order: &[QueueItem],
     current_index: Option<usize>,
     shuffle: bool,
     repeat_mode: RepeatMode,
@@ -23,6 +24,25 @@ pub fn save_queue(
         )?;
 
         for (pos, item) in items.iter().enumerate() {
+            stmt.execute((
+                i64::try_from(pos).unwrap_or(i64::MAX),
+                &item.song_id,
+                &item.title,
+                &item.artist,
+                &item.album,
+                item.duration,
+            ))?;
+        }
+        drop(stmt);
+
+        conn.execute("DELETE FROM queue_original_items", [])?;
+        let mut stmt = conn.prepare(
+            "INSERT INTO queue_original_items
+             (position, song_id, title, artist, album, duration)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+
+        for (pos, item) in original_order.iter().enumerate() {
             stmt.execute((
                 i64::try_from(pos).unwrap_or(i64::MAX),
                 &item.song_id,
@@ -67,8 +87,17 @@ pub fn save_queue(
 
 /// Load all queue items from the database
 pub fn load_queue_items(conn: &Connection) -> AppResult<Vec<QueueItem>> {
+    load_ordered_queue_items(conn, "queue_items")
+}
+
+pub fn load_queue_original_items(conn: &Connection) -> AppResult<Vec<QueueItem>> {
+    load_ordered_queue_items(conn, "queue_original_items")
+}
+
+fn load_ordered_queue_items(conn: &Connection, table: &str) -> AppResult<Vec<QueueItem>> {
     let mut stmt = conn.prepare(
-        "SELECT song_id, title, artist, album, duration FROM queue_items ORDER BY position",
+        format!("SELECT song_id, title, artist, album, duration FROM {table} ORDER BY position")
+            .as_str(),
     )?;
 
     let items = stmt
@@ -118,5 +147,40 @@ pub fn load_queue_state(conn: &Connection) -> AppResult<(Option<usize>, bool, Re
             Ok((None, false, RepeatMode::Off))
         }
         Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn queue_item(id: &str) -> QueueItem {
+        QueueItem {
+            song_id: id.to_string(),
+            title: format!("Song {id}"),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration: 180,
+        }
+    }
+
+    fn song_ids(items: &[QueueItem]) -> Vec<&str> {
+        items.iter().map(|item| item.song_id.as_str()).collect()
+    }
+
+    #[test]
+    fn queue_persistence_round_trips_original_shuffle_order() {
+        let conn = Connection::open_in_memory().expect("open test database");
+        crate::db::init_db(&conn).expect("initialize test database");
+        let visible = vec![queue_item("c"), queue_item("a"), queue_item("b")];
+        let original = vec![queue_item("a"), queue_item("b"), queue_item("c")];
+
+        save_queue(&conn, &visible, &original, Some(0), true, RepeatMode::Off)
+            .expect("save shuffled queue");
+
+        let loaded_visible = load_queue_items(&conn).expect("load visible queue order");
+        let loaded_original = load_queue_original_items(&conn).expect("load original queue order");
+        assert_eq!(song_ids(&loaded_visible), vec!["c", "a", "b"]);
+        assert_eq!(song_ids(&loaded_original), vec!["a", "b", "c"]);
     }
 }
