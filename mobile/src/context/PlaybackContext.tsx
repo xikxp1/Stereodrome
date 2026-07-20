@@ -128,9 +128,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
-  const currentIndexRef = useRef<number | null>(null);
   const currentSongRef = useRef<PlayableSong | null>(null);
   const isPlayingRef = useRef(false);
+  const canPlayRef = useRef(false);
   const audioLoadedRef = useRef(false);
   const positionRef = useRef(0);
   const durationRef = useRef(0);
@@ -166,7 +166,6 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     const removedCurrentIsStillPlaying =
       index === null && pendingIndex !== null;
 
-    currentIndexRef.current = index;
     setQueue(songs);
     setCurrentIndex(index);
     setPendingNavigationIndex(pendingIndex);
@@ -204,6 +203,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
       audioLoadedRef.current = snapshot.audio_loaded;
       isPlayingRef.current = snapshot.is_playing;
+      canPlayRef.current = snapshot.can_play;
       positionRef.current = snapshot.position_seconds;
       durationRef.current = snapshot.duration_seconds;
       currentSongRef.current = current;
@@ -469,7 +469,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         await stereodromeCore.audioPause();
         await reconcilePlaybackSnapshot();
         await persistPlaybackPosition(false);
-      } else if (currentIndexRef.current !== null) {
+      } else if (canPlayRef.current) {
         await stereodromeCore.audioResume();
         restoredStartPositionRef.current = null;
         await reconcilePlaybackSnapshot();
