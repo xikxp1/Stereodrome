@@ -16,6 +16,32 @@ class PlaylistStore {
   currentPlaylist = $state<Playlist | null>(null);
   currentPlaylistSongs = $state<PlaylistSong[]>([]);
   isLoading = $state(false);
+  private readonly membershipMutationPlaylistIds = new Set<string>();
+
+  private async mutatePlaylistMembership(
+    playlistId: string,
+    mutation: () => Promise<unknown>,
+    failureMessage: string
+  ) {
+    if (this.membershipMutationPlaylistIds.has(playlistId)) {
+      return;
+    }
+
+    this.membershipMutationPlaylistIds.add(playlistId);
+    try {
+      await mutation();
+      await this.loadPlaylists();
+
+      // Keep the lock until affected song positions have been refreshed.
+      if (this.currentPlaylist?.id === playlistId) {
+        await this.loadPlaylistSongs(playlistId);
+      }
+    } catch (cause) {
+      logError(failureMessage, cause);
+    } finally {
+      this.membershipMutationPlaylistIds.delete(playlistId);
+    }
+  }
 
   async syncPlaylists() {
     try {
@@ -110,17 +136,11 @@ class PlaylistStore {
   }
 
   async addSongsToPlaylist(playlistId: string, songIds: string[]) {
-    try {
-      await invoke("add_songs_to_playlist", { playlistId, songIds });
-      await this.loadPlaylists();
-
-      // Refresh current playlist songs if affected
-      if (this.currentPlaylist?.id === playlistId) {
-        await this.loadPlaylistSongs(playlistId);
-      }
-    } catch (cause) {
-      logError("Failed to add songs to playlist", cause);
-    }
+    await this.mutatePlaylistMembership(
+      playlistId,
+      () => invoke("add_songs_to_playlist", { playlistId, songIds }),
+      "Failed to add songs to playlist"
+    );
   }
 
   async removeSongFromPlaylist(playlistId: string, position: number) {
@@ -133,17 +153,11 @@ class PlaylistStore {
       return;
     }
 
-    try {
-      await removeSongsFromPlaylistCommand(playlistId, uniquePositions);
-      await this.loadPlaylists();
-
-      // Refresh current playlist songs if affected
-      if (this.currentPlaylist?.id === playlistId) {
-        await this.loadPlaylistSongs(playlistId);
-      }
-    } catch (cause) {
-      logError("Failed to remove song from playlist", cause);
-    }
+    await this.mutatePlaylistMembership(
+      playlistId,
+      () => removeSongsFromPlaylistCommand(playlistId, uniquePositions),
+      "Failed to remove song from playlist"
+    );
   }
 
   async setPlaylistSavedOffline(
