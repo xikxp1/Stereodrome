@@ -129,6 +129,8 @@
   let normStats = $state<NormalizationStats | null>(null);
   let loadingNorm = $state(false);
   let savingNorm = $state(false);
+  let pendingNormSaves = 0;
+  let audioSettingsSaveQueue: Promise<void> = Promise.resolve();
   let analyzing = $state(false);
   let clearingNorm = $state(false);
   let analysisProgress = $state<AnalysisProgress | null>(null);
@@ -409,6 +411,12 @@
     }
   }
 
+  function enqueueAudioSettingsSave(save: () => Promise<void>) {
+    const queuedSave = audioSettingsSaveQueue.then(save);
+    audioSettingsSaveQueue = queuedSave.catch(() => undefined);
+    return queuedSave;
+  }
+
   async function handlePlaybackSettingChange(
     update: Partial<PlaybackSettings>
   ) {
@@ -421,8 +429,8 @@
           update.equalizer_bands_db ?? playbackSettings.equalizer_bands_db
         ),
       };
-      await setPlaybackSettings(updated);
       playbackSettings = updated;
+      await enqueueAudioSettingsSave(() => setPlaybackSettings(updated));
     } catch (e) {
       error(`Failed to save playback settings: ${e}`);
     }
@@ -707,15 +715,17 @@
     update: Partial<NormalizationSettings>
   ) {
     if (!normSettings) return;
+    const updated = { ...normSettings, ...update };
+    normSettings = updated;
+    pendingNormSaves += 1;
     savingNorm = true;
     try {
-      const updated = { ...normSettings, ...update };
-      await setNormalizationSettings(updated);
-      normSettings = updated;
+      await enqueueAudioSettingsSave(() => setNormalizationSettings(updated));
     } catch (e) {
       error(`Failed to save normalization settings: ${e}`);
     } finally {
-      savingNorm = false;
+      pendingNormSaves -= 1;
+      savingNorm = pendingNormSaves > 0;
     }
   }
 

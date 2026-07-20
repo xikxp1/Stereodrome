@@ -59,6 +59,9 @@ class PlaybackStore {
   private unlistenState: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
   private persistVolumeTimeout: ReturnType<typeof setTimeout> | null = null;
+  private volumeUpdateQueue: Promise<void> = Promise.resolve();
+  private volumeUpdateId = 0;
+  private pendingVolumeUpdates = 0;
   private readonly shouldHandleSideEffects =
     getCurrentWindow().label === "main";
 
@@ -101,7 +104,9 @@ class PlaybackStore {
         this.isPlaying = state.is_playing;
         this.position = state.position;
         this.duration = state.duration;
-        this.volume = state.volume;
+        if (this.pendingVolumeUpdates === 0) {
+          this.volume = state.volume;
+        }
 
         if (state.song) {
           const nextTrack = this.toCurrentTrack(state.song);
@@ -234,12 +239,24 @@ class PlaybackStore {
 
   async setVolume(volume: number) {
     const clamped = Math.max(0, Math.min(1, volume));
+    const updateId = ++this.volumeUpdateId;
+    this.volume = clamped;
+    this.pendingVolumeUpdates += 1;
+
+    const update = this.volumeUpdateQueue.then(() =>
+      invoke("set_volume", { volume: clamped }).then(() => undefined)
+    );
+    this.volumeUpdateQueue = update.catch(() => undefined);
+
     try {
-      await invoke("set_volume", { volume: clamped });
-      this.volume = clamped;
-      this.scheduleVolumePersistence(clamped);
+      await update;
+      if (updateId === this.volumeUpdateId) {
+        this.scheduleVolumePersistence(clamped);
+      }
     } catch (cause) {
       logError("Failed to set volume", cause);
+    } finally {
+      this.pendingVolumeUpdates -= 1;
     }
   }
 
@@ -264,7 +281,9 @@ class PlaybackStore {
       this.isPlaying = status.is_playing;
       this.position = status.position;
       this.duration = status.duration;
-      this.volume = status.volume;
+      if (this.pendingVolumeUpdates === 0) {
+        this.volume = status.volume;
+      }
     } catch (cause) {
       logError("Failed to get playback status", cause);
     }
