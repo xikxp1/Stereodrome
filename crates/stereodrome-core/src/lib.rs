@@ -2909,8 +2909,9 @@ async fn fetch_incremental_library_data(
         let artist_albums = match artist_result {
             Ok(albums) => albums,
             Err(error) => {
-                warn!("Error fetching artist {artist_id}: {error}");
-                continue;
+                return Err(CoreError::Subsonic(format!(
+                    "Incremental sync failed to fetch artist {artist_id}: {error}"
+                )));
             }
         };
         let artist_name = artist_names_by_id
@@ -2955,7 +2956,14 @@ async fn fetch_incremental_library_data(
         }
     }
 
-    let songs = fetch_incremental_songs(client, album_fetch_requests).await;
+    let imported_album_ids = album_fetch_requests
+        .iter()
+        .map(|request| request.album_id.clone())
+        .collect();
+    ensure_incremental_albums_complete(&candidate_album_ids, &imported_album_ids, "artist fetches")
+        .map_err(CoreError::Subsonic)?;
+
+    let songs = fetch_incremental_songs(client, album_fetch_requests).await?;
     Ok(LibrarySyncData {
         artists,
         albums,
@@ -2966,35 +2974,47 @@ async fn fetch_incremental_library_data(
 async fn fetch_incremental_songs(
     client: Client,
     album_fetch_requests: Vec<AlbumFetchRequest>,
-) -> Vec<SyncSongData> {
+) -> CoreResult<Vec<SyncSongData>> {
+    let expected_album_ids = album_fetch_requests
+        .iter()
+        .map(|request| request.album_id.clone())
+        .collect::<HashSet<_>>();
     let mut album_fetches =
         fetch_album_songs_bounded(client, album_fetch_requests, ALBUM_FETCH_CONCURRENCY).await;
     album_fetches.sort_by(|left, right| left.0.album_id.cmp(&right.0.album_id));
     let mut songs_data = Vec::new();
+    let mut fetched_album_ids = HashSet::new();
 
     for (request, album_result) in album_fetches {
-        match album_result {
-            Ok(songs) => songs_data.extend(songs.into_iter().map(|song| SyncSongData {
-                id: song.id,
-                album_id: request.album_id.clone(),
-                artist_id: request.artist_id.clone(),
-                title: song.title,
-                track: song.track,
-                disc_number: song.disc_number,
-                duration: song.duration,
-                bit_rate: song.bit_rate,
-                size: song.size,
-                suffix: song.suffix,
-                content_type: song.content_type,
-                path: song.path,
-                year: song.year.or(request.album_year),
-                genre: song.genre,
-            })),
-            Err(error) => warn!("Error fetching album {}: {error}", request.album_id),
-        }
+        let songs = album_result.map_err(|error| {
+            CoreError::Subsonic(format!(
+                "Incremental sync failed to fetch album {}: {error}",
+                request.album_id
+            ))
+        })?;
+        fetched_album_ids.insert(request.album_id.clone());
+        songs_data.extend(songs.into_iter().map(|song| SyncSongData {
+            id: song.id,
+            album_id: request.album_id.clone(),
+            artist_id: request.artist_id.clone(),
+            title: song.title,
+            track: song.track,
+            disc_number: song.disc_number,
+            duration: song.duration,
+            bit_rate: song.bit_rate,
+            size: song.size,
+            suffix: song.suffix,
+            content_type: song.content_type,
+            path: song.path,
+            year: song.year.or(request.album_year),
+            genre: song.genre,
+        }));
     }
 
-    songs_data
+    ensure_incremental_albums_complete(&expected_album_ids, &fetched_album_ids, "album fetches")
+        .map_err(CoreError::Subsonic)?;
+
+    Ok(songs_data)
 }
 
 async fn fetch_full_library_sync_data(client: &Client) -> CoreResult<LibrarySyncData> {
@@ -3248,6 +3268,27 @@ fn scan_newest_album_page(
     NewestPageScanResult {
         candidates,
         reached_previous_head: false,
+    }
+}
+
+fn ensure_incremental_albums_complete(
+    candidate_album_ids: &HashSet<String>,
+    completed_album_ids: &HashSet<String>,
+    stage: &str,
+) -> Result<(), String> {
+    let mut missing_album_ids = candidate_album_ids
+        .difference(completed_album_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    missing_album_ids.sort();
+
+    if missing_album_ids.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Incremental sync incomplete after {stage}; missing candidate albums: {}",
+            missing_album_ids.join(", ")
+        ))
     }
 }
 
@@ -3741,9 +3782,9 @@ mod tests {
         ConnectivitySettings, CoreError, DueSyncJob, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT,
         NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, Song, StereodromeCore,
         SyncSettings, compute_next_run_at, cover_art_filename_matches, cover_cache_filename,
-        distinct_nonempty_cover_art_ids, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
-        prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
-        write_sync_value,
+        distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete, is_job_due,
+        path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
+        scan_newest_album_page, should_prefetch_large_cover_art, write_sync_value,
     };
     use chrono::{Duration as ChronoDuration, Utc};
     use rusqlite::Connection;
@@ -4001,6 +4042,25 @@ mod tests {
             }]
         );
         assert!(!result.reached_previous_head);
+    }
+
+    #[test]
+    fn incomplete_incremental_import_reports_missing_candidate_albums() {
+        let error = ensure_incremental_albums_complete(
+            &HashSet::from([
+                "album-3".to_string(),
+                "album-1".to_string(),
+                "album-2".to_string(),
+            ]),
+            &HashSet::from(["album-2".to_string()]),
+            "artist fetches",
+        )
+        .expect_err("missing candidates must prevent checkpoint advancement");
+
+        assert_eq!(
+            error,
+            "Incremental sync incomplete after artist fetches; missing candidate albums: album-1, album-3"
+        );
     }
 
     #[tokio::test]
