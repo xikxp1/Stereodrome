@@ -1,7 +1,9 @@
 use log::{debug, error, info, warn};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
+use std::any::Any;
 use std::io::Cursor;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
@@ -28,6 +30,7 @@ const TRANSPORT_ACK_TIMEOUT: Duration = Duration::from_secs(1);
 const STALL_GRACE_DURATION: Duration = Duration::from_millis(750);
 const STALL_TIMEOUT: Duration = Duration::from_millis(2500);
 const POSITION_EPSILON_SECONDS: f64 = 0.01;
+const AUDIO_THREAD_RESTART_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -559,11 +562,16 @@ impl AudioPlayer {
         let producer_clone = Arc::clone(&spectrum_producer);
         let spectrum_enabled_clone = Arc::clone(&spectrum_enabled);
         let audio_thread = thread::spawn(move || {
-            run_audio_thread(
-                &command_rx,
+            supervise_audio_thread(
+                || {
+                    run_audio_thread(
+                        &command_rx,
+                        &state_clone,
+                        &producer_clone,
+                        &spectrum_enabled_clone,
+                    )
+                },
                 &state_clone,
-                &producer_clone,
-                &spectrum_enabled_clone,
             );
         });
 
@@ -1036,6 +1044,12 @@ fn append_output_source<S>(
 enum AudioThreadEvent {
     Command(AudioCommand),
     Timeout,
+    Disconnected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioThreadExit {
+    Shutdown,
     Disconnected,
 }
 
@@ -1824,13 +1838,46 @@ fn crossfade_factor(factor: f64) -> f32 {
     factor as f32
 }
 
-/// Main audio thread function.
+fn panic_payload_message(payload: &(dyn Any + Send)) -> &str {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.as_str()
+    } else {
+        "non-string panic payload"
+    }
+}
+
+fn supervise_audio_thread(
+    mut run_thread: impl FnMut() -> AudioThreadExit,
+    shared_state: &SharedState,
+) {
+    loop {
+        match panic::catch_unwind(AssertUnwindSafe(&mut run_thread)) {
+            Ok(AudioThreadExit::Shutdown) => break,
+            Ok(AudioThreadExit::Disconnected) => {
+                warn!("Audio command channel disconnected; playback thread exiting");
+                break;
+            }
+            Err(payload) => {
+                error!(
+                    "Rust audio playback thread panicked; restarting: {}",
+                    panic_payload_message(payload.as_ref())
+                );
+                shared_state.mark_stream_failed();
+                thread::sleep(AUDIO_THREAD_RESTART_DELAY);
+            }
+        }
+    }
+}
+
+/// Runs one audio-thread lifecycle while the supervisor retains the command receiver.
 fn run_audio_thread(
     command_rx: &Receiver<AudioCommand>,
     shared_state: &Arc<SharedState>,
     spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
     spectrum_enabled: &Arc<AtomicBool>,
-) {
+) -> AudioThreadExit {
     info!("Rust audio playback thread starting");
     let mut audio_thread = AudioThread::new(shared_state, spectrum_producer, spectrum_enabled);
 
@@ -1838,14 +1885,11 @@ fn run_audio_thread(
         match audio_thread.next_event(command_rx) {
             AudioThreadEvent::Command(command) => {
                 if !audio_thread.handle_command(command) {
-                    break;
+                    return AudioThreadExit::Shutdown;
                 }
             }
             AudioThreadEvent::Timeout => audio_thread.handle_timeout(),
-            AudioThreadEvent::Disconnected => {
-                warn!("Audio command channel disconnected; playback thread exiting");
-                break;
-            }
+            AudioThreadEvent::Disconnected => return AudioThreadExit::Disconnected,
         }
     }
 }
@@ -1930,6 +1974,24 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(player.get_status().state, PlaybackLifecycleState::Stopped);
+    }
+
+    #[test]
+    fn audio_thread_supervisor_restarts_after_panic() {
+        let shared = SharedState::new();
+        let mut attempts = 0;
+
+        supervise_audio_thread(
+            || {
+                attempts += 1;
+                assert!(attempts > 1, "simulated audio worker panic");
+                AudioThreadExit::Shutdown
+            },
+            &shared,
+        );
+
+        assert_eq!(attempts, 2);
+        assert!(shared.stream_failed.load(Ordering::SeqCst));
     }
 
     #[test]
