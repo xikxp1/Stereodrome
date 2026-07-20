@@ -1,77 +1,65 @@
+import { useEffect, useState } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
 
 import { SyncedMarqueeText } from "@/components/SyncedMarqueeText";
 import { colors } from "@/components/theme";
 import { usePlayback } from "@/context/PlaybackContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
-import { useEffect, useState } from "react";
+
+type CoverArtState = {
+  songId: string;
+  uri: string | null;
+};
+
+function useCoverArtUri(songId: string | null, size: number) {
+  const [coverArt, setCoverArt] = useState<CoverArtState | null>(null);
+
+  useEffect(() => {
+    if (songId === null || songId.length === 0) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    stereodromeCore
+      .getSongCoverArtUri(songId, size)
+      .then((uri) => {
+        if (!cancelled) {
+          setCoverArt({ songId, uri });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCoverArt({ songId, uri: null });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [size, songId]);
+
+  return coverArt?.songId === songId ? coverArt.uri : null;
+}
 
 export function NowPlayingScreen() {
   const playback = usePlayback();
-  const [coverUri, setCoverUri] = useState<string | null>(null);
-  const [nextCoverUri, setNextCoverUri] = useState<string | null>(null);
   const song = playback.currentSong;
   const nextSong = playback.nextSong;
   const songId = song?.id ?? null;
   const nextSongId = nextSong?.id ?? null;
-  const duration = playback.duration || song?.duration || 0;
+  const coverUri = useCoverArtUri(songId, 512);
+  const nextCoverUri = useCoverArtUri(nextSongId, 128);
+  const duration =
+    playback.duration > 0 ? playback.duration : (song?.duration ?? 0);
   const progressRatio =
-    song && duration > 0 ? Math.min(1, playback.position / duration) : 0;
-
-  useEffect(() => {
-    if (!songId) {
-      setCoverUri(null);
-      return;
-    }
-    let cancelled = false;
-    setCoverUri(null);
-    stereodromeCore
-      .getSongCoverArtUri(songId, 512)
-      .then((uri) => {
-        if (!cancelled) {
-          setCoverUri(uri);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setCoverUri(null);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [songId]);
-
-  useEffect(() => {
-    if (!nextSongId) {
-      setNextCoverUri(null);
-      return;
-    }
-    let cancelled = false;
-    setNextCoverUri(null);
-    stereodromeCore
-      .getSongCoverArtUri(nextSongId, 128)
-      .then((uri) => {
-        if (!cancelled) {
-          setNextCoverUri(uri);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setNextCoverUri(null);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [nextSongId]);
+    song !== null && duration > 0
+      ? Math.min(1, playback.position / duration)
+      : 0;
 
   return (
     <View style={styles.container}>
       <View style={styles.currentRegion}>
-        {coverUri ? (
+        {coverUri !== null && coverUri.length > 0 ? (
           <Image source={{ uri: coverUri }} style={styles.cover} />
         ) : (
           <View style={styles.coverPlaceholder} />
@@ -105,7 +93,7 @@ export function NowPlayingScreen() {
       <View style={styles.nextSlot}>
         {nextSong ? (
           <View style={styles.nextRow}>
-            {nextCoverUri ? (
+            {nextCoverUri !== null && nextCoverUri.length > 0 ? (
               <Image source={{ uri: nextCoverUri }} style={styles.nextCover} />
             ) : (
               <View style={styles.nextCoverPlaceholder} />
@@ -131,7 +119,7 @@ export function NowPlayingScreen() {
           </View>
         ) : null}
       </View>
-      {playback.error ? (
+      {playback.error !== null && playback.error.length > 0 ? (
         <Text numberOfLines={2} style={styles.error}>
           {playback.error}
         </Text>

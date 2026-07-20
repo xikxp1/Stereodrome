@@ -21,6 +21,7 @@ pub struct Compressor {
 }
 
 impl Compressor {
+    #[must_use]
     pub fn new(preset: &DynamicsPreset, sample_rate: u32) -> Self {
         let (threshold_db, ratio, knee_db) = match preset {
             DynamicsPreset::Light => (-20.0_f32, 2.0_f32, 6.0_f32),
@@ -30,7 +31,7 @@ impl Compressor {
 
         let attack_secs = 0.020_f32;
         let release_secs = 0.200;
-        let sr = sample_rate as f32;
+        let sr = sample_rate_as_f32(sample_rate);
         let attack_coeff = (-1.0 / (attack_secs * sr)).exp();
         let release_coeff = (-1.0 / (release_secs * sr)).exp();
 
@@ -96,4 +97,13 @@ impl Compressor {
     pub fn reset(&mut self) {
         self.envelope_sq = 0.0;
     }
+}
+
+/// Audio sample rates are far below the integer precision limit of `f32`.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "DSP coefficients are f32 and supported audio sample rates are exactly representable"
+)]
+fn sample_rate_as_f32(sample_rate: u32) -> f32 {
+    sample_rate as f32
 }

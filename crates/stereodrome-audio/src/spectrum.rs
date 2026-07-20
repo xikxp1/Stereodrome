@@ -7,9 +7,13 @@ use rustfft::{FftPlanner, num_complex::Complex};
 
 /// FFT window size - 2048 samples provides good frequency resolution at 44.1kHz
 const FFT_SIZE: usize = 2048;
+const FFT_SIZE_F32: f32 = 2048.0;
 
 /// Number of frequency bands for visualization
 const NUM_BANDS: usize = 12;
+const LOG_SCALE: f32 = 50.0;
+const ATTACK: f32 = 0.8;
+const DECAY: f32 = 0.3;
 
 /// Spectrum data emitted to frontend
 #[derive(Debug, Clone, serde::Serialize)]
@@ -74,11 +78,13 @@ pub struct SpectrumAnalyzer {
 }
 
 impl SpectrumAnalyzer {
+    #[must_use]
     pub fn new(sample_rate: u32) -> Self {
         // Precompute Hann window
         let window: Vec<f32> = (0..FFT_SIZE)
-            .map(|i| {
-                let t = i as f32 / (FFT_SIZE - 1) as f32;
+            .map(|index| {
+                let index = u16::try_from(index).unwrap_or_default();
+                let t = f32::from(index) / (FFT_SIZE_F32 - 1.0);
                 0.5 * (1.0 - (2.0 * std::f32::consts::PI * t).cos())
             })
             .collect();
@@ -127,14 +133,15 @@ impl SpectrumAnalyzer {
 
         // Calculate magnitudes and aggregate into bands
         let mut bands = [0.0f32; NUM_BANDS];
-        let mut band_counts = [0u32; NUM_BANDS];
+        let mut band_counts = [0u16; NUM_BANDS];
         let mut peak = 0.0f32;
-        let bin_hz = self.sample_rate as f32 / FFT_SIZE as f32;
+        let bin_hz = sample_rate_as_f32(self.sample_rate) / FFT_SIZE_F32;
 
         // Only use first half of FFT output (positive frequencies)
-        for (bin_idx, complex) in self.fft_output.iter().take(FFT_SIZE / 2).enumerate() {
-            let freq = bin_idx as f32 * bin_hz;
-            let magnitude = complex.norm() / (FFT_SIZE as f32).sqrt();
+        for (bin_index, complex) in self.fft_output.iter().take(FFT_SIZE / 2).enumerate() {
+            let bin_index = u16::try_from(bin_index).unwrap_or_default();
+            let freq = f32::from(bin_index) * bin_hz;
+            let magnitude = complex.norm() / FFT_SIZE_F32.sqrt();
 
             peak = peak.max(magnitude);
 
@@ -151,19 +158,18 @@ impl SpectrumAnalyzer {
         // Average each band
         for i in 0..NUM_BANDS {
             if band_counts[i] > 0 {
-                bands[i] /= band_counts[i] as f32;
+                bands[i] /= f32::from(band_counts[i]);
             }
         }
 
         // Apply logarithmic scaling for better perceptual mapping
-        const LOG_SCALE: f32 = 50.0;
         let log_denom = (1.0 + LOG_SCALE).log10();
         for band in &mut bands {
             *band = (1.0 + *band * LOG_SCALE).log10() / log_denom;
         }
 
         // Normalize bands (relative to current frame)
-        let max_band = bands.iter().cloned().fold(0.0f32, f32::max);
+        let max_band = bands.iter().copied().fold(0.0f32, f32::max);
         if max_band > 0.01 {
             for band in &mut bands {
                 *band = (*band / max_band).min(1.0);
@@ -176,10 +182,7 @@ impl SpectrumAnalyzer {
             bands[i] = (bands[i] * BAND_GAINS[i]).min(1.0);
         }
 
-        // Apply smoothing (decay) for visual appeal
-        const ATTACK: f32 = 0.8; // Quick rise
-        const DECAY: f32 = 0.3; // Slower fall
-
+        // Apply smoothing (quick attack, slower decay) for visual appeal.
         for (i, band) in bands.iter().enumerate() {
             if *band > self.smoothed_bands[i] {
                 self.smoothed_bands[i] = self.smoothed_bands[i] * (1.0 - ATTACK) + band * ATTACK;
@@ -202,4 +205,13 @@ impl SpectrumAnalyzer {
         self.sample_buffer.clear();
         self.smoothed_bands.fill(0.0);
     }
+}
+
+/// Audio sample rates are far below the integer precision limit of `f32`.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "FFT processing uses f32 and supported audio sample rates are exactly representable"
+)]
+fn sample_rate_as_f32(sample_rate: u32) -> f32 {
+    sample_rate as f32
 }

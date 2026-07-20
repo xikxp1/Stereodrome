@@ -30,11 +30,13 @@ export function SongContextMenuScreen() {
   const songs = useQuery({
     queryKey: ["songs"],
     queryFn: () => stereodromeCore.getSongs(),
-    enabled: !!target && !target.fullSong,
+    enabled: target !== null && target.fullSong == null,
   });
 
   const fullSong = useMemo<Song | null>(() => {
-    if (!target) return null;
+    if (!target) {
+      return null;
+    }
     return (
       target.fullSong ??
       songs.data?.find((song) => song.id === target.song.id) ??
@@ -77,15 +79,18 @@ export function SongContextMenuScreen() {
     {
       label: "Go to Artist",
       sublabel: fullSong?.artist ?? "Artist unavailable",
-      disabled: !fullSong?.artist_id,
+      disabled: fullSong?.artist_id == null || fullSong.artist_id.length === 0,
       onSelect: () => {
-        if (!fullSong?.artist_id) return;
+        const artistId = fullSong?.artist_id;
+        if (artistId == null || artistId.length === 0) {
+          return;
+        }
         view.push({
           name: "artist",
-          title: fullSong.artist ?? "Artist",
+          title: fullSong?.artist ?? "Artist",
           params: {
-            artistId: fullSong.artist_id,
-            title: fullSong.artist ?? "Artist",
+            artistId,
+            title: fullSong?.artist ?? "Artist",
           },
         });
       },
@@ -93,15 +98,18 @@ export function SongContextMenuScreen() {
     {
       label: "Go to Album",
       sublabel: fullSong?.album ?? "Album unavailable",
-      disabled: !fullSong?.album_id,
+      disabled: fullSong?.album_id == null || fullSong.album_id.length === 0,
       onSelect: () => {
-        if (!fullSong?.album_id) return;
+        const albumId = fullSong?.album_id;
+        if (albumId == null || albumId.length === 0) {
+          return;
+        }
         view.push({
           name: "album",
-          title: fullSong.album ?? "Album",
+          title: fullSong?.album ?? "Album",
           params: {
-            albumId: fullSong.album_id,
-            title: fullSong.album ?? "Album",
+            albumId,
+            title: fullSong?.album ?? "Album",
           },
         });
       },

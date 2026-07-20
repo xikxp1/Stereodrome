@@ -46,9 +46,9 @@ static SONG_DOWNLOAD_LOCKS: LazyLock<Mutex<HashMap<String, Weak<AsyncMutex<()>>>
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn song_download_lock(song_id: &str) -> Arc<AsyncMutex<()>> {
-    SONG_DOWNLOAD_LOCKS
-        .lock()
-        .map(|mut locks| {
+    SONG_DOWNLOAD_LOCKS.lock().map_or_else(
+        |_| Arc::new(AsyncMutex::new(())),
+        |mut locks| {
             locks.retain(|_, lock| lock.strong_count() > 0);
             if let Some(lock) = locks.get(song_id).and_then(Weak::upgrade) {
                 return lock;
@@ -56,8 +56,8 @@ fn song_download_lock(song_id: &str) -> Arc<AsyncMutex<()>> {
             let lock = Arc::new(AsyncMutex::new(()));
             locks.insert(song_id.to_string(), Arc::downgrade(&lock));
             lock
-        })
-        .unwrap_or_else(|_| Arc::new(AsyncMutex::new(())))
+        },
+    )
 }
 
 struct DownloadInProgressGuard {
@@ -230,6 +230,8 @@ pub struct StereodromeCore {
 }
 
 impl StereodromeCore {
+    /// # Errors
+    /// Returns an error if required directories, persisted state, or the database cannot be initialized.
     pub fn new(data_dir: impl AsRef<Path>) -> CoreResult<Self> {
         init_rustls_crypto_provider();
 
@@ -257,6 +259,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if offline mode is active, the server cannot be reached, or state cannot be persisted.
     pub async fn connect_server(&self, params: ConnectParams) -> CoreResult<ConnectionStatus> {
         if self.manual_offline_enabled()? {
             return Err(CoreError::OfflineMode);
@@ -295,6 +299,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if saved settings cannot be read or the updated server connection fails.
     pub async fn update_server_settings(
         &self,
         update: ServerSettingsUpdate,
@@ -308,6 +314,8 @@ impl StereodromeCore {
         .await
     }
 
+    /// # Errors
+    /// Returns an error if saved connection state cannot be read or shared state cannot be updated.
     pub async fn restore_session(&self) -> CoreResult<ConnectionStatus> {
         info!("Restoring saved Subsonic session");
         let config = {
@@ -355,6 +363,8 @@ impl StereodromeCore {
         }
     }
 
+    /// # Errors
+    /// Returns an error if shared connection state or the saved configuration cannot be cleared.
     pub async fn disconnect_server(&self) -> CoreResult<()> {
         info!("Disconnecting Subsonic server");
         *self.client.lock().await = None;
@@ -370,6 +380,8 @@ impl StereodromeCore {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error if the shared server configuration lock is poisoned.
     pub fn get_connection_status(&self) -> CoreResult<ConnectionStatus> {
         let config = self
             .server_config
@@ -387,6 +399,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if the server cannot be queried or synchronized library data cannot be persisted.
     pub async fn sync_library(&self) -> CoreResult<SyncResult> {
         info!("Starting full library sync");
         let client = self.connected_client().await?;
@@ -403,71 +417,13 @@ impl StereodromeCore {
         let now = Utc::now().to_rfc3339();
         let mut conn = Connection::open(&self.db_path)?;
         let tx = conn.transaction()?;
-
-        {
-            let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO artists
-                 (id, name, album_count, cover_art_id, synced_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            for artist in &sync_data.artists {
-                stmt.execute(params![
-                    artist.id,
-                    artist.name,
-                    artist.album_count,
-                    artist.cover_art,
-                    now
-                ])?;
-            }
-        }
-
-        {
-            let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO albums
-                 (id, artist_id, name, year, song_count, duration, cover_art_id, synced_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            )?;
-            for album in &sync_data.albums {
-                stmt.execute(params![
-                    album.id,
-                    album.artist_id,
-                    album.name,
-                    album.year,
-                    album.song_count,
-                    album.duration,
-                    album.cover_art,
-                    now
-                ])?;
-            }
-        }
-
-        {
-            let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO songs
-                 (id, album_id, artist_id, title, track_number, disc_number, duration,
-                  bit_rate, size, suffix, content_type, path, year, genre, synced_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            )?;
-            for song in &sync_data.songs {
-                stmt.execute(params![
-                    song.id,
-                    song.album_id,
-                    song.artist_id,
-                    song.title,
-                    song.track,
-                    song.disc_number,
-                    song.duration,
-                    song.bit_rate,
-                    song.size,
-                    song.suffix,
-                    song.content_type,
-                    song.path,
-                    song.year,
-                    song.genre,
-                    now
-                ])?;
-            }
-        }
+        apply_library_sync_data(
+            &tx,
+            &sync_data.artists,
+            &sync_data.albums,
+            &sync_data.songs,
+            &now,
+        )?;
 
         tx.execute(
             "INSERT OR REPLACE INTO sync_state (key, value, updated_at)
@@ -504,6 +460,8 @@ impl StereodromeCore {
         Ok(result)
     }
 
+    /// # Errors
+    /// Returns an error if incremental synchronization cannot query the server or update persisted state.
     pub async fn sync_library_incremental(&self) -> CoreResult<SyncResult> {
         info!("Starting incremental library sync");
         self.record_sync_attempt_keyed(
@@ -535,6 +493,8 @@ impl StereodromeCore {
         }
     }
 
+    /// # Errors
+    /// Returns an error if library reconciliation cannot query the server or update persisted state.
     pub async fn reconcile_library(&self) -> CoreResult<SyncResult> {
         info!("Starting full library sync with reconciliation");
         self.record_sync_attempt_keyed(FULL_LAST_ATTEMPT_AT_KEY, FULL_LAST_ERROR_KEY, None)?;
@@ -574,6 +534,8 @@ impl StereodromeCore {
         }
     }
 
+    /// # Errors
+    /// Returns an error if synchronization settings cannot be read from the database.
     pub fn get_sync_settings(&self) -> CoreResult<SyncSettings> {
         let conn = Connection::open(&self.db_path)?;
         let Some(json) = sync_value(&conn, SETTINGS_SYNC_KEY)? else {
@@ -585,6 +547,8 @@ impl StereodromeCore {
         Ok(settings)
     }
 
+    /// # Errors
+    /// Returns an error if synchronization settings cannot be serialized or persisted.
     pub fn set_sync_settings(&self, settings: SyncSettings) -> CoreResult<SyncSettings> {
         let settings = settings.clamped();
         let conn = Connection::open(&self.db_path)?;
@@ -592,6 +556,8 @@ impl StereodromeCore {
         Ok(settings)
     }
 
+    /// # Errors
+    /// Returns an error if connectivity settings cannot be read from the database.
     pub fn get_connectivity_settings(&self) -> CoreResult<ConnectivitySettings> {
         let conn = Connection::open(&self.db_path)?;
         let Some(json) = sync_value(&conn, SETTINGS_CONNECTIVITY_KEY)? else {
@@ -600,6 +566,8 @@ impl StereodromeCore {
         Ok(serde_json::from_str::<ConnectivitySettings>(&json).unwrap_or_default())
     }
 
+    /// # Errors
+    /// Returns an error if connectivity settings cannot be serialized or persisted.
     pub fn set_connectivity_settings(
         &self,
         settings: ConnectivitySettings,
@@ -613,10 +581,14 @@ impl StereodromeCore {
         Ok(settings)
     }
 
+    /// # Errors
+    /// Returns an error if connectivity settings cannot be read.
     pub fn manual_offline_enabled(&self) -> CoreResult<bool> {
         Ok(self.get_connectivity_settings()?.manual_offline_enabled)
     }
 
+    /// # Errors
+    /// Returns an error if the due job cannot be determined or synchronization fails.
     pub async fn run_due_library_sync(&self) -> CoreResult<Option<String>> {
         if self.manual_offline_enabled()? {
             return Ok(None);
@@ -635,11 +607,15 @@ impl StereodromeCore {
         }
     }
 
+    /// # Errors
+    /// Returns an error if synchronization settings or job state cannot be read.
     pub fn next_due_library_sync_job(&self) -> CoreResult<Option<DueSyncJob>> {
         let settings = self.get_sync_settings()?;
         self.next_due_sync_job(&settings)
     }
 
+    /// # Errors
+    /// Returns an error if no server is connected or its scan status request fails.
     pub async fn get_scan_status(&self) -> CoreResult<ScanStatus> {
         let client = self.connected_client().await?;
         let status = client
@@ -657,6 +633,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if no server is connected or the scan request fails.
     pub async fn start_scan(&self) -> CoreResult<ScanStatus> {
         info!("Starting Subsonic server scan");
         let client = self.connected_client().await?;
@@ -675,17 +653,19 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if synchronization settings or persisted job state cannot be read.
     pub fn get_library_sync_status(&self) -> CoreResult<LibrarySyncStatus> {
         let conn = Connection::open(&self.db_path)?;
         let settings = self.get_sync_settings()?;
-        let full = self.sync_job_status(&conn, "library_full", false, 1440)?;
-        let incremental = self.sync_job_status(
+        let full = Self::sync_job_status(&conn, "library_full", false, 1440)?;
+        let incremental = Self::sync_job_status(
             &conn,
             "library_incremental",
             settings.incremental_enabled,
             settings.incremental_interval_minutes,
         )?;
-        let reconcile = self.sync_job_status(
+        let reconcile = Self::sync_job_status(
             &conn,
             "library_reconcile",
             settings.full_reconcile_enabled,
@@ -700,6 +680,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if artists cannot be read from the database.
     pub fn get_artists(&self) -> CoreResult<Vec<Artist>> {
         let conn = Connection::open(&self.db_path)?;
         let mut stmt = conn.prepare(
@@ -709,33 +691,34 @@ impl StereodromeCore {
         rows_collect(stmt.query_map([], Artist::from_row)?)
     }
 
+    /// # Errors
+    /// Returns an error if albums cannot be read from the database.
     pub fn get_albums(&self, artist_id: Option<String>) -> CoreResult<Vec<Album>> {
         let conn = Connection::open(&self.db_path)?;
-        match artist_id {
-            Some(artist_id) => {
-                let mut stmt = conn.prepare(
-                    "SELECT al.id, al.artist_id, al.name, al.year, al.song_count, al.duration,
-                            al.cover_art_id, al.synced_at, ar.name
-                     FROM albums al
-                     LEFT JOIN artists ar ON al.artist_id = ar.id
-                     WHERE al.artist_id = ?1
-                     ORDER BY COALESCE(al.year, 9999), al.name COLLATE NOCASE",
-                )?;
-                rows_collect(stmt.query_map([artist_id], Album::from_row)?)
-            }
-            None => {
-                let mut stmt = conn.prepare(
-                    "SELECT al.id, al.artist_id, al.name, al.year, al.song_count, al.duration,
-                            al.cover_art_id, al.synced_at, ar.name
-                     FROM albums al
-                     LEFT JOIN artists ar ON al.artist_id = ar.id
-                     ORDER BY al.name COLLATE NOCASE",
-                )?;
-                rows_collect(stmt.query_map([], Album::from_row)?)
-            }
+        if let Some(artist_id) = artist_id {
+            let mut stmt = conn.prepare(
+                "SELECT al.id, al.artist_id, al.name, al.year, al.song_count, al.duration,
+                        al.cover_art_id, al.synced_at, ar.name
+                 FROM albums al
+                 LEFT JOIN artists ar ON al.artist_id = ar.id
+                 WHERE al.artist_id = ?1
+                 ORDER BY COALESCE(al.year, 9999), al.name COLLATE NOCASE",
+            )?;
+            rows_collect(stmt.query_map([artist_id], Album::from_row)?)
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT al.id, al.artist_id, al.name, al.year, al.song_count, al.duration,
+                        al.cover_art_id, al.synced_at, ar.name
+                 FROM albums al
+                 LEFT JOIN artists ar ON al.artist_id = ar.id
+                 ORDER BY al.name COLLATE NOCASE",
+            )?;
+            rows_collect(stmt.query_map([], Album::from_row)?)
         }
     }
 
+    /// # Errors
+    /// Returns an error if songs cannot be read from the database.
     pub fn get_songs(
         &self,
         album_id: Option<String>,
@@ -758,6 +741,8 @@ impl StereodromeCore {
         }
     }
 
+    /// # Errors
+    /// Returns an error if no server is connected, the list type is unsupported, or the request fails.
     pub async fn get_album_list(
         &self,
         list_type: String,
@@ -792,10 +777,16 @@ impl StereodromeCore {
             .collect())
     }
 
+    // Strings are retained by value as part of the stable FFI-facing API.
+    /// # Errors
+    /// Returns an error if the search limit is invalid or the library database cannot be queried.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn search_library(&self, query: String, limit: Option<usize>) -> CoreResult<SearchResults> {
         let conn = Connection::open(&self.db_path)?;
-        let like = format!("%{}%", query);
-        let limit = limit.unwrap_or(25).min(100) as i64;
+        let like = format!("%{query}%");
+        let limit = i64::try_from(limit.unwrap_or(25).min(100)).map_err(|_| {
+            CoreError::InvalidInput("search limit exceeds SQLite range".to_string())
+        })?;
 
         let mut song_stmt = conn.prepare(
             "SELECT s.id, s.title, ar.name, al.name, s.duration
@@ -852,6 +843,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if playlists cannot be fetched from the server or persisted locally.
     pub async fn get_playlists(&self) -> CoreResult<Vec<Playlist>> {
         if let Ok(client) = self.connected_client().await {
             let playlists = client
@@ -869,6 +862,8 @@ impl StereodromeCore {
         self.get_cached_playlists(true)
     }
 
+    /// # Errors
+    /// Returns an error if playlist songs cannot be fetched from the server or persisted locally.
     pub async fn get_playlist_songs(&self, playlist_id: String) -> CoreResult<Vec<Song>> {
         if let Ok(client) = self.connected_client().await {
             let playlist = client
@@ -909,6 +904,8 @@ impl StereodromeCore {
         self.get_local_playlist_songs(&playlist_id)
     }
 
+    /// # Errors
+    /// Returns an error if no server is connected or the playlist cannot be created and cached.
     pub async fn create_playlist(
         &self,
         name: String,
@@ -925,6 +922,8 @@ impl StereodromeCore {
         self.get_cached_playlist(&mapped.id)
     }
 
+    /// # Errors
+    /// Returns an error if no server is connected or the playlist cannot be renamed and refreshed.
     pub async fn rename_playlist(&self, playlist_id: String, name: String) -> CoreResult<()> {
         let client = self.connected_client().await?;
         client
@@ -947,6 +946,8 @@ impl StereodromeCore {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error if no server is connected or the playlist cannot be deleted locally and remotely.
     pub async fn delete_playlist(&self, playlist_id: String) -> CoreResult<()> {
         let removed_song_ids = self.playlist_song_ids(&playlist_id)?;
         let client = self.connected_client().await?;
@@ -965,6 +966,8 @@ impl StereodromeCore {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error if no server is connected or playlist membership cannot be updated and refreshed.
     pub async fn add_songs_to_playlist(
         &self,
         playlist_id: String,
@@ -1001,6 +1004,8 @@ impl StereodromeCore {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error if no server is connected or playlist membership cannot be updated and refreshed.
     pub async fn remove_songs_from_playlist(
         &self,
         playlist_id: String,
@@ -1031,6 +1036,10 @@ impl StereodromeCore {
         Ok(())
     }
 
+    // Strings are retained by value as part of the stable FFI-facing API.
+    /// # Errors
+    /// Returns an error if cache state cannot be read, offline mode is active, or server settings are unavailable.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn get_stream_uri(&self, song_id: String) -> CoreResult<String> {
         if let Some(path) = self.cached_song_path(&song_id)? {
             return Ok(path_to_file_uri(&path));
@@ -1048,6 +1057,8 @@ impl StereodromeCore {
         ))
     }
 
+    /// # Errors
+    /// Returns an error if cover art cannot be read from cache or downloaded from the server.
     pub async fn get_cover_art_uri(
         &self,
         cover_art_id: String,
@@ -1058,6 +1069,8 @@ impl StereodromeCore {
         Ok(path_to_file_uri(&path))
     }
 
+    /// # Errors
+    /// Returns an error if song metadata or its cover art cannot be read or downloaded.
     pub async fn get_song_cover_art_uri(
         &self,
         song_id: String,
@@ -1082,6 +1095,8 @@ impl StereodromeCore {
         }
     }
 
+    /// # Errors
+    /// Returns an error if song metadata or cached cover art cannot be read.
     pub fn cached_song_cover_art_uri(
         &self,
         song_id: &str,
@@ -1095,6 +1110,8 @@ impl StereodromeCore {
             .map(|path| path_to_file_uri(&path)))
     }
 
+    /// # Errors
+    /// Returns an error if cache settings or cached files cannot be inspected.
     pub fn get_audio_cache_stats(&self) -> CoreResult<CacheStats> {
         let max_size = self.max_cache_size()?;
         let entries = self.audio_cache_entries()?;
@@ -1105,6 +1122,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if offline song state cannot be read from the database.
     pub fn get_offline_song_ids(&self) -> CoreResult<Vec<String>> {
         let conn = Connection::open(&self.db_path)?;
         let mut stmt = conn.prepare("SELECT id FROM songs ORDER BY title COLLATE NOCASE")?;
@@ -1123,6 +1142,8 @@ impl StereodromeCore {
         Ok(song_ids)
     }
 
+    /// # Errors
+    /// Returns an error if the cache size cannot be persisted or cache eviction fails.
     pub fn set_max_cache_size(&self, max_size: u64) -> CoreResult<CacheStats> {
         let max_size = max_size.clamp(500 * 1024 * 1024, 50 * 1024 * 1024 * 1024);
         self.set_setting("max_cache_size", &max_size.to_string())?;
@@ -1130,6 +1151,8 @@ impl StereodromeCore {
         self.get_audio_cache_stats()
     }
 
+    /// # Errors
+    /// Returns an error if cached files or their persisted records cannot be removed.
     pub fn clear_audio_cache(&self) -> CoreResult<CacheStats> {
         let protected_paths = self.protected_audio_cache_paths()?;
         for (path, _) in self.audio_cache_entries()? {
@@ -1156,13 +1179,14 @@ impl StereodromeCore {
         self.get_audio_cache_stats()
     }
 
+    /// # Errors
+    /// Returns an error if the song's cache path or metadata cannot be inspected.
     pub fn is_song_cached(&self, song_id: String) -> CoreResult<DownloadStatus> {
         let path = self.cached_song_path(&song_id)?;
         let bytes = path
             .as_ref()
             .and_then(|path| path.metadata().ok())
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+            .map_or(0, |metadata| metadata.len());
         Ok(DownloadStatus {
             song_id,
             cached: path.is_some(),
@@ -1171,12 +1195,14 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if offline mode is active or the song cannot be downloaded, stored, or recorded.
     pub async fn download_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
         let download_lock = song_download_lock(&song_id);
         let _download_lock = download_lock.lock().await;
 
         if let Some(path) = self.cached_song_path(&song_id)? {
-            let bytes = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            let bytes = path.metadata().map_or(0, |metadata| metadata.len());
             self.preserve_cached_song_cover_art_if_connected(&song_id)
                 .await;
             return Ok(DownloadStatus {
@@ -1256,6 +1282,8 @@ impl StereodromeCore {
         }
     }
 
+    /// # Errors
+    /// Returns an error if the cached song or its persisted record cannot be removed.
     pub fn remove_cached_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
         if self.song_protected_by_saved_playlist(&song_id)? {
             return Err(CoreError::InvalidInput(format!(
@@ -1279,6 +1307,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if album metadata cannot be read or one of its songs cannot be downloaded.
     pub async fn download_album(&self, album_id: String) -> CoreResult<Vec<DownloadStatus>> {
         let songs = self.get_songs(Some(album_id), None)?;
         let mut statuses = Vec::with_capacity(songs.len());
@@ -1288,6 +1318,8 @@ impl StereodromeCore {
         Ok(statuses)
     }
 
+    /// # Errors
+    /// Returns an error if the playlist cannot be refreshed or one of its songs cannot be downloaded.
     pub async fn download_playlist(&self, playlist_id: String) -> CoreResult<Vec<DownloadStatus>> {
         if self.connected_client().await.is_ok() {
             self.refresh_playlist_cache(&playlist_id).await?;
@@ -1295,6 +1327,8 @@ impl StereodromeCore {
         self.download_local_playlist_songs(&playlist_id).await
     }
 
+    /// # Errors
+    /// Returns an error if offline mode prevents saving or playlist cache state cannot be updated.
     pub async fn set_playlist_saved_offline(
         &self,
         playlist_id: String,
@@ -1306,24 +1340,25 @@ impl StereodromeCore {
             }
 
             let previous_saved_at = self.playlist_offline_saved_at(&playlist_id)?;
-            self.set_playlist_offline_saved_at(
-                &playlist_id,
-                Some(
-                    previous_saved_at
-                        .clone()
-                        .unwrap_or_else(|| Utc::now().to_rfc3339()),
-                ),
-            )?;
+            let saved_at = previous_saved_at
+                .clone()
+                .unwrap_or_else(|| Utc::now().to_rfc3339());
+            self.set_playlist_offline_saved_at(&playlist_id, Some(&saved_at))?;
             match self.download_playlist(playlist_id.clone()).await {
-                Ok(statuses) => Ok(SavedPlaylistOfflineResult {
-                    playlist_id,
-                    saved_offline: true,
-                    downloaded_count: statuses.len() as i32,
-                    removed_count: 0,
-                    skipped_protected_count: 0,
-                }),
+                Ok(statuses) => {
+                    let downloaded_count = i32::try_from(statuses.len()).map_err(|_| {
+                        CoreError::InvalidInput("playlist contains too many songs".to_string())
+                    })?;
+                    Ok(SavedPlaylistOfflineResult {
+                        playlist_id,
+                        saved_offline: true,
+                        downloaded_count,
+                        removed_count: 0,
+                        skipped_protected_count: 0,
+                    })
+                }
                 Err(error) => {
-                    self.set_playlist_offline_saved_at(&playlist_id, previous_saved_at)?;
+                    self.set_playlist_offline_saved_at(&playlist_id, previous_saved_at.as_deref())?;
                     Err(error)
                 }
             }
@@ -1342,6 +1377,8 @@ impl StereodromeCore {
         }
     }
 
+    /// # Errors
+    /// Returns an error if offline mode prevents saving or playlist cache state cannot be updated.
     pub fn mark_playlist_saved_offline(
         &self,
         playlist_id: String,
@@ -1353,10 +1390,8 @@ impl StereodromeCore {
             }
 
             let previous_saved_at = self.playlist_offline_saved_at(&playlist_id)?;
-            self.set_playlist_offline_saved_at(
-                &playlist_id,
-                Some(previous_saved_at.unwrap_or_else(|| Utc::now().to_rfc3339())),
-            )?;
+            let saved_at = previous_saved_at.unwrap_or_else(|| Utc::now().to_rfc3339());
+            self.set_playlist_offline_saved_at(&playlist_id, Some(&saved_at))?;
             Ok(SavedPlaylistOfflineResult {
                 playlist_id,
                 saved_offline: true,
@@ -1379,6 +1414,8 @@ impl StereodromeCore {
         }
     }
 
+    /// # Errors
+    /// Returns an error if saved playlists cannot be read or their download counts exceed supported limits.
     pub async fn reconcile_saved_playlists_offline(
         &self,
     ) -> CoreResult<Vec<SavedPlaylistOfflineResult>> {
@@ -1398,12 +1435,11 @@ impl StereodromeCore {
         let mut results = Vec::with_capacity(playlist_ids.len());
         for playlist_id in playlist_ids {
             let downloaded_count = match self.download_playlist(playlist_id.clone()).await {
-                Ok(statuses) => statuses.len() as i32,
+                Ok(statuses) => i32::try_from(statuses.len()).map_err(|_| {
+                    CoreError::InvalidInput("playlist contains too many songs".to_string())
+                })?,
                 Err(error) => {
-                    warn!(
-                        "Failed to reconcile saved playlist {}: {}",
-                        playlist_id, error
-                    );
+                    warn!("Failed to reconcile saved playlist {playlist_id}: {error}");
                     0
                 }
             };
@@ -1427,11 +1463,15 @@ impl StereodromeCore {
         song_ids
     }
 
+    /// # Errors
+    /// Returns an error if queue, processing settings, or prefetched downloads cannot be accessed.
     pub async fn prefetch_next(&self) -> CoreResult<Vec<DownloadStatus>> {
         let prefetch_count = self.get_audio_processing_settings()?.prefetch_count as usize;
         self.prefetch_upcoming(prefetch_count).await
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be read or an upcoming song cannot be downloaded.
     pub async fn prefetch_upcoming(
         &self,
         prefetch_count: usize,
@@ -1471,11 +1511,15 @@ impl StereodromeCore {
         Ok(statuses)
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn peek_next_queue_item(&self) -> CoreResult<Option<QueueItem>> {
         let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
         Ok(queue.peek_next().cloned())
     }
 
+    /// # Errors
+    /// Returns an error if either song's playback metadata cannot be read.
     pub fn songs_are_gapless_eligible(
         &self,
         current_song_id: &str,
@@ -1500,6 +1544,8 @@ impl StereodromeCore {
         Ok(same_disc_consecutive || next_disc_first_track)
     }
 
+    /// # Errors
+    /// Returns an error if playback state cannot be read from the database.
     pub fn get_playback_state(&self) -> CoreResult<PlaybackState> {
         let conn = Connection::open(&self.db_path)?;
         let state = conn
@@ -1531,6 +1577,8 @@ impl StereodromeCore {
         }))
     }
 
+    /// # Errors
+    /// Returns an error if playback or scrobble state cannot be read, updated, or persisted.
     pub async fn report_playback_progress(
         &self,
         progress: PlaybackProgress,
@@ -1571,8 +1619,9 @@ impl StereodromeCore {
         }
 
         let scrobbled_song_id = if should_submit {
-            if let Ok(client) = self.connected_client().await {
-                let timestamp = chrono::Utc::now().timestamp_millis().max(0) as usize;
+            if let Ok(client) = self.connected_client().await
+                && let Ok(timestamp) = usize::try_from(chrono::Utc::now().timestamp_millis().max(0))
+            {
                 let _ = client
                     .scrobble(
                         vec![(progress.song_id.clone(), Some(timestamp))],
@@ -1587,7 +1636,7 @@ impl StereodromeCore {
             None
         };
 
-        self.save_playback_state(PlaybackStateWrite {
+        self.save_playback_state(&PlaybackStateWrite {
             song_id: Some(progress.song_id),
             position_seconds: progress.position_seconds,
             duration_seconds: progress.duration_seconds,
@@ -1598,9 +1647,11 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if playback markers cannot be read or updated state cannot be persisted.
     pub fn save_playback_position(&self, progress: PlaybackProgress) -> CoreResult<PlaybackState> {
         let previous = self.playback_markers()?;
-        self.save_playback_state(PlaybackStateWrite {
+        self.save_playback_state(&PlaybackStateWrite {
             song_id: Some(progress.song_id),
             position_seconds: progress.position_seconds,
             duration_seconds: progress.duration_seconds,
@@ -1615,6 +1666,8 @@ impl StereodromeCore {
         lastfm::status(&self.db_path)
     }
 
+    /// # Errors
+    /// Returns an error if offline mode is active or Last.fm authentication cannot be started.
     pub async fn begin_lastfm_auth(&self) -> CoreResult<LastfmAuthStart> {
         if self.manual_offline_enabled()? {
             return Err(CoreError::OfflineMode);
@@ -1623,6 +1676,8 @@ impl StereodromeCore {
         lastfm::begin_auth(&self.db_path).await
     }
 
+    /// # Errors
+    /// Returns an error if offline mode is active or Last.fm authentication cannot be completed.
     pub async fn complete_lastfm_auth(&self) -> CoreResult<LastfmStatus> {
         if self.manual_offline_enabled()? {
             return Err(CoreError::OfflineMode);
@@ -1631,14 +1686,20 @@ impl StereodromeCore {
         lastfm::complete_auth(&self.db_path).await
     }
 
+    /// # Errors
+    /// Returns an error if the Last.fm session cannot be removed from persisted state.
     pub fn disconnect_lastfm(&self) -> CoreResult<LastfmStatus> {
         lastfm::disconnect(&self.db_path)
     }
 
+    /// # Errors
+    /// Returns an error if the persisted Last.fm queue cannot be read.
     pub fn get_lastfm_queue(&self) -> CoreResult<Vec<LastfmQueueItem>> {
         lastfm::list_queue(&self.db_path)
     }
 
+    /// # Errors
+    /// Returns an error if offline mode is active or queued Last.fm submissions cannot be retried.
     pub async fn retry_lastfm_queue(&self) -> CoreResult<usize> {
         if self.manual_offline_enabled()? {
             return Err(CoreError::OfflineMode);
@@ -1647,6 +1708,8 @@ impl StereodromeCore {
         lastfm::retry_queue(&self.db_path, true).await
     }
 
+    /// # Errors
+    /// Returns an error if audio processing settings cannot be read from the database.
     pub fn get_audio_processing_settings(&self) -> CoreResult<AudioProcessingSettings> {
         let conn = Connection::open(&self.db_path)?;
         let Some(json) = sync_value(&conn, "settings_audio_processing")? else {
@@ -1658,6 +1721,8 @@ impl StereodromeCore {
         Ok(settings)
     }
 
+    /// # Errors
+    /// Returns an error if audio processing settings cannot be serialized or persisted.
     pub fn set_audio_processing_settings(
         &self,
         mut settings: AudioProcessingSettings,
@@ -1672,10 +1737,16 @@ impl StereodromeCore {
         Ok(settings)
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn get_queue(&self) -> CoreResult<QueueState> {
         self.with_queue_state(|_| Ok(()))
     }
 
+    // Owned collection arguments are retained as part of the stable FFI-facing API.
+    /// # Errors
+    /// Returns an error if the requested songs are invalid or queue state cannot be loaded and persisted.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn play_song_with_queue(
         &self,
         song_id: String,
@@ -1699,6 +1770,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn add_to_queue(&self, item: QueueItem) -> CoreResult<QueueState> {
         self.with_queue_state(|queue| {
             queue.add(item);
@@ -1706,6 +1779,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn add_songs_to_queue(&self, items: Vec<QueueItem>) -> CoreResult<QueueState> {
         self.with_queue_state(|queue| {
             queue.add_many(items);
@@ -1713,6 +1788,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn insert_next(&self, item: QueueItem) -> CoreResult<QueueState> {
         self.with_queue_state(|queue| {
             queue.insert_next(item);
@@ -1720,6 +1797,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn insert_next_songs(&self, items: Vec<QueueItem>) -> CoreResult<QueueState> {
         self.with_queue_state(|queue| {
             queue.insert_many_next(items);
@@ -1727,6 +1806,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn remove_from_queue(&self, index: usize) -> CoreResult<QueueState> {
         self.with_queue_state(|queue| {
             queue.remove(index);
@@ -1734,6 +1815,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn clear_queue(&self) -> CoreResult<QueueState> {
         self.with_queue_state(|queue| {
             queue.clear();
@@ -1741,6 +1824,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn move_queue_item(&self, from: usize, to: usize) -> CoreResult<QueueState> {
         self.with_queue_state(|queue| {
             queue.move_item(from, to);
@@ -1748,21 +1833,29 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn play_queue_item(&self, index: usize) -> CoreResult<Option<QueueItem>> {
         self.with_queue_result(|queue| Ok(queue.set_current(index).cloned()))
             .map(|(item, _)| item)
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn play_next(&self, force: Option<bool>) -> CoreResult<Option<QueueItem>> {
         self.with_queue_result(|queue| Ok(queue.next(force.unwrap_or(false)).cloned()))
             .map(|(item, _)| item)
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn play_previous(&self) -> CoreResult<Option<QueueItem>> {
         self.with_queue_result(|queue| Ok(queue.previous().cloned()))
             .map(|(item, _)| item)
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn toggle_shuffle(&self) -> CoreResult<QueueState> {
         self.with_queue_state(|queue| {
             queue.toggle_shuffle();
@@ -1770,6 +1863,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn set_repeat_mode(&self, mode: RepeatMode) -> CoreResult<QueueState> {
         self.with_queue_state(|queue| {
             queue.set_repeat_mode(mode);
@@ -1777,6 +1872,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn cycle_repeat_mode(&self) -> CoreResult<QueueState> {
         self.with_queue_state(|queue| {
             queue.cycle_repeat_mode();
@@ -1784,6 +1881,8 @@ impl StereodromeCore {
         })
     }
 
+    /// # Errors
+    /// Returns an error if queue state cannot be locked or persisted.
     pub fn reroll_next(&self) -> CoreResult<QueueState> {
         self.with_queue_state(|queue| {
             queue.reroll_next();
@@ -1914,7 +2013,12 @@ impl StereodromeCore {
             )?;
             for (position, song) in songs.iter().enumerate() {
                 if existing_song_ids.contains(&song.id) {
-                    playlist_song_stmt.execute(params![playlist_id, song.id, position as i64])?;
+                    let position = i64::try_from(position).map_err(|_| {
+                        CoreError::InvalidInput(
+                            "playlist position exceeds SQLite range".to_string(),
+                        )
+                    })?;
+                    playlist_song_stmt.execute(params![playlist_id, song.id, position])?;
                 }
             }
         }
@@ -1970,14 +2074,14 @@ impl StereodromeCore {
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
-        .map(|value| value.flatten())
+        .map(std::option::Option::flatten)
         .map_err(Into::into)
     }
 
     fn set_playlist_offline_saved_at(
         &self,
         playlist_id: &str,
-        offline_saved_at: Option<String>,
+        offline_saved_at: Option<&str>,
     ) -> CoreResult<()> {
         let conn = Connection::open(&self.db_path)?;
         conn.execute(
@@ -2006,7 +2110,7 @@ impl StereodromeCore {
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
-        .map(|value| value.flatten())
+        .map(std::option::Option::flatten)
         .map_err(Into::into)
     }
 
@@ -2077,10 +2181,7 @@ impl StereodromeCore {
             Ok(Some(cover_art_id)) => cover_art_id,
             Ok(None) => return,
             Err(error) => {
-                warn!(
-                    "Failed to resolve cover art for offline song {}: {}",
-                    song_id, error
-                );
+                warn!("Failed to resolve cover art for offline song {song_id}: {error}");
                 return;
             }
         };
@@ -2090,8 +2191,7 @@ impl StereodromeCore {
             .await
         {
             warn!(
-                "Failed to preserve cover art {} for offline song {}: {}",
-                cover_art_id, song_id, error
+                "Failed to preserve cover art {cover_art_id} for offline song {song_id}: {error}"
             );
         }
     }
@@ -2109,10 +2209,7 @@ impl StereodromeCore {
         let cover_art_ids = match self.playlist_offline_cover_art_ids(playlist_id) {
             Ok(cover_art_ids) => cover_art_ids,
             Err(error) => {
-                warn!(
-                    "Failed to resolve cover art for offline playlist {}: {}",
-                    playlist_id, error
-                );
+                warn!("Failed to resolve cover art for offline playlist {playlist_id}: {error}");
                 return;
             }
         };
@@ -2123,8 +2220,7 @@ impl StereodromeCore {
                 .await
             {
                 warn!(
-                    "Failed to preserve cover art {} for offline playlist {}: {}",
-                    cover_art_id, playlist_id, error
+                    "Failed to preserve cover art {cover_art_id} for offline playlist {playlist_id}: {error}"
                 );
             }
         }
@@ -2156,7 +2252,6 @@ impl StereodromeCore {
     }
 
     fn sync_job_status(
-        &self,
         conn: &Connection,
         prefix: &str,
         enabled: bool,
@@ -2264,158 +2359,37 @@ impl StereodromeCore {
         .await?;
 
         if newest_scan.candidates.is_empty() {
-            if let Some(head_album_id) = newest_scan.head_album_id.as_deref()
-                && previous_head_album_id.as_deref() != Some(head_album_id)
-            {
-                let conn = Connection::open(&self.db_path)?;
-                write_sync_value(&conn, NEWEST_HEAD_ALBUM_KEY, head_album_id)?;
-            }
-
-            match previous_head_album_id.as_deref() {
-                Some(previous_head_album_id)
-                    if newest_scan.stop_reason == NewestScanStopReason::ReachedPreviousHead =>
-                {
-                    info!(
-                        "Incremental sync skipped: no albums found before previous newest head ({previous_head_album_id})"
-                    );
-                }
-                Some(previous_head_album_id) => {
-                    info!(
-                        "Incremental sync skipped: newest-album feed exhausted before previous newest head ({previous_head_album_id})"
-                    );
-                }
-                None => {
-                    info!(
-                        "Incremental sync skipped: no previous newest head recorded and newest feed contained no unknown albums"
-                    );
-                }
-            }
-
+            handle_empty_incremental_scan(
+                &self.db_path,
+                previous_head_album_id.as_deref(),
+                &newest_scan,
+            )?;
             return Ok(SyncResult::default());
         }
 
-        let candidate_album_ids: HashSet<String> = newest_scan
-            .candidates
-            .iter()
-            .map(|candidate| candidate.album_id.clone())
-            .collect();
-        let mut artist_names_by_id: HashMap<String, String> = HashMap::new();
-        let mut artists_to_refresh: HashSet<String> = HashSet::new();
-
-        for candidate in &newest_scan.candidates {
-            artists_to_refresh.insert(candidate.artist_id.clone());
-            if let Some(name) = &candidate.artist_name {
-                artist_names_by_id
-                    .entry(candidate.artist_id.clone())
-                    .or_insert(name.clone());
-            }
-        }
-
-        let mut artist_ids: Vec<String> = artists_to_refresh.into_iter().collect();
-        artist_ids.sort();
-        let mut artist_fetches =
-            fetch_artist_albums_bounded(client.clone(), artist_ids, ARTIST_FETCH_CONCURRENCY).await;
-        artist_fetches.sort_by(|left, right| left.0.cmp(&right.0));
-
-        let mut artists_data = Vec::new();
-        let mut albums_data = Vec::new();
-        let mut album_fetch_requests = Vec::new();
-
-        for (artist_id, artist_result) in artist_fetches {
-            let artist_albums = match artist_result {
-                Ok(albums) => albums,
-                Err(error) => {
-                    warn!("Error fetching artist {artist_id}: {error}");
-                    continue;
-                }
-            };
-
-            let artist_name = artist_names_by_id
-                .get(&artist_id)
-                .cloned()
-                .or_else(|| {
-                    local_artists
-                        .get(&artist_id)
-                        .map(|artist| artist.name.clone())
-                })
-                .unwrap_or_else(|| "Unknown Artist".to_string());
-            let cover_art = local_artists
-                .get(&artist_id)
-                .and_then(|artist| artist.cover_art_id.clone());
-
-            artists_data.push(SyncArtistData {
-                id: artist_id.clone(),
-                name: artist_name,
-                album_count: artist_albums.len() as i32,
-                cover_art,
-            });
-
-            for album in artist_albums {
-                if !candidate_album_ids.contains(&album.id) {
-                    continue;
-                }
-
-                albums_data.push(SyncAlbumData {
-                    id: album.id.clone(),
-                    artist_id: artist_id.clone(),
-                    name: album.name,
-                    year: album.year,
-                    song_count: album.song_count,
-                    duration: Some(album.duration),
-                    cover_art: album.cover_art,
-                });
-                album_fetch_requests.push(AlbumFetchRequest {
-                    album_id: album.id,
-                    artist_id: artist_id.clone(),
-                    album_year: album.year,
-                });
-            }
-        }
-
-        let mut album_fetches =
-            fetch_album_songs_bounded(client, album_fetch_requests, ALBUM_FETCH_CONCURRENCY).await;
-        album_fetches.sort_by(|left, right| left.0.album_id.cmp(&right.0.album_id));
-        let mut songs_data = Vec::new();
-
-        for (request, album_result) in album_fetches {
-            match album_result {
-                Ok(songs) => {
-                    for song in songs {
-                        songs_data.push(SyncSongData {
-                            id: song.id,
-                            album_id: request.album_id.clone(),
-                            artist_id: request.artist_id.clone(),
-                            title: song.title,
-                            track: song.track,
-                            disc_number: song.disc_number,
-                            duration: song.duration,
-                            bit_rate: song.bit_rate,
-                            size: song.size,
-                            suffix: song.suffix,
-                            content_type: song.content_type,
-                            path: song.path,
-                            year: song.year.or(request.album_year),
-                            genre: song.genre,
-                        });
-                    }
-                }
-                Err(error) => warn!("Error fetching album {}: {error}", request.album_id),
-            }
-        }
+        let candidate_count = newest_scan.candidates.len();
+        let sync_data =
+            fetch_incremental_library_data(client, &newest_scan.candidates, &local_artists).await?;
 
         info!(
             "Applying newest-album incremental sync: importing {} newest albums via {} artists (upserts: {} artists, {} albums, {} songs)",
-            candidate_album_ids.len(),
-            artists_data.len(),
-            artists_data.len(),
-            albums_data.len(),
-            songs_data.len()
+            candidate_count,
+            sync_data.artists.len(),
+            sync_data.artists.len(),
+            sync_data.albums.len(),
+            sync_data.songs.len()
         );
 
         let now = Utc::now().to_rfc3339();
         let mut conn = Connection::open(&self.db_path)?;
         let tx = conn.transaction()?;
-        apply_library_sync_data(&tx, &artists_data, &albums_data, &songs_data, &now)?;
+        apply_library_sync_data(
+            &tx,
+            &sync_data.artists,
+            &sync_data.albums,
+            &sync_data.songs,
+            &now,
+        )?;
         if let Some(head_album_id) = newest_scan.head_album_id.as_deref() {
             tx.execute(
                 "INSERT OR REPLACE INTO sync_state (key, value, updated_at)
@@ -2426,9 +2400,9 @@ impl StereodromeCore {
         tx.commit()?;
 
         Ok(SyncResult {
-            artists: artists_data.len(),
-            albums: albums_data.len(),
-            songs: songs_data.len(),
+            artists: sync_data.artists.len(),
+            albums: sync_data.albums.len(),
+            songs: sync_data.songs.len(),
         })
     }
 
@@ -2641,7 +2615,7 @@ impl StereodromeCore {
                 song_id,
                 status: "downloaded",
                 path: Some(&mp3_path),
-                bytes: mp3_path.metadata().map(|m| m.len()).unwrap_or(0),
+                bytes: mp3_path.metadata().map_or(0, |m| m.len()),
                 error: None,
             })?;
             return Ok(Some(mp3_path));
@@ -2766,6 +2740,9 @@ impl StereodromeCore {
 
     fn record_download(&self, record: DownloadRecord<'_>) -> CoreResult<()> {
         let conn = Connection::open(&self.db_path)?;
+        let bytes = i64::try_from(record.bytes).map_err(|_| {
+            CoreError::InvalidInput("download size exceeds SQLite range".to_string())
+        })?;
         conn.execute(
             "INSERT OR REPLACE INTO download_items
              (entity_type, entity_id, song_id, status, path, bytes, error, updated_at)
@@ -2776,7 +2753,7 @@ impl StereodromeCore {
                 record.song_id,
                 record.status,
                 record.path.map(|path| path.to_string_lossy().to_string()),
-                record.bytes as i64,
+                bytes,
                 record.error,
                 Utc::now().to_rfc3339()
             ],
@@ -2817,7 +2794,7 @@ impl StereodromeCore {
         }))
     }
 
-    fn save_playback_state(&self, state: PlaybackStateWrite) -> CoreResult<PlaybackState> {
+    fn save_playback_state(&self, state: &PlaybackStateWrite) -> CoreResult<PlaybackState> {
         let conn = Connection::open(&self.db_path)?;
         let updated_at = Utc::now().to_rfc3339();
         conn.execute(
@@ -2826,13 +2803,13 @@ impl StereodromeCore {
               now_playing_song_id, scrobbled_song_id, updated_at)
              VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                state.song_id,
+                &state.song_id,
                 state.position_seconds.max(0.0),
                 state.duration_seconds.max(0.0),
-                state.was_playing as i64,
+                i64::from(state.was_playing),
                 state.app_volume.clamp(0.0, 2.0),
-                state.now_playing_song_id,
-                state.scrobbled_song_id,
+                &state.now_playing_song_id,
+                &state.scrobbled_song_id,
                 updated_at
             ],
         )?;
@@ -2847,7 +2824,7 @@ impl StereodromeCore {
             mutate(queue)?;
             Ok(())
         })
-        .map(|(_, state)| state)
+        .map(|((), state)| state)
     }
 
     fn with_queue_result<T>(
@@ -2860,6 +2837,164 @@ impl StereodromeCore {
         db::save_queue(&self.db_path, &state)?;
         Ok((result, state))
     }
+}
+
+fn handle_empty_incremental_scan(
+    db_path: &Path,
+    previous_head_album_id: Option<&str>,
+    newest_scan: &NewestScanResult,
+) -> CoreResult<()> {
+    if let Some(head_album_id) = newest_scan.head_album_id.as_deref()
+        && previous_head_album_id != Some(head_album_id)
+    {
+        let conn = Connection::open(db_path)?;
+        write_sync_value(&conn, NEWEST_HEAD_ALBUM_KEY, head_album_id)?;
+    }
+
+    match previous_head_album_id {
+        Some(previous_head_album_id)
+            if newest_scan.stop_reason == NewestScanStopReason::ReachedPreviousHead =>
+        {
+            info!(
+                "Incremental sync skipped: no albums found before previous newest head ({previous_head_album_id})"
+            );
+        }
+        Some(previous_head_album_id) => {
+            info!(
+                "Incremental sync skipped: newest-album feed exhausted before previous newest head ({previous_head_album_id})"
+            );
+        }
+        None => {
+            info!(
+                "Incremental sync skipped: no previous newest head recorded and newest feed contained no unknown albums"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn fetch_incremental_library_data(
+    client: Client,
+    candidates: &[NewestAlbumCandidate],
+    local_artists: &HashMap<String, LocalArtistRow>,
+) -> CoreResult<LibrarySyncData> {
+    let candidate_album_ids = candidates
+        .iter()
+        .map(|candidate| candidate.album_id.clone())
+        .collect::<HashSet<_>>();
+    let mut artist_names_by_id = HashMap::new();
+    let mut artists_to_refresh = HashSet::new();
+
+    for candidate in candidates {
+        artists_to_refresh.insert(candidate.artist_id.clone());
+        if let Some(name) = &candidate.artist_name {
+            artist_names_by_id
+                .entry(candidate.artist_id.clone())
+                .or_insert(name.clone());
+        }
+    }
+
+    let mut artist_ids = artists_to_refresh.into_iter().collect::<Vec<_>>();
+    artist_ids.sort();
+    let mut artist_fetches =
+        fetch_artist_albums_bounded(client.clone(), artist_ids, ARTIST_FETCH_CONCURRENCY).await;
+    artist_fetches.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut artists = Vec::new();
+    let mut albums = Vec::new();
+    let mut album_fetch_requests = Vec::new();
+
+    for (artist_id, artist_result) in artist_fetches {
+        let artist_albums = match artist_result {
+            Ok(albums) => albums,
+            Err(error) => {
+                warn!("Error fetching artist {artist_id}: {error}");
+                continue;
+            }
+        };
+        let artist_name = artist_names_by_id
+            .get(&artist_id)
+            .cloned()
+            .or_else(|| {
+                local_artists
+                    .get(&artist_id)
+                    .map(|artist| artist.name.clone())
+            })
+            .unwrap_or_else(|| "Unknown Artist".to_string());
+        let cover_art = local_artists
+            .get(&artist_id)
+            .and_then(|artist| artist.cover_art_id.clone());
+
+        artists.push(SyncArtistData {
+            id: artist_id.clone(),
+            name: artist_name,
+            album_count: i32::try_from(artist_albums.len()).map_err(|_| {
+                CoreError::InvalidInput("artist contains too many albums".to_string())
+            })?,
+            cover_art,
+        });
+
+        for album in artist_albums {
+            if candidate_album_ids.contains(&album.id) {
+                album_fetch_requests.push(AlbumFetchRequest {
+                    album_id: album.id.clone(),
+                    artist_id: artist_id.clone(),
+                    album_year: album.year,
+                });
+                albums.push(SyncAlbumData {
+                    id: album.id,
+                    artist_id: artist_id.clone(),
+                    name: album.name,
+                    year: album.year,
+                    song_count: album.song_count,
+                    duration: Some(album.duration),
+                    cover_art: album.cover_art,
+                });
+            }
+        }
+    }
+
+    let songs = fetch_incremental_songs(client, album_fetch_requests).await;
+    Ok(LibrarySyncData {
+        artists,
+        albums,
+        songs,
+    })
+}
+
+async fn fetch_incremental_songs(
+    client: Client,
+    album_fetch_requests: Vec<AlbumFetchRequest>,
+) -> Vec<SyncSongData> {
+    let mut album_fetches =
+        fetch_album_songs_bounded(client, album_fetch_requests, ALBUM_FETCH_CONCURRENCY).await;
+    album_fetches.sort_by(|left, right| left.0.album_id.cmp(&right.0.album_id));
+    let mut songs_data = Vec::new();
+
+    for (request, album_result) in album_fetches {
+        match album_result {
+            Ok(songs) => songs_data.extend(songs.into_iter().map(|song| SyncSongData {
+                id: song.id,
+                album_id: request.album_id.clone(),
+                artist_id: request.artist_id.clone(),
+                title: song.title,
+                track: song.track,
+                disc_number: song.disc_number,
+                duration: song.duration,
+                bit_rate: song.bit_rate,
+                size: song.size,
+                suffix: song.suffix,
+                content_type: song.content_type,
+                path: song.path,
+                year: song.year.or(request.album_year),
+                genre: song.genre,
+            })),
+            Err(error) => warn!("Error fetching album {}: {error}", request.album_id),
+        }
+    }
+
+    songs_data
 }
 
 async fn fetch_full_library_sync_data(client: &Client) -> CoreResult<LibrarySyncData> {
@@ -3410,7 +3545,7 @@ fn is_job_due(
         return true;
     };
 
-    now.signed_duration_since(last_attempt) >= ChronoDuration::minutes(interval_minutes as i64)
+    now.signed_duration_since(last_attempt) >= ChronoDuration::minutes(i64::from(interval_minutes))
 }
 
 fn compute_next_run_at(
@@ -3428,7 +3563,7 @@ fn compute_next_run_at(
     };
 
     Some(
-        (last_attempt + ChronoDuration::minutes(interval_minutes as i64))
+        (last_attempt + ChronoDuration::minutes(i64::from(interval_minutes)))
             .with_timezone(&Utc)
             .to_rfc3339(),
     )
@@ -3507,9 +3642,10 @@ fn distinct_nonempty_cover_art_ids(ids: Vec<Option<String>>) -> Vec<String> {
 }
 
 fn path_to_file_uri(path: &Path) -> String {
-    url::Url::from_file_path(path)
-        .map(|url| url.to_string())
-        .unwrap_or_else(|_| format!("file://{}", path.to_string_lossy()))
+    url::Url::from_file_path(path).map_or_else(
+        |()| format!("file://{}", path.to_string_lossy()),
+        |url| url.to_string(),
+    )
 }
 
 fn should_prefetch_large_cover_art(size: Option<i32>) -> bool {
@@ -3520,6 +3656,83 @@ fn is_mobile_playback_cache_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case(MOBILE_PLAYBACK_FORMAT))
+}
+
+struct PlaybackMarkers {
+    app_volume: f64,
+    now_playing_song_id: Option<String>,
+    scrobbled_song_id: Option<String>,
+}
+
+struct GaplessTrackInfo {
+    album_id: String,
+    disc_number: i32,
+    track_number: i32,
+}
+
+fn gapless_track_info(conn: &Connection, song_id: &str) -> CoreResult<Option<GaplessTrackInfo>> {
+    let info = conn
+        .query_row(
+            "SELECT album_id, disc_number, track_number FROM songs WHERE id = ?1",
+            [song_id],
+            |row| {
+                Ok(GaplessTrackInfo {
+                    album_id: row.get(0)?,
+                    disc_number: row.get::<_, Option<i32>>(1)?.unwrap_or(1),
+                    track_number: row.get::<_, Option<i32>>(2)?.unwrap_or(0),
+                })
+            },
+        )
+        .optional()?;
+    Ok(info)
+}
+
+#[derive(Clone, Copy)]
+struct DownloadRecord<'a> {
+    entity_type: &'a str,
+    entity_id: &'a str,
+    song_id: &'a str,
+    status: &'a str,
+    path: Option<&'a Path>,
+    bytes: u64,
+    error: Option<&'a str>,
+}
+
+struct PlaybackStateWrite {
+    song_id: Option<String>,
+    position_seconds: f64,
+    duration_seconds: f64,
+    was_playing: bool,
+    app_volume: f64,
+    now_playing_song_id: Option<String>,
+    scrobbled_song_id: Option<String>,
+}
+
+fn clamp_audio_processing_settings(settings: &mut AudioProcessingSettings) {
+    if settings.normalization_mode != "album" {
+        settings.normalization_mode = "track".to_string();
+    }
+    settings.target_lufs = settings.target_lufs.clamp(-24.0, -8.0);
+    settings.preamp_db = settings.preamp_db.clamp(-12.0, 12.0);
+    settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(500, 15_000);
+    settings.prefetch_count = settings.prefetch_count.clamp(1, 10);
+    if !matches!(
+        settings.dynamics_preset.as_str(),
+        "light" | "medium" | "heavy"
+    ) {
+        settings.dynamics_preset = "light".to_string();
+    }
+    if !matches!(
+        settings.binaural_preset.as_str(),
+        "light" | "medium" | "strong"
+    ) {
+        settings.binaural_preset = "medium".to_string();
+    }
+    settings.equalizer_bands_db.resize(12, 0.0);
+    settings.equalizer_bands_db.truncate(12);
+    for band in &mut settings.equalizer_bands_db {
+        *band = band.clamp(-12.0, 12.0);
+    }
 }
 
 #[cfg(test)]
@@ -3582,7 +3795,7 @@ mod tests {
             Some(" playlist-cover ".to_string()),
             Some("album-cover".to_string()),
             None,
-            Some("".to_string()),
+            Some(String::new()),
             Some("album-cover".to_string()),
             Some("artist-cover".to_string()),
             Some("playlist-cover".to_string()),
@@ -4440,81 +4653,5 @@ mod tests {
             |row| row.get(0),
         )
         .expect("count rows")
-    }
-}
-
-struct PlaybackMarkers {
-    app_volume: f64,
-    now_playing_song_id: Option<String>,
-    scrobbled_song_id: Option<String>,
-}
-
-struct GaplessTrackInfo {
-    album_id: String,
-    disc_number: i32,
-    track_number: i32,
-}
-
-fn gapless_track_info(conn: &Connection, song_id: &str) -> CoreResult<Option<GaplessTrackInfo>> {
-    let info = conn
-        .query_row(
-            "SELECT album_id, disc_number, track_number FROM songs WHERE id = ?1",
-            [song_id],
-            |row| {
-                Ok(GaplessTrackInfo {
-                    album_id: row.get(0)?,
-                    disc_number: row.get::<_, Option<i32>>(1)?.unwrap_or(1),
-                    track_number: row.get::<_, Option<i32>>(2)?.unwrap_or(0),
-                })
-            },
-        )
-        .optional()?;
-    Ok(info)
-}
-
-struct DownloadRecord<'a> {
-    entity_type: &'a str,
-    entity_id: &'a str,
-    song_id: &'a str,
-    status: &'a str,
-    path: Option<&'a Path>,
-    bytes: u64,
-    error: Option<&'a str>,
-}
-
-struct PlaybackStateWrite {
-    song_id: Option<String>,
-    position_seconds: f64,
-    duration_seconds: f64,
-    was_playing: bool,
-    app_volume: f64,
-    now_playing_song_id: Option<String>,
-    scrobbled_song_id: Option<String>,
-}
-
-fn clamp_audio_processing_settings(settings: &mut AudioProcessingSettings) {
-    if settings.normalization_mode != "album" {
-        settings.normalization_mode = "track".to_string();
-    }
-    settings.target_lufs = settings.target_lufs.clamp(-24.0, -8.0);
-    settings.preamp_db = settings.preamp_db.clamp(-12.0, 12.0);
-    settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(500, 15_000);
-    settings.prefetch_count = settings.prefetch_count.clamp(1, 10);
-    if !matches!(
-        settings.dynamics_preset.as_str(),
-        "light" | "medium" | "heavy"
-    ) {
-        settings.dynamics_preset = "light".to_string();
-    }
-    if !matches!(
-        settings.binaural_preset.as_str(),
-        "light" | "medium" | "strong"
-    ) {
-        settings.binaural_preset = "medium".to_string();
-    }
-    settings.equalizer_bands_db.resize(12, 0.0);
-    settings.equalizer_bands_db.truncate(12);
-    for band in &mut settings.equalizer_bands_db {
-        *band = band.clamp(-12.0, 12.0);
     }
 }

@@ -46,7 +46,7 @@ export async function configureLibrarySyncBackgroundTask(
 
   try {
     const registered = await TaskManager.isTaskRegisteredAsync(TASK_NAME);
-    if (!minimumInterval) {
+    if (minimumInterval === null) {
       if (registered) {
         await BackgroundTask.unregisterTaskAsync(TASK_NAME);
       }

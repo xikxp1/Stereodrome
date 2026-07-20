@@ -37,25 +37,36 @@ pub struct SearchResults {
     pub artists: Vec<SearchResultArtist>,
 }
 
+fn i64_to_i32_saturating(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or_else(|_| {
+        if value.is_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        }
+    })
+}
+
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn search_library(
     state: State<'_, AppState>,
     query: String,
     limit: Option<i32>,
 ) -> AppResult<SearchResults> {
-    let limit = limit.unwrap_or(20) as usize;
+    let limit = usize::try_from(limit.unwrap_or(20).max(0)).unwrap_or(usize::MAX);
 
     let search_index_guard = state
         .search_index
         .lock()
-        .map_err(|e| AppError::Search(format!("Failed to lock search index: {}", e)))?;
+        .map_err(|e| AppError::Search(format!("Failed to lock search index: {e}")))?;
 
     let index_manager = search_index_guard.as_ref().ok_or_else(|| {
         AppError::Search("Search index not initialized. Please sync library first.".to_string())
     })?;
 
     // Multiply limit to get enough results for each category
-    let hits = index_manager.search(&query, limit * 3)?;
+    let hits = index_manager.search(&query, limit.saturating_mul(3))?;
 
     debug!(
         "search_library: query='{}', limit={}, hits={}",
@@ -76,7 +87,7 @@ pub fn search_library(
                     title: hit.name,
                     artist: hit.artist_name,
                     album: hit.album_name,
-                    duration: hit.duration.map(|d| d as i32),
+                    duration: hit.duration.map(i64_to_i32_saturating),
                 });
             }
             "album" if albums.len() < limit => {
@@ -84,15 +95,15 @@ pub fn search_library(
                     id: hit.id,
                     name: hit.name,
                     artist: hit.artist_name,
-                    year: hit.year.map(|y| y as i32),
-                    song_count: hit.song_count.unwrap_or(0) as i32,
+                    year: hit.year.map(i64_to_i32_saturating),
+                    song_count: i64_to_i32_saturating(hit.song_count.unwrap_or(0)),
                 });
             }
             "artist" if artists.len() < limit => {
                 artists.push(SearchResultArtist {
                     id: hit.id,
                     name: hit.name,
-                    album_count: hit.album_count.unwrap_or(0) as i32,
+                    album_count: i64_to_i32_saturating(hit.album_count.unwrap_or(0)),
                 });
             }
             _ => {}

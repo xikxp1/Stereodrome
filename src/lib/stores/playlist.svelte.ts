@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { error } from "@tauri-apps/plugin-log";
 import {
   reconcileSavedPlaylistsOffline,
   removeSongsFromPlaylist as removeSongsFromPlaylistCommand,
   setPlaylistSavedOffline,
 } from "$lib/api/commands";
+import { logError } from "$lib/services/logging";
 import type { Playlist, Song } from "$lib/types";
 
 export interface PlaylistSong extends Song {
@@ -21,8 +21,8 @@ class PlaylistStore {
     try {
       await invoke("sync_playlists");
       await this.loadPlaylists();
-    } catch (e) {
-      error(`Failed to sync playlists: ${e}`);
+    } catch (cause) {
+      logError("Failed to sync playlists", cause);
     }
   }
 
@@ -30,8 +30,8 @@ class PlaylistStore {
     this.isLoading = true;
     try {
       this.playlists = await invoke<Playlist[]>("get_playlists");
-    } catch (e) {
-      error(`Failed to load playlists: ${e}`);
+    } catch (cause) {
+      logError("Failed to load playlists", cause);
     } finally {
       this.isLoading = false;
     }
@@ -44,8 +44,8 @@ class PlaylistStore {
         "get_playlist_songs",
         { playlistId }
       );
-    } catch (e) {
-      error(`Failed to load playlist songs: ${e}`);
+    } catch (cause) {
+      logError("Failed to load playlist songs", cause);
     } finally {
       this.isLoading = false;
     }
@@ -71,8 +71,8 @@ class PlaylistStore {
       });
       await this.loadPlaylists();
       return playlist;
-    } catch (e) {
-      error(`Failed to create playlist: ${e}`);
+    } catch (cause) {
+      logError("Failed to create playlist", cause);
       return null;
     }
   }
@@ -89,8 +89,8 @@ class PlaylistStore {
           name,
         };
       }
-    } catch (e) {
-      error(`Failed to update playlist: ${e}`);
+    } catch (cause) {
+      logError("Failed to update playlist", cause);
     }
   }
 
@@ -104,8 +104,8 @@ class PlaylistStore {
         this.currentPlaylist = null;
         this.currentPlaylistSongs = [];
       }
-    } catch (e) {
-      error(`Failed to delete playlist: ${e}`);
+    } catch (cause) {
+      logError("Failed to delete playlist", cause);
     }
   }
 
@@ -118,8 +118,8 @@ class PlaylistStore {
       if (this.currentPlaylist?.id === playlistId) {
         await this.loadPlaylistSongs(playlistId);
       }
-    } catch (e) {
-      error(`Failed to add songs to playlist: ${e}`);
+    } catch (cause) {
+      logError("Failed to add songs to playlist", cause);
     }
   }
 
@@ -141,8 +141,8 @@ class PlaylistStore {
       if (this.currentPlaylist?.id === playlistId) {
         await this.loadPlaylistSongs(playlistId);
       }
-    } catch (e) {
-      error(`Failed to remove song from playlist: ${e}`);
+    } catch (cause) {
+      logError("Failed to remove song from playlist", cause);
     }
   }
 
@@ -161,8 +161,8 @@ class PlaylistStore {
         await this.loadPlaylistSongs(playlistId);
       }
       return true;
-    } catch (e) {
-      error(`Failed to update saved playlist offline state: ${e}`);
+    } catch (cause) {
+      logError("Failed to update saved playlist offline state", cause);
       return false;
     }
   }
@@ -174,8 +174,11 @@ class PlaylistStore {
       if (this.currentPlaylist) {
         await this.loadPlaylistSongs(this.currentPlaylist.id);
       }
-    } catch (e) {
-      error(`Failed to reconcile saved playlists for offline listening: ${e}`);
+    } catch (cause) {
+      logError(
+        "Failed to reconcile saved playlists for offline listening",
+        cause
+      );
     }
   }
 }

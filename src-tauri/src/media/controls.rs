@@ -118,6 +118,7 @@ fn media_controls_hwnd(app_handle: &AppHandle) -> Option<usize> {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn run_media_controls_thread(
     command_rx: mpsc::Receiver<MediaCommand>,
     app_handle: AppHandle,
@@ -133,7 +134,7 @@ fn run_media_controls_thread(
     let mut controls = match MediaControls::new(config) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to create media controls: {:?}", e);
+            error!("Failed to create media controls: {e:?}");
             let _ = init_tx.send(Err(format!("failed to create media controls: {e:?}")));
             return;
         }
@@ -143,7 +144,7 @@ fn run_media_controls_thread(
     if let Err(e) = controls.attach(move |event: MediaControlEvent| {
         handle_media_event(&event_app_handle, event);
     }) {
-        error!("Failed to attach media event handler: {:?}", e);
+        error!("Failed to attach media event handler: {e:?}");
         let _ = init_tx.send(Err(format!("failed to attach media event handler: {e:?}")));
         return;
     }
@@ -175,7 +176,7 @@ fn run_media_controls_thread(
                     };
 
                     if let Err(e) = controls.set_metadata(metadata) {
-                        debug!("Failed to set metadata: {:?}", e);
+                        debug!("Failed to set metadata: {e:?}");
                     }
                 }
                 MediaCommand::SetPlaybackStatus {
@@ -190,12 +191,12 @@ fn run_media_controls_thread(
                     };
 
                     if let Err(e) = controls.set_playback(playback) {
-                        debug!("Failed to set playback status: {:?}", e);
+                        debug!("Failed to set playback status: {e:?}");
                     }
                 }
                 MediaCommand::Clear => {
                     if let Err(e) = controls.set_playback(MediaPlayback::Stopped) {
-                        debug!("Failed to clear playback: {:?}", e);
+                        debug!("Failed to clear playback: {e:?}");
                     }
                 }
                 MediaCommand::Shutdown => {
@@ -212,6 +213,7 @@ fn run_media_controls_thread(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn handle_media_event(app_handle: &AppHandle, event: MediaControlEvent) {
     let payload = match event {
         MediaControlEvent::Play => serde_json::json!({ "action": "play" }),

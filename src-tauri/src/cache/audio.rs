@@ -71,14 +71,11 @@ struct DownloadInProgressGuard {
 
 impl DownloadInProgressGuard {
     fn new(app_handle: &AppHandle, song_id: &str) -> Self {
-        let should_emit = DOWNLOADS_IN_PROGRESS
-            .lock()
-            .map(|mut downloads| {
-                let count = downloads.entry(song_id.to_string()).or_default();
-                *count += 1;
-                *count == 1
-            })
-            .unwrap_or(false);
+        let should_emit = DOWNLOADS_IN_PROGRESS.lock().is_ok_and(|mut downloads| {
+            let count = downloads.entry(song_id.to_string()).or_default();
+            *count += 1;
+            *count == 1
+        });
         if should_emit {
             emit_audio_cache_changed(app_handle, "download_started");
         }
@@ -91,21 +88,18 @@ impl DownloadInProgressGuard {
 
 impl Drop for DownloadInProgressGuard {
     fn drop(&mut self) {
-        let should_emit = DOWNLOADS_IN_PROGRESS
-            .lock()
-            .map(|mut downloads| {
-                let Some(count) = downloads.get_mut(&self.song_id) else {
-                    return false;
-                };
-                *count -= 1;
-                if *count == 0 {
-                    downloads.remove(&self.song_id);
-                    true
-                } else {
-                    false
-                }
-            })
-            .unwrap_or(false);
+        let should_emit = DOWNLOADS_IN_PROGRESS.lock().is_ok_and(|mut downloads| {
+            let Some(count) = downloads.get_mut(&self.song_id) else {
+                return false;
+            };
+            *count -= 1;
+            if *count == 0 {
+                downloads.remove(&self.song_id);
+                true
+            } else {
+                false
+            }
+        });
         if should_emit {
             emit_audio_cache_changed(&self.app_handle, "download_finished");
         }
@@ -129,7 +123,7 @@ pub struct AudioCache {
 }
 
 impl AudioCache {
-    /// Create a new AudioCache instance, reading max size from settings
+    /// Create a new `AudioCache` instance, reading max size from settings
     pub fn new(app_handle: &AppHandle) -> AppResult<Self> {
         let max_size = read_max_cache_size(app_handle);
         let cache_dir = crate::cache::audio_cache_dir(app_handle)?;
@@ -151,7 +145,7 @@ impl AudioCache {
         let filename = if suffix.is_empty() {
             safe_id
         } else {
-            format!("{}.{}", safe_id, suffix)
+            format!("{safe_id}.{suffix}")
         };
         self.cache_dir.join(filename)
     }
@@ -180,7 +174,7 @@ impl AudioCache {
                 }
                 Err(e) => {
                     // Log error but continue to fetch from server
-                    warn!("Failed to read cached audio: {}", e);
+                    warn!("Failed to read cached audio: {e}");
                 }
             }
         }
@@ -195,15 +189,15 @@ impl AudioCache {
         let bytes = client
             .stream(song_id)
             .await
-            .map_err(|e| AppError::Audio(format!("Failed to fetch audio: {}", e)))?;
+            .map_err(|e| AppError::Audio(format!("Failed to fetch audio: {e}")))?;
 
         // Write to cache (fire-and-forget, don't fail playback if caching fails)
         if let Err(e) = fs::write(&cache_path, &bytes) {
-            warn!("Failed to cache audio: {}", e);
+            warn!("Failed to cache audio: {e}");
         } else {
             // Enforce size limit after successful write
             if let Err(e) = self.enforce_size_limit() {
-                warn!("Failed to enforce cache size limit: {}", e);
+                warn!("Failed to enforce cache size limit: {e}");
             }
             self.emit_changed("updated");
         }
@@ -212,6 +206,7 @@ impl AudioCache {
     }
 
     /// Update the access time of a file (for LRU tracking)
+    #[allow(clippy::unused_self)]
     fn touch_file(&self, path: &Path) {
         // Use filetime to update access time without opening the file handle
         // This is much more efficient on Windows where file handle operations are expensive
@@ -246,7 +241,7 @@ impl AudioCache {
             }
 
             if let Err(e) = fs::remove_file(&entry.path) {
-                warn!("Failed to remove cached file {:?}: {}", entry.path, e);
+                warn!("Failed to remove cached file {}: {e}", entry.path.display());
             } else {
                 current_size = current_size.saturating_sub(entry.size);
                 removed_any = true;
@@ -279,7 +274,7 @@ impl AudioCache {
                 continue;
             }
             if let Err(e) = fs::remove_file(&entry.path) {
-                warn!("Failed to remove cached file {:?}: {}", entry.path, e);
+                warn!("Failed to remove cached file {}: {e}", entry.path.display());
             } else {
                 removed_any = true;
             }
@@ -377,13 +372,10 @@ impl AudioCache {
             }
 
             // Create cache instance
-            let cache = match AudioCache::new(&app_handle) {
-                Ok(c) => c,
-                Err(_) => {
-                    // Remove from in-progress on error
-                    PREFETCH_IN_PROGRESS.lock().await.remove(&song_id);
-                    return;
-                }
+            let Ok(cache) = AudioCache::new(&app_handle) else {
+                // Remove from in-progress on error
+                PREFETCH_IN_PROGRESS.lock().await.remove(&song_id);
+                return;
             };
 
             let was_cached = cache.is_cached(&song_id, &suffix);
@@ -394,11 +386,11 @@ impl AudioCache {
             } else {
                 match cache.get_or_fetch(&client, &song_id, &suffix).await {
                     Ok(data) => {
-                        debug!("Prefetch complete: {}", song_id);
+                        debug!("Prefetch complete: {song_id}");
                         Some(data)
                     }
                     Err(e) => {
-                        warn!("Prefetch failed for {}: {}", song_id, e);
+                        warn!("Prefetch failed for {song_id}: {e}");
                         PREFETCH_IN_PROGRESS.lock().await.remove(&song_id);
                         return;
                     }
@@ -434,10 +426,7 @@ impl AudioCache {
                                 }
                             }
                             Err(e) => {
-                                warn!(
-                                    "Prefetch loudness analysis failed for {}: {}",
-                                    song_id_clone, e
-                                );
+                                warn!("Prefetch loudness analysis failed for {song_id_clone}: {e}");
                             }
                         }
                     })

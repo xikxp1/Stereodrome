@@ -149,10 +149,10 @@ impl AudioPlayer {
     }
 
     pub fn start_spectrum_emitter(&self, app_handle: AppHandle) {
+        const DEFAULT_SAMPLE_RATE: u32 = 44100;
+
         let consumer = self.inner.get_spectrum_consumer();
         let state = self.inner.state_handle();
-
-        const DEFAULT_SAMPLE_RATE: u32 = 44100;
 
         thread::spawn(move || {
             let mut analyzer = spectrum::SpectrumAnalyzer::new(DEFAULT_SAMPLE_RATE);
@@ -181,6 +181,7 @@ impl AudioPlayer {
         });
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn start_position_emitter(&self, app_handle: AppHandle) {
         let state_handle = self.inner.state_handle();
 
@@ -244,7 +245,7 @@ impl AudioPlayer {
                 {
                     let settings = crate::commands::settings::read_playback_settings(&app_handle);
                     if settings.crossfade_enabled {
-                        let cf_secs = settings.crossfade_duration_ms as f64 / 1000.0;
+                        let cf_secs = f64::from(settings.crossfade_duration_ms) / 1000.0;
                         let remaining = state.duration - state.position;
 
                         if remaining <= cf_secs && remaining > 0.5 {
@@ -318,14 +319,13 @@ impl AudioPlayer {
                                 let sanitized_id = id.replace(['/', '\\'], "_");
 
                                 for size in [800, 128, 64] {
-                                    let path =
-                                        cache_dir.join(format!("{}_{}.jpg", sanitized_id, size));
+                                    let path = cache_dir.join(format!("{sanitized_id}_{size}.jpg"));
                                     if path.exists() {
                                         return Some(path.to_string_lossy().to_string());
                                     }
                                 }
 
-                                let path = cache_dir.join(format!("{}.jpg", sanitized_id));
+                                let path = cache_dir.join(format!("{sanitized_id}.jpg"));
                                 if path.exists() {
                                     return Some(path.to_string_lossy().to_string());
                                 }

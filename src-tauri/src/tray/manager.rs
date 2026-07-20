@@ -38,17 +38,18 @@ pub struct TrayManager {
 }
 
 impl TrayManager {
+    #[allow(clippy::too_many_lines)]
     pub fn new(app: &tauri::App) -> Option<Self> {
         // Get app version
         let version = app.package_info().version.to_string();
-        let app_info_text = format!("Stereodrome v{}", version);
+        let app_info_text = format!("Stereodrome v{version}");
 
         // Create menu items
         let app_info_item =
             match MenuItem::with_id(app, MENU_ID_APP_INFO, &app_info_text, false, None::<&str>) {
                 Ok(item) => item,
                 Err(e) => {
-                    error!("Failed to create app info menu item: {:?}", e);
+                    error!("Failed to create app info menu item: {e:?}");
                     return None;
                 }
             };
@@ -57,7 +58,7 @@ impl TrayManager {
             match MenuItem::with_id(app, MENU_ID_NOW_PLAYING, "Not Playing", false, None::<&str>) {
                 Ok(item) => item,
                 Err(e) => {
-                    error!("Failed to create now playing menu item: {:?}", e);
+                    error!("Failed to create now playing menu item: {e:?}");
                     return None;
                 }
             };
@@ -66,7 +67,7 @@ impl TrayManager {
             match MenuItem::with_id(app, MENU_ID_PLAY_PAUSE, "Play", true, None::<&str>) {
                 Ok(item) => item,
                 Err(e) => {
-                    error!("Failed to create play/pause menu item: {:?}", e);
+                    error!("Failed to create play/pause menu item: {e:?}");
                     return None;
                 }
             };
@@ -75,7 +76,7 @@ impl TrayManager {
         {
             Ok(item) => item,
             Err(e) => {
-                error!("Failed to create next menu item: {:?}", e);
+                error!("Failed to create next menu item: {e:?}");
                 return None;
             }
         };
@@ -84,7 +85,7 @@ impl TrayManager {
             match MenuItem::with_id(app, MENU_ID_PREVIOUS, "Previous Track", true, None::<&str>) {
                 Ok(item) => item,
                 Err(e) => {
-                    error!("Failed to create previous menu item: {:?}", e);
+                    error!("Failed to create previous menu item: {e:?}");
                     return None;
                 }
             };
@@ -93,7 +94,7 @@ impl TrayManager {
             match MenuItem::with_id(app, MENU_ID_SHOW, "Show Window", true, None::<&str>) {
                 Ok(item) => item,
                 Err(e) => {
-                    error!("Failed to create show menu item: {:?}", e);
+                    error!("Failed to create show menu item: {e:?}");
                     return None;
                 }
             };
@@ -113,7 +114,7 @@ impl TrayManager {
         ) {
             Ok(item) => item,
             Err(e) => {
-                error!("Failed to create quit menu item: {:?}", e);
+                error!("Failed to create quit menu item: {e:?}");
                 return None;
             }
         };
@@ -121,7 +122,7 @@ impl TrayManager {
         let separator = match PredefinedMenuItem::separator(app) {
             Ok(sep) => sep,
             Err(e) => {
-                error!("Failed to create separator: {:?}", e);
+                error!("Failed to create separator: {e:?}");
                 return None;
             }
         };
@@ -143,18 +144,17 @@ impl TrayManager {
         ) {
             Ok(menu) => menu,
             Err(e) => {
-                error!("Failed to create tray menu: {:?}", e);
+                error!("Failed to create tray menu: {e:?}");
                 return None;
             }
         };
 
         // Get app icon
-        let icon = match app.default_window_icon() {
-            Some(icon) => icon.clone(),
-            None => {
-                error!("No default window icon available");
-                return None;
-            }
+        let icon = if let Some(icon) = app.default_window_icon() {
+            icon.clone()
+        } else {
+            error!("No default window icon available");
+            return None;
         };
 
         // Build tray icon with event handlers
@@ -170,7 +170,7 @@ impl TrayManager {
         {
             Ok(tray) => tray,
             Err(e) => {
-                error!("Failed to create tray icon: {:?}", e);
+                error!("Failed to create tray icon: {e:?}");
                 return None;
             }
         };
@@ -213,7 +213,7 @@ impl TrayManager {
 
     pub fn update_update_available(&self, version: Option<&str>) {
         let _ = self.command_tx.send(TrayCommand::UpdateAvailable {
-            version: version.map(|v| v.to_string()),
+            version: version.map(std::string::ToString::to_string),
         });
     }
 }
@@ -224,6 +224,7 @@ impl Drop for TrayManager {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn run_tray_thread(command_rx: mpsc::Receiver<TrayCommand>, tray_state: Arc<Mutex<TrayState>>) {
     info!("Tray manager thread started");
 
@@ -234,7 +235,7 @@ fn run_tray_thread(command_rx: mpsc::Receiver<TrayCommand>, tray_state: Arc<Mute
                     if let Ok(state) = tray_state.lock() {
                         let text = if is_playing { "Pause" } else { "Play" };
                         if let Err(e) = state.play_pause_item.set_text(text) {
-                            debug!("Failed to update play/pause text: {:?}", e);
+                            debug!("Failed to update play/pause text: {e:?}");
                         }
                     }
                 }
@@ -243,11 +244,11 @@ fn run_tray_thread(command_rx: mpsc::Receiver<TrayCommand>, tray_state: Arc<Mute
                         let now_playing = if title.is_empty() {
                             "Not Playing".to_string()
                         } else {
-                            format!("{} - {}", artist, title)
+                            format!("{artist} - {title}")
                         };
 
                         if let Err(e) = state.now_playing_item.set_text(&now_playing) {
-                            debug!("Failed to update now playing text: {:?}", e);
+                            debug!("Failed to update now playing text: {e:?}");
                         }
 
                         // Also update tooltip
@@ -256,30 +257,25 @@ fn run_tray_thread(command_rx: mpsc::Receiver<TrayCommand>, tray_state: Arc<Mute
                             if title.is_empty() {
                                 String::new()
                             } else {
-                                format!("\n{} - {}", artist, title)
+                                format!("\n{artist} - {title}")
                             }
                         ))) {
-                            debug!("Failed to update tooltip: {:?}", e);
+                            debug!("Failed to update tooltip: {e:?}");
                         }
                     }
                 }
                 TrayCommand::UpdateAvailable { version } => {
                     if let Ok(state) = tray_state.lock() {
-                        match version {
-                            Some(_) => {
-                                let text = format!(
-                                    "Stereodrome v{} - Update Available",
-                                    state.app_version
-                                );
-                                if let Err(e) = state.app_info_item.set_text(&text) {
-                                    debug!("Failed to update app info text: {:?}", e);
-                                }
+                        if version.is_some() {
+                            let text =
+                                format!("Stereodrome v{} - Update Available", state.app_version);
+                            if let Err(e) = state.app_info_item.set_text(&text) {
+                                debug!("Failed to update app info text: {e:?}");
                             }
-                            None => {
-                                let text = format!("Stereodrome v{}", state.app_version);
-                                if let Err(e) = state.app_info_item.set_text(&text) {
-                                    debug!("Failed to reset app info text: {:?}", e);
-                                }
+                        } else {
+                            let text = format!("Stereodrome v{}", state.app_version);
+                            if let Err(e) = state.app_info_item.set_text(&text) {
+                                debug!("Failed to reset app info text: {e:?}");
                             }
                         }
                     }

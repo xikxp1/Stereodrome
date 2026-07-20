@@ -118,7 +118,7 @@ async fn fetch_cover_art_bytes(
     client
         .get_cover_art(cover_art_id, size)
         .await
-        .map_err(|e| AppError::Subsonic(format!("Failed to fetch cover art: {}", e)))
+        .map_err(|e| AppError::Subsonic(format!("Failed to fetch cover art: {e}")))
 }
 
 pub(crate) async fn preserve_cover_art_for_offline(
@@ -167,7 +167,7 @@ pub async fn get_cover_art(
     if let Some(bytes) = cached_cover_art_bytes(&cache_dir, &cover_art_id, size)? {
         let base64 = STANDARD.encode(&bytes);
         let mime = guess_mime_type(&bytes);
-        return Ok(format!("data:{};base64,{}", mime, base64));
+        return Ok(format!("data:{mime};base64,{base64}"));
     }
 
     if crate::commands::settings::manual_offline_enabled(&app_handle) {
@@ -184,15 +184,15 @@ pub async fn get_cover_art(
     // Cache the image
     let cache_path = cache_path(&cache_dir, &cover_art_id, size);
     if let Err(e) = fs::write(&cache_path, &bytes_vec) {
-        warn!("Failed to cache cover art: {}", e);
+        warn!("Failed to cache cover art: {e}");
     }
 
     let base64 = STANDARD.encode(&bytes_vec);
     let mime = guess_mime_type(&bytes_vec);
-    Ok(format!("data:{};base64,{}", mime, base64))
+    Ok(format!("data:{mime};base64,{base64}"))
 }
 
-/// Get cover art for a song by its ID (looks up album's cover_art_id)
+/// Get cover art for a song by its ID (looks up album's `cover_art_id`)
 #[tauri::command]
 pub async fn get_song_cover_art(
     app_handle: AppHandle,

@@ -18,8 +18,10 @@ const KEY_PLAYBACK_SONG_ID: &str = "lastfm_playback_song_id";
 const KEY_PLAYBACK_STARTED_AT: &str = "lastfm_playback_started_at";
 const KEY_PLAYBACK_LAST_POSITION: &str = "lastfm_playback_last_position";
 const KEY_PLAYBACK_SCROBBLED_SONG_ID: &str = "lastfm_playback_scrobbled_song_id";
-const MAX_BATCH_SIZE: usize = 50;
+const MAX_BATCH_SIZE: i64 = 50;
 
+// These flags are independent wire-format fields consumed by the mobile UI.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LastfmStatus {
     pub available: bool,
@@ -333,10 +335,7 @@ fn credentials() -> CoreResult<(String, String)> {
 }
 
 fn enabled(db_path: &Path) -> CoreResult<bool> {
-    Ok(sync_value(db_path, KEY_ENABLED)?
-        .as_deref()
-        .map(|value| value != "false")
-        .unwrap_or(true))
+    Ok(sync_value(db_path, KEY_ENABLED)?.as_deref() != Some("false"))
 }
 
 fn load_session(db_path: &Path) -> CoreResult<Option<LastfmSession>> {
@@ -431,12 +430,13 @@ async fn post_lastfm(params: Vec<(String, String)>) -> CoreResult<serde_json::Va
 }
 
 fn summarize_response_body(body: &str) -> String {
+    const MAX_LEN: usize = 300;
+
     if let Some(error) = extract_lastfm_xml_error(body) {
         return error;
     }
 
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
-    const MAX_LEN: usize = 300;
     if compact.len() > MAX_LEN {
         format!("{}...", &compact[..MAX_LEN])
     } else if compact.is_empty() {
@@ -505,9 +505,9 @@ fn due_queue(db_path: &Path, include_not_due: bool) -> CoreResult<Vec<LastfmQueu
     };
     let mut stmt = conn.prepare(sql)?;
     let rows = if include_not_due {
-        stmt.query_map([MAX_BATCH_SIZE as i64], queue_item_from_row)?
+        stmt.query_map([MAX_BATCH_SIZE], queue_item_from_row)?
     } else {
-        stmt.query_map(params![MAX_BATCH_SIZE as i64, now], queue_item_from_row)?
+        stmt.query_map(params![MAX_BATCH_SIZE, now], queue_item_from_row)?
     };
     Ok(rows.filter_map(Result::ok).collect())
 }
@@ -596,7 +596,7 @@ fn mark_batch_failure(db_path: &Path, items: &[LastfmQueueItem], error: &str) ->
 }
 
 fn retry_delay_secs(attempts: i64) -> i64 {
-    let exponent = attempts.clamp(0, 6) as u32;
+    let exponent = u32::try_from(attempts.clamp(0, 6)).unwrap_or_default();
     (60_i64 * 2_i64.pow(exponent)).min(3600)
 }
 

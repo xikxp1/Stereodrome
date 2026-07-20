@@ -13,29 +13,41 @@ export function HomeScreen() {
           ? [
               {
                 label: "Now Playing",
-                onSelect: () => view.showNowPlaying(),
+                onSelect: () => {
+                  view.showNowPlaying();
+                },
               },
             ]
           : []),
         {
           label: "Music",
-          onSelect: () => view.push({ name: "music", title: "Music" }),
+          onSelect: () => {
+            view.push({ name: "music", title: "Music" });
+          },
         },
         {
           label: "Search",
-          onSelect: () => view.push({ name: "search", title: "Search" }),
+          onSelect: () => {
+            view.push({ name: "search", title: "Search" });
+          },
         },
         {
           label: "Downloads",
-          onSelect: () => view.push({ name: "downloads", title: "Downloads" }),
+          onSelect: () => {
+            view.push({ name: "downloads", title: "Downloads" });
+          },
         },
         {
           label: "Queue",
-          onSelect: () => view.push({ name: "queue", title: "Queue" }),
+          onSelect: () => {
+            view.push({ name: "queue", title: "Queue" });
+          },
         },
         {
           label: "Settings",
-          onSelect: () => view.push({ name: "settings", title: "Settings" }),
+          onSelect: () => {
+            view.push({ name: "settings", title: "Settings" });
+          },
         },
       ]}
     />

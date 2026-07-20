@@ -24,21 +24,28 @@ pub struct EqualizerSettings {
 }
 
 impl EqualizerSettings {
-    pub fn new(bands_db: Vec<f32>) -> Self {
-        Self {
-            bands_db: sanitize_bands_db(&bands_db),
+    #[must_use]
+    pub fn new(mut bands_db: Vec<f32>) -> Self {
+        bands_db.truncate(EQ_BAND_COUNT);
+        bands_db.resize(EQ_BAND_COUNT, 0.0);
+        for value in &mut bands_db {
+            *value = value.clamp(EQ_MIN_DB, EQ_MAX_DB);
         }
+        Self { bands_db }
     }
 
+    #[must_use]
     pub fn is_flat(&self) -> bool {
         self.bands_db.iter().all(|v| v.abs() < 0.01)
     }
 }
 
+#[must_use]
 pub fn default_bands_db() -> Vec<f32> {
     vec![0.0; EQ_BAND_COUNT]
 }
 
+#[must_use]
 pub fn sanitize_bands_db(input: &[f32]) -> Vec<f32> {
     let mut output = vec![0.0; EQ_BAND_COUNT];
     for (index, value) in input.iter().copied().enumerate().take(EQ_BAND_COUNT) {
@@ -65,7 +72,7 @@ where
 {
     pub fn new(source: S, settings: &EqualizerSettings) -> Self {
         let channels = source.channels();
-        let sample_rate = source.sample_rate().get() as f32;
+        let sample_rate = sample_rate_as_f32(source.sample_rate().get());
         let max_center = sample_rate * 0.475;
 
         let gains: Vec<f32> = settings
@@ -74,13 +81,13 @@ where
             .map(|db| 10.0_f32.powf(db / 20.0))
             .collect();
 
-        let channel_count = channels.get() as usize;
+        let channel_count = usize::from(channels.get());
         let mut filters = Vec::with_capacity(channel_count);
         for _ in 0..channel_count {
             let mut channel_filters = Vec::with_capacity(EQ_BAND_COUNT);
             for (index, gain) in gains.iter().copied().enumerate() {
                 let mut biquad = Biquad::<f32>::new();
-                biquad.set_sample_rate(sample_rate as f64);
+                biquad.set_sample_rate(f64::from(sample_rate));
                 biquad.set_coefs(BiquadCoefs::bell(
                     sample_rate,
                     EQ_BAND_FREQUENCIES[index].min(max_center),
@@ -112,13 +119,13 @@ where
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.output_pos < self.channels.get() as usize {
+        if self.output_pos < usize::from(self.channels.get()) {
             let sample = self.output_buffer[self.output_pos];
             self.output_pos += 1;
             return Some(sample);
         }
 
-        let ch = self.channels.get() as usize;
+        let ch = usize::from(self.channels.get());
         for channel_idx in 0..ch {
             let mut sample = self.inner.next()?;
             for filter in &mut self.filters[channel_idx] {
@@ -161,8 +168,17 @@ where
                     filter.reset();
                 }
             }
-            self.output_pos = self.channels.get() as usize;
+            self.output_pos = usize::from(self.channels.get());
         }
         result
     }
+}
+
+/// Audio sample rates are far below the integer precision limit of `f32`.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "fundsp's f32 filters require f32 rates and supported audio rates are exact"
+)]
+fn sample_rate_as_f32(sample_rate: u32) -> f32 {
+    sample_rate as f32
 }

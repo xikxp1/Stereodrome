@@ -47,7 +47,7 @@ pub async fn connect_server(
 
     // Persist credentials to OS keyring
     if let Err(e) = credentials::save_credentials(&config) {
-        warn!("Failed to save credentials to keyring: {}", e);
+        warn!("Failed to save credentials to keyring: {e}");
     }
 
     Ok(ConnectionStatus {
@@ -69,7 +69,7 @@ pub async fn disconnect_server(state: State<'_, AppState>) -> AppResult<()> {
 
     // Clear credentials from OS keyring
     if let Err(e) = credentials::delete_credentials() {
-        warn!("Failed to delete credentials from keyring: {}", e);
+        warn!("Failed to delete credentials from keyring: {e}");
     }
 
     Ok(())
@@ -127,19 +127,15 @@ pub async fn restore_session(
         && let Ok(Some(config)) = credentials::load_credentials()
     {
         // Ping to verify connection is still valid and get server version
-        match state.client.ping().await {
-            Ok(server_version) => {
-                return Ok(ConnectionStatus {
-                    connected: true,
-                    server_url: Some(config.url),
-                    username: Some(config.username),
-                    server_version: Some(server_version),
-                });
-            }
-            Err(_) => {
-                // Connection is stale, will try to reconnect below
-            }
+        if let Ok(server_version) = state.client.ping().await {
+            return Ok(ConnectionStatus {
+                connected: true,
+                server_url: Some(config.url),
+                username: Some(config.username),
+                server_version: Some(server_version),
+            });
         }
+        // Connection is stale, will try to reconnect below
     }
 
     // Try to load credentials from keyring

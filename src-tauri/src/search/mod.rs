@@ -119,12 +119,12 @@ impl SearchSchema {
         }
     }
 
-    /// Build SearchSchema from an existing tantivy Schema (for reopening indexes)
+    /// Build `SearchSchema` from an existing tantivy Schema (for reopening indexes)
     pub fn from_existing(schema: &Schema) -> AppResult<Self> {
         let get_field = |name: &str| -> AppResult<Field> {
             schema
                 .get_field(name)
-                .map_err(|_| AppError::Search(format!("Schema mismatch: missing field '{}'", name)))
+                .map_err(|_| AppError::Search(format!("Schema mismatch: missing field '{name}'")))
         };
 
         Ok(Self {
@@ -169,7 +169,7 @@ impl IndexManager {
 
         // Try to open existing index first, fall back to creating fresh
         Self::try_open_existing(index_path).or_else(|e| {
-            warn!("Could not open existing index: {}, creating fresh", e);
+            warn!("Could not open existing index: {e}, creating fresh");
             Self::create_fresh(index_path)
         })
     }
@@ -177,10 +177,10 @@ impl IndexManager {
     /// Try to open an existing index
     fn try_open_existing(index_path: &Path) -> AppResult<Self> {
         let dir = MmapDirectory::open(index_path)
-            .map_err(|e| AppError::Search(format!("Failed to open index dir: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to open index dir: {e}")))?;
 
         let index = Index::open(dir)
-            .map_err(|e| AppError::Search(format!("Failed to open existing index: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to open existing index: {e}")))?;
 
         // Build schema from the opened index's schema
         let existing_schema = index.schema();
@@ -196,7 +196,7 @@ impl IndexManager {
 
         let reader = index
             .reader()
-            .map_err(|e| AppError::Search(format!("Failed to create reader: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to create reader: {e}")))?;
 
         let mut query_parser = QueryParser::for_index(
             &index,
@@ -210,8 +210,8 @@ impl IndexManager {
         query_parser.set_conjunction_by_default();
 
         info!(
-            "Opened existing search index at {:?} with {} docs",
-            index_path,
+            "Opened existing search index at {} with {} docs",
+            index_path.display(),
             reader.searcher().num_docs()
         );
 
@@ -225,7 +225,7 @@ impl IndexManager {
 
     /// Create a fresh index
     fn create_fresh(index_path: &Path) -> AppResult<Self> {
-        info!("Creating fresh search index at {:?}", index_path);
+        info!("Creating fresh search index at {}", index_path.display());
 
         // Delete existing index files if any
         if index_path.exists() {
@@ -241,10 +241,10 @@ impl IndexManager {
         let schema = SearchSchema::new();
 
         let dir = MmapDirectory::open(index_path)
-            .map_err(|e| AppError::Search(format!("Failed to open index dir: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to open index dir: {e}")))?;
 
         let index = Index::create(dir, schema.schema().clone(), IndexSettings::default())
-            .map_err(|e| AppError::Search(format!("Failed to create index: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to create index: {e}")))?;
 
         // Register tokenizer
         let ngram_tokenizer = TextAnalyzer::builder(NgramTokenizer::new(2, 8, false).unwrap())
@@ -256,7 +256,7 @@ impl IndexManager {
 
         let reader = index
             .reader()
-            .map_err(|e| AppError::Search(format!("Failed to create reader: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to create reader: {e}")))?;
 
         let mut query_parser = QueryParser::for_index(
             &index,
@@ -287,12 +287,12 @@ impl IndexManager {
         let mut writer: IndexWriter = self
             .index
             .writer(INDEX_WRITER_HEAP_SIZE_BYTES)
-            .map_err(|e| AppError::Search(format!("Failed to create writer: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to create writer: {e}")))?;
 
         // Delete all existing documents
         writer
             .delete_all_documents()
-            .map_err(|e| AppError::Search(format!("Failed to delete existing documents: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to delete existing documents: {e}")))?;
 
         debug!(
             "Indexing {} artists, {} albums, {} songs...",
@@ -337,7 +337,7 @@ impl IndexManager {
         let mut writer: IndexWriter = self
             .index
             .writer(INDEX_WRITER_HEAP_SIZE_BYTES)
-            .map_err(|e| AppError::Search(format!("Failed to create writer: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to create writer: {e}")))?;
 
         for artist in artists {
             self.delete_document(&writer, "artist", &artist.id)?;
@@ -369,12 +369,12 @@ impl IndexManager {
     fn commit_writer(&self, writer: &mut IndexWriter) -> AppResult<()> {
         writer
             .commit()
-            .map_err(|e| AppError::Search(format!("Failed to commit index: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to commit index: {e}")))?;
 
         // Reload reader to see committed changes
         self.reader
             .reload()
-            .map_err(|e| AppError::Search(format!("Failed to reload after commit: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to reload after commit: {e}")))?;
 
         Ok(())
     }
@@ -399,7 +399,7 @@ impl IndexManager {
 
         writer
             .delete_query(Box::new(delete_query))
-            .map_err(|e| AppError::Search(format!("Failed to delete document: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to delete document: {e}")))?;
 
         Ok(())
     }
@@ -409,10 +409,10 @@ impl IndexManager {
         doc.add_text(self.schema.id, &artist.id);
         doc.add_text(self.schema.entity_type, "artist");
         doc.add_text(self.schema.name, &artist.name);
-        doc.add_i64(self.schema.album_count, artist.album_count as i64);
+        doc.add_i64(self.schema.album_count, i64::from(artist.album_count));
         writer
             .add_document(doc)
-            .map_err(|e| AppError::Search(format!("Failed to add artist: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to add artist: {e}")))?;
 
         Ok(())
     }
@@ -424,12 +424,12 @@ impl IndexManager {
         doc.add_text(self.schema.name, &album.name);
         doc.add_text(self.schema.artist_name, &album.artist_name);
         if let Some(year) = album.year {
-            doc.add_i64(self.schema.year, year as i64);
+            doc.add_i64(self.schema.year, i64::from(year));
         }
-        doc.add_i64(self.schema.song_count, album.song_count as i64);
+        doc.add_i64(self.schema.song_count, i64::from(album.song_count));
         writer
             .add_document(doc)
-            .map_err(|e| AppError::Search(format!("Failed to add album: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to add album: {e}")))?;
 
         Ok(())
     }
@@ -445,14 +445,14 @@ impl IndexManager {
             doc.add_text(self.schema.genre, genre);
         }
         if let Some(year) = song.year {
-            doc.add_i64(self.schema.year, year as i64);
+            doc.add_i64(self.schema.year, i64::from(year));
         }
         if let Some(duration) = song.duration {
-            doc.add_i64(self.schema.duration, duration as i64);
+            doc.add_i64(self.schema.duration, i64::from(duration));
         }
         writer
             .add_document(doc)
-            .map_err(|e| AppError::Search(format!("Failed to add song: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to add song: {e}")))?;
 
         Ok(())
     }
@@ -462,7 +462,7 @@ impl IndexManager {
         // Reload reader to pick up any committed changes
         self.reader
             .reload()
-            .map_err(|e| AppError::Search(format!("Failed to reload reader: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Failed to reload reader: {e}")))?;
 
         let searcher = self.reader.searcher();
 
@@ -489,22 +489,19 @@ impl IndexManager {
             return Ok(Vec::new());
         }
 
-        debug!(
-            "Search: query='{}', tantivy_query='{}', limit={}",
-            query_str, query_text, limit
-        );
+        debug!("Search: query='{query_str}', tantivy_query='{query_text}', limit={limit}");
 
         // Parse and execute query
         let query = self
             .query_parser
             .parse_query(query_text)
-            .map_err(|e| AppError::Search(format!("Query parse error: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Query parse error: {e}")))?;
 
-        debug!("Search: parsed query = {:?}", query);
+        debug!("Search: parsed query = {query:?}");
 
         let top_docs = searcher
             .search(&query, &TopDocs::with_limit(limit).order_by_score())
-            .map_err(|e| AppError::Search(format!("Search error: {}", e)))?;
+            .map_err(|e| AppError::Search(format!("Search error: {e}")))?;
 
         debug!(
             "Search: searcher has {} docs, found {} matches",
@@ -517,12 +514,12 @@ impl IndexManager {
         for (_score, doc_address) in top_docs {
             let doc: TantivyDocument = searcher
                 .doc(doc_address)
-                .map_err(|e| AppError::Search(format!("Failed to retrieve doc: {}", e)))?;
+                .map_err(|e| AppError::Search(format!("Failed to retrieve doc: {e}")))?;
 
             let get_text = |field: Field| -> Option<String> {
                 doc.get_first(field)
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
             };
 
             let get_i64 =

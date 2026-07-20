@@ -131,6 +131,7 @@
     <div class="relative flex items-center">
       <div class="flex rounded bg-base-300 p-0.5 shadow-sm">
         <button
+          type="button"
           class="flex h-7 w-7 items-center justify-center rounded-l bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
           onclick={() => onPrevious?.()}
           disabled={!queue.hasPrevious}
@@ -140,6 +141,7 @@
           <SkipBack class="h-3 w-3" fill="currentColor" />
         </button>
         <button
+          type="button"
           class="flex h-7 w-8 items-center justify-center border-x border-base-300 bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
           onclick={() => onPlayPause?.()}
           disabled={queue.items.length === 0 &&
@@ -155,6 +157,7 @@
           {/if}
         </button>
         <button
+          type="button"
           class="flex h-7 w-7 items-center justify-center rounded-r bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content active:bg-base-300 disabled:cursor-not-allowed disabled:text-base-content/30 disabled:hover:bg-base-100"
           onclick={() => onNext?.()}
           disabled={!queue.hasNext}
@@ -165,6 +168,7 @@
         </button>
       </div>
       <button
+        type="button"
         class="absolute right-0.5 top-full mt-0.75 flex h-4 w-7 items-center justify-center rounded border border-base-300 bg-base-100 text-base-content/55 transition-colors hover:bg-base-200 hover:text-base-content disabled:cursor-not-allowed disabled:text-base-content/25 disabled:hover:bg-base-100"
         onclick={() => queue.rerollNext()}
         disabled={!queue.canRerollNext}
@@ -178,6 +182,7 @@
     <!-- Volume - Compact dropdown on small screens -->
     <div class="relative flex items-center gap-1.5 lg:hidden">
       <button
+        type="button"
         class={[
           "flex h-7 w-7 items-center justify-center rounded bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content",
           isMutedWhilePlaying && "volume-alert-button",
@@ -297,6 +302,7 @@
     <!-- Shuffle/Repeat -->
     <div class="flex items-center">
       <button
+        type="button"
         class="flex h-6 w-6 items-center justify-center rounded transition-colors disabled:cursor-not-allowed disabled:text-base-content/20 {queue.shuffle
           ? 'text-primary'
           : 'text-base-content/40 hover:text-base-content/70 disabled:hover:text-base-content/20'}"
@@ -308,6 +314,7 @@
         <Shuffle class="h-3.5 w-3.5" />
       </button>
       <button
+        type="button"
         class="flex h-6 w-6 items-center justify-center rounded transition-colors disabled:cursor-not-allowed disabled:text-base-content/20 {queue.repeatMode !==
         'Off'
           ? 'text-primary'
@@ -332,9 +339,9 @@
     {currentTime}
     {duration}
     {coverArtUrl}
-    {onSeek}
-    {onCoverArtClick}
-    {onMiniPlayerToggle}
+    {...onSeek ? { onSeek } : {}}
+    {...onCoverArtClick ? { onCoverArtClick } : {}}
+    {...onMiniPlayerToggle ? { onMiniPlayerToggle } : {}}
   />
 
   <!-- Right: Settings + Queue Toggle + Search -->
@@ -343,6 +350,7 @@
       <div class="indicator">
         <span class="indicator-item status status-primary"></span>
         <button
+          type="button"
           class="flex h-7 w-7 items-center justify-center rounded bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content"
           onclick={() => onSettingsClick?.()}
           aria-label="Settings"
@@ -353,6 +361,7 @@
       </div>
     {:else}
       <button
+        type="button"
         class="flex h-7 w-7 items-center justify-center rounded bg-base-100 text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content"
         onclick={() => onSettingsClick?.()}
         aria-label="Settings"
@@ -362,6 +371,7 @@
       </button>
     {/if}
     <button
+      type="button"
       class="flex h-7 w-7 items-center justify-center rounded transition-colors {queueOpen
         ? 'bg-primary text-primary-content'
         : 'bg-base-100 text-base-content/70 hover:bg-base-200 hover:text-base-content'}"

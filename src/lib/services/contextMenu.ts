@@ -28,46 +28,58 @@ export async function showSongContextMenu(opts: {
   const items: (MenuItem | PredefinedMenuItem | Submenu)[] = [
     await MenuItem.new({ text: selectionLabel, enabled: false }),
     await PredefinedMenuItem.new({ item: "Separator" }),
-    await MenuItem.new({ text: "Play Next", action: () => opts.onPlayNext() }),
+    await MenuItem.new({
+      text: "Play Next",
+      action: () => {
+        opts.onPlayNext();
+      },
+    }),
     await MenuItem.new({
       text: "Add to Queue",
-      action: () => opts.onAddToQueue(),
+      action: () => {
+        opts.onAddToQueue();
+      },
     }),
   ];
 
   if (
-    opts.showGoToArtist ||
-    opts.showGoToAlbum ||
-    opts.onGoToArtist ||
-    opts.onGoToAlbum
+    opts.showGoToArtist === true ||
+    opts.showGoToAlbum === true ||
+    opts.onGoToArtist !== undefined ||
+    opts.onGoToAlbum !== undefined
   ) {
     items.push(await PredefinedMenuItem.new({ item: "Separator" }));
-    if (opts.showGoToArtist || opts.onGoToArtist) {
+    if (opts.showGoToArtist === true || opts.onGoToArtist !== undefined) {
       items.push(
         await MenuItem.new({
           text: "Go to Artist",
-          enabled: !opts.disableGoToArtist && !!opts.onGoToArtist,
+          enabled:
+            opts.disableGoToArtist !== true && opts.onGoToArtist !== undefined,
           action: () => opts.onGoToArtist?.(),
         })
       );
     }
-    if (opts.showGoToAlbum || opts.onGoToAlbum) {
+    if (opts.showGoToAlbum === true || opts.onGoToAlbum !== undefined) {
       items.push(
         await MenuItem.new({
           text: "Go to Album",
-          enabled: !opts.disableGoToAlbum && !!opts.onGoToAlbum,
+          enabled:
+            opts.disableGoToAlbum !== true && opts.onGoToAlbum !== undefined,
           action: () => opts.onGoToAlbum?.(),
         })
       );
     }
   }
 
-  if (opts.onRemoveFromPlaylist) {
+  const onRemoveFromPlaylist = opts.onRemoveFromPlaylist;
+  if (onRemoveFromPlaylist !== undefined) {
     items.push(await PredefinedMenuItem.new({ item: "Separator" }));
     items.push(
       await MenuItem.new({
         text: "Remove from Playlist",
-        action: () => opts.onRemoveFromPlaylist!(),
+        action: () => {
+          onRemoveFromPlaylist();
+        },
       })
     );
   }
@@ -75,9 +87,12 @@ export async function showSongContextMenu(opts: {
   const playlistSubItems: (MenuItem | PredefinedMenuItem)[] = [];
   for (const p of opts.playlists) {
     playlistSubItems.push(
+      // eslint-disable-next-line no-await-in-loop -- Preserve menu item creation and playlist order.
       await MenuItem.new({
         text: p.name,
-        action: () => opts.onAddToPlaylist(p.id),
+        action: () => {
+          opts.onAddToPlaylist(p.id);
+        },
       })
     );
   }
@@ -87,7 +102,9 @@ export async function showSongContextMenu(opts: {
   playlistSubItems.push(
     await MenuItem.new({
       text: "New Playlist\u2026",
-      action: () => opts.onNewPlaylist(),
+      action: () => {
+        opts.onNewPlaylist();
+      },
     })
   );
 
@@ -111,11 +128,23 @@ export async function showPlaylistContextMenu(opts: {
     items: [
       await MenuItem.new({
         text: opts.savedOffline ? "Remove Offline Save" : "Save Offline",
-        action: () => opts.onToggleSavedOffline(),
+        action: () => {
+          opts.onToggleSavedOffline();
+        },
       }),
       await PredefinedMenuItem.new({ item: "Separator" }),
-      await MenuItem.new({ text: "Rename", action: () => opts.onRename() }),
-      await MenuItem.new({ text: "Delete", action: () => opts.onDelete() }),
+      await MenuItem.new({
+        text: "Rename",
+        action: () => {
+          opts.onRename();
+        },
+      }),
+      await MenuItem.new({
+        text: "Delete",
+        action: () => {
+          opts.onDelete();
+        },
+      }),
     ],
   });
   await menu.popup();
@@ -131,11 +160,15 @@ export async function showQueueableContextMenu(opts: {
   const items: (MenuItem | PredefinedMenuItem)[] = [
     await MenuItem.new({
       text: "Play Next",
-      action: () => opts.onPlayNext(),
+      action: () => {
+        opts.onPlayNext();
+      },
     }),
     await MenuItem.new({
       text: "Add to Queue",
-      action: () => opts.onAddToQueue(),
+      action: () => {
+        opts.onAddToQueue();
+      },
     }),
   ];
 

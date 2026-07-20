@@ -43,7 +43,10 @@ jobs:
 
       - name: Install frontend dependencies
         shell: bash
-        run: scripts/bun-install-with-retry.sh install
+        run: scripts/bun-install-with-retry.sh install --frozen-lockfile
+
+      - name: Audit frontend dependencies
+        run: bun audit --production
 
       - name: Type check frontend
         run: bun run check
@@ -55,12 +58,13 @@ jobs:
         run: bun run format:check
 
       - name: Rust format check
-        working-directory: src-tauri
         run: cargo fmt --check
 
       - name: Rust clippy
-        working-directory: src-tauri
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --workspace --all-features
 
       - name: Build desktop app
         run: bun run tauri build --no-bundle
@@ -115,6 +119,11 @@ jobs:
       - name: Lint mobile
         working-directory: mobile
         run: bun run lint
+
+      - name: Audit mobile dependencies
+        working-directory: mobile
+        # xcode uses uuid.v4 only; GHSA-w5hq-g745-h8pq affects buffered v3/v5/v6.
+        run: bun audit --production --ignore GHSA-w5hq-g745-h8pq
 
       - name: Build Android Rust core
         run: scripts/build-mobile-rust.sh android

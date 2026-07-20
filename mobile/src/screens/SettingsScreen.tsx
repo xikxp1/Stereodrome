@@ -5,7 +5,6 @@ import {
   Linking,
   Modal,
   Pressable,
-  StyleSheet,
   Text,
   TextInput,
   View,
@@ -16,12 +15,12 @@ import {
   type SelectableOption,
 } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
-import { colors } from "@/components/theme";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { configureLibrarySyncBackgroundTask } from "@/services/librarySyncScheduler";
 import { stereodromeCore } from "@/services/stereodromeCore";
+import { settingsScreenStyles as styles } from "@/screens/SettingsScreen.styles";
 import type {
   AudioProcessingSettings,
   LastfmQueueItem,
@@ -75,11 +74,11 @@ type SettingsCategory =
   | "normalization"
   | "cache";
 
-const settingsCategories: Array<{
+const settingsCategories: {
   id: SettingsCategory;
   label: string;
   sublabel: string;
-}> = [
+}[] = [
   { id: "server", label: "Server", sublabel: "Connection and account" },
   { id: "sync", label: "Library Sync", sublabel: "Sync status and actions" },
   { id: "lastfm", label: "Last.fm", sublabel: "Scrobbling and offline queue" },
@@ -170,7 +169,14 @@ export function SettingsScreen({ category }: { category?: string }) {
     queryKey: librarySyncStatusQueryKey,
     queryFn: stereodromeCore.getLibrarySyncStatus,
     enabled: selectedCategory === "sync",
-    refetchInterval: (query) => (query.state.data?.active_job ? 2000 : false),
+    refetchInterval: (query) => {
+      const activeJob = query.state.data?.active_job;
+      return activeJob !== null &&
+        activeJob !== undefined &&
+        activeJob.length > 0
+        ? 2000
+        : false;
+    },
   });
   const syncSettings = useQuery({
     queryKey: syncSettingsQueryKey,
@@ -226,14 +232,16 @@ export function SettingsScreen({ category }: { category?: string }) {
   }
 
   useEffect(() => {
-    if (selectedCategory !== "sync" || !scanStatus.data?.scanning) {
-      return;
+    if (selectedCategory !== "sync" || scanStatus.data?.scanning !== true) {
+      return undefined;
     }
 
     const interval = setInterval(() => {
       void queryClient.invalidateQueries({ queryKey: scanStatusQueryKey });
     }, 2000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+    };
   }, [queryClient, scanStatus.data?.scanning, selectedCategory]);
 
   const settings = audioSettings.data;
@@ -244,12 +252,13 @@ export function SettingsScreen({ category }: { category?: string }) {
           kind: "action" as const,
           label: settingsCategory.label,
           sublabel: settingsCategory.sublabel,
-          onSelect: () =>
+          onSelect: () => {
             view.push({
               name: "settings",
               title: settingsCategory.label,
               params: { category: settingsCategory.id },
-            }),
+            });
+          },
         }))),
     ...messageOptions(),
   ];
@@ -270,6 +279,8 @@ export function SettingsScreen({ category }: { category?: string }) {
         return normalizationOptions(settings, updateAudioSetting, openTextEdit);
       case "cache":
         return cacheOptions();
+      default:
+        return [];
     }
   }
 
@@ -303,7 +314,7 @@ export function SettingsScreen({ category }: { category?: string }) {
         kind: "editable",
         label: "Server",
         sublabel: stereodrome.status.server_url ?? "Not connected",
-        onSelect: () =>
+        onSelect: () => {
           openTextEdit({
             title: "Server URL",
             value: stereodrome.status.server_url ?? "",
@@ -318,13 +329,14 @@ export function SettingsScreen({ category }: { category?: string }) {
               }
               await stereodrome.updateServerSettings({ url });
             },
-          }),
+          });
+        },
       },
       {
         kind: "editable",
         label: "Username",
         sublabel: stereodrome.status.username ?? "-",
-        onSelect: () =>
+        onSelect: () => {
           openTextEdit({
             title: "Username",
             value: stereodrome.status.username ?? "",
@@ -338,7 +350,8 @@ export function SettingsScreen({ category }: { category?: string }) {
               }
               await stereodrome.updateServerSettings({ username });
             },
-          }),
+          });
+        },
       },
       {
         kind: "info",
@@ -377,7 +390,7 @@ export function SettingsScreen({ category }: { category?: string }) {
               sublabel:
                 busyAction === "scan"
                   ? "Starting..."
-                  : scanStatus.data?.scanning
+                  : scanStatus.data?.scanning === true
                     ? formatScanStatus(scanStatus.data)
                     : "Invoke Subsonic scan",
               confirmLabel: "Confirm Scan",
@@ -426,11 +439,14 @@ export function SettingsScreen({ category }: { category?: string }) {
       {
         kind: "info",
         label: "Library Sync",
-        sublabel: syncStatus.data?.active_job
-          ? syncStatus.data.active_job === "incremental"
-            ? "Running incremental sync"
-            : "Running full sync"
-          : "Idle",
+        sublabel:
+          syncStatus.data?.active_job !== null &&
+          syncStatus.data?.active_job !== undefined &&
+          syncStatus.data.active_job.length > 0
+            ? syncStatus.data.active_job === "incremental"
+              ? "Running incremental sync"
+              : "Running full sync"
+            : "Idle",
         onSelect: () =>
           queryClient.invalidateQueries({
             queryKey: librarySyncStatusQueryKey,
@@ -442,7 +458,7 @@ export function SettingsScreen({ category }: { category?: string }) {
         openTextEdit
       ),
       ...syncActions,
-      ...(syncStatus.data?.incremental.last_error
+      ...(hasText(syncStatus.data?.incremental.last_error)
         ? [
             {
               kind: "info" as const,
@@ -455,7 +471,7 @@ export function SettingsScreen({ category }: { category?: string }) {
             },
           ]
         : []),
-      ...(syncStatus.data?.full_reconcile.last_error
+      ...(hasText(syncStatus.data?.full_reconcile.last_error)
         ? [
             {
               kind: "info" as const,
@@ -493,7 +509,7 @@ export function SettingsScreen({ category }: { category?: string }) {
         sublabel: !status.available
           ? "Not configured"
           : status.authenticated
-            ? `Connected${status.username ? ` as ${status.username}` : ""}`
+            ? `Connected${hasText(status.username) ? ` as ${status.username}` : ""}`
             : status.pending_auth
               ? "Authorization pending"
               : "Disconnected",
@@ -505,7 +521,7 @@ export function SettingsScreen({ category }: { category?: string }) {
         sublabel: `${status.queue_count.toLocaleString()} pending`,
         onSelect: refreshLastfm,
       },
-      ...(status.last_error
+      ...(hasText(status.last_error)
         ? [
             {
               kind: "info" as const,
@@ -524,7 +540,7 @@ export function SettingsScreen({ category }: { category?: string }) {
     return queue.slice(0, 6).map((item) => ({
       kind: "info" as const,
       label: item.title,
-      sublabel: `${item.artist}${item.album ? ` — ${item.album}` : ""}`,
+      sublabel: `${item.artist}${hasText(item.album) ? ` — ${item.album}` : ""}`,
       onSelect: refreshLastfm,
     }));
   }
@@ -543,9 +559,9 @@ export function SettingsScreen({ category }: { category?: string }) {
       ];
     }
 
-    const options: SelectableOption[] = [];
+    const lastfmActions: SelectableOption[] = [];
     if (status.available && !status.authenticated) {
-      options.push({
+      lastfmActions.push({
         kind: "action",
         label: "Connect",
         sublabel:
@@ -556,7 +572,7 @@ export function SettingsScreen({ category }: { category?: string }) {
       });
     }
     if (status.pending_auth) {
-      options.push({
+      lastfmActions.push({
         kind: "action",
         label: "Complete Authorization",
         sublabel:
@@ -567,7 +583,7 @@ export function SettingsScreen({ category }: { category?: string }) {
       });
     }
     if (status.authenticated) {
-      options.push(
+      lastfmActions.push(
         {
           kind: "action",
           label: "Retry Queue",
@@ -589,7 +605,7 @@ export function SettingsScreen({ category }: { category?: string }) {
         })
       );
     }
-    return options;
+    return lastfmActions;
   }
 
   function interfaceOptions(): SelectableOption[] {
@@ -601,7 +617,9 @@ export function SettingsScreen({ category }: { category?: string }) {
           mobileSettings.buttonHandedness === "right"
             ? "Right handed"
             : "Left handed",
-        onSelect: () => mobileSettings.toggleButtonHandedness(),
+        onSelect: () => {
+          mobileSettings.toggleButtonHandedness();
+        },
       },
     ];
   }
@@ -621,7 +639,7 @@ export function SettingsScreen({ category }: { category?: string }) {
         kind: "editable",
         label: "Maximum Cache Size",
         sublabel: formatBytes(cacheStats.data?.max_size ?? 0),
-        onSelect: () =>
+        onSelect: () => {
           openTextEdit({
             title: "Maximum Cache Size (GB)",
             value: formatInputNumber(
@@ -639,7 +657,8 @@ export function SettingsScreen({ category }: { category?: string }) {
               });
               setMessage(`Cache limit set to ${formatCacheSizePreset(gb)}`);
             },
-          }),
+          });
+        },
         onLongSelect: () => cycleCacheSize(-1),
       },
       ...protectedActionRows({
@@ -666,13 +685,15 @@ export function SettingsScreen({ category }: { category?: string }) {
   }
 
   function messageOptions(): SelectableOption[] {
-    return message
+    return hasText(message)
       ? [
           {
             kind: "info" as const,
             label: "Last Action",
             sublabel: message,
-            onSelect: () => setMessage(null),
+            onSelect: () => {
+              setMessage(null);
+            },
           },
         ]
       : [];
@@ -704,7 +725,7 @@ export function SettingsScreen({ category }: { category?: string }) {
   }
 
   async function runBusy(label: string, action: () => Promise<void>) {
-    if (busyActionRef.current) {
+    if (hasText(busyActionRef.current)) {
       return;
     }
 
@@ -831,7 +852,9 @@ export function SettingsScreen({ category }: { category?: string }) {
       />
       <Modal
         animationType="fade"
-        onRequestClose={() => setTextEdit(null)}
+        onRequestClose={() => {
+          setTextEdit(null);
+        }}
         transparent
         visible={textEdit !== null}
       >
@@ -842,12 +865,14 @@ export function SettingsScreen({ category }: { category?: string }) {
               autoFocus
               keyboardType={textEdit?.keyboardType ?? "default"}
               onChangeText={setTextEditValue}
-              onSubmitEditing={submitTextEdit}
+              onSubmitEditing={() => {
+                void submitTextEdit();
+              }}
               selectTextOnFocus
               style={styles.modalInput}
               value={textEditValue}
             />
-            {textEditError ? (
+            {hasText(textEditError) ? (
               <Text numberOfLines={2} style={styles.modalError}>
                 {textEditError}
               </Text>
@@ -855,14 +880,18 @@ export function SettingsScreen({ category }: { category?: string }) {
             <View style={styles.modalActions}>
               <Pressable
                 disabled={textEditSaving}
-                onPress={() => setTextEdit(null)}
+                onPress={() => {
+                  setTextEdit(null);
+                }}
                 style={styles.modalButton}
               >
                 <Text style={styles.modalButtonText}>Cancel</Text>
               </Pressable>
               <Pressable
                 disabled={textEditSaving}
-                onPress={submitTextEdit}
+                onPress={() => {
+                  void submitTextEdit();
+                }}
                 style={[styles.modalButton, styles.modalPrimaryButton]}
               >
                 <Text style={styles.modalPrimaryButtonText}>
@@ -888,7 +917,9 @@ function syncScheduleOptions(
         kind: "info",
         label: "Scheduled Sync",
         sublabel: "Loading...",
-        onSelect: () => {},
+        onSelect: () => {
+          // This informational loading row intentionally has no action.
+        },
       },
     ];
   }
@@ -909,7 +940,7 @@ function syncScheduleOptions(
             kind: "editable" as const,
             label: "Partial sync interval",
             sublabel: formatMinutes(settings.incremental_interval_minutes),
-            onSelect: () =>
+            onSelect: () => {
               openTextEdit({
                 title: "Partial Sync Interval (minutes)",
                 value: formatInputNumber(settings.incremental_interval_minutes),
@@ -925,7 +956,8 @@ function syncScheduleOptions(
                     ),
                   });
                 },
-              }),
+              });
+            },
             onLongSelect: () =>
               updateSyncSettings({
                 incremental_interval_minutes: cycleNumber(
@@ -952,7 +984,7 @@ function syncScheduleOptions(
             kind: "editable" as const,
             label: "Full reconcile interval",
             sublabel: formatHours(settings.full_reconcile_interval_hours),
-            onSelect: () =>
+            onSelect: () => {
               openTextEdit({
                 title: "Full Reconcile Interval (hours)",
                 value: formatInputNumber(
@@ -970,7 +1002,8 @@ function syncScheduleOptions(
                     ),
                   });
                 },
-              }),
+              });
+            },
             onLongSelect: () =>
               updateSyncSettings({
                 full_reconcile_interval_hours: cycleNumber(
@@ -998,7 +1031,9 @@ function playbackOptions(
         kind: "info",
         label: "Playback",
         sublabel: "Loading...",
-        onSelect: () => {},
+        onSelect: () => {
+          // This informational loading row intentionally has no action.
+        },
       },
     ];
   }
@@ -1016,7 +1051,7 @@ function playbackOptions(
       kind: "editable",
       label: "Files to Prefetch",
       sublabel: `${settings.prefetch_count} upcoming`,
-      onSelect: () =>
+      onSelect: () => {
         openTextEdit({
           title: "Files to Prefetch",
           value: String(settings.prefetch_count),
@@ -1027,7 +1062,8 @@ function playbackOptions(
               prefetch_count: Math.round(clamp(count, 1, 10)),
             });
           },
-        }),
+        });
+      },
       onLongSelect: () =>
         updateAudioSetting({
           prefetch_count: cycleNumber(
@@ -1050,7 +1086,7 @@ function playbackOptions(
             kind: "editable" as const,
             label: "Crossfade Duration",
             sublabel: `${settings.crossfade_duration_ms / 1000}s`,
-            onSelect: () =>
+            onSelect: () => {
               openTextEdit({
                 title: "Crossfade Duration (seconds)",
                 value: formatInputNumber(settings.crossfade_duration_ms / 1000),
@@ -1063,7 +1099,8 @@ function playbackOptions(
                     ),
                   });
                 },
-              }),
+              });
+            },
             onLongSelect: () =>
               updateAudioSetting({
                 crossfade_duration_ms: cycleNumber(
@@ -1130,7 +1167,7 @@ function playbackOptions(
                 activeEqPreset,
                 1
               )
-            ].bands,
+            ]?.bands ?? settings.equalizer_bands_db,
         }),
       onLongSelect: () =>
         updateAudioSetting({
@@ -1142,20 +1179,20 @@ function playbackOptions(
                 activeEqPreset,
                 -1
               )
-            ].bands,
+            ]?.bands ?? settings.equalizer_bands_db,
         }),
     },
     ...sanitizeEqBands(settings.equalizer_bands_db).map((band, index) => ({
       kind: "editable" as const,
-      label: `EQ ${eqLabels[index]}`,
+      label: `EQ ${getEqLabel(index)}`,
       sublabel: formatDb(band),
-      onSelect: () =>
+      onSelect: () => {
         openTextEdit({
-          title: `EQ ${eqLabels[index]} (dB)`,
+          title: `EQ ${getEqLabel(index)} (dB)`,
           value: formatInputNumber(band),
           keyboardType: "numbers-and-punctuation",
           onSubmit: async (value) => {
-            const db = parseNumberInput(value, `EQ ${eqLabels[index]}`);
+            const db = parseNumberInput(value, `EQ ${getEqLabel(index)}`);
             await updateAudioSetting({
               equalizer_enabled: true,
               equalizer_bands_db: setBand(
@@ -1165,7 +1202,8 @@ function playbackOptions(
               ),
             });
           },
-        }),
+        });
+      },
       onLongSelect: () =>
         updateAudioSetting({
           equalizer_enabled: true,
@@ -1192,7 +1230,9 @@ function normalizationOptions(
         kind: "info",
         label: "Volume Normalization",
         sublabel: "Loading...",
-        onSelect: () => {},
+        onSelect: () => {
+          // This informational loading row intentionally has no action.
+        },
       },
     ];
   }
@@ -1223,7 +1263,7 @@ function normalizationOptions(
             kind: "editable" as const,
             label: "Target Level",
             sublabel: `${settings.target_lufs} LUFS`,
-            onSelect: () =>
+            onSelect: () => {
               openTextEdit({
                 title: "Target Level (LUFS)",
                 value: formatInputNumber(settings.target_lufs),
@@ -1234,7 +1274,8 @@ function normalizationOptions(
                     target_lufs: clamp(lufs, -24, -8),
                   });
                 },
-              }),
+              });
+            },
             onLongSelect: () =>
               updateAudioSetting({
                 target_lufs: cycleNumber(lufsPresets, settings.target_lufs, -1),
@@ -1244,7 +1285,7 @@ function normalizationOptions(
             kind: "editable" as const,
             label: "Preamp",
             sublabel: formatDb(settings.preamp_db),
-            onSelect: () =>
+            onSelect: () => {
               openTextEdit({
                 title: "Preamp (dB)",
                 value: formatInputNumber(settings.preamp_db),
@@ -1255,7 +1296,8 @@ function normalizationOptions(
                     preamp_db: clamp(db, -12, 12),
                   });
                 },
-              }),
+              });
+            },
             onLongSelect: () =>
               updateAudioSetting({
                 preamp_db: clamp(settings.preamp_db - 0.5, -6, 6),
@@ -1323,7 +1365,7 @@ function formatBytes(bytes: number) {
 }
 
 function formatTimestamp(value: string | null | undefined) {
-  if (!value) {
+  if (!hasText(value)) {
     return "Never";
   }
   const parsed = new Date(value);
@@ -1344,9 +1386,10 @@ function formatHours(hours: number) {
 }
 
 function parseSettingsCategory(value: string | undefined) {
-  return settingsCategories.some((category) => category.id === value)
-    ? (value as SettingsCategory)
-    : null;
+  return (
+    settingsCategories.find((settingsCategory) => settingsCategory.id === value)
+      ?.id ?? null
+  );
 }
 
 function markSyncStatusRunning(
@@ -1376,13 +1419,17 @@ function syncJobKey(mode: "incremental" | "full") {
 
 function formatScanStatus(status: ScanStatus) {
   if (status.scanning) {
-    return status.count
+    return status.count !== null && status.count !== 0
       ? `Scanning (${status.count.toLocaleString()} items)`
       : "Scanning...";
   }
-  return status.count
+  return status.count !== null && status.count !== 0
     ? `Idle (${status.count.toLocaleString()} items)`
     : "Idle";
+}
+
+function hasText(value: string | null | undefined): value is string {
+  return value !== null && value !== undefined && value.length > 0;
 }
 
 function onOff(value: boolean) {
@@ -1399,7 +1446,9 @@ function labelForPreset(value: string) {
 function cycleNumber(values: number[], current: number, direction: 1 | -1) {
   const index = values.findIndex((value) => Math.abs(value - current) < 0.01);
   const safeIndex = index === -1 ? 0 : index;
-  return values[(safeIndex + direction + values.length) % values.length];
+  return (
+    values[(safeIndex + direction + values.length) % values.length] ?? current
+  );
 }
 
 function cycleString<T extends string>(
@@ -1409,7 +1458,12 @@ function cycleString<T extends string>(
 ): T {
   const index = values.findIndex((value) => value === current);
   const safeIndex = index === -1 ? 0 : index;
-  return values[(safeIndex + direction + values.length) % values.length];
+  const nextValue =
+    values[(safeIndex + direction + values.length) % values.length];
+  if (nextValue === undefined) {
+    throw new Error("Cannot cycle an empty list of values");
+  }
+  return nextValue;
 }
 
 function nextPresetIndex(
@@ -1434,12 +1488,16 @@ function sanitizeEqBands(bands: number[] | undefined) {
   return output;
 }
 
+function getEqLabel(index: number) {
+  return eqLabels[index] ?? `Band ${index + 1}`;
+}
+
 function getEqPreset(bands: number[] | undefined): EqPresetId | null {
   const normalized = sanitizeEqBands(bands);
   return (
     eqPresets.find((preset) =>
       preset.bands.every(
-        (value, index) => Math.abs(value - normalized[index]) <= 0.05
+        (value, index) => Math.abs(value - (normalized[index] ?? 0)) <= 0.05
       )
     )?.id ?? null
   );
@@ -1480,74 +1538,3 @@ function formatDb(value: number) {
 function formatCacheSizePreset(value: number) {
   return value < 1 ? `${value * 1000}MB` : `${value}GB`;
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  modalActions: {
-    flexDirection: "row",
-    gap: 8,
-    justifyContent: "flex-end",
-  },
-  modalButton: {
-    borderColor: "#b9b9b2",
-    borderRadius: 4,
-    borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  modalButtonText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  modalCard: {
-    backgroundColor: "#f7f7ef",
-    borderColor: "#b9b9b2",
-    borderRadius: 8,
-    borderWidth: 1,
-    padding: 12,
-    width: "82%",
-  },
-  modalInput: {
-    backgroundColor: "#fff",
-    borderColor: "#c9c9c1",
-    borderRadius: 4,
-    borderWidth: 1,
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: "700",
-    height: 36,
-    marginBottom: 10,
-    paddingHorizontal: 8,
-  },
-  modalError: {
-    color: "#b3261e",
-    fontSize: 11,
-    fontWeight: "700",
-    marginBottom: 8,
-  },
-  modalOverlay: {
-    alignItems: "center",
-    backgroundColor: "rgba(0, 0, 0, 0.38)",
-    flex: 1,
-    justifyContent: "center",
-    padding: 14,
-  },
-  modalPrimaryButton: {
-    backgroundColor: colors.selected,
-    borderColor: colors.selected,
-  },
-  modalPrimaryButtonText: {
-    color: colors.selectedText,
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  modalTitle: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: "800",
-    marginBottom: 8,
-  },
-});

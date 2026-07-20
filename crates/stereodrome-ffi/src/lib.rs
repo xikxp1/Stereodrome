@@ -2,10 +2,11 @@
 //!
 //! The first mobile implementation uses JSON-over-FFI so the Swift/Kotlin Expo
 //! module can remain thin while the Rust API stabilizes. The crate is isolated
-//! so a UniFFI surface can be generated here without touching the desktop
+//! so a `UniFFI` surface can be generated here without touching the desktop
 //! Tauri adapter.
 
 use std::ffi::{CStr, CString, c_char};
+use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
@@ -63,7 +64,9 @@ impl log::Log for MobileLogger {
                 callback(message.as_ptr());
                 return;
             }
-            eprintln!("{message}");
+            let mut stderr = std::io::stderr().lock();
+            let _ = stderr.write_all(message.as_bytes());
+            let _ = stderr.write_all(b"\n");
         }
     }
 
@@ -78,17 +81,17 @@ fn init_mobile_logging() {
     });
     INIT_PANIC_HOOK.call_once(|| {
         panic::set_hook(Box::new(|panic_info| {
-            let location = panic_info
-                .location()
-                .map(|location| {
+            let location = panic_info.location().map_or_else(
+                || "unknown location".to_string(),
+                |location| {
                     format!(
                         "{}:{}:{}",
                         location.file(),
                         location.line(),
                         location.column()
                     )
-                })
-                .unwrap_or_else(|| "unknown location".to_string());
+                },
+            );
             log::error!(
                 target: "stereodrome_ffi",
                 "Rust panic at {location}: {}",
@@ -180,24 +183,20 @@ impl PlaybackAnnouncer {
             downloaded_song_ids,
             downloading_song_ids: core.get_downloading_song_ids(),
         };
-        self.file_state
-            .lock()
-            .map(|mut current| {
-                if *current == next {
-                    false
-                } else {
-                    *current = next;
-                    true
-                }
-            })
-            .unwrap_or(false)
+        self.file_state.lock().is_ok_and(|mut current| {
+            if *current == next {
+                false
+            } else {
+                *current = next;
+                true
+            }
+        })
     }
 
     fn downloading_state_changed(&self, song_ids: &[String]) -> bool {
         self.file_state
             .lock()
-            .map(|current| current.downloading_song_ids != song_ids)
-            .unwrap_or(false)
+            .is_ok_and(|current| current.downloading_song_ids != song_ids)
     }
 
     fn file_state_snapshot(&self) -> MobileFileStateSnapshot {
@@ -272,6 +271,7 @@ impl PlaybackAnnouncer {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 struct PlaybackSnapshot {
     seq: u64,
     state: &'static str,
@@ -321,8 +321,7 @@ fn build_playback_snapshot(
                 .items
                 .iter()
                 .find(|item| item.song_id == song.id)
-                .map(|item| item.duration as f64)
-                .unwrap_or(0.0)
+                .map_or(0.0, |item| duration_seconds(item.duration))
         };
         (
             Some(snapshot_song_from_audio(core, song, duration)),
@@ -341,7 +340,7 @@ fn build_playback_snapshot(
             {
                 persisted.duration_seconds
             } else {
-                item.duration as f64
+                duration_seconds(item.duration)
             };
             let position = if persisted.current_song_id.as_deref() == Some(item.song_id.as_str()) {
                 persisted.position_seconds.max(0.0)
@@ -685,6 +684,7 @@ fn stereodrome_core_call_inner(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String, String> {
     let runtime = &mobile.runtime;
     let core = &mobile.core;
@@ -832,9 +832,10 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         "reconcileSavedPlaylistsOffline" => {
             json_result(runtime.block_on(async { core.reconcile_saved_playlists_offline().await }))
         }
-        "startSavedPlaylistsOfflineReconcile" => json_result(
-            start_saved_playlist_offline_job(mobile, SavedPlaylistOfflineTarget::All).map(|_| ()),
-        ),
+        "startSavedPlaylistsOfflineReconcile" => json_result(start_saved_playlist_offline_job(
+            mobile,
+            SavedPlaylistOfflineTarget::All,
+        )),
         "getSavedPlaylistsOfflineReconcileStatus" => {
             json_result(get_saved_playlist_offline_status(mobile))
         }
@@ -886,7 +887,7 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
                             }
                         })
                         .and_then(|prepared| start_queue_prefetch(mobile, prepared))
-                        .map(|_| next_settings)
+                        .map(|()| next_settings)
                 });
             json_result(result)
         }
@@ -905,7 +906,7 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(result)
         }
         "audioPause" => {
-            let result = mobile.audio.pause().map(|_| ());
+            let result = mobile.audio.pause();
             json_result(result)
         }
         "audioResume" => {
@@ -915,7 +916,7 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(result)
         }
         "audioRebuildOutput" => {
-            let result = mobile.audio.rebuild_output().and_then(|_| {
+            let result = mobile.audio.rebuild_output().and_then(|()| {
                 runtime
                     .block_on(async { prepare_next_transition(mobile).await })
                     .map_err(stereodrome_audio::AudioError::Playback)
@@ -923,17 +924,17 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(result.map(|_| ()))
         }
         "audioStop" => {
-            let result = mobile.audio.stop().map(|_| ());
+            let result = mobile.audio.stop();
             json_result(result)
         }
         "audioSeek" => {
             let position = parse_payload::<f64>(payload)?;
-            let result = mobile.audio.seek(position).map(|_| ());
+            let result = mobile.audio.seek(position);
             json_result(result)
         }
         "audioSetVolume" => {
             let volume = parse_payload::<f32>(payload)?;
-            let result = mobile.audio.set_volume(volume).map(|_| ());
+            let result = mobile.audio.set_volume(volume);
             json_result(result)
         }
         "playSongWithQueue" => {
@@ -1551,6 +1552,7 @@ fn start_mobile_file_state_monitor(
     });
 }
 
+#[allow(clippy::too_many_lines)]
 fn start_mobile_playback_monitor(
     core: Arc<StereodromeCore>,
     audio: Arc<AudioPlayer>,
@@ -1618,7 +1620,7 @@ fn start_mobile_playback_monitor(
                         let progress = PlaybackProgress {
                             song_id: next.song_id.clone(),
                             position_seconds: 0.0,
-                            duration_seconds: next.duration as f64,
+                            duration_seconds: duration_seconds(next.duration),
                             is_playing: true,
                         };
                         let _ = runtime
@@ -1653,7 +1655,7 @@ fn start_mobile_playback_monitor(
                 match core.get_audio_processing_settings() {
                     Ok(settings) if settings.crossfade_enabled => {
                         let crossfade_window_seconds =
-                            settings.crossfade_duration_ms as f64 / 1000.0;
+                            f64::from(settings.crossfade_duration_ms) / 1000.0;
                         let remaining = state.duration - state.position;
                         if remaining <= crossfade_window_seconds && remaining > 0.5 {
                             state_handle.set_crossfade_initiated(true);
@@ -1898,8 +1900,7 @@ async fn resume_current_playback(
                 queue
                     .current_index
                     .and_then(|index| queue.items.get(index))
-                    .map(|item| item.duration as f64)
-                    .unwrap_or(0.0)
+                    .map_or(0.0, |item| duration_seconds(item.duration))
             };
             Some(if duration > 1.0 {
                 persisted.position_seconds.clamp(0.0, duration - 1.0)
@@ -1965,7 +1966,7 @@ async fn prepare_next_transition_from(
             prepared.processing.binaural_preset,
             prepared.processing.equalizer_settings,
         )
-        .map(|_| true)
+        .map(|()| true)
         .map_err(|e| e.to_string())
 }
 
@@ -2078,7 +2079,7 @@ async fn prepare_queue_item_audio_from(
             album: item.album,
             cover_art_id: None,
         },
-        duration_secs: item.duration as f64,
+        duration_secs: duration_seconds(item.duration),
         processing,
     })
 }
@@ -2087,7 +2088,7 @@ fn audio_processing_from_settings(
     settings: &AudioProcessingSettings,
 ) -> Result<AudioProcessing, String> {
     let normalization_gain = if settings.normalization_enabled || settings.preamp_db.abs() > 0.01 {
-        Some(10.0_f32.powf(settings.preamp_db as f32 / 20.0))
+        Some(10.0_f32.powf(narrow_f64_to_f32(settings.preamp_db, "preamp_db")? / 20.0))
     } else {
         None
     };
@@ -2116,8 +2117,8 @@ fn audio_processing_from_settings(
             settings
                 .equalizer_bands_db
                 .iter()
-                .map(|value| *value as f32)
-                .collect(),
+                .map(|value| narrow_f64_to_f32(*value, "equalizer band"))
+                .collect::<Result<Vec<_>, _>>()?,
         ))
     } else {
         None
@@ -2131,12 +2132,29 @@ fn audio_processing_from_settings(
     })
 }
 
+fn duration_seconds(duration: i64) -> f64 {
+    let duration = duration.clamp(0, i64::from(u32::MAX));
+    f64::from(u32::try_from(duration).expect("clamped duration fits in u32"))
+}
+
+fn narrow_f64_to_f32(value: f64, name: &str) -> Result<f32, String> {
+    if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
+        return Err(format!("{name} is outside the supported f32 range"));
+    }
+
+    // The finite range check above makes this the only intentionally narrowing step.
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        Ok(value as f32)
+    }
+}
+
 fn file_uri_to_path(value: &str) -> Result<PathBuf, String> {
     if value.starts_with("file://") {
         Url::parse(value)
             .map_err(|e| e.to_string())?
             .to_file_path()
-            .map_err(|_| format!("invalid file URI: {value}"))
+            .map_err(|()| format!("invalid file URI: {value}"))
     } else {
         Ok(PathBuf::from(value))
     }
@@ -2192,7 +2210,9 @@ mod tests {
     #[test]
     fn mobile_monitor_gap_under_threshold_is_not_suspension() {
         assert!(!is_mobile_monitor_suspension_gap(
-            MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD - Duration::from_millis(1)
+            MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD
+                .checked_sub(Duration::from_millis(1))
+                .unwrap()
         ));
     }
 
@@ -2304,11 +2324,11 @@ mod tests {
             thread::yield_now();
         }
 
-        match second_captured_rx.recv_timeout(Duration::from_millis(25)) {
-            Err(RecvTimeoutError::Timeout) => {}
-            Ok(snapshot) => panic!("second snapshot captured before first completed: {snapshot:?}"),
-            Err(RecvTimeoutError::Disconnected) => panic!("second snapshot thread exited early"),
-        }
+        let early_snapshot = second_captured_rx.recv_timeout(Duration::from_millis(25));
+        assert!(
+            matches!(early_snapshot, Err(RecvTimeoutError::Timeout)),
+            "second snapshot completed unexpectedly: {early_snapshot:?}"
+        );
 
         state.store(1, AtomicOrdering::SeqCst);
         release_first_tx

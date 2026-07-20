@@ -35,8 +35,9 @@ export function AlbumsScreen() {
       stereodrome.offlineMode,
       stereodrome.offlineSongIds
     );
-    if (albumSongs.length > 0) {
-      await playback.playSong(albumSongs[0], albumSongs);
+    const firstSong = albumSongs[0];
+    if (firstSong) {
+      await playback.playSong(firstSong, albumSongs);
       view.showNowPlaying();
     }
   }
@@ -52,13 +53,14 @@ export function AlbumsScreen() {
       }
       options={shownAlbums.map((album) => ({
         label: album.name,
-        sublabel: album.artist_name ?? undefined,
-        onSelect: () =>
+        ...(album.artist_name == null ? {} : { sublabel: album.artist_name }),
+        onSelect: () => {
           view.push({
             name: "album",
             title: album.name,
             params: { albumId: album.id, title: album.name },
-          }),
+          });
+        },
         onLongSelect: () => playAlbum(album.id),
       }))}
     />

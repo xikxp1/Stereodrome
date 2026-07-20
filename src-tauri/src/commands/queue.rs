@@ -103,6 +103,7 @@ fn load_queue_items_for_song_ids(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_queue(state: State<'_, AppState>) -> QueueState {
     let mut queue = state.queue.lock_recover();
     queue.prepare_next_cycle_if_needed();
@@ -152,6 +153,7 @@ pub async fn play_song_with_queue(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn add_to_queue(
     state: State<'_, AppState>,
     app_handle: AppHandle,
@@ -166,6 +168,7 @@ pub fn add_to_queue(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn add_songs_to_queue(
     state: State<'_, AppState>,
     app_handle: AppHandle,
@@ -180,6 +183,7 @@ pub fn add_songs_to_queue(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn insert_next_in_queue(
     state: State<'_, AppState>,
     app_handle: AppHandle,
@@ -194,6 +198,7 @@ pub fn insert_next_in_queue(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn insert_next_songs_in_queue(
     state: State<'_, AppState>,
     app_handle: AppHandle,
@@ -208,6 +213,7 @@ pub fn insert_next_songs_in_queue(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn remove_from_queue(
     state: State<'_, AppState>,
     app_handle: AppHandle,
@@ -222,6 +228,7 @@ pub fn remove_from_queue(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn clear_queue(state: State<'_, AppState>, app_handle: AppHandle) -> AppResult<()> {
     {
         let mut queue = state.queue.lock_recover();
@@ -232,6 +239,7 @@ pub fn clear_queue(state: State<'_, AppState>, app_handle: AppHandle) -> AppResu
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn move_queue_item(
     state: State<'_, AppState>,
     app_handle: AppHandle,
@@ -247,6 +255,7 @@ pub fn move_queue_item(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn reroll_next_queue_item(
     state: State<'_, AppState>,
     app_handle: AppHandle,
@@ -399,6 +408,7 @@ pub async fn play_previous(state: State<'_, AppState>, app_handle: AppHandle) ->
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn toggle_shuffle(state: State<'_, AppState>, app_handle: AppHandle) -> bool {
     let shuffle = {
         let mut queue = state.queue.lock_recover();
@@ -410,6 +420,7 @@ pub fn toggle_shuffle(state: State<'_, AppState>, app_handle: AppHandle) -> bool
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn set_repeat_mode(
     state: State<'_, AppState>,
     app_handle: AppHandle,
@@ -424,6 +435,7 @@ pub fn set_repeat_mode(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn cycle_repeat_mode(state: State<'_, AppState>, app_handle: AppHandle) -> RepeatMode {
     let mode = {
         let mut queue = state.queue.lock_recover();

@@ -17,6 +17,11 @@ pub struct LoudnessResult {
 ///
 /// Decodes the full file and measures loudness. Typically takes 1-3 seconds
 /// for a 4-minute song at 44.1kHz stereo.
+///
+/// # Errors
+///
+/// Returns an error if decoding fails or the EBU R128 analyzer cannot process
+/// the decoded samples.
 pub fn analyze_loudness(audio_data: Vec<u8>) -> AudioResult<LoudnessResult> {
     let byte_len = audio_data.len() as u64;
     let cursor = Cursor::new(audio_data);
@@ -26,14 +31,21 @@ pub fn analyze_loudness(audio_data: Vec<u8>) -> AudioResult<LoudnessResult> {
         .build()
         .map_err(|e| AudioError::Playback(format!("Failed to decode audio for analysis: {e}")))?;
 
-    let channels = source.channels().get() as u32;
+    let channels = u32::from(source.channels().get());
     let sample_rate = source.sample_rate().get();
 
     let mut analyzer = EbuR128::new(channels, sample_rate, Mode::I | Mode::TRUE_PEAK)
         .map_err(|e| AudioError::Playback(format!("Failed to create EBU R128 analyzer: {e}")))?;
 
     // Collect samples in chunks for efficient processing
-    let chunk_size = (sample_rate as usize) * (channels as usize); // ~1 second of audio
+    let chunk_size = usize::try_from(sample_rate)
+        .ok()
+        .and_then(|rate| {
+            usize::try_from(channels)
+                .ok()
+                .and_then(|count| rate.checked_mul(count))
+        })
+        .ok_or_else(|| AudioError::Playback("Audio frame chunk size is too large".to_string()))?;
     let mut buffer = Vec::with_capacity(chunk_size);
 
     for sample in source {
@@ -78,6 +90,7 @@ pub fn analyze_loudness(audio_data: Vec<u8>) -> AudioResult<LoudnessResult> {
 ///
 /// Returns a gain multiplier to apply to each audio sample so that the
 /// song's perceived loudness matches `target_lufs`.
+#[must_use]
 pub fn calculate_gain(
     track_lufs: f64,
     track_peak: f64,
@@ -97,5 +110,13 @@ pub fn calculate_gain(
         gain = 1.0 / track_peak;
     }
 
+    gain_as_f32(gain)
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the final normalization multiplier must match the f32 audio sample format"
+)]
+fn gain_as_f32(gain: f64) -> f32 {
     gain as f32
 }

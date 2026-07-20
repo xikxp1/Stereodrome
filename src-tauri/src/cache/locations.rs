@@ -25,6 +25,7 @@ pub struct CacheLocationInfo {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+#[allow(clippy::struct_field_names)]
 pub struct CacheMoveSummary {
     pub moved_files: u64,
     pub skipped_files: u64,
@@ -54,7 +55,10 @@ pub fn current_cache_root(app_handle: &AppHandle) -> AppResult<PathBuf> {
         if path.is_absolute() {
             return Ok(path);
         }
-        warn!("Ignoring relative cache root from settings: {:?}", path);
+        warn!(
+            "Ignoring relative cache root from settings: {}",
+            path.display()
+        );
     }
 
     default_cache_root(app_handle)
@@ -158,6 +162,7 @@ fn write_cache_root(
     Ok(())
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn location_info_from_roots(cache_root: PathBuf, default_cache_root: PathBuf) -> CacheLocationInfo {
     CacheLocationInfo {
         audio_cache_dir: cache_root
@@ -183,7 +188,10 @@ fn move_cache_files(source_dir: &Path, destination_dir: &Path) -> CacheMoveSumma
     let entries = match fs::read_dir(source_dir) {
         Ok(entries) => entries,
         Err(error) => {
-            warn!("Failed to read cache directory {:?}: {}", source_dir, error);
+            warn!(
+                "Failed to read cache directory {}: {error}",
+                source_dir.display()
+            );
             summary.failed_files += 1;
             return summary;
         }
@@ -194,8 +202,8 @@ fn move_cache_files(source_dir: &Path, destination_dir: &Path) -> CacheMoveSumma
             Ok(entry) => entry,
             Err(error) => {
                 warn!(
-                    "Failed to read a cache directory entry in {:?}: {}",
-                    source_dir, error
+                    "Failed to read a cache directory entry in {}: {error}",
+                    source_dir.display()
                 );
                 summary.failed_files += 1;
                 continue;
@@ -217,8 +225,9 @@ fn move_cache_files(source_dir: &Path, destination_dir: &Path) -> CacheMoveSumma
             Ok(()) => summary.moved_files += 1,
             Err(error) => {
                 warn!(
-                    "Failed to move cache file {:?} to {:?}: {}",
-                    source_path, destination_path, error
+                    "Failed to move cache file {} to {}: {error}",
+                    source_path.display(),
+                    destination_path.display()
                 );
                 summary.failed_files += 1;
             }

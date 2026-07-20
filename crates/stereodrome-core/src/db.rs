@@ -47,7 +47,7 @@ fn run_migrations(conn: &Connection) -> CoreResult<()> {
     let playlist_columns: Vec<String> = conn
         .prepare("PRAGMA table_info(playlists)")?
         .query_map([], |row| row.get::<_, String>(1))?
-        .filter_map(|row| row.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     if !playlist_columns.contains(&"offline_saved_at".to_string()) {
@@ -76,8 +76,11 @@ pub fn save_queue(path: &Path, state: &QueueState) -> CoreResult<()> {
         )?;
 
         for (pos, item) in state.items.iter().enumerate() {
+            let pos = i64::try_from(pos).map_err(|_| {
+                crate::CoreError::InvalidInput("queue position exceeds SQLite range".to_string())
+            })?;
             stmt.execute((
-                pos as i64,
+                pos,
                 &item.song_id,
                 &item.title,
                 &item.artist,
@@ -93,14 +96,17 @@ pub fn save_queue(path: &Path, state: &QueueState) -> CoreResult<()> {
         RepeatMode::One => "One",
     };
 
+    let current_index = state
+        .current_index
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| {
+            crate::CoreError::InvalidInput("queue index exceeds SQLite range".to_string())
+        })?;
     tx.execute(
         "INSERT OR REPLACE INTO queue_state (id, current_index, shuffle, repeat_mode)
          VALUES (1, ?1, ?2, ?3)",
-        (
-            state.current_index.map(|i| i as i64),
-            state.shuffle as i64,
-            repeat_mode,
-        ),
+        (current_index, i64::from(state.shuffle), repeat_mode),
     )?;
 
     tx.commit()?;
@@ -146,7 +152,15 @@ fn load_queue_state(conn: &Connection) -> CoreResult<(Option<usize>, bool, Repea
                 "One" => RepeatMode::One,
                 _ => RepeatMode::Off,
             };
-            Ok((current_index.map(|i| i as usize), shuffle != 0, repeat_mode))
+            let current_index = current_index
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| {
+                    crate::CoreError::InvalidInput(
+                        "persisted queue index is outside the supported range".to_string(),
+                    )
+                })?;
+            Ok((current_index, shuffle != 0, repeat_mode))
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok((None, false, RepeatMode::Off)),
         Err(error) => Err(error.into()),

@@ -5,13 +5,13 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
-import { error } from "@tauri-apps/plugin-log";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   getCoverArtPath,
   getNotificationSettings,
   sendNowPlayingNotification,
 } from "$lib/api/commands";
+import { logError } from "$lib/services/logging";
 import type { NotificationSettings } from "$lib/types";
 
 const MINI_PLAYER_LABEL = "mini-player";
@@ -73,8 +73,8 @@ class NotificationService {
     let settings: NotificationSettings;
     try {
       settings = await getNotificationSettings();
-    } catch (e) {
-      error(`Failed to read notification settings: ${e}`);
+    } catch (cause) {
+      logError("Failed to read notification settings", cause);
       return;
     }
 
@@ -94,10 +94,10 @@ class NotificationService {
       return;
     }
 
-    const body = artist ? `${artist} - ${title}` : title;
+    const body = artist !== "" ? `${artist} - ${title}` : title;
 
     let coverArtPath: string | null = null;
-    if (coverArtId) {
+    if (coverArtId !== null && coverArtId !== "") {
       try {
         coverArtPath = await getCoverArtPath(coverArtId, 128);
       } catch {
@@ -112,18 +112,19 @@ class NotificationService {
         cover_art_path: coverArtPath,
       });
       if (handled) return;
-    } catch (e) {
-      error(`Failed to send native now playing notification: ${e}`);
+    } catch (cause) {
+      logError("Failed to send native now playing notification", cause);
     }
 
-    const attachments = coverArtPath
-      ? [{ id: "cover", url: `file://${coverArtPath}` }]
-      : undefined;
+    const attachments =
+      coverArtPath !== null && coverArtPath !== ""
+        ? [{ id: "cover", url: `file://${coverArtPath}` }]
+        : undefined;
 
     sendNotification({
       title: "Now Playing",
       body,
-      attachments,
+      ...(attachments ? { attachments } : {}),
     });
   }
 
@@ -134,8 +135,8 @@ class NotificationService {
     let settings: NotificationSettings;
     try {
       settings = await getNotificationSettings();
-    } catch (e) {
-      error(`Failed to read notification settings: ${e}`);
+    } catch (cause) {
+      logError("Failed to read notification settings", cause);
       return;
     }
 

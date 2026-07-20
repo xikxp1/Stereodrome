@@ -1,4 +1,4 @@
-//! BinauralSource wraps a Rodio Source with bs2b stereo crossfeed processing.
+//! `BinauralSource` wraps a Rodio `Source` with bs2b stereo crossfeed processing.
 //! Pipeline: inner source -> bs2b crossfeed -> output.
 
 use bs2b::{Bs2b, Level, streaming::CallbackAdapter};
@@ -56,12 +56,12 @@ where
                 bs2b.set_level(level);
                 bs2b
             });
-            CallbackAdapter::new(processor, channels.get() as usize).ok()
+            CallbackAdapter::new(processor, usize::from(channels.get())).ok()
         } else {
             None
         };
 
-        let ch = channels.get() as usize;
+        let ch = usize::from(channels.get());
         Self {
             inner: source,
             adapter,
@@ -82,14 +82,14 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         // Return buffered output if available
-        if self.output_pos < self.channels.get() as usize {
+        if self.output_pos < usize::from(self.channels.get()) {
             let sample = self.output_buffer[self.output_pos];
             self.output_pos += 1;
             return Some(sample);
         }
 
         // Collect a full frame from inner source into pre-allocated buffer
-        let ch = self.channels.get() as usize;
+        let ch = usize::from(self.channels.get());
         for i in 0..ch {
             self.input_buffer[i] = self.inner.next()?;
         }
@@ -134,7 +134,7 @@ where
             if let Some(adapter) = self.adapter.as_mut() {
                 adapter.processor_mut().clear();
             }
-            self.output_pos = self.channels.get() as usize;
+            self.output_pos = usize::from(self.channels.get());
         }
         result
     }

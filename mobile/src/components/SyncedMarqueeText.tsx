@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
-  StyleProp,
+  AppState,
+  type StyleProp,
   StyleSheet,
   Text,
-  TextStyle,
+  type TextStyle,
   View,
-  ViewStyle,
-  AppState,
+  type ViewStyle,
 } from "react-native";
 
 type MarqueeMember = {
@@ -57,7 +57,9 @@ function getGroup(groupId: string) {
 
 function stopGroupAnimation(groupId: string) {
   const group = groupStates.get(groupId);
-  if (!group) return;
+  if (!group) {
+    return;
+  }
 
   if (group.animationId !== null) {
     cancelAnimationFrame(group.animationId);
@@ -87,10 +89,14 @@ function setMemberOffsets(group: MarqueeGroup, offset: number) {
 
 function startGroupAnimation(groupId: string) {
   const group = groupStates.get(groupId);
-  if (!group || group.members.size === 0 || marqueeAnimationsPaused) return;
+  if (!group || group.members.size === 0 || marqueeAnimationsPaused) {
+    return;
+  }
 
   const initialMaxOffset = getGroupMaxOffset(group);
-  if (initialMaxOffset <= 0) return;
+  if (initialMaxOffset <= 0) {
+    return;
+  }
 
   group.state.maxOffset = initialMaxOffset;
   group.state.offset = 0;
@@ -100,16 +106,20 @@ function startGroupAnimation(groupId: string) {
   let lastTime: number | null = null;
 
   function animate(currentTime: number) {
-    const group = groupStates.get(groupId);
-    if (!group || group.members.size === 0) return;
+    const currentGroup = groupStates.get(groupId);
+    if (!currentGroup || currentGroup.members.size === 0) {
+      return;
+    }
 
-    const groupMaxOffset = getGroupMaxOffset(group);
-    if (groupMaxOffset <= 0) return;
-    group.state.maxOffset = groupMaxOffset;
+    const groupMaxOffset = getGroupMaxOffset(currentGroup);
+    if (groupMaxOffset <= 0) {
+      return;
+    }
+    currentGroup.state.maxOffset = groupMaxOffset;
 
     if (lastTime === null) {
       lastTime = currentTime;
-      group.animationId = requestAnimationFrame(animate);
+      currentGroup.animationId = requestAnimationFrame(animate);
       return;
     }
 
@@ -117,49 +127,51 @@ function startGroupAnimation(groupId: string) {
     lastTime = currentTime;
     const movement = scrollSpeed * deltaTime;
 
-    if (group.state.direction === "left") {
-      group.state.offset += movement;
-      if (group.state.offset >= group.state.maxOffset) {
-        group.state.offset = group.state.maxOffset;
-        group.state.direction = "right";
+    if (currentGroup.state.direction === "left") {
+      currentGroup.state.offset += movement;
+      if (currentGroup.state.offset >= currentGroup.state.maxOffset) {
+        currentGroup.state.offset = currentGroup.state.maxOffset;
+        currentGroup.state.direction = "right";
         lastTime = null;
-        setMemberOffsets(group, group.state.maxOffset);
-        group.pauseTimeout = setTimeout(() => {
-          if (group.members.size > 0) {
-            group.animationId = requestAnimationFrame(animate);
+        setMemberOffsets(currentGroup, currentGroup.state.maxOffset);
+        currentGroup.pauseTimeout = setTimeout(() => {
+          if (currentGroup.members.size > 0) {
+            currentGroup.animationId = requestAnimationFrame(animate);
           }
         }, pauseDuration);
         return;
       }
     } else {
-      group.state.offset -= movement;
-      if (group.state.offset <= 0) {
-        group.state.offset = 0;
-        group.state.direction = "left";
+      currentGroup.state.offset -= movement;
+      if (currentGroup.state.offset <= 0) {
+        currentGroup.state.offset = 0;
+        currentGroup.state.direction = "left";
         lastTime = null;
-        setMemberOffsets(group, 0);
-        group.pauseTimeout = setTimeout(() => {
-          if (group.members.size > 0) {
-            group.animationId = requestAnimationFrame(animate);
+        setMemberOffsets(currentGroup, 0);
+        currentGroup.pauseTimeout = setTimeout(() => {
+          if (currentGroup.members.size > 0) {
+            currentGroup.animationId = requestAnimationFrame(animate);
           }
         }, pauseDuration);
         return;
       }
     }
 
-    setMemberOffsets(group, group.state.offset);
-    group.animationId = requestAnimationFrame(animate);
+    setMemberOffsets(currentGroup, currentGroup.state.offset);
+    currentGroup.animationId = requestAnimationFrame(animate);
   }
 
   group.pauseTimeout = setTimeout(() => {
-    if (marqueeAnimationsPaused) return;
+    if (marqueeAnimationsPaused) {
+      return;
+    }
     group.animationId = requestAnimationFrame(animate);
   }, pauseDuration);
 }
 
 function restartGroupAnimation(groupId: string) {
   const existingTimeout = restartTimeouts.get(groupId);
-  if (existingTimeout) {
+  if (existingTimeout !== undefined) {
     clearTimeout(existingTimeout);
   }
 
@@ -173,7 +185,9 @@ function restartGroupAnimation(groupId: string) {
       if (group) {
         group.state.offset = 0;
         group.state.direction = "left";
-        group.members.forEach((member) => member.updateOffset(0));
+        group.members.forEach((member) => {
+          member.updateOffset(0);
+        });
       }
 
       startGroupAnimation(groupId);
@@ -202,26 +216,34 @@ export function SyncedMarqueeText({
   const translateX = useRef(new Animated.Value(0)).current;
   const memberRef = useRef<MarqueeMember | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
-  const [textWidth, setTextWidth] = useState(0);
+  const [textMeasurement, setTextMeasurement] = useState({ text, width: 0 });
+  const textWidth = textMeasurement.text === text ? textMeasurement.width : 0;
   const maxOffset = useMemo(
     () => Math.max(0, textWidth - containerWidth),
     [containerWidth, textWidth]
   );
 
   useEffect(() => {
-    setTextWidth(0);
     translateX.setValue(0);
   }, [text, translateX]);
 
   function measureTextWidth(width: number) {
-    setTextWidth((existing) => Math.max(existing, Math.ceil(width)));
+    setTextMeasurement((existing) => ({
+      text,
+      width:
+        existing.text === text
+          ? Math.max(existing.width, Math.ceil(width))
+          : Math.ceil(width),
+    }));
   }
 
   useEffect(() => {
     const marqueeGroup = getGroup(group);
     const member: MarqueeMember = {
       maxOffset,
-      updateOffset: (offset) => translateX.setValue(-offset),
+      updateOffset: (offset) => {
+        translateX.setValue(-offset);
+      },
     };
 
     memberRef.current = member;
@@ -251,13 +273,17 @@ export function SyncedMarqueeText({
 
   return (
     <View
-      onLayout={(event) => setContainerWidth(event.nativeEvent.layout.width)}
+      onLayout={(event) => {
+        setContainerWidth(event.nativeEvent.layout.width);
+      }}
       style={[styles.container, containerStyle]}
     >
       <View pointerEvents="none" style={styles.measureBox}>
         <Text
           numberOfLines={1}
-          onLayout={(event) => measureTextWidth(event.nativeEvent.layout.width)}
+          onLayout={(event) => {
+            measureTextWidth(event.nativeEvent.layout.width);
+          }}
           onTextLayout={(event) => {
             const widestLine = event.nativeEvent.lines.reduce(
               (widest, line) => Math.max(widest, line.width),

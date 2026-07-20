@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AppState, type AppStateStatus } from "react-native";
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -10,12 +11,12 @@ import {
 } from "react";
 
 import { syncLibraryBackgroundRegistration } from "@/services/librarySyncScheduler";
-import { stereodromeCore } from "@/services/stereodromeCore";
-import type {
-  ConnectionStatus,
-  LibrarySyncStatus,
-  PlaybackSnapshot,
-} from "@/types/music";
+import {
+  isLibrarySyncStatus,
+  isPlaybackSnapshot,
+  stereodromeCore,
+} from "@/services/stereodromeCore";
+import type { ConnectionStatus, LibrarySyncStatus } from "@/types/music";
 
 type StereodromeContextValue = {
   ready: boolean;
@@ -90,34 +91,37 @@ export function StereodromeProvider({
   const offlineMode =
     manualOfflineEnabled || (hasConfiguredServer && !status.connected);
 
-  async function refreshOfflineSongIds() {
+  const refreshOfflineSongIds = useCallback(async () => {
     try {
       const songIds = await stereodromeCore.getOfflineSongIds();
       setOfflineSongIds(new Set(songIds));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }
+  }, []);
 
-  function stopSavedPlaylistOfflinePolling() {
-    if (!savedPlaylistOfflinePoll.current) {
+  const stopSavedPlaylistOfflinePolling = useCallback(() => {
+    if (savedPlaylistOfflinePoll.current === null) {
       return;
     }
     clearInterval(savedPlaylistOfflinePoll.current);
     savedPlaylistOfflinePoll.current = null;
-  }
+  }, []);
 
-  async function pollSavedPlaylistOfflineReconcile() {
+  const pollSavedPlaylistOfflineReconcile = useCallback(async () => {
     try {
-      const status =
+      const reconcileStatus =
         await stereodromeCore.getSavedPlaylistsOfflineReconcileStatus();
-      if (status.running) {
+      if (reconcileStatus.running) {
         return;
       }
 
       stopSavedPlaylistOfflinePolling();
-      if (status.last_error) {
-        setError(status.last_error);
+      if (
+        reconcileStatus.last_error !== null &&
+        reconcileStatus.last_error.length > 0
+      ) {
+        setError(reconcileStatus.last_error);
       } else {
         setError(null);
       }
@@ -126,25 +130,32 @@ export function StereodromeProvider({
       stopSavedPlaylistOfflinePolling();
       setError(e instanceof Error ? e.message : String(e));
     }
-  }
+  }, [refreshOfflineSongIds, stopSavedPlaylistOfflinePolling]);
 
-  function startSavedPlaylistOfflinePolling() {
-    if (savedPlaylistOfflinePoll.current) {
+  const startSavedPlaylistOfflinePolling = useCallback(() => {
+    if (savedPlaylistOfflinePoll.current !== null) {
       return;
     }
-    void pollSavedPlaylistOfflineReconcile();
-    savedPlaylistOfflinePoll.current = setInterval(
-      () => void pollSavedPlaylistOfflineReconcile(),
-      savedPlaylistOfflinePollIntervalMs
-    );
-  }
+    pollSavedPlaylistOfflineReconcile().catch((pollError: unknown) => {
+      setError(
+        pollError instanceof Error ? pollError.message : String(pollError)
+      );
+    });
+    savedPlaylistOfflinePoll.current = setInterval(() => {
+      pollSavedPlaylistOfflineReconcile().catch((pollError: unknown) => {
+        setError(
+          pollError instanceof Error ? pollError.message : String(pollError)
+        );
+      });
+    }, savedPlaylistOfflinePollIntervalMs);
+  }, [pollSavedPlaylistOfflineReconcile]);
 
-  async function reconcileSavedPlaylistsOfflineInBackground() {
+  const reconcileSavedPlaylistsOfflineInBackground = useCallback(async () => {
     await stereodromeCore.startSavedPlaylistsOfflineReconcile();
     startSavedPlaylistOfflinePolling();
-  }
+  }, [startSavedPlaylistOfflinePolling]);
 
-  async function refreshStatus() {
+  const refreshStatus = useCallback(async () => {
     try {
       const connectivitySettings =
         await stereodromeCore.getConnectivitySettings();
@@ -152,11 +163,17 @@ export function StereodromeProvider({
       const next = await stereodromeCore.restoreSession();
       setStatus(next);
       setError(null);
-      if (next.server_url) {
+      if (next.server_url !== null && next.server_url.length > 0) {
         await refreshOfflineSongIds();
         if (next.connected && !connectivitySettings.manual_offline_enabled) {
-          void reconcileSavedPlaylistsOfflineInBackground().catch((e) =>
-            setError(e instanceof Error ? e.message : String(e))
+          reconcileSavedPlaylistsOfflineInBackground().catch(
+            (reconcileError: unknown) => {
+              setError(
+                reconcileError instanceof Error
+                  ? reconcileError.message
+                  : String(reconcileError)
+              );
+            }
           );
         }
       } else {
@@ -169,42 +186,49 @@ export function StereodromeProvider({
       setDownloadingSongIds(new Set());
       setError(e instanceof Error ? e.message : String(e));
     }
-  }
+  }, [reconcileSavedPlaylistsOfflineInBackground, refreshOfflineSongIds]);
 
-  async function connect(params: {
-    url: string;
-    username: string;
-    password: string;
-  }) {
-    if (manualOfflineEnabled) {
-      throw new Error("Offline mode is enabled");
-    }
+  const connect = useCallback(
+    async (params: { url: string; username: string; password: string }) => {
+      if (manualOfflineEnabled) {
+        throw new Error("Offline mode is enabled");
+      }
 
-    const next = await stereodromeCore.connectServer(params);
-    setStatus(next);
-    setError(null);
-    await reconcileSavedPlaylistsOfflineInBackground();
-    await refreshOfflineSongIds();
-  }
-
-  async function updateServerSettings(params: {
-    url?: string;
-    username?: string;
-  }) {
-    if (manualOfflineEnabled) {
-      throw new Error("Offline mode is enabled");
-    }
-
-    const next = await stereodromeCore.updateServerSettings(params);
-    setStatus(next);
-    setError(null);
-    if (next.connected && !manualOfflineEnabled) {
+      const next = await stereodromeCore.connectServer(params);
+      setStatus(next);
+      setError(null);
       await reconcileSavedPlaylistsOfflineInBackground();
-    }
-    await refreshOfflineSongIds();
-  }
+      await refreshOfflineSongIds();
+    },
+    [
+      manualOfflineEnabled,
+      reconcileSavedPlaylistsOfflineInBackground,
+      refreshOfflineSongIds,
+    ]
+  );
 
-  async function sync() {
+  const updateServerSettings = useCallback(
+    async (params: { url?: string; username?: string }) => {
+      if (manualOfflineEnabled) {
+        throw new Error("Offline mode is enabled");
+      }
+
+      const next = await stereodromeCore.updateServerSettings(params);
+      setStatus(next);
+      setError(null);
+      if (next.connected) {
+        await reconcileSavedPlaylistsOfflineInBackground();
+      }
+      await refreshOfflineSongIds();
+    },
+    [
+      manualOfflineEnabled,
+      reconcileSavedPlaylistsOfflineInBackground,
+      refreshOfflineSongIds,
+    ]
+  );
+
+  const sync = useCallback(async () => {
     if (manualOfflineEnabled) {
       throw new Error("Offline mode is enabled");
     }
@@ -216,9 +240,9 @@ export function StereodromeProvider({
       syncWasActive.current = false;
       throw e;
     }
-  }
+  }, [manualOfflineEnabled]);
 
-  async function syncIncremental() {
+  const syncIncremental = useCallback(async () => {
     if (manualOfflineEnabled) {
       throw new Error("Offline mode is enabled");
     }
@@ -230,9 +254,9 @@ export function StereodromeProvider({
       syncWasActive.current = false;
       throw e;
     }
-  }
+  }, [manualOfflineEnabled]);
 
-  async function refreshLibraryAfterSync() {
+  const refreshLibraryAfterSync = useCallback(async () => {
     await Promise.all(
       libraryQueryKeys.map((queryKey) =>
         queryClient.invalidateQueries({ queryKey })
@@ -242,9 +266,15 @@ export function StereodromeProvider({
       await reconcileSavedPlaylistsOfflineInBackground();
     }
     await refreshOfflineSongIds();
-  }
+  }, [
+    manualOfflineEnabled,
+    queryClient,
+    reconcileSavedPlaylistsOfflineInBackground,
+    refreshOfflineSongIds,
+    status.connected,
+  ]);
 
-  async function refreshSyncStatusAfterForeground() {
+  const refreshSyncStatusAfterForeground = useCallback(async () => {
     if (manualOfflineEnabled) {
       return;
     }
@@ -255,7 +285,8 @@ export function StereodromeProvider({
 
       const nextCompletedSyncKey = completedSyncKey(syncStatus);
       if (
-        lastCompletedSyncKey.current &&
+        lastCompletedSyncKey.current !== null &&
+        lastCompletedSyncKey.current.length > 0 &&
         nextCompletedSyncKey !== lastCompletedSyncKey.current
       ) {
         await refreshLibraryAfterSync();
@@ -264,7 +295,7 @@ export function StereodromeProvider({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }
+  }, [manualOfflineEnabled, queryClient, refreshLibraryAfterSync]);
 
   useEffect(() => {
     let mounted = true;
@@ -274,7 +305,7 @@ export function StereodromeProvider({
         await refreshStatus();
         await syncLibraryBackgroundRegistration();
       })
-      .catch((e) => {
+      .catch((e: unknown) => {
         if (mounted) {
           setError(e instanceof Error ? e.message : String(e));
         }
@@ -288,42 +319,69 @@ export function StereodromeProvider({
       mounted = false;
       stopSavedPlaylistOfflinePolling();
     };
-  }, []);
+  }, [refreshStatus, stopSavedPlaylistOfflinePolling]);
 
-  useEffect(() => {
-    return stereodromeCore.addEventListener<PlaybackSnapshot>(
-      "playback-snapshot",
-      (snapshot) => {
-        setOfflineSongIds(new Set(snapshot.downloaded_song_ids ?? []));
-        setDownloadingSongIds(new Set(snapshot.downloading_song_ids ?? []));
-      }
-    );
-  }, []);
+  useEffect(
+    () =>
+      stereodromeCore.addEventListener(
+        "playback-snapshot",
+        (snapshot) => {
+          setOfflineSongIds(new Set(snapshot.downloaded_song_ids));
+          setDownloadingSongIds(new Set(snapshot.downloading_song_ids));
+        },
+        isPlaybackSnapshot
+      ),
+    []
+  );
 
-  useEffect(() => {
-    return stereodromeCore.addEventListener<LibrarySyncStatus>(
-      "sync-status-changed",
-      (syncStatus) => {
-        queryClient.setQueryData(librarySyncStatusQueryKey, syncStatus);
-        lastCompletedSyncKey.current = completedSyncKey(syncStatus);
+  useEffect(
+    () =>
+      stereodromeCore.addEventListener(
+        "sync-status-changed",
+        (syncStatus) => {
+          queryClient.setQueryData(librarySyncStatusQueryKey, syncStatus);
+          lastCompletedSyncKey.current = completedSyncKey(syncStatus);
 
-        const wasActive = syncWasActive.current;
-        const isActive = Boolean(syncStatus.active_job);
-        syncWasActive.current = isActive;
+          const wasActive = syncWasActive.current;
+          const isActive =
+            syncStatus.active_job !== null && syncStatus.active_job.length > 0;
+          syncWasActive.current = isActive;
 
-        if (wasActive && !isActive) {
-          void refreshLibraryAfterSync();
-        }
-      }
-    );
-  }, [queryClient]);
+          if (wasActive && !isActive) {
+            refreshLibraryAfterSync().catch((refreshError: unknown) => {
+              setError(
+                refreshError instanceof Error
+                  ? refreshError.message
+                  : String(refreshError)
+              );
+            });
+          }
+        },
+        isLibrarySyncStatus
+      ),
+    [queryClient, refreshLibraryAfterSync]
+  );
 
   useEffect(() => {
     function handleAppStateChange(nextState: AppStateStatus) {
       if (nextState === "active") {
-        void refreshSyncStatusAfterForeground();
+        refreshSyncStatusAfterForeground().catch((refreshError: unknown) => {
+          setError(
+            refreshError instanceof Error
+              ? refreshError.message
+              : String(refreshError)
+          );
+        });
         if (!manualOfflineEnabled) {
-          void syncLibraryBackgroundRegistration();
+          syncLibraryBackgroundRegistration().catch(
+            (registrationError: unknown) => {
+              setError(
+                registrationError instanceof Error
+                  ? registrationError.message
+                  : String(registrationError)
+              );
+            }
+          );
         }
       }
     }
@@ -332,17 +390,22 @@ export function StereodromeProvider({
       "change",
       handleAppStateChange
     );
-    return () => subscription.remove();
-  }, [queryClient]);
+    return () => {
+      subscription.remove();
+    };
+  }, [manualOfflineEnabled, refreshSyncStatusAfterForeground]);
 
-  async function setManualOfflineEnabled(enabled: boolean) {
-    const settings = await stereodromeCore.setConnectivitySettings({
-      manual_offline_enabled: enabled,
-    });
-    setManualOfflineEnabledState(settings.manual_offline_enabled);
-    await refreshStatus();
-    await syncLibraryBackgroundRegistration();
-  }
+  const setManualOfflineEnabled = useCallback(
+    async (enabled: boolean) => {
+      const settings = await stereodromeCore.setConnectivitySettings({
+        manual_offline_enabled: enabled,
+      });
+      setManualOfflineEnabledState(settings.manual_offline_enabled);
+      await refreshStatus();
+      await syncLibraryBackgroundRegistration();
+    },
+    [refreshStatus]
+  );
 
   const value = useMemo(
     () => ({
@@ -371,8 +434,16 @@ export function StereodromeProvider({
       offlineMode,
       offlineSongIds,
       downloadingSongIds,
+      connect,
+      reconcileSavedPlaylistsOfflineInBackground,
       ready,
+      refreshOfflineSongIds,
+      refreshStatus,
+      setManualOfflineEnabled,
       status,
+      sync,
+      syncIncremental,
+      updateServerSettings,
     ]
   );
 

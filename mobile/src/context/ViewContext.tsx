@@ -106,6 +106,8 @@ function viewReducer(state: ViewState, action: ViewAction): ViewState {
         state.transitionKey
       );
     }
+    default:
+      throw new Error("Unknown view action");
   }
 }
 

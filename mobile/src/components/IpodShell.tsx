@@ -34,20 +34,29 @@ function formatPlaybackTime(seconds: number) {
 
 export function IpodShell() {
   const view = useViewStack();
+  const {
+    current,
+    pop,
+    reset,
+    showNowPlaying,
+    transitionDirection,
+    transitionKey,
+  } = view;
   const navigationProgress = useRef(new Animated.Value(1)).current;
-  const previousTransitionKey = useRef(view.transitionKey);
+  const previousTransitionKey = useRef(transitionKey);
   const { subscribe } = useInputBus();
   const { buttonHandedness } = useMobileSettings();
   const playback = usePlayback();
   const songActions = useSongActions();
   const stereodrome = useStereodrome();
   const insets = useSafeAreaInsets();
-  const current = view.current;
-  const navigationOffset = view.transitionDirection === "back" ? -24 : 24;
+  const navigationOffset = transitionDirection === "back" ? -24 : 24;
   const leftHandedButtons = buttonHandedness === "left";
   const RepeatIcon = playback.repeatMode === "One" ? Repeat1 : Repeat;
   const playbackDuration =
-    playback.duration || playback.currentSong?.duration || 0;
+    playback.duration > 0
+      ? playback.duration
+      : (playback.currentSong?.duration ?? 0);
   const playbackTime = playback.currentSong
     ? `${formatPlaybackTime(playback.position)}/${formatPlaybackTime(
         playbackDuration
@@ -70,27 +79,22 @@ export function IpodShell() {
           translateX: navigationProgress.interpolate({
             inputRange: [0, 1],
             outputRange: [
-              view.transitionDirection === "replace" ? 0 : navigationOffset,
+              transitionDirection === "replace" ? 0 : navigationOffset,
               0,
             ],
           }),
         },
       ],
     }),
-    [
-      navigationOffset,
-      navigationProgress,
-      view.transitionDirection,
-      view.transitionKey,
-    ]
+    [navigationOffset, navigationProgress, transitionDirection]
   );
 
   useLayoutEffect(() => {
-    if (previousTransitionKey.current === view.transitionKey) {
+    if (previousTransitionKey.current === transitionKey) {
       return;
     }
 
-    previousTransitionKey.current = view.transitionKey;
+    previousTransitionKey.current = transitionKey;
     navigationProgress.stopAnimation();
     navigationProgress.setValue(0);
     Animated.timing(navigationProgress, {
@@ -99,35 +103,30 @@ export function IpodShell() {
       toValue: 1,
       useNativeDriver: true,
     }).start();
-  }, [navigationProgress, view.transitionKey]);
+  }, [navigationProgress, transitionKey]);
 
   useEffect(() => {
     if (!stereodrome.ready) {
-      if (view.current.name !== loadingView.name) {
-        view.reset(loadingView);
+      if (current.name !== loadingView.name) {
+        reset(loadingView);
       }
       return;
     }
 
     if (!stereodrome.hasConfiguredServer) {
-      if (view.current.name !== connectView.name) {
-        view.reset(connectView);
+      if (current.name !== connectView.name) {
+        reset(connectView);
       }
       return;
     }
 
     if (
-      view.current.name === loadingView.name ||
-      view.current.name === connectView.name
+      current.name === loadingView.name ||
+      current.name === connectView.name
     ) {
-      view.reset(homeView);
+      reset(homeView);
     }
-  }, [
-    stereodrome.hasConfiguredServer,
-    stereodrome.ready,
-    view.current.name,
-    view.reset,
-  ]);
+  }, [stereodrome.hasConfiguredServer, stereodrome.ready, current.name, reset]);
 
   useEffect(
     () =>
@@ -135,13 +134,21 @@ export function IpodShell() {
         if (!stereodrome.ready) {
           return;
         }
-        if (input === "menu") view.pop();
-        if (input === "menu_long" && playback.currentSong) {
-          view.showNowPlaying();
+        if (input === "menu") {
+          pop();
         }
-        if (input === "play_pause") void playback.toggle();
-        if (input === "next") void playback.next();
-        if (input === "previous") void playback.previous();
+        if (input === "menu_long" && playback.currentSong) {
+          showNowPlaying();
+        }
+        if (input === "play_pause") {
+          void playback.toggle();
+        }
+        if (input === "next") {
+          void playback.next();
+        }
+        if (input === "previous") {
+          void playback.previous();
+        }
         if (current.name === "nowPlaying" && input === "scroll_forward") {
           void playback.seekBy(5);
         }
@@ -149,7 +156,7 @@ export function IpodShell() {
           void playback.seekBy(-5);
         }
       }),
-    [current.name, playback, stereodrome.ready, subscribe, view]
+    [current.name, playback, pop, showNowPlaying, stereodrome.ready, subscribe]
   );
 
   return (
@@ -160,9 +167,9 @@ export function IpodShell() {
         <View style={styles.screen}>
           <Header
             marqueeTitle={
-              current.name !== "nowPlaying" && !!playback.currentSong
+              current.name !== "nowPlaying" && Boolean(playback.currentSong)
             }
-            rightText={playbackTime}
+            {...(playbackTime === undefined ? {} : { rightText: playbackTime })}
             title={headerTitle}
           />
           <View style={styles.viewport}>
@@ -176,7 +183,9 @@ export function IpodShell() {
             accessibilityLabel="Cycle repeat mode"
             accessibilityRole="button"
             accessibilityState={{ selected: playback.repeatEnabled }}
-            onPress={() => void playback.toggleRepeat()}
+            onPress={() => {
+              void playback.toggleRepeat();
+            }}
             style={[
               styles.queueButton,
               leftHandedButtons ? styles.repeatLeft : styles.repeatRight,
@@ -218,7 +227,9 @@ export function IpodShell() {
               accessibilityLabel="Toggle shuffle"
               accessibilityRole="button"
               accessibilityState={{ selected: playback.shuffleEnabled }}
-              onPress={() => void playback.toggleShuffle()}
+              onPress={() => {
+                void playback.toggleShuffle();
+              }}
               style={[
                 styles.queueButton,
                 playback.shuffleEnabled && styles.queueButtonActive,
@@ -236,7 +247,9 @@ export function IpodShell() {
             <Pressable
               accessibilityLabel="Reroll next track"
               accessibilityRole="button"
-              onPress={() => void playback.rerollNext()}
+              onPress={() => {
+                void playback.rerollNext();
+              }}
               style={styles.queueButton}
             >
               <Dices color={colors.wheelIcon} size={20} />

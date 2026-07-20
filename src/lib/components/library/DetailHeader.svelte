@@ -34,6 +34,7 @@
   class="flex items-center gap-3 px-4 py-3 border-b border-base-300 bg-base-100"
 >
   <button
+    type="button"
     class="btn btn-ghost btn-sm btn-square"
     onclick={() => onBack?.()}
     title="Back"
@@ -71,6 +72,7 @@
 
   {#if onAction && actionLabel}
     <button
+      type="button"
       class="btn btn-sm"
       disabled={actionDisabled}
       onclick={() => onAction?.()}

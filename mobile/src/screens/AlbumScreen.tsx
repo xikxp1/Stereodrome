@@ -17,7 +17,7 @@ export function AlbumScreen({ albumId }: { albumId: string; title: string }) {
   const songs = useQuery({
     queryKey: ["album-songs", albumId],
     queryFn: () => stereodromeCore.getSongs(albumId),
-    enabled: !!albumId,
+    enabled: Boolean(albumId),
   });
   const shownSongs = visibleSongs(
     songs.data ?? [],
@@ -40,9 +40,12 @@ export function AlbumScreen({ albumId }: { albumId: string; title: string }) {
     [shownSongs, setActiveSongTarget]
   );
 
-  useEffect(() => {
-    return () => clearActiveSongTarget();
-  }, [clearActiveSongTarget]);
+  useEffect(
+    () => () => {
+      clearActiveSongTarget();
+    },
+    [clearActiveSongTarget]
+  );
 
   return (
     <SelectableList
@@ -60,7 +63,7 @@ export function AlbumScreen({ albumId }: { albumId: string; title: string }) {
           stereodrome.offlineSongIds,
           stereodrome.downloadingSongIds
         ),
-        sublabel: song.artist ?? undefined,
+        ...(song.artist == null ? {} : { sublabel: song.artist }),
         onSelect: async () => {
           await playback.playSong(
             song,
@@ -68,12 +71,14 @@ export function AlbumScreen({ albumId }: { albumId: string; title: string }) {
           );
           view.showNowPlaying();
         },
-        onLongSelect: stereodrome.offlineMode
-          ? undefined
-          : async () => {
-              await stereodromeCore.downloadAlbum(albumId);
-              await stereodrome.refreshOfflineSongIds();
-            },
+        ...(stereodrome.offlineMode
+          ? {}
+          : {
+              onLongSelect: async () => {
+                await stereodromeCore.downloadAlbum(albumId);
+                await stereodrome.refreshOfflineSongIds();
+              },
+            }),
       }))}
       onActiveIndexChange={handleActiveIndexChange}
     />

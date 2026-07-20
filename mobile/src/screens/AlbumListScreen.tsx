@@ -39,7 +39,7 @@ const albumListConfig: Record<RankedAlbumListKind, RankedAlbumListConfig> = {
 export function isRankedAlbumListKind(
   value: string | undefined
 ): value is RankedAlbumListKind {
-  return Boolean(value && value in albumListConfig);
+  return value !== undefined && value.length > 0 && value in albumListConfig;
 }
 
 export function AlbumListScreen({ kind }: { kind: RankedAlbumListKind }) {
@@ -73,17 +73,21 @@ export function AlbumListScreen({ kind }: { kind: RankedAlbumListKind }) {
 
   const options = useMemo(
     () =>
-      shownAlbums.map((album: AlbumListEntry) => ({
-        label: album.name,
-        sublabel: albumSublabel(album),
-        onSelect: () =>
-          view.push({
-            name: "album",
-            title: album.name,
-            params: { albumId: album.id, title: album.name },
-          }),
-        onLongSelect: () => playAlbum(album.id),
-      })),
+      shownAlbums.map((album: AlbumListEntry) => {
+        const sublabel = albumSublabel(album);
+        return {
+          label: album.name,
+          ...(sublabel === undefined ? {} : { sublabel }),
+          onSelect: () => {
+            view.push({
+              name: "album",
+              title: album.name,
+              params: { albumId: album.id, title: album.name },
+            });
+          },
+          onLongSelect: () => playAlbum(album.id),
+        };
+      }),
     [playAlbum, shownAlbums, view]
   );
 
@@ -113,13 +117,16 @@ export function AlbumListScreen({ kind }: { kind: RankedAlbumListKind }) {
 }
 
 function albumSublabel(album: AlbumListEntry) {
-  const detail = [album.artist_name, album.year ? String(album.year) : null]
+  const detail = [
+    album.artist_name,
+    album.year !== null && album.year !== 0 ? String(album.year) : null,
+  ]
     .filter(Boolean)
     .join(" - ");
   if (album.play_count != null) {
-    return detail
+    return detail.length > 0
       ? `${detail} - ${album.play_count.toLocaleString()} plays`
       : `${album.play_count.toLocaleString()} plays`;
   }
-  return detail || undefined;
+  return detail.length > 0 ? detail : undefined;
 }

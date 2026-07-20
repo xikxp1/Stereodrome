@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { error } from "@tauri-apps/plugin-log";
 import {
   playSongWithQueue as playSongWithQueueCommand,
   rerollNextQueueItem,
 } from "$lib/api/commands";
+import { logError } from "$lib/services/logging";
 import type { QueueItem, QueueState, RepeatMode, Song } from "$lib/types";
 
 class QueueStore {
@@ -21,7 +21,7 @@ class QueueStore {
   private unlistenQueueEnded: UnlistenFn | null = null;
 
   constructor() {
-    this.init();
+    void this.init();
   }
 
   private async init() {
@@ -56,8 +56,8 @@ class QueueStore {
     try {
       const state = await invoke<QueueState>("get_queue");
       this.updateFromState(state);
-    } catch (e) {
-      error(`Failed to load queue: ${e}`);
+    } catch (cause) {
+      logError("Failed to load queue", cause);
     }
   }
 
@@ -65,9 +65,20 @@ class QueueStore {
     return {
       song_id: song.id,
       title: song.title,
-      artist: song.artist || "Unknown Artist",
-      album: song.album || "Unknown Album",
-      duration: song.duration || 0,
+      artist:
+        song.artist !== undefined && song.artist !== ""
+          ? song.artist
+          : "Unknown Artist",
+      album:
+        song.album !== undefined && song.album !== ""
+          ? song.album
+          : "Unknown Album",
+      duration:
+        song.duration !== null &&
+        song.duration !== 0 &&
+        !Number.isNaN(song.duration)
+          ? song.duration
+          : 0,
     };
   }
 
@@ -75,8 +86,8 @@ class QueueStore {
     const item = this.songToQueueItem(song);
     try {
       await invoke("add_to_queue", { item });
-    } catch (e) {
-      error(`Failed to add to queue: ${e}`);
+    } catch (cause) {
+      logError("Failed to add to queue", cause);
     }
   }
 
@@ -84,8 +95,8 @@ class QueueStore {
     const items = songs.map((s) => this.songToQueueItem(s));
     try {
       await invoke("add_songs_to_queue", { items });
-    } catch (e) {
-      error(`Failed to add songs to queue: ${e}`);
+    } catch (cause) {
+      logError("Failed to add songs to queue", cause);
     }
   }
 
@@ -95,8 +106,8 @@ class QueueStore {
       const item = this.songToQueueItem(song);
       try {
         await invoke("insert_next_in_queue", { item });
-      } catch (e) {
-        error(`Failed to insert next: ${e}`);
+      } catch (cause) {
+        logError("Failed to insert next", cause);
       }
     } else {
       // Play the next song in queue
@@ -104,8 +115,8 @@ class QueueStore {
       // force=false: respect repeat mode (auto-advance when song ends)
       try {
         await invoke<boolean>("play_next", { force });
-      } catch (e) {
-        error(`Failed to play next: ${e}`);
+      } catch (cause) {
+        logError("Failed to play next", cause);
       }
     }
   }
@@ -114,72 +125,72 @@ class QueueStore {
     const items = songs.map((s) => this.songToQueueItem(s));
     try {
       await invoke("insert_next_songs_in_queue", { items });
-    } catch (e) {
-      error(`Failed to insert songs next: ${e}`);
+    } catch (cause) {
+      logError("Failed to insert songs next", cause);
     }
   }
 
   async playPrevious() {
     try {
       await invoke<boolean>("play_previous");
-    } catch (e) {
-      error(`Failed to play previous: ${e}`);
+    } catch (cause) {
+      logError("Failed to play previous", cause);
     }
   }
 
   async playQueueItem(index: number) {
     try {
       await invoke("play_queue_item", { index });
-    } catch (e) {
-      error(`Failed to play queue item: ${e}`);
+    } catch (cause) {
+      logError("Failed to play queue item", cause);
     }
   }
 
   async removeFromQueue(index: number) {
     try {
       await invoke("remove_from_queue", { index });
-    } catch (e) {
-      error(`Failed to remove from queue: ${e}`);
+    } catch (cause) {
+      logError("Failed to remove from queue", cause);
     }
   }
 
   async clearQueue() {
     try {
       await invoke("clear_queue");
-    } catch (e) {
-      error(`Failed to clear queue: ${e}`);
+    } catch (cause) {
+      logError("Failed to clear queue", cause);
     }
   }
 
   async moveItem(from: number, to: number) {
     try {
       await invoke("move_queue_item", { from, to });
-    } catch (e) {
-      error(`Failed to move queue item: ${e}`);
+    } catch (cause) {
+      logError("Failed to move queue item", cause);
     }
   }
 
   async toggleShuffle() {
     try {
       await invoke<boolean>("toggle_shuffle");
-    } catch (e) {
-      error(`Failed to toggle shuffle: ${e}`);
+    } catch (cause) {
+      logError("Failed to toggle shuffle", cause);
     }
   }
 
   async cycleRepeatMode() {
     try {
       await invoke<RepeatMode>("cycle_repeat_mode");
-    } catch (e) {
-      error(`Failed to cycle repeat mode: ${e}`);
+    } catch (cause) {
+      logError("Failed to cycle repeat mode", cause);
     }
   }
 
   async setRepeatMode(mode: RepeatMode) {
     try {
       await invoke("set_repeat_mode", { mode });
-    } catch (e) {
-      error(`Failed to set repeat mode: ${e}`);
+    } catch (cause) {
+      logError("Failed to set repeat mode", cause);
     }
   }
 
@@ -190,8 +201,8 @@ class QueueStore {
 
     try {
       return await rerollNextQueueItem();
-    } catch (e) {
-      error(`Failed to reroll next track: ${e}`);
+    } catch (cause) {
+      logError("Failed to reroll next track", cause);
       return false;
     }
   }
@@ -201,7 +212,7 @@ class QueueStore {
     if (this.currentIndex === null || this.currentIndex >= this.items.length) {
       return null;
     }
-    return this.items[this.currentIndex];
+    return this.items[this.currentIndex] ?? null;
   }
 
   // Get the previous song (what will play when Previous is clicked)
@@ -212,24 +223,24 @@ class QueueStore {
     if (this.currentIndex === null && this.pendingNavigationIndex !== null) {
       const prevIdx = this.pendingNavigationIndex - 1;
       if (prevIdx >= 0) {
-        return this.items[prevIdx];
+        return this.items[prevIdx] ?? null;
       }
       // At start with pending - wrap if repeat all
       if (this.repeatMode === "All") {
-        return this.items[this.items.length - 1];
+        return this.items[this.items.length - 1] ?? null;
       }
-      return this.items[0]; // Stay at beginning
+      return this.items[0] ?? null; // Stay at beginning
     }
 
     if (this.currentIndex === null) return null;
 
     if (this.currentIndex > 0) {
-      return this.items[this.currentIndex - 1];
+      return this.items[this.currentIndex - 1] ?? null;
     }
 
     // At the start - wrap around if repeat is on
     if (this.repeatMode === "All") {
-      return this.items[this.items.length - 1];
+      return this.items[this.items.length - 1] ?? null;
     }
 
     return null;
@@ -245,7 +256,7 @@ class QueueStore {
         this.pendingNavigationIndex,
         this.items.length - 1
       );
-      return this.items[nextIdx];
+      return this.items[nextIdx] ?? null;
     }
 
     if (this.preparedNextItem !== null) {
@@ -254,21 +265,21 @@ class QueueStore {
 
     // If repeat one, next will play the same song
     if (this.repeatMode === "One" && this.currentIndex !== null) {
-      return this.items[this.currentIndex];
+      return this.items[this.currentIndex] ?? null;
     }
 
     if (this.currentIndex === null) {
       // Nothing playing, next would start from beginning
-      return this.items[0];
+      return this.items[0] ?? null;
     }
 
     if (this.currentIndex < this.items.length - 1) {
-      return this.items[this.currentIndex + 1];
+      return this.items[this.currentIndex + 1] ?? null;
     }
 
     // At the end - wrap around if repeat is on
     if (this.repeatMode === "All") {
-      return this.items[0];
+      return this.items[0] ?? null;
     }
 
     return null;

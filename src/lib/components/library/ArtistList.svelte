@@ -29,6 +29,7 @@
         {#each query.data as artist (artist.id)}
           <li>
             <button
+              type="button"
               class="rounded-none"
               class:active={selectedId === artist.id}
               onclick={() => onSelect?.(artist)}

@@ -53,28 +53,29 @@ export function SongActionProvider({
 }) {
   const playback = usePlayback();
   const view = useViewStack();
+  const { current, push } = view;
   const [activeListTarget, setActiveListTarget] =
     useState<SongActionTarget | null>(null);
   const [menuTarget, setMenuTarget] = useState<SongActionTarget | null>(null);
 
   const resolvedTarget = useMemo(() => {
-    if (view.current.name === "nowPlaying" && playback.currentSong) {
+    if (current.name === "nowPlaying" && playback.currentSong) {
       return {
         song: playback.currentSong,
         origin: "nowPlaying" as const,
       };
     }
 
-    if (songListViews.has(view.current.name)) {
+    if (songListViews.has(current.name)) {
       return activeListTarget;
     }
 
     return null;
-  }, [activeListTarget, playback.currentSong, view.current.name]);
+  }, [activeListTarget, current.name, playback.currentSong]);
 
   const setActiveSongTarget = useCallback((target: SongActionTarget | null) => {
-    setActiveListTarget((current) =>
-      isSameTarget(current, target) ? current : target
+    setActiveListTarget((currentTarget) =>
+      isSameTarget(currentTarget, target) ? currentTarget : target
     );
   }, []);
 
@@ -88,8 +89,8 @@ export function SongActionProvider({
     }
 
     setMenuTarget(resolvedTarget);
-    view.push({ name: "songContextMenu", title: "Song Actions" });
-  }, [resolvedTarget, view]);
+    push({ name: "songContextMenu", title: "Song Actions" });
+  }, [push, resolvedTarget]);
 
   const value = useMemo(
     () => ({

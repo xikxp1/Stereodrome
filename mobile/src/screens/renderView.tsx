@@ -35,14 +35,14 @@ export function renderView(view: ViewInstance) {
     case "artist":
       return (
         <ArtistScreen
-          artistId={view.params?.artistId ?? ""}
-          title={view.params?.title ?? "Artist"}
+          artistId={view.params?.["artistId"] ?? ""}
+          title={view.params?.["title"] ?? "Artist"}
         />
       );
     case "albums":
       return <AlbumsScreen />;
     case "albumList": {
-      const kind = view.params?.kind;
+      const kind = view.params?.["kind"];
       return isRankedAlbumListKind(kind) ? (
         <AlbumListScreen kind={kind} />
       ) : (
@@ -52,8 +52,8 @@ export function renderView(view: ViewInstance) {
     case "album":
       return (
         <AlbumScreen
-          albumId={view.params?.albumId ?? ""}
-          title={view.params?.title ?? "Album"}
+          albumId={view.params?.["albumId"] ?? ""}
+          title={view.params?.["title"] ?? "Album"}
         />
       );
     case "songs":
@@ -63,8 +63,8 @@ export function renderView(view: ViewInstance) {
     case "playlist":
       return (
         <PlaylistScreen
-          playlistId={view.params?.playlistId ?? ""}
-          title={view.params?.title ?? "Playlist"}
+          playlistId={view.params?.["playlistId"] ?? ""}
+          title={view.params?.["title"] ?? "Playlist"}
         />
       );
     case "queue":
@@ -80,7 +80,13 @@ export function renderView(view: ViewInstance) {
     case "nowPlaying":
       return <NowPlayingScreen />;
     case "settings":
-      return <SettingsScreen category={view.params?.category} />;
+      return (
+        <SettingsScreen
+          {...(view.params?.["category"] === undefined
+            ? {}
+            : { category: view.params["category"] })}
+        />
+      );
     case "home":
     default:
       return <HomeScreen />;

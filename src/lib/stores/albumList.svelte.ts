@@ -33,12 +33,12 @@ class AlbumListStore {
 
   async loadView(activeView: string, options: LoadViewOptions = {}) {
     const listType = AlbumListStore.getListType(activeView);
-    if (!listType) return;
+    if (listType === null) return;
 
     const isSameList = this.currentListType === listType;
     if (
       isSameList &&
-      !options.force &&
+      options.force !== true &&
       (this.entries.length > 0 || this.isLoading)
     ) {
       return;
@@ -89,7 +89,8 @@ class AlbumListStore {
   }
 
   async loadMore() {
-    if (!this.currentListType || this.isLoadingMore || !this.hasMore) return;
+    if (this.currentListType === null || this.isLoadingMore || !this.hasMore)
+      return;
 
     const listType = this.currentListType;
     const requestId = this.loadRequestId;

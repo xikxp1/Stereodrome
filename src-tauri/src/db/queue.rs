@@ -24,7 +24,7 @@ pub fn save_queue(
 
         for (pos, item) in items.iter().enumerate() {
             stmt.execute((
-                pos as i64,
+                i64::try_from(pos).unwrap_or(i64::MAX),
                 &item.song_id,
                 &item.title,
                 &item.artist,
@@ -42,8 +42,12 @@ pub fn save_queue(
 
         conn.execute(
             "INSERT OR REPLACE INTO queue_state (id, current_index, shuffle, repeat_mode)
-             VALUES (1, ?1, ?2, ?3)",
-            (current_index.map(|i| i as i64), shuffle as i64, repeat_str),
+            VALUES (1, ?1, ?2, ?3)",
+            (
+                current_index.map(|index| i64::try_from(index).unwrap_or(i64::MAX)),
+                i64::from(shuffle),
+                repeat_str,
+            ),
         )?;
 
         Ok(())
@@ -77,7 +81,7 @@ pub fn load_queue_items(conn: &Connection) -> AppResult<Vec<QueueItem>> {
                 duration: row.get(4)?,
             })
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     Ok(items)
@@ -103,7 +107,11 @@ pub fn load_queue_state(conn: &Connection) -> AppResult<(Option<usize>, bool, Re
                 "One" => RepeatMode::One,
                 _ => RepeatMode::Off,
             };
-            Ok((current_index.map(|i| i as usize), shuffle != 0, repeat_mode))
+            Ok((
+                current_index.and_then(|index| usize::try_from(index).ok()),
+                shuffle != 0,
+                repeat_mode,
+            ))
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             // No state saved yet, return defaults

@@ -21,13 +21,13 @@ class TrayControlsService {
     this.unlisten = await listen<TrayControlEvent>("tray-control", (event) => {
       switch (event.payload.action) {
         case "play_pause":
-          playback.togglePlayPause();
+          void playback.togglePlayPause();
           break;
         case "next":
-          queue.playNext();
+          void queue.playNext();
           break;
         case "previous":
-          queue.playPrevious();
+          void queue.playPrevious();
           break;
         case "open_settings":
           // Dispatch custom event for +page.svelte to handle

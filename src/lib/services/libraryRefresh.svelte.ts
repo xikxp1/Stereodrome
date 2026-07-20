@@ -1,7 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { error } from "@tauri-apps/plugin-log";
 import { queryClient } from "$lib/db/queryClient";
+import { logError } from "$lib/services/logging";
 import type { LibraryContentUpdatedEvent } from "$lib/types";
 
 export const LIBRARY_REFRESHED_EVENT = "library-refreshed";
@@ -28,14 +28,12 @@ class LibraryRefreshService {
 
     this.unlisten = await listen<LibraryContentUpdatedEvent>(
       "library-content-updated",
-      async (event) => {
+      (event) => {
         if (!event.payload.has_new_items) return;
 
-        try {
-          await refreshLibraryViews();
-        } catch (e) {
-          error(`Failed to refresh library views after sync event: ${e}`);
-        }
+        void refreshLibraryViews().catch((cause: unknown) => {
+          logError("Failed to refresh library views after sync event", cause);
+        });
       }
     );
   }

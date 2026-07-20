@@ -19,7 +19,8 @@ pub trait MutexExt<T> {
 
 impl<T> MutexExt<T> for Mutex<T> {
     fn lock_recover(&self) -> MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -66,8 +67,7 @@ impl From<ClientError> for AppError {
     fn from(err: ClientError) -> Self {
         match err {
             ClientError::NotConnected => AppError::NotConnected,
-            ClientError::ConnectionFailed(s) => AppError::Subsonic(s),
-            ClientError::ApiError(s) => AppError::Subsonic(s),
+            ClientError::ConnectionFailed(s) | ClientError::ApiError(s) => AppError::Subsonic(s),
             ClientError::ChannelClosed => {
                 AppError::ClientChannel("Client channel closed".to_string())
             }

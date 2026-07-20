@@ -4,8 +4,8 @@ export type NativeEnvelope<T> =
   { ok: true; value: T } | { ok: false; error: string };
 
 export type StereodromeCoreNativeModule = {
-  initialize(dataDir: string): Promise<boolean>;
-  call(method: string, payload: string): Promise<string>;
+  initialize?(dataDir: string): Promise<boolean>;
+  call?(method: string, payload: string): Promise<string>;
   getConnectionStatus(): Promise<string>;
   getStreamUri(songId: string): Promise<string>;
   addListener?(

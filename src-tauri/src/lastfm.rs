@@ -21,9 +21,10 @@ const API_KEY: Option<&str> = option_env!("LASTFM_API_KEY");
 const SHARED_SECRET: Option<&str> = option_env!("LASTFM_SHARED_SECRET");
 const STORE_FILE: &str = "settings.json";
 const KEY_LASTFM: &str = "lastfm";
-const MAX_BATCH_SIZE: usize = 50;
+const MAX_BATCH_SIZE: i64 = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct LastfmStatus {
     pub available: bool,
     pub authenticated: bool,
@@ -141,7 +142,11 @@ fn non_empty(value: &str) -> Option<String> {
 
 fn finite_i64(value: f64) -> Option<i64> {
     if value.is_finite() && value > 0.0 {
-        Some(value.round() as i64)
+        let rounded = value.round().clamp(1.0, 9_223_372_036_854_775_807.0);
+        // The finite check and positive, i64-range clamp above make this narrowing safe.
+        #[allow(clippy::cast_possible_truncation)]
+        let integer = rounded as i64;
+        Some(integer)
     } else {
         None
     }
@@ -225,7 +230,7 @@ fn now_unix() -> i64 {
 }
 
 fn retry_delay_secs(attempts: i64) -> i64 {
-    let exponent = attempts.clamp(0, 6) as u32;
+    let exponent = u32::try_from(attempts.clamp(0, 6)).expect("clamped attempts fit in u32");
     (60_i64 * 2_i64.pow(exponent)).min(3600)
 }
 
@@ -292,12 +297,13 @@ async fn post_lastfm(params: Vec<(String, String)>) -> AppResult<serde_json::Val
 }
 
 fn summarize_response_body(body: &str) -> String {
+    const MAX_LEN: usize = 300;
+
     if let Some(error) = extract_lastfm_xml_error(body) {
         return error;
     }
 
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
-    const MAX_LEN: usize = 300;
     if compact.len() > MAX_LEN {
         format!("{}...", &compact[..MAX_LEN])
     } else if compact.is_empty() {
@@ -373,7 +379,7 @@ pub async fn report_now_playing(
 
     let mut params = vec![
         ("method".to_string(), "track.updateNowPlaying".to_string()),
-        ("api_key".to_string(), api_key.to_string()),
+        ("api_key".to_string(), api_key.clone()),
         ("sk".to_string(), session.session_key),
         ("artist".to_string(), song.artist),
         ("track".to_string(), song.title),
@@ -532,9 +538,9 @@ fn due_queue(conn: &Connection, include_not_due: bool) -> AppResult<Vec<LastfmQu
     };
 
     let rows = if include_not_due {
-        stmt.query_map([MAX_BATCH_SIZE as i64], map_row)?
+        stmt.query_map([MAX_BATCH_SIZE], map_row)?
     } else {
-        stmt.query_map(params![MAX_BATCH_SIZE as i64, now], map_row)?
+        stmt.query_map(params![MAX_BATCH_SIZE, now], map_row)?
     };
     Ok(rows.filter_map(Result::ok).collect())
 }
@@ -660,7 +666,7 @@ pub async fn retry_lastfm_queue_inner(
 
 pub fn start_lastfm_retry_scheduler(app_handle: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        let mut interval = tokio::time::interval(Duration::from_mins(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {

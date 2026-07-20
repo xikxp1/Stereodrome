@@ -11,50 +11,61 @@ export function MusicScreen() {
       options={[
         {
           label: "Artists",
-          onSelect: () => view.push({ name: "artists", title: "Artists" }),
+          onSelect: () => {
+            view.push({ name: "artists", title: "Artists" });
+          },
         },
         {
           label: "Albums",
-          onSelect: () => view.push({ name: "albums", title: "Albums" }),
+          onSelect: () => {
+            view.push({ name: "albums", title: "Albums" });
+          },
         },
         {
           label: "Songs",
-          onSelect: () => view.push({ name: "songs", title: "Songs" }),
+          onSelect: () => {
+            view.push({ name: "songs", title: "Songs" });
+          },
         },
         ...(stereodrome.offlineMode
           ? []
           : [
               {
                 label: "Recently Added",
-                onSelect: () =>
+                onSelect: () => {
                   view.push({
                     name: "albumList",
                     title: "Recently Added",
                     params: { kind: "recentlyAdded" },
-                  }),
+                  });
+                },
               },
               {
                 label: "Recently Played",
-                onSelect: () =>
+                onSelect: () => {
                   view.push({
                     name: "albumList",
                     title: "Recently Played",
                     params: { kind: "recentlyPlayed" },
-                  }),
+                  });
+                },
               },
               {
                 label: "Most Played",
-                onSelect: () =>
+                onSelect: () => {
                   view.push({
                     name: "albumList",
                     title: "Most Played",
                     params: { kind: "mostPlayed" },
-                  }),
+                  });
+                },
               },
             ]),
         {
           label: "Playlists",
-          onSelect: () => view.push({ name: "playlists", title: "Playlists" }),
+          onSelect: () => {
+            view.push({ name: "playlists", title: "Playlists" });
+          },
         },
       ]}
     />

@@ -39,9 +39,12 @@ export function SongsScreen() {
     [shownSongs, setActiveSongTarget]
   );
 
-  useEffect(() => {
-    return () => clearActiveSongTarget();
-  }, [clearActiveSongTarget]);
+  useEffect(
+    () => () => {
+      clearActiveSongTarget();
+    },
+    [clearActiveSongTarget]
+  );
 
   return (
     <SelectableList

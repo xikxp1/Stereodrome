@@ -31,12 +31,16 @@ const MobileSettingsContext = createContext<MobileSettingsContextValue | null>(
 );
 
 function parseSettings(raw: string): MobileSettings {
-  const parsed = JSON.parse(raw) as Partial<MobileSettings>;
+  const parsed: unknown = JSON.parse(raw);
+  const buttonHandedness =
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "buttonHandedness" in parsed
+      ? parsed.buttonHandedness
+      : undefined;
   return {
     buttonHandedness:
-      parsed.buttonHandedness === "left"
-        ? "left"
-        : defaultSettings.buttonHandedness,
+      buttonHandedness === "left" ? "left" : defaultSettings.buttonHandedness,
   };
 }
 

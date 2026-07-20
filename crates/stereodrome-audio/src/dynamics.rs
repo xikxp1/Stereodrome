@@ -1,4 +1,4 @@
-//! DynamicsSource wraps a Rodio Source with compression and look-ahead limiting.
+//! `DynamicsSource` wraps a Rodio `Source` with compression and look-ahead limiting.
 //! Pipeline: inner source → soft-knee compressor → fundsp limiter → output.
 
 use fundsp::audiounit::AudioUnit;
@@ -38,10 +38,10 @@ where
         } else {
             Box::new(limiter(0.01, 0.1))
         };
-        lim.set_sample_rate(sample_rate.get() as f64);
+        lim.set_sample_rate(f64::from(sample_rate.get()));
         lim.reset();
 
-        let ch = channels.get() as usize;
+        let ch = usize::from(channels.get());
         Self {
             inner: source,
             compressor,
@@ -50,7 +50,7 @@ where
             input_buffer: vec![0.0; ch],
             output_buffer: vec![0.0; ch],
             // Start exhausted to trigger first fill
-            output_pos: channels.get() as usize,
+            output_pos: usize::from(channels.get()),
         }
     }
 }
@@ -63,14 +63,14 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         // Return buffered output if available
-        if self.output_pos < self.channels.get() as usize {
+        if self.output_pos < usize::from(self.channels.get()) {
             let sample = self.output_buffer[self.output_pos];
             self.output_pos += 1;
             return Some(sample);
         }
 
         // Collect a full frame from inner source into pre-allocated buffer
-        let ch = self.channels.get() as usize;
+        let ch = usize::from(self.channels.get());
         for i in 0..ch {
             self.input_buffer[i] = self.inner.next()?;
         }
@@ -122,7 +122,7 @@ where
         if result.is_ok() {
             self.compressor.reset();
             self.limiter.reset();
-            self.output_pos = self.channels.get() as usize;
+            self.output_pos = usize::from(self.channels.get());
         }
         result
     }

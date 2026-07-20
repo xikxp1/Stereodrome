@@ -236,6 +236,7 @@ fn create_mini_player_window(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn open_mini_player(app_handle: AppHandle, position: MiniPlayerPosition) -> AppResult<()> {
     if let Some(window) = app_handle.get_webview_window(MINI_PLAYER_LABEL) {
         apply_mini_player_mode(&window, MiniPlayerMode::Mini, position)?;
@@ -268,6 +269,7 @@ pub fn open_mini_player(app_handle: AppHandle, position: MiniPlayerPosition) -> 
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn set_mini_player_mode(
     app_handle: AppHandle,
     mode: MiniPlayerMode,
@@ -283,6 +285,7 @@ pub fn set_mini_player_mode(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn close_mini_player(app_handle: AppHandle) -> AppResult<()> {
     #[cfg(target_os = "macos")]
     {
@@ -315,6 +318,7 @@ pub fn close_mini_player(app_handle: AppHandle) -> AppResult<()> {
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn restore_main_window(app_handle: AppHandle) -> AppResult<()> {
     restore_main_window_impl(&app_handle)
 }

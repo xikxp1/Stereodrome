@@ -117,7 +117,7 @@ impl AlbumListOrder {
     }
 }
 
-/// Album entry from getAlbumList2, richer than AlbumSummaryInfo
+/// Album entry from getAlbumList2, richer than `AlbumSummaryInfo`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlbumListEntry {
     pub id: String,
@@ -188,8 +188,8 @@ impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClientError::NotConnected => write!(f, "Not connected to server"),
-            ClientError::ConnectionFailed(s) => write!(f, "Connection failed: {}", s),
-            ClientError::ApiError(s) => write!(f, "API error: {}", s),
+            ClientError::ConnectionFailed(s) => write!(f, "Connection failed: {s}"),
+            ClientError::ApiError(s) => write!(f, "API error: {s}"),
             ClientError::ChannelClosed => write!(f, "Client channel closed"),
             ClientError::Timeout => write!(f, "Request timed out"),
         }

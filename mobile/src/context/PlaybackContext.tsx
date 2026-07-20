@@ -9,7 +9,10 @@ import {
 } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 
-import { stereodromeCore } from "@/services/stereodromeCore";
+import {
+  isPlaybackSnapshot,
+  stereodromeCore,
+} from "@/services/stereodromeCore";
 import type {
   PlaybackSnapshot,
   PlaybackStateSnapshot,
@@ -240,12 +243,14 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       }
 
       restoredStartPositionRef.current = null;
-      void prepareNextPlayback().catch(() => {});
+      prepareNextPlayback().catch(() => {
+        // Preparing the next item is opportunistic; playback already succeeded.
+      });
     },
     [prepareNextPlayback, reconcilePlaybackSnapshot]
   );
 
-  const persistPlaybackPosition = useCallback(async (isPlaying: boolean) => {
+  const persistPlaybackPosition = useCallback(async (playing: boolean) => {
     const song = currentSongRef.current;
     if (!song) {
       return;
@@ -254,15 +259,16 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     await stereodromeCore.savePlaybackPosition({
       song_id: song.id,
       position_seconds: positionRef.current,
-      duration_seconds: durationRef.current || song.duration || 0,
-      is_playing: isPlaying,
+      duration_seconds:
+        durationRef.current > 0 ? durationRef.current : (song.duration ?? 0),
+      is_playing: playing,
     });
   }, []);
 
   const restorePlaybackState = useCallback(
     async (queueState: QueueState, snapshot: PlaybackStateSnapshot) => {
       const restoredSongId = snapshot.current_song_id;
-      if (!restoredSongId) {
+      if (restoredSongId === null || restoredSongId.length === 0) {
         restoredStartPositionRef.current = null;
         return queueState;
       }
@@ -282,9 +288,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
       const restoredPosition = Math.max(0, snapshot.position_seconds);
       const restoredDuration =
-        snapshot.duration_seconds ||
-        nextQueueState.items[restoredIndex]?.duration ||
-        0;
+        snapshot.duration_seconds > 0
+          ? snapshot.duration_seconds
+          : (nextQueueState.items[restoredIndex]?.duration ?? 0);
       positionRef.current = restoredPosition;
       durationRef.current = restoredDuration;
       restoredStartPositionRef.current = restoredPosition;
@@ -311,7 +317,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     await ensurePlayerReady();
     await stereodromeCore.audioApplySettings();
     await reconcilePlaybackSnapshot();
-    void prepareNextPlayback().catch(() => {});
+    prepareNextPlayback().catch(() => {
+      // Applying settings should not fail when optional preloading fails.
+    });
   }, [prepareNextPlayback, reconcilePlaybackSnapshot]);
 
   useEffect(() => {
@@ -334,19 +342,19 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       await reconcilePlaybackSnapshot();
     }
 
-    void initializePlayback().catch((setupError) => {
+    void initializePlayback().catch((setupError: unknown) => {
       if (mounted) {
         setError(errorMessage(setupError));
       }
     });
 
-    const unsubscribePlayback =
-      stereodromeCore.addEventListener<PlaybackSnapshot>(
-        "playback-snapshot",
-        (snapshot) => {
-          applyPlaybackSnapshot(snapshot);
-        }
-      );
+    const unsubscribePlayback = stereodromeCore.addEventListener(
+      "playback-snapshot",
+      (snapshot) => {
+        applyPlaybackSnapshot(snapshot);
+      },
+      isPlaybackSnapshot
+    );
 
     return () => {
       mounted = false;
@@ -363,12 +371,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     function handleAppStateChange(nextState: AppStateStatus) {
       const active = nextState === "active";
       if (active) {
-        void reconcilePlaybackSnapshot().catch((playbackError) => {
+        void reconcilePlaybackSnapshot().catch((playbackError: unknown) => {
           setError(errorMessage(playbackError));
         });
       } else {
         void persistPlaybackPosition(isPlayingRef.current).catch(
-          (playbackError) => {
+          (playbackError: unknown) => {
             setError(errorMessage(playbackError));
           }
         );
@@ -379,7 +387,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       "change",
       handleAppStateChange
     );
-    return () => subscription.remove();
+    return () => {
+      subscription.remove();
+    };
   }, [persistPlaybackPosition, reconcilePlaybackSnapshot]);
 
   useEffect(() => {
@@ -388,7 +398,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
     const poll = () => {
       void reconcilePlaybackSnapshot()
-        .catch((playbackError) => {
+        .catch((playbackError: unknown) => {
           if (!cancelled) {
             setError(errorMessage(playbackError));
           }
@@ -405,7 +415,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       cancelled = true;
-      if (timeout) {
+      if (timeout !== null) {
         clearTimeout(timeout);
       }
     };
@@ -413,7 +423,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!isPlaying) {
-      return;
+      return undefined;
     }
     const interval = setInterval(() => {
       const nextPosition =
@@ -423,7 +433,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       positionRef.current = nextPosition;
       setPosition(nextPosition);
     }, 1000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+    };
   }, [isPlaying]);
 
   const playSong = useCallback(

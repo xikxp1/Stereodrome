@@ -9,7 +9,7 @@ class NowPlayingStore {
   private unlistenNowPlaying: UnlistenFn | null = null;
 
   constructor() {
-    this.setupEventListeners();
+    void this.setupEventListeners();
   }
 
   private async setupEventListeners() {

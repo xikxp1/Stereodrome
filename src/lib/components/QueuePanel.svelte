@@ -271,6 +271,7 @@
     <div class="flex items-center shrink-0">
       <!-- Shuffle -->
       <button
+        type="button"
         class="queue-header-btn"
         class:active={queue.shuffle}
         onclick={handleToggleShuffle}
@@ -280,6 +281,7 @@
       </button>
       <!-- Repeat -->
       <button
+        type="button"
         class="queue-header-btn"
         class:active={queue.repeatMode !== "Off"}
         onclick={handleCycleRepeat}
@@ -293,6 +295,7 @@
       </button>
       <!-- Reroll -->
       <button
+        type="button"
         class="queue-header-btn"
         onclick={handleRerollNext}
         title="Reroll next track (D)"
@@ -303,6 +306,7 @@
       </button>
       <!-- Scroll to current -->
       <button
+        type="button"
         class="queue-header-btn"
         onclick={handleScrollToCurrent}
         title="Scroll to current"
@@ -312,6 +316,7 @@
       </button>
       <!-- Clear -->
       <button
+        type="button"
         class="queue-header-btn"
         onclick={handleClearQueue}
         title="Clear queue"
@@ -334,58 +339,62 @@
     <div bind:this={scrollContainer} class="flex-1 overflow-auto">
       <div style="height: {totalSize}px; width: 100%; position: relative;">
         {#each virtualItems as row (row.index)}
-          {@const item = queue.items[row.index]}
-          {@const index = row.index}
-          {@const isPlaying = queue.currentIndex === index}
-          <div
-            class="queue-item"
-            class:playing={isPlaying}
-            class:dragging={draggedIndex === index}
-            class:drop-above={isDropTarget(index, "before")}
-            class:drop-below={isDropTarget(index, "after")}
-            role="row"
-            tabindex="0"
-            onclick={() => onItemClick?.(item.song_id)}
-            ondblclick={() => handlePlayItem(index)}
-            onkeydown={(e) => e.key === "Enter" && handlePlayItem(index)}
-            style="position: absolute; top: 0; left: 0; width: 100%; height: {row.size}px; transform: translateY({row.start}px);"
-          >
-            <div class="queue-item-index">
-              {#if isPlaying}
-                <Volume2 class="w-3 h-3 animate-pulse text-primary" />
-              {:else}
-                <span class="text-xs text-base-content/40">{index + 1}</span>
-              {/if}
-            </div>
-            <button
-              class="queue-item-drag-handle"
-              onclick={stopRowEvent}
-              onkeydown={stopRowEvent}
-              onmousedown={(e) => beginPointerDrag(index, e)}
-              title="Drag to reorder"
-              aria-label="Drag to reorder {item.title}"
+          {const item = $derived(queue.items[row.index])}
+          {const index = $derived(row.index)}
+          {const isPlaying = $derived(queue.currentIndex === index)}
+          {#if item}
+            <div
+              class="queue-item"
+              class:playing={isPlaying}
+              class:dragging={draggedIndex === index}
+              class:drop-above={isDropTarget(index, "before")}
+              class:drop-below={isDropTarget(index, "after")}
+              role="row"
+              tabindex="0"
+              onclick={() => onItemClick?.(item.song_id)}
+              ondblclick={() => handlePlayItem(index)}
+              onkeydown={(e) => e.key === "Enter" && handlePlayItem(index)}
+              style="position: absolute; top: 0; left: 0; width: 100%; height: {row.size}px; transform: translateY({row.start}px);"
             >
-              <GripVertical class="w-3 h-3" />
-            </button>
-            <div class="queue-item-info">
-              <div class="queue-item-title" class:text-primary={isPlaying}>
-                {item.title}
+              <div class="queue-item-index">
+                {#if isPlaying}
+                  <Volume2 class="w-3 h-3 animate-pulse text-primary" />
+                {:else}
+                  <span class="text-xs text-base-content/40">{index + 1}</span>
+                {/if}
               </div>
-              <div class="queue-item-artist">
-                {item.artist}
+              <button
+                type="button"
+                class="queue-item-drag-handle"
+                onclick={stopRowEvent}
+                onkeydown={stopRowEvent}
+                onmousedown={(e) => beginPointerDrag(index, e)}
+                title="Drag to reorder"
+                aria-label="Drag to reorder {item.title}"
+              >
+                <GripVertical class="w-3 h-3" />
+              </button>
+              <div class="queue-item-info">
+                <div class="queue-item-title" class:text-primary={isPlaying}>
+                  {item.title}
+                </div>
+                <div class="queue-item-artist">
+                  {item.artist}
+                </div>
               </div>
+              <div class="queue-item-duration">
+                {formatDuration(item.duration)}
+              </div>
+              <button
+                type="button"
+                class="queue-item-remove"
+                onclick={(e) => handleRemoveItem(index, e)}
+                title="Remove from queue"
+              >
+                <X class="w-3 h-3" />
+              </button>
             </div>
-            <div class="queue-item-duration">
-              {formatDuration(item.duration)}
-            </div>
-            <button
-              class="queue-item-remove"
-              onclick={(e) => handleRemoveItem(index, e)}
-              title="Remove from queue"
-            >
-              <X class="w-3 h-3" />
-            </button>
-          </div>
+          {/if}
         {/each}
       </div>
     </div>

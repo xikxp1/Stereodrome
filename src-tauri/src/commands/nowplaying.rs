@@ -72,7 +72,7 @@ pub async fn scrobble_submit(
     }
 
     // scrobble with submission=true (or None, which defaults to true) means submit the scrobble
-    let time = timestamp.map(|t| t as usize);
+    let time = timestamp.map(|value| usize::try_from(value).unwrap_or(usize::MAX));
     state
         .client
         .scrobble(&song_id, time, Some(true))
@@ -134,7 +134,7 @@ pub fn start_now_playing_emitter(
                     let _ = app_handle.emit("now-playing", NowPlayingEvent { entries });
                 }
                 Err(e) => {
-                    warn!("Failed to fetch now playing: {}", e);
+                    warn!("Failed to fetch now playing: {e}");
                 }
             }
         }

@@ -19,12 +19,12 @@ export function ArtistScreen({
   const albums = useQuery({
     queryKey: ["artist-albums", artistId],
     queryFn: () => stereodromeCore.getAlbums(artistId),
-    enabled: !!artistId,
+    enabled: Boolean(artistId),
   });
   const songs = useQuery({
     queryKey: ["artist-songs", artistId],
     queryFn: () => stereodromeCore.getSongs(undefined, artistId),
-    enabled: !!artistId && stereodrome.offlineMode,
+    enabled: Boolean(artistId) && stereodrome.offlineMode,
   });
   const shownAlbums = visibleAlbums(
     albums.data ?? [],
@@ -41,8 +41,9 @@ export function ArtistScreen({
       stereodrome.offlineMode,
       stereodrome.offlineSongIds
     );
-    if (albumSongs.length > 0) {
-      await playback.playSong(albumSongs[0], albumSongs);
+    const firstSong = albumSongs[0];
+    if (firstSong) {
+      await playback.playSong(firstSong, albumSongs);
       view.showNowPlaying();
     }
   }
@@ -58,13 +59,16 @@ export function ArtistScreen({
       }
       options={shownAlbums.map((album) => ({
         label: album.name,
-        sublabel: album.year ? String(album.year) : undefined,
-        onSelect: () =>
+        ...(album.year !== null && album.year !== 0
+          ? { sublabel: String(album.year) }
+          : {}),
+        onSelect: () => {
           view.push({
             name: "album",
             title: album.name,
             params: { albumId: album.id, title: album.name },
-          }),
+          });
+        },
         onLongSelect: () => playAlbum(album.id),
       }))}
     />

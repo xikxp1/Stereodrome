@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 import type { SelectableOption } from "@/components/SelectableList";
 
@@ -16,11 +16,17 @@ export type ProtectedSelectableAction = {
 };
 
 export function useProtectedSelectableAction(resetKey: string | number | null) {
+  const [previousResetKey, setPreviousResetKey] = useState(resetKey);
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
 
-  useEffect(() => {
+  if (!Object.is(previousResetKey, resetKey)) {
+    setPreviousResetKey(resetKey);
     setPendingActionId(null);
-  }, [resetKey]);
+  }
+
+  const visiblePendingActionId = Object.is(previousResetKey, resetKey)
+    ? pendingActionId
+    : null;
 
   const clearProtectedAction = useCallback(() => {
     setPendingActionId(null);
@@ -32,14 +38,18 @@ export function useProtectedSelectableAction(resetKey: string | number | null) {
 
   const protectedActionRows = useCallback(
     (action: ProtectedSelectableAction): SelectableOption[] => {
-      if (pendingActionId !== action.id) {
+      if (visiblePendingActionId !== action.id) {
         return [
           {
             kind: action.kind ?? "action",
             label: action.label,
             sublabel: action.sublabel,
-            disabled: action.disabled,
-            onSelect: () => setPendingActionId(action.id),
+            ...(action.disabled === undefined
+              ? {}
+              : { disabled: action.disabled }),
+            onSelect: () => {
+              setPendingActionId(action.id);
+            },
           },
         ];
       }
@@ -55,7 +65,9 @@ export function useProtectedSelectableAction(resetKey: string | number | null) {
           kind: "action",
           label: action.confirmLabel,
           sublabel: action.confirmSublabel,
-          disabled: action.disabled,
+          ...(action.disabled === undefined
+            ? {}
+            : { disabled: action.disabled }),
           wheelOnly: true,
           onSelect: async () => {
             clearProtectedAction();
@@ -64,13 +76,13 @@ export function useProtectedSelectableAction(resetKey: string | number | null) {
         },
       ];
     },
-    [clearProtectedAction, pendingActionId]
+    [clearProtectedAction, visiblePendingActionId]
   );
 
   return {
     armProtectedAction,
     clearProtectedAction,
-    pendingActionId,
+    pendingActionId: visiblePendingActionId,
     protectedActionRows,
   };
 }

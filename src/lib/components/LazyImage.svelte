@@ -60,7 +60,7 @@
       activeCacheKey = null;
       imageUrl = null;
       isLoading = false;
-      return;
+      return undefined;
     }
 
     const cacheKey = buildCacheKey(coverArtId, size);
@@ -69,14 +69,14 @@
     isLoading = false;
 
     if (!element || imageUrl) {
-      return;
+      return undefined;
     }
 
     const requestedCoverArtId = coverArtId;
     const requestedSize = size;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && !imageUrl && !isLoading) {
+        if (entries[0]?.isIntersecting && !imageUrl && !isLoading) {
           loadImage(cacheKey, requestedCoverArtId, requestedSize);
           observer.disconnect();
         }

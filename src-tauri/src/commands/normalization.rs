@@ -23,11 +23,13 @@ pub struct AnalysisProgress {
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_analysis_progress(state: State<'_, AppState>) -> Option<AnalysisProgress> {
     state.analysis_progress.lock_recover().clone()
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_normalization_stats(state: State<'_, AppState>) -> AppResult<NormalizationStats> {
     let conn = state.db.lock_recover();
 
@@ -48,6 +50,7 @@ pub fn get_normalization_stats(state: State<'_, AppState>) -> AppResult<Normaliz
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_lines)]
 pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
     // Check if analysis is already running
     {
@@ -88,13 +91,13 @@ pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>
                 ))
             })
             .map_err(AppError::Database)?
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
 
         (results, total_count, already_analyzed)
     };
 
-    let total = songs.len() as i64;
+    let total = i64::try_from(songs.len()).unwrap_or(i64::MAX);
     if total == 0 {
         return Ok(());
     }
@@ -158,7 +161,7 @@ pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>
 
             // Emit progress AFTER DB write completes
             let progress = AnalysisProgress {
-                analyzed: (i + 1) as i64,
+                analyzed: i64::try_from(i.saturating_add(1)).unwrap_or(i64::MAX),
                 total,
                 current_song: song_id,
                 analyzed_count: already_analyzed + successful_writes,
@@ -186,6 +189,7 @@ pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn clear_normalization_data(state: State<'_, AppState>) -> AppResult<()> {
     let conn = state.db.lock_recover();
     conn.execute("DELETE FROM normalization_data", [])

@@ -62,7 +62,9 @@ export function ConnectScreen() {
       />
       <Pressable
         disabled={busy || stereodrome.manualOfflineEnabled}
-        onPress={connect}
+        onPress={() => {
+          void connect();
+        }}
         style={styles.button}
       >
         {busy ? (

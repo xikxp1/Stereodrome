@@ -28,7 +28,7 @@ pub struct AppState {
     pub navigating: AtomicBool,
     pub lastfm_retry_running: AtomicBool,
     pub lastfm_tracker: Mutex<LastfmPlaybackTracker>,
-    /// Current analysis progress (set by analyze_all_songs, cleared on completion)
+    /// Current analysis progress (set by `analyze_all_songs`, cleared on completion)
     pub analysis_progress: Arc<Mutex<Option<AnalysisProgress>>>,
 }
 
@@ -44,25 +44,24 @@ impl AppState {
         // Try to create search index, but don't fail if it errors
         let search_index = match IndexManager::new(&index_path) {
             Ok(manager) => {
-                info!("Search index initialized at {:?}", index_path);
+                info!("Search index initialized at {}", index_path.display());
                 Some(manager)
             }
             Err(e) => {
-                warn!("Failed to initialize search index: {}", e);
+                warn!("Failed to initialize search index: {e}");
                 None
             }
         };
 
         // Load persisted queue
-        let queue = match (load_queue_items(&conn), load_queue_state(&conn)) {
-            (Ok(items), Ok((current_index, shuffle, repeat_mode))) => {
-                debug!("Loaded queue with {} items from database", items.len());
-                PlayQueue::load(items, current_index, shuffle, repeat_mode)
-            }
-            _ => {
-                debug!("No persisted queue found, starting fresh");
-                PlayQueue::new()
-            }
+        let queue = if let (Ok(items), Ok((current_index, shuffle, repeat_mode))) =
+            (load_queue_items(&conn), load_queue_state(&conn))
+        {
+            debug!("Loaded queue with {} items from database", items.len());
+            PlayQueue::load(items, current_index, shuffle, repeat_mode)
+        } else {
+            debug!("No persisted queue found, starting fresh");
+            PlayQueue::new()
         };
 
         Ok(Self {

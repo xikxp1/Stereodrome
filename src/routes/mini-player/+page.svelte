@@ -582,7 +582,7 @@
       duration={playback.duration}
       {coverArtUrl}
       isPlaying={playback.isPlaying}
-      canPlayPause={queue.items.length > 0 || !!queue.currentSong}
+      canPlayPause={queue.items.length > 0 || Boolean(queue.currentSong)}
       canPrevious={queue.hasPrevious}
       canNext={queue.hasNext}
       canReroll={queue.canRerollNext}

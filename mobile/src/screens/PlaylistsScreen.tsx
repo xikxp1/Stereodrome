@@ -23,8 +23,9 @@ export function PlaylistsScreen() {
       stereodrome.offlineMode,
       stereodrome.offlineSongIds
     );
-    if (playableSongs.length > 0) {
-      await playback.playSong(playableSongs[0], playableSongs);
+    const firstSong = playableSongs[0];
+    if (firstSong) {
+      await playback.playSong(firstSong, playableSongs);
       view.showNowPlaying();
     }
   }
@@ -47,12 +48,13 @@ export function PlaylistsScreen() {
         sublabel: playlist.saved_offline
           ? `${playlist.song_count} songs • saved offline`
           : `${playlist.song_count} songs`,
-        onSelect: () =>
+        onSelect: () => {
           view.push({
             name: "playlist",
             title: playlist.name,
             params: { playlistId: playlist.id, title: playlist.name },
-          }),
+          });
+        },
         onLongSelect: () => playPlaylist(playlist.id),
       }))}
     />

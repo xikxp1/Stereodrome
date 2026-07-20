@@ -1,4 +1,5 @@
 import { useCallback, useEffect } from "react";
+import { Alert } from "react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -27,7 +28,7 @@ export function PlaylistScreen({
   const songs = useQuery({
     queryKey: ["playlist-songs", playlistId],
     queryFn: () => stereodromeCore.getPlaylistSongs(playlistId),
-    enabled: !!playlistId,
+    enabled: Boolean(playlistId),
   });
   const playlists = useQuery({
     queryKey: ["playlists", stereodrome.offlineMode ? "offline" : "online"],
@@ -68,20 +69,33 @@ export function PlaylistScreen({
     [playlistId, shownSongs, setActiveSongTarget, songOptionOffset]
   );
 
-  useEffect(() => {
-    return () => clearActiveSongTarget();
-  }, [clearActiveSongTarget]);
+  useEffect(
+    () => () => {
+      clearActiveSongTarget();
+    },
+    [clearActiveSongTarget]
+  );
 
   async function setSavedOffline(nextSavedOffline: boolean) {
     if (!playlistId || stereodrome.offlineMode) {
       return;
     }
-    await stereodromeCore.setPlaylistSavedOffline(playlistId, nextSavedOffline);
-    await queryClient.invalidateQueries({ queryKey: ["playlists"] });
-    if (nextSavedOffline) {
-      await stereodrome.reconcileSavedPlaylistsOffline();
-    } else {
-      await stereodrome.refreshOfflineSongIds();
+    try {
+      await stereodromeCore.setPlaylistSavedOffline(
+        playlistId,
+        nextSavedOffline
+      );
+      await queryClient.invalidateQueries({ queryKey: ["playlists"] });
+      if (nextSavedOffline) {
+        await stereodrome.reconcileSavedPlaylistsOffline();
+      } else {
+        await stereodrome.refreshOfflineSongIds();
+      }
+    } catch (saveError) {
+      Alert.alert(
+        "Offline save failed",
+        saveError instanceof Error ? saveError.message : String(saveError)
+      );
     }
   }
 
@@ -115,20 +129,22 @@ export function PlaylistScreen({
         stereodrome.offlineSongIds,
         stereodrome.downloadingSongIds
       ),
-      sublabel: song.artist ?? undefined,
+      ...(song.artist == null ? {} : { sublabel: song.artist }),
       onSelect: async () => {
         await playback.playSong(song, shownSongs.length ? shownSongs : [song]);
         view.showNowPlaying();
       },
-      onLongSelect: stereodrome.offlineMode
-        ? undefined
-        : () => {
-            if (savedOffline) {
-              armProtectedAction("remove-offline-save");
-              return;
-            }
-            return setSavedOffline(true);
-          },
+      ...(stereodrome.offlineMode
+        ? {}
+        : {
+            onLongSelect: () => {
+              if (savedOffline) {
+                armProtectedAction("remove-offline-save");
+                return;
+              }
+              void setSavedOffline(true);
+            },
+          }),
     })),
   ];
 

@@ -29,12 +29,13 @@ pub fn init_db(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_migrations(conn: &Connection) -> AppResult<()> {
     // Check if songs table has all required columns
     let columns: Vec<String> = conn
         .prepare("PRAGMA table_info(songs)")?
         .query_map([], |row| row.get::<_, String>(1))?
-        .filter_map(|r| r.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     let required_columns = [
@@ -63,10 +64,7 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
     // If critical columns are missing, drop and recreate tables
     // Data will be re-synced from server
     if !missing.is_empty() {
-        warn!(
-            "Songs table missing columns {:?}, recreating tables",
-            missing
-        );
+        warn!("Songs table missing columns {missing:?}, recreating tables");
         conn.execute_batch(
             "DROP TABLE IF EXISTS playlist_songs;
              DROP TABLE IF EXISTS playlists;
@@ -81,7 +79,7 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
     let mut playlist_columns: Vec<String> = conn
         .prepare("PRAGMA table_info(playlists)")?
         .query_map([], |row| row.get::<_, String>(1))?
-        .filter_map(|r| r.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     let required_playlist_columns = ["owner", "cover_art_id"];
@@ -91,10 +89,7 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
         .collect();
 
     if !missing_playlist.is_empty() {
-        warn!(
-            "Playlists table missing columns {:?}, recreating playlist tables",
-            missing_playlist
-        );
+        warn!("Playlists table missing columns {missing_playlist:?}, recreating playlist tables");
         conn.execute_batch(
             "DROP TABLE IF EXISTS playlist_songs;
              DROP TABLE IF EXISTS playlists;",
@@ -103,7 +98,7 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
         playlist_columns = conn
             .prepare("PRAGMA table_info(playlists)")?
             .query_map([], |row| row.get::<_, String>(1))?
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
     }
 

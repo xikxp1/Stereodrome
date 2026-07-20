@@ -4,10 +4,10 @@
   import { getSongs } from "$lib/api/commands";
   import { queue } from "$lib/stores/queue.svelte";
   import { showQueueableContextMenu } from "$lib/services/contextMenu";
+  import { on } from "svelte/events";
   import {
     createVirtualizer,
     type SvelteVirtualizer,
-    type VirtualItem,
   } from "@tanstack/svelte-virtual";
 
   interface Props {
@@ -27,7 +27,6 @@
   let containerWidth = $state(0);
 
   const HORIZONTAL_PADDING = 32;
-  const GRID_GAP = 16;
   const ESTIMATED_ROW_HEIGHT = 300;
 
   const contentWidth = $derived(
@@ -63,13 +62,12 @@
 
   // Track scroll position and report to parent
   $effect(() => {
-    if (!scrollContainer) return;
+    if (!scrollContainer) return undefined;
     const el = scrollContainer;
     const handleScroll = () => {
       onScrollOffsetChange?.(el.scrollTop);
     };
-    el.addEventListener("scroll", handleScroll);
-    return () => el.removeEventListener("scroll", handleScroll);
+    return on(el, "scroll", handleScroll);
   });
 
   // Restore scroll position on mount
@@ -93,10 +91,6 @@
   function getArtistsForRow(rowIndex: number) {
     const startIndex = rowIndex * columns;
     return artists.slice(startIndex, startIndex + columns);
-  }
-
-  function getRowStyle(item: VirtualItem) {
-    return `position: absolute; top: 0; left: 0; width: 100%; transform: translateY(${item.start}px); display: grid; grid-template-columns: repeat(${columns}, minmax(0, 1fr)); gap: ${GRID_GAP}px;`;
   }
 
   function measureRow(
@@ -133,15 +127,18 @@
   class="flex-1 overflow-auto p-4"
 >
   {#if artists.length > 0}
-    <div class="relative" style="height: {totalSize}px;">
+    <div class="relative" style:height={`${totalSize}px`}>
       {#each virtualItems as item (item.key)}
         <div
+          class="virtual-grid-row"
           data-index={item.index}
           use:measureRow={$virtualizer}
-          style={getRowStyle(item)}
+          style:transform={`translateY(${item.start}px)`}
+          style:grid-template-columns={`repeat(${columns}, minmax(0, 1fr))`}
         >
           {#each getArtistsForRow(item.index) as artist (artist.id)}
             <button
+              type="button"
               class="virtual-grid-card flex flex-col bg-base-200 hover:bg-base-300 transition-colors cursor-pointer text-left rounded-lg p-3"
               onclick={() => onSelect?.(artist)}
               oncontextmenu={(e) => handleContextMenu(e, artist)}
@@ -168,6 +165,15 @@
 </div>
 
 <style>
+  .virtual-grid-row {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: grid;
+    width: 100%;
+    gap: 16px;
+  }
+
   .virtual-grid-card {
     min-width: 0;
   }

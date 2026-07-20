@@ -40,7 +40,9 @@ class ConnectionStore {
   get offlineMode(): boolean {
     return (
       this.manualOfflineEnabled ||
-      Boolean(this.status.server_url && !this.status.connected)
+      (this.status.server_url !== null &&
+        this.status.server_url !== "" &&
+        !this.status.connected)
     );
   }
 
@@ -120,7 +122,9 @@ class ConnectionStore {
         this.applyConnectivitySettings(await getConnectivitySettings());
         const currentStatus = await getConnectionStatus();
         this.applyStatus(
-          currentStatus.server_url ? await restoreSession() : currentStatus
+          currentStatus.server_url !== null && currentStatus.server_url !== ""
+            ? await restoreSession()
+            : currentStatus
         );
       } catch (e) {
         this.error = e instanceof Error ? e.message : String(e);

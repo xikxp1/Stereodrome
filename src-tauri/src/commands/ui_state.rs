@@ -24,9 +24,9 @@ fn normalized_volume(volume: f32) -> f32 {
 pub fn read_persisted_volume(app_handle: &AppHandle) -> f32 {
     if let Ok(store) = app_handle.store(STORE_FILE)
         && let Some(value) = store.get(KEY_VOLUME)
-        && let Some(volume) = value.as_f64()
+        && let Ok(volume) = serde_json::from_value::<f32>(value.clone())
     {
-        return normalized_volume(volume as f32);
+        return normalized_volume(volume);
     }
 
     DEFAULT_VOLUME
@@ -83,16 +83,19 @@ pub fn write_mini_player_position(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn set_persisted_volume(app_handle: AppHandle, volume: f32) -> AppResult<()> {
     write_persisted_volume(&app_handle, volume)
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_mini_player_position(app_handle: AppHandle) -> Option<MiniPlayerPosition> {
     read_mini_player_position(&app_handle)
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn set_mini_player_position(
     app_handle: AppHandle,
     position: MiniPlayerPosition,

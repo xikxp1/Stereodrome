@@ -1,5 +1,5 @@
 //! Audio normalizer that wraps a Rodio Source to apply a constant gain factor
-//! for loudness normalization (EBU R128 / ReplayGain).
+//! for loudness normalization (EBU R128 / `ReplayGain`).
 
 use rodio::source::SeekError;
 use rodio::{ChannelCount, SampleRate, Source};

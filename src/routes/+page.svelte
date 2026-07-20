@@ -37,6 +37,7 @@
     type Monitor,
   } from "@tauri-apps/api/window";
   import { error } from "@tauri-apps/plugin-log";
+  import { on } from "svelte/events";
   import { CircleCheck, Download } from "lucide-svelte";
   import { playlistStore } from "$lib/stores/playlist.svelte";
   import { albumListStore } from "$lib/stores/albumList.svelte";
@@ -170,8 +171,7 @@
     const handler = () => {
       settingsOpen = true;
     };
-    window.addEventListener("open-settings", handler);
-    return () => window.removeEventListener("open-settings", handler);
+    return on(window, "open-settings", handler);
   });
 
   $effect(() => {
@@ -217,8 +217,7 @@
       }
     };
 
-    window.addEventListener(LIBRARY_REFRESHED_EVENT, handler);
-    return () => window.removeEventListener(LIBRARY_REFRESHED_EVENT, handler);
+    return on(window, LIBRARY_REFRESHED_EVENT, handler);
   });
 
   // Load local library data for configured sessions, including offline restores.
@@ -409,7 +408,7 @@
     return getDefaultMiniPlayerPosition(fallbackBounds);
   }
 
-  const offlineVisibleSongs = $derived.by(() =>
+  const offlineVisibleSongs = $derived(
     isOfflineConfiguredSession
       ? songs.filter((song) => offlineSongIds.has(song.id))
       : songs
@@ -550,7 +549,7 @@
 
   // Playlist view stats
   const playlistSongs = $derived(playlistStore.currentPlaylistSongs as Song[]);
-  const offlineVisiblePlaylistSongs = $derived.by(() =>
+  const offlineVisiblePlaylistSongs = $derived(
     isOfflineConfiguredSession
       ? playlistSongs.filter((song) => offlineSongIds.has(song.id))
       : playlistSongs
@@ -726,7 +725,7 @@
           duration: entry.duration,
           cover_art_id: entry.cover_art_id,
           synced_at: "",
-          artistName: entry.artistName ?? undefined,
+          ...(entry.artistName ? { artistName: entry.artistName } : {}),
         },
       };
     }
@@ -1131,7 +1130,7 @@
           {activeView}
           onViewChange={handleViewChange}
           onPlaylistSelect={handlePlaylistSelect}
-          selectedPlaylistId={selectedPlaylist?.id}
+          selectedPlaylistId={selectedPlaylist?.id ?? null}
         />
       </aside>
 
@@ -1168,10 +1167,10 @@
             <SongList
               songs={filteredPlaylistSongs}
               isLoading={playlistStore.isLoading}
-              selectedSongId={selectedSong?.id}
+              selectedSongId={selectedSong?.id ?? null}
               playingSongId={playback.currentTrack?.id ?? null}
               {scrollToSongId}
-              playlistId={selectedPlaylist?.id}
+              playlistId={selectedPlaylist?.id ?? null}
               downloadedSongIds={offlineSongIds}
               {downloadingSongIds}
               onSelect={handleSongSelect}
@@ -1206,7 +1205,7 @@
               songs={filteredSongs}
               {isLoading}
               error={loadError}
-              selectedSongId={selectedSong?.id}
+              selectedSongId={selectedSong?.id ?? null}
               playingSongId={playback.currentTrack?.id ?? null}
               {scrollToSongId}
               downloadedSongIds={offlineSongIds}
@@ -1246,7 +1245,7 @@
                 songs={detailSongs}
                 {isLoading}
                 error={loadError}
-                selectedSongId={selectedSong?.id}
+                selectedSongId={selectedSong?.id ?? null}
                 playingSongId={playback.currentTrack?.id ?? null}
                 {scrollToSongId}
                 downloadedSongIds={offlineSongIds}
@@ -1295,7 +1294,7 @@
                 songs={detailSongs}
                 {isLoading}
                 error={loadError}
-                selectedSongId={selectedSong?.id}
+                selectedSongId={selectedSong?.id ?? null}
                 playingSongId={playback.currentTrack?.id ?? null}
                 {scrollToSongId}
                 downloadedSongIds={offlineSongIds}
@@ -1345,7 +1344,7 @@
                 songs={detailSongs}
                 isLoading={albumListStore.isLoading}
                 error={albumListStore.error}
-                selectedSongId={selectedSong?.id}
+                selectedSongId={selectedSong?.id ?? null}
                 playingSongId={playback.currentTrack?.id ?? null}
                 {scrollToSongId}
                 downloadedSongIds={offlineSongIds}

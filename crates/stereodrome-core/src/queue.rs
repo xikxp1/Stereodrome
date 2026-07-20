@@ -61,6 +61,7 @@ impl Default for PlayQueue {
 }
 
 impl PlayQueue {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
@@ -73,6 +74,7 @@ impl PlayQueue {
         }
     }
 
+    #[must_use]
     pub fn load(
         items: Vec<QueueItem>,
         current_index: Option<usize>,
@@ -90,30 +92,37 @@ impl PlayQueue {
         }
     }
 
+    #[must_use]
     pub fn items(&self) -> &[QueueItem] {
         &self.items
     }
 
+    #[must_use]
     pub fn current_index(&self) -> Option<usize> {
         self.current_index
     }
 
+    #[must_use]
     pub fn current_item(&self) -> Option<&QueueItem> {
         self.current_index.and_then(|i| self.items.get(i))
     }
 
+    #[must_use]
     pub fn is_shuffle(&self) -> bool {
         self.shuffle
     }
 
+    #[must_use]
     pub fn repeat_mode(&self) -> RepeatMode {
         self.repeat_mode
     }
 
+    #[must_use]
     pub fn pending_navigation_index(&self) -> Option<usize> {
         self.pending_navigation_index
     }
 
+    #[must_use]
     pub fn prepared_next_item(&self) -> Option<&QueueItem> {
         self.should_prepare_wrap_shuffle()
             .then(|| self.prepared_shuffle_cycle.as_ref()?.first())
@@ -134,7 +143,7 @@ impl PlayQueue {
 
     pub fn insert_next(&mut self, item: QueueItem) {
         self.invalidate_prepared_shuffle_cycle();
-        let insert_idx = self.current_index.map(|i| i + 1).unwrap_or(0);
+        let insert_idx = self.current_index.map_or(0, |i| i + 1);
         self.original_order
             .insert(insert_idx.min(self.original_order.len()), item.clone());
         self.items.insert(insert_idx.min(self.items.len()), item);
@@ -142,7 +151,7 @@ impl PlayQueue {
 
     pub fn insert_many_next(&mut self, items: Vec<QueueItem>) {
         self.invalidate_prepared_shuffle_cycle();
-        let base_idx = self.current_index.map(|i| i + 1).unwrap_or(0);
+        let base_idx = self.current_index.map_or(0, |i| i + 1);
         for (offset, item) in items.into_iter().enumerate() {
             let idx = base_idx + offset;
             self.original_order
@@ -413,9 +422,8 @@ impl PlayQueue {
                     }
                 } else {
                     match effective_index {
-                        Some(0) => self.items.len() - 1,
+                        Some(0) | None => self.items.len() - 1,
                         Some(i) => i - 1,
-                        None => self.items.len() - 1,
                     }
                 };
                 self.current_index = Some(prev_idx);
@@ -430,8 +438,7 @@ impl PlayQueue {
                 } else {
                     match effective_index {
                         Some(i) if i > 0 => Some(i - 1),
-                        Some(_) => Some(0),
-                        None => Some(0),
+                        Some(_) | None => Some(0),
                     }
                 };
                 self.current_index = prev_idx;

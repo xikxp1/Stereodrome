@@ -5,10 +5,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{mpsc, oneshot};
 
-use super::messages::*;
+use super::messages::{
+    AlbumDetail, AlbumListEntry, AlbumListOrder, AlbumSummaryInfo, ArtistDetail, ArtistSummaryInfo,
+    ClientError, ClientRequest, ClientResult, ConnectionInfo, NowPlayingInfo, PlaylistDetail,
+    PlaylistInfo, ScanStatusInfo,
+};
 
 /// Handle for communicating with the client thread.
-/// This is stored in AppState and used by commands.
+/// This is stored in `AppState` and used by commands.
 /// Clone-able and lock-free for reads.
 #[derive(Clone)]
 pub struct SubsonicClientHandle {
@@ -17,7 +21,7 @@ pub struct SubsonicClientHandle {
 }
 
 impl SubsonicClientHandle {
-    /// Create a new handle (called by thread::spawn)
+    /// Create a new handle (called by `thread::spawn`)
     pub(super) fn new(request_tx: mpsc::Sender<ClientRequest>, connected: Arc<AtomicBool>) -> Self {
         Self {
             request_tx,

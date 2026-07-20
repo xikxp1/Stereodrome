@@ -24,7 +24,9 @@ export function InputProvider({ children }: { children: React.ReactNode }) {
   const listeners = useRef(new Set<Listener>());
 
   const emit = useCallback((input: IpodInput) => {
-    listeners.current.forEach((listener) => listener(input));
+    listeners.current.forEach((listener) => {
+      listener(input);
+    });
   }, []);
 
   const subscribe = useCallback((listener: Listener) => {

@@ -72,19 +72,19 @@
     let lastTime: number | null = null;
 
     function animate(currentTime: number) {
-      const group = groupStates.get(groupId);
-      if (!group || group.members.size === 0) return;
+      const animatedGroup = groupStates.get(groupId);
+      if (!animatedGroup || animatedGroup.members.size === 0) return;
 
       // Always get fresh max offset from members
-      const groupMaxOffset = getGroupMaxOffset(group);
+      const groupMaxOffset = getGroupMaxOffset(animatedGroup);
       if (groupMaxOffset <= 0) return;
 
       // Update state's maxOffset if it changed
-      group.state.maxOffset = groupMaxOffset;
+      animatedGroup.state.maxOffset = groupMaxOffset;
 
       if (lastTime === null) {
         lastTime = currentTime;
-        group.animationId = requestAnimationFrame(animate);
+        animatedGroup.animationId = requestAnimationFrame(animate);
         return;
       }
 
@@ -92,7 +92,7 @@
       lastTime = currentTime;
 
       const movement = SCROLL_SPEED * deltaTime;
-      const state = group.state;
+      const state = animatedGroup.state;
 
       if (state.direction === "left") {
         state.offset += movement;
@@ -103,13 +103,13 @@
           lastTime = null;
 
           // Update all members to their max position (100% progress)
-          for (const member of group.members) {
+          for (const member of animatedGroup.members) {
             member.updateOffset(member.maxOffset);
           }
 
-          group.pauseTimeout = setTimeout(() => {
-            if (group.members.size > 0) {
-              group.animationId = requestAnimationFrame(animate);
+          animatedGroup.pauseTimeout = setTimeout(() => {
+            if (animatedGroup.members.size > 0) {
+              animatedGroup.animationId = requestAnimationFrame(animate);
             }
           }, PAUSE_DURATION);
           return;
@@ -123,13 +123,13 @@
           lastTime = null;
 
           // Update all members with final position
-          for (const member of group.members) {
+          for (const member of animatedGroup.members) {
             member.updateOffset(0);
           }
 
-          group.pauseTimeout = setTimeout(() => {
-            if (group.members.size > 0) {
-              group.animationId = requestAnimationFrame(animate);
+          animatedGroup.pauseTimeout = setTimeout(() => {
+            if (animatedGroup.members.size > 0) {
+              animatedGroup.animationId = requestAnimationFrame(animate);
             }
           }, PAUSE_DURATION);
           return;
@@ -137,14 +137,14 @@
       }
 
       // Update all members proportionally so they scroll together
-      for (const member of group.members) {
+      for (const member of animatedGroup.members) {
         const progress =
           state.maxOffset > 0 ? state.offset / state.maxOffset : 0;
         const memberOffset = progress * member.maxOffset;
         member.updateOffset(Math.max(0, memberOffset));
       }
 
-      group.animationId = requestAnimationFrame(animate);
+      animatedGroup.animationId = requestAnimationFrame(animate);
     }
 
     // Reset state

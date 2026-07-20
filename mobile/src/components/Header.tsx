@@ -27,7 +27,7 @@ export function Header({
           {title}
         </Text>
       )}
-      {rightText ? (
+      {rightText !== undefined && rightText.length > 0 ? (
         <Text numberOfLines={1} style={styles.rightText}>
           {rightText}
         </Text>

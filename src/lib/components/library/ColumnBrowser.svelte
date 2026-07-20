@@ -57,6 +57,7 @@
     <div class="flex-1 overflow-y-auto">
       <div class="flex flex-col">
         <button
+          type="button"
           class="px-2 py-0.5 text-xs text-left truncate {selectedGenre === null
             ? 'bg-primary text-primary-content'
             : 'hover:bg-base-200'}"
@@ -66,6 +67,7 @@
         </button>
         {#each genres as genre (genre)}
           <button
+            type="button"
             class="px-2 py-0.5 text-xs text-left truncate {selectedGenre ===
             genre
               ? 'bg-primary text-primary-content'
@@ -94,6 +96,7 @@
     <div class="flex-1 overflow-y-auto">
       <div class="flex flex-col">
         <button
+          type="button"
           class="px-2 py-0.5 text-xs text-left truncate {selectedArtist === null
             ? 'bg-primary text-primary-content'
             : 'hover:bg-base-200'}"
@@ -103,6 +106,7 @@
         </button>
         {#each artists as artist (artist.id)}
           <button
+            type="button"
             class="px-2 py-0.5 text-xs text-left truncate {selectedArtist?.id ===
             artist.id
               ? 'bg-primary text-primary-content'
@@ -129,6 +133,7 @@
     <div class="flex-1 overflow-y-auto">
       <div class="flex flex-col">
         <button
+          type="button"
           class="px-2 py-0.5 text-xs text-left truncate {selectedAlbum === null
             ? 'bg-primary text-primary-content'
             : 'hover:bg-base-200'}"
@@ -138,6 +143,7 @@
         </button>
         {#each albums as album (album.id)}
           <button
+            type="button"
             class="px-2 py-0.5 text-xs text-left truncate {selectedAlbum?.id ===
             album.id
               ? 'bg-primary text-primary-content'

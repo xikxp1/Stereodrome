@@ -17,7 +17,7 @@ class SpectrumStore {
   private unlistenSpectrum: UnlistenFn | null = null;
 
   constructor() {
-    this.setupEventListener();
+    void this.setupEventListener();
   }
 
   private async setupEventListener() {

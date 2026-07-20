@@ -75,6 +75,7 @@ fn write_normalization_settings(app_handle: &AppHandle, settings: &Normalization
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_normalization_settings(app_handle: AppHandle) -> NormalizationSettings {
     read_normalization_settings(&app_handle)
 }
@@ -148,11 +149,13 @@ fn write_notification_settings(app_handle: &AppHandle, settings: &NotificationSe
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_notification_settings(app_handle: AppHandle) -> NotificationSettings {
     read_notification_settings(&app_handle)
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn set_notification_settings(
     app_handle: AppHandle,
     settings: NotificationSettings,
@@ -164,6 +167,7 @@ pub fn set_notification_settings(
 // --- Playback Settings ---
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct PlaybackSettings {
     #[serde(default = "default_true")]
     pub gapless_enabled: bool,
@@ -248,6 +252,7 @@ fn write_playback_settings(app_handle: &AppHandle, settings: &PlaybackSettings) 
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_playback_settings(app_handle: AppHandle) -> PlaybackSettings {
     read_playback_settings(&app_handle)
 }
@@ -305,11 +310,13 @@ pub fn manual_offline_enabled(app_handle: &AppHandle) -> bool {
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_connectivity_settings(app_handle: AppHandle) -> ConnectivitySettings {
     read_connectivity_settings(&app_handle)
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn set_connectivity_settings(
     app_handle: AppHandle,
     settings: ConnectivitySettings,
@@ -372,11 +379,13 @@ fn write_sync_settings(app_handle: &AppHandle, settings: &SyncSettings) {
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_sync_settings(app_handle: AppHandle) -> SyncSettings {
     read_sync_settings(&app_handle)
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn set_sync_settings(app_handle: AppHandle, mut settings: SyncSettings) -> AppResult<()> {
     settings.incremental_interval_minutes = settings.incremental_interval_minutes.clamp(5, 720);
     settings.full_reconcile_interval_hours = settings.full_reconcile_interval_hours.clamp(1, 168);

@@ -34,6 +34,12 @@ fn focus_main_window(app: &AppHandle) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[allow(clippy::exit, clippy::too_many_lines)]
+/// Starts the desktop application and blocks until it exits.
+///
+/// # Panics
+///
+/// Panics if the Tauri application cannot be built or run.
 pub fn run() {
     let builder = tauri::Builder::default();
 

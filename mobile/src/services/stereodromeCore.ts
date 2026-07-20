@@ -30,6 +30,7 @@ import type {
 } from "@/types/music";
 
 type Envelope<T> = { ok: true; value: T } | { ok: false; error: string };
+type PayloadValidator<T> = (value: unknown) => value is T;
 type CoreEventName = "playback-snapshot" | "sync-status-changed" | "error";
 type CoreEventHandler<T = unknown> = (payload: T) => void;
 
@@ -51,34 +52,502 @@ function fileUriToPath(uri: string): string {
   return decodeURIComponent(uri.replace(/^file:\/\//, ""));
 }
 
-function parseEnvelope<T>(raw: string): T {
-  const envelope = JSON.parse(raw) as Envelope<T>;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isEnvelope(value: unknown): value is Envelope<unknown> {
+  if (!isRecord(value) || typeof value["ok"] !== "boolean") {
+    return false;
+  }
+  return value["ok"] ? "value" in value : typeof value["error"] === "string";
+}
+
+function parseEnvelope<T>(
+  raw: string,
+  isPayload: (value: unknown) => value is T
+): T {
+  const envelope: unknown = JSON.parse(raw);
+  if (!isEnvelope(envelope)) {
+    throw new Error("Native core returned an invalid response envelope");
+  }
   if (!envelope.ok) {
     throw new Error(envelope.error);
+  }
+  if (!isPayload(envelope.value)) {
+    throw new Error("Native core returned an invalid response payload");
   }
   return envelope.value;
 }
 
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isNullableNumber(value: unknown): value is number | null {
+  return value === null || typeof value === "number";
+}
+
+function isNull(value: unknown): value is null {
+  return value === null;
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function isNumber(value: unknown): value is number {
+  return typeof value === "number";
+}
+
+function isNullable<T>(
+  validator: PayloadValidator<T>
+): PayloadValidator<T | null> {
+  return (value): value is T | null => value === null || validator(value);
+}
+
+function isArrayOf<T>(validator: PayloadValidator<T>): PayloadValidator<T[]> {
+  return (value): value is T[] =>
+    Array.isArray(value) && value.every(validator);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return isArrayOf(isString)(value);
+}
+
+function isConnectionStatus(value: unknown): value is ConnectionStatus {
+  return (
+    isRecord(value) &&
+    typeof value["connected"] === "boolean" &&
+    isNullableString(value["server_url"]) &&
+    isNullableString(value["username"]) &&
+    isNullableString(value["server_version"])
+  );
+}
+
+function isConnectivitySettings(value: unknown): value is ConnectivitySettings {
+  return (
+    isRecord(value) && typeof value["manual_offline_enabled"] === "boolean"
+  );
+}
+
+function isSyncSettings(value: unknown): value is SyncSettings {
+  return (
+    isRecord(value) &&
+    typeof value["incremental_enabled"] === "boolean" &&
+    typeof value["incremental_interval_minutes"] === "number" &&
+    typeof value["full_reconcile_enabled"] === "boolean" &&
+    typeof value["full_reconcile_interval_hours"] === "number"
+  );
+}
+
+function isScanStatus(value: unknown): value is ScanStatus {
+  return (
+    isRecord(value) &&
+    typeof value["scanning"] === "boolean" &&
+    isNullableNumber(value["count"])
+  );
+}
+
+function isArtist(value: unknown): value is Artist {
+  return (
+    isRecord(value) &&
+    typeof value["id"] === "string" &&
+    typeof value["name"] === "string" &&
+    typeof value["album_count"] === "number" &&
+    isNullableString(value["cover_art_id"]) &&
+    typeof value["synced_at"] === "string"
+  );
+}
+
+function isAlbum(value: unknown): value is Album {
+  return (
+    isRecord(value) &&
+    typeof value["id"] === "string" &&
+    typeof value["artist_id"] === "string" &&
+    typeof value["name"] === "string" &&
+    isNullableNumber(value["year"]) &&
+    typeof value["song_count"] === "number" &&
+    isNullableNumber(value["duration"]) &&
+    isNullableString(value["cover_art_id"]) &&
+    typeof value["synced_at"] === "string" &&
+    isNullableString(value["artist_name"])
+  );
+}
+
+function isAlbumListEntry(value: unknown): value is AlbumListEntry {
+  return (
+    isRecord(value) &&
+    typeof value["id"] === "string" &&
+    typeof value["name"] === "string" &&
+    isNullableString(value["artist_id"]) &&
+    isNullableString(value["artist_name"]) &&
+    isNullableNumber(value["year"]) &&
+    isNullableNumber(value["song_count"]) &&
+    isNullableNumber(value["duration"]) &&
+    isNullableString(value["cover_art_id"]) &&
+    isNullableNumber(value["play_count"]) &&
+    isNullableString(value["created"])
+  );
+}
+
+function isSong(value: unknown): value is Song {
+  return (
+    isRecord(value) &&
+    typeof value["id"] === "string" &&
+    typeof value["album_id"] === "string" &&
+    typeof value["artist_id"] === "string" &&
+    typeof value["title"] === "string" &&
+    isNullableNumber(value["track_number"]) &&
+    typeof value["disc_number"] === "number" &&
+    isNullableNumber(value["duration"]) &&
+    isNullableNumber(value["bit_rate"]) &&
+    isNullableNumber(value["size"]) &&
+    isNullableString(value["suffix"]) &&
+    isNullableString(value["content_type"]) &&
+    isNullableString(value["path"]) &&
+    isNullableNumber(value["year"]) &&
+    isNullableString(value["genre"]) &&
+    typeof value["synced_at"] === "string" &&
+    isNullableString(value["artist"]) &&
+    isNullableString(value["album"])
+  );
+}
+
+function isPlaylist(value: unknown): value is Playlist {
+  return (
+    isRecord(value) &&
+    typeof value["id"] === "string" &&
+    typeof value["name"] === "string" &&
+    typeof value["song_count"] === "number" &&
+    typeof value["duration"] === "number" &&
+    isNullableString(value["owner"]) &&
+    isNullableString(value["cover_art_id"]) &&
+    typeof value["created_at"] === "string" &&
+    typeof value["changed_at"] === "string" &&
+    typeof value["saved_offline"] === "boolean" &&
+    isNullableString(value["offline_saved_at"])
+  );
+}
+
+function isSearchResultSong(
+  value: unknown
+): value is SearchResults["songs"][number] {
+  return (
+    isRecord(value) &&
+    typeof value["id"] === "string" &&
+    typeof value["title"] === "string" &&
+    isNullableString(value["artist"]) &&
+    isNullableString(value["album"]) &&
+    isNullableNumber(value["duration"])
+  );
+}
+
+function isSearchResultAlbum(
+  value: unknown
+): value is SearchResults["albums"][number] {
+  return (
+    isRecord(value) &&
+    typeof value["id"] === "string" &&
+    typeof value["name"] === "string" &&
+    isNullableString(value["artist"]) &&
+    isNullableNumber(value["year"]) &&
+    typeof value["song_count"] === "number"
+  );
+}
+
+function isSearchResultArtist(
+  value: unknown
+): value is SearchResults["artists"][number] {
+  return (
+    isRecord(value) &&
+    typeof value["id"] === "string" &&
+    typeof value["name"] === "string" &&
+    typeof value["album_count"] === "number"
+  );
+}
+
+function isSearchResults(value: unknown): value is SearchResults {
+  return (
+    isRecord(value) &&
+    isArrayOf(isSearchResultSong)(value["songs"]) &&
+    isArrayOf(isSearchResultAlbum)(value["albums"]) &&
+    isArrayOf(isSearchResultArtist)(value["artists"])
+  );
+}
+
+function isRepeatMode(value: unknown): value is RepeatMode {
+  return value === "Off" || value === "All" || value === "One";
+}
+
+function isQueueItem(value: unknown): value is QueueItem {
+  return (
+    isRecord(value) &&
+    typeof value["song_id"] === "string" &&
+    typeof value["title"] === "string" &&
+    typeof value["artist"] === "string" &&
+    typeof value["album"] === "string" &&
+    typeof value["duration"] === "number"
+  );
+}
+
+function isQueueState(value: unknown): value is QueueState {
+  return (
+    isRecord(value) &&
+    Array.isArray(value["items"]) &&
+    value["items"].every(isQueueItem) &&
+    isNullableNumber(value["current_index"]) &&
+    typeof value["shuffle"] === "boolean" &&
+    isRepeatMode(value["repeat_mode"]) &&
+    isNullableNumber(value["pending_navigation_index"]) &&
+    (value["prepared_next_item"] === null ||
+      isQueueItem(value["prepared_next_item"]))
+  );
+}
+
+function isCacheStats(value: unknown): value is CacheStats {
+  return (
+    isRecord(value) &&
+    typeof value["total_size"] === "number" &&
+    typeof value["file_count"] === "number" &&
+    typeof value["max_size"] === "number"
+  );
+}
+
+function isDownloadStatus(value: unknown): value is DownloadStatus {
+  return (
+    isRecord(value) &&
+    typeof value["song_id"] === "string" &&
+    typeof value["cached"] === "boolean" &&
+    isNullableString(value["path"]) &&
+    typeof value["bytes"] === "number"
+  );
+}
+
+function isSavedPlaylistOfflineResult(
+  value: unknown
+): value is SavedPlaylistOfflineResult {
+  return (
+    isRecord(value) &&
+    typeof value["playlist_id"] === "string" &&
+    typeof value["saved_offline"] === "boolean" &&
+    typeof value["downloaded_count"] === "number" &&
+    typeof value["removed_count"] === "number" &&
+    typeof value["skipped_protected_count"] === "number"
+  );
+}
+
+function isSavedPlaylistOfflineStatus(
+  value: unknown
+): value is SavedPlaylistOfflineStatus {
+  return (
+    isRecord(value) &&
+    typeof value["running"] === "boolean" &&
+    isNullableString(value["last_error"])
+  );
+}
+
+function isPlaybackStateSnapshot(
+  value: unknown
+): value is PlaybackStateSnapshot {
+  return (
+    isRecord(value) &&
+    isNullableString(value["current_song_id"]) &&
+    typeof value["position_seconds"] === "number" &&
+    typeof value["duration_seconds"] === "number" &&
+    typeof value["was_playing"] === "boolean" &&
+    typeof value["app_volume"] === "number" &&
+    typeof value["updated_at"] === "string"
+  );
+}
+
+function isPlaybackSnapshotSong(
+  value: unknown
+): value is NonNullable<PlaybackSnapshot["song"]> {
+  return (
+    isRecord(value) &&
+    typeof value["id"] === "string" &&
+    typeof value["title"] === "string" &&
+    typeof value["artist"] === "string" &&
+    typeof value["album"] === "string" &&
+    typeof value["duration_seconds"] === "number" &&
+    isNullableString(value["artwork_uri"])
+  );
+}
+
+export function isPlaybackSnapshot(value: unknown): value is PlaybackSnapshot {
+  return (
+    isRecord(value) &&
+    typeof value["seq"] === "number" &&
+    ["playing", "paused", "stopped", "stalled"].includes(
+      typeof value["state"] === "string" ? value["state"] : ""
+    ) &&
+    typeof value["is_playing"] === "boolean" &&
+    typeof value["audio_loaded"] === "boolean" &&
+    (value["song"] === null || isPlaybackSnapshotSong(value["song"])) &&
+    typeof value["position_seconds"] === "number" &&
+    typeof value["duration_seconds"] === "number" &&
+    typeof value["volume"] === "number" &&
+    isQueueState(value["queue"]) &&
+    isNullableNumber(value["queue_index"]) &&
+    typeof value["queue_length"] === "number" &&
+    typeof value["can_play"] === "boolean" &&
+    typeof value["can_next"] === "boolean" &&
+    typeof value["can_previous"] === "boolean" &&
+    typeof value["can_seek"] === "boolean" &&
+    isStringArray(value["downloaded_song_ids"]) &&
+    isStringArray(value["downloading_song_ids"])
+  );
+}
+
+function isSyncJobStatus(
+  value: unknown
+): value is LibrarySyncStatus["incremental"] {
+  return (
+    isRecord(value) &&
+    typeof value["enabled"] === "boolean" &&
+    typeof value["interval_minutes"] === "number" &&
+    typeof value["running"] === "boolean" &&
+    isNullableString(value["last_attempt_at"]) &&
+    isNullableString(value["last_success_at"]) &&
+    isNullableString(value["last_error"]) &&
+    isNullableString(value["next_run_at"])
+  );
+}
+
+export function isLibrarySyncStatus(
+  value: unknown
+): value is LibrarySyncStatus {
+  return (
+    isRecord(value) &&
+    isNullableString(value["active_job"]) &&
+    isSyncJobStatus(value["full"]) &&
+    isSyncJobStatus(value["incremental"]) &&
+    isSyncJobStatus(value["full_reconcile"])
+  );
+}
+
+function isLastfmStatus(value: unknown): value is LastfmStatus {
+  return (
+    isRecord(value) &&
+    typeof value["available"] === "boolean" &&
+    typeof value["authenticated"] === "boolean" &&
+    typeof value["enabled"] === "boolean" &&
+    isNullableString(value["username"]) &&
+    typeof value["pending_auth"] === "boolean" &&
+    typeof value["queue_count"] === "number" &&
+    isNullableString(value["last_error"])
+  );
+}
+
+function isLastfmAuthStart(value: unknown): value is LastfmAuthStart {
+  return isRecord(value) && typeof value["auth_url"] === "string";
+}
+
+function isLastfmQueueItem(value: unknown): value is LastfmQueueItem {
+  return (
+    isRecord(value) &&
+    typeof value["id"] === "number" &&
+    typeof value["song_id"] === "string" &&
+    typeof value["title"] === "string" &&
+    typeof value["artist"] === "string" &&
+    isNullableString(value["album"]) &&
+    isNullableNumber(value["duration"]) &&
+    typeof value["played_at"] === "number" &&
+    typeof value["attempts"] === "number" &&
+    typeof value["next_retry_at"] === "number" &&
+    isNullableString(value["last_error"]) &&
+    typeof value["created_at"] === "string" &&
+    typeof value["updated_at"] === "string"
+  );
+}
+
+function isPlaybackState(value: unknown): boolean {
+  return (
+    value === "playing" ||
+    value === "paused" ||
+    value === "stopped" ||
+    value === "stalled"
+  );
+}
+
+function isAudioPlaybackStatus(value: unknown): value is AudioPlaybackStatus {
+  return (
+    isRecord(value) &&
+    isPlaybackState(value["state"]) &&
+    typeof value["is_playing"] === "boolean" &&
+    isNullableString(value["current_song_id"]) &&
+    typeof value["position"] === "number" &&
+    typeof value["duration"] === "number" &&
+    typeof value["volume"] === "number"
+  );
+}
+
+function isNormalizationMode(
+  value: unknown
+): value is AudioProcessingSettings["normalization_mode"] {
+  return value === "track" || value === "album";
+}
+
+function isDynamicsPreset(
+  value: unknown
+): value is AudioProcessingSettings["dynamics_preset"] {
+  return value === "light" || value === "medium" || value === "heavy";
+}
+
+function isBinauralPreset(
+  value: unknown
+): value is AudioProcessingSettings["binaural_preset"] {
+  return value === "light" || value === "medium" || value === "strong";
+}
+
+function isAudioProcessingSettings(
+  value: unknown
+): value is AudioProcessingSettings {
+  return (
+    isRecord(value) &&
+    typeof value["normalization_enabled"] === "boolean" &&
+    isNormalizationMode(value["normalization_mode"]) &&
+    typeof value["target_lufs"] === "number" &&
+    typeof value["preamp_db"] === "number" &&
+    typeof value["prevent_clipping"] === "boolean" &&
+    typeof value["dynamics_enabled"] === "boolean" &&
+    isDynamicsPreset(value["dynamics_preset"]) &&
+    typeof value["binaural_enabled"] === "boolean" &&
+    isBinauralPreset(value["binaural_preset"]) &&
+    typeof value["equalizer_enabled"] === "boolean" &&
+    isArrayOf(isNumber)(value["equalizer_bands_db"]) &&
+    typeof value["gapless_enabled"] === "boolean" &&
+    typeof value["crossfade_enabled"] === "boolean" &&
+    typeof value["crossfade_duration_ms"] === "number" &&
+    typeof value["prefetch_count"] === "number"
+  );
+}
+
 async function invokeJson<T>(
   name: string,
+  isPayload: PayloadValidator<T>,
   payload: unknown = null
 ): Promise<T> {
   await ensureInitialized();
 
-  if (!NativeStereodromeCore?.call) {
+  if (NativeStereodromeCore.call === undefined) {
     throw new Error(unavailable);
   }
   return parseEnvelope<T>(
-    await NativeStereodromeCore.call(name, JSON.stringify(payload))
+    await NativeStereodromeCore.call(name, JSON.stringify(payload)),
+    isPayload
   );
 }
 
-function emitCoreEvent<T>(name: CoreEventName, payload: T) {
-  listeners.get(name)?.forEach((listener) => listener(payload));
+function emitCoreEvent(name: CoreEventName, payload: unknown) {
+  listeners.get(name)?.forEach((listener) => {
+    listener(payload);
+  });
 }
 
 function stopSyncStatusPolling() {
-  if (!syncStatusPoll) {
+  if (syncStatusPoll === null) {
     return;
   }
   clearInterval(syncStatusPoll);
@@ -92,9 +561,12 @@ async function pollLibrarySyncStatus() {
 
   syncStatusPollInFlight = true;
   try {
-    const status = await invokeJson<LibrarySyncStatus>("getLibrarySyncStatus");
+    const status = await invokeJson(
+      "getLibrarySyncStatus",
+      isLibrarySyncStatus
+    );
     emitCoreEvent("sync-status-changed", status);
-    if (!status.active_job) {
+    if (status.active_job === null || status.active_job.length === 0) {
       stopSyncStatusPolling();
     }
   } catch (error) {
@@ -106,13 +578,14 @@ async function pollLibrarySyncStatus() {
 }
 
 function startSyncStatusPolling() {
-  void pollLibrarySyncStatus();
-  if (!syncStatusPoll) {
-    syncStatusPoll = setInterval(
-      () => void pollLibrarySyncStatus(),
-      syncStatusPollIntervalMs
-    );
-  }
+  pollLibrarySyncStatus().catch((error: unknown) => {
+    emitCoreEvent("error", error);
+  });
+  syncStatusPoll ??= setInterval(() => {
+    pollLibrarySyncStatus().catch((error: unknown) => {
+      emitCoreEvent("error", error);
+    });
+  }, syncStatusPollIntervalMs);
 }
 
 function startNativePlaybackSubscription() {
@@ -123,10 +596,11 @@ function startNativePlaybackSubscription() {
     "playback-snapshot",
     ({ snapshot }) => {
       try {
-        emitCoreEvent(
-          "playback-snapshot",
-          JSON.parse(snapshot) as PlaybackSnapshot
-        );
+        const payload: unknown = JSON.parse(snapshot);
+        if (!isPlaybackSnapshot(payload)) {
+          throw new Error("Native core emitted an invalid playback snapshot");
+        }
+        emitCoreEvent("playback-snapshot", payload);
       } catch (error) {
         emitCoreEvent("error", error);
       }
@@ -155,7 +629,7 @@ async function queueMutation(
   payload: unknown = null
 ): Promise<QueueState> {
   try {
-    return await invokeJson<QueueState>(name, payload);
+    return await invokeJson(name, isQueueState, payload);
   } catch (error) {
     emitCoreEvent("error", error);
     throw error;
@@ -163,12 +637,12 @@ async function queueMutation(
 }
 
 async function ensureInitialized(): Promise<boolean> {
-  if (initializePromise) {
+  if (initializePromise !== null) {
     return initializePromise;
   }
 
   initializePromise = (async () => {
-    if (!NativeStereodromeCore?.initialize) {
+    if (NativeStereodromeCore.initialize === undefined) {
       throw new Error(unavailable);
     }
 
@@ -198,72 +672,82 @@ export const stereodromeCore = {
   initialize: ensureInitialized,
   addEventListener<T = unknown>(
     name: CoreEventName,
-    listener: CoreEventHandler<T>
+    listener: CoreEventHandler<T>,
+    isPayload: (payload: unknown) => payload is T
   ): () => void {
     const current = listeners.get(name) ?? new Set<CoreEventHandler>();
-    current.add(listener as CoreEventHandler);
+    const guardedListener: CoreEventHandler = (payload) => {
+      if (isPayload(payload)) {
+        listener(payload);
+      }
+    };
+    current.add(guardedListener);
     listeners.set(name, current);
     return () => {
-      current.delete(listener as CoreEventHandler);
+      current.delete(guardedListener);
     };
   },
   getConnectionStatus(): Promise<ConnectionStatus> {
-    return invokeJson("getConnectionStatus");
+    return invokeJson("getConnectionStatus", isConnectionStatus);
   },
   connectServer(params: {
     url: string;
     username: string;
     password: string;
   }): Promise<ConnectionStatus> {
-    return invokeJson("connectServer", params);
+    return invokeJson("connectServer", isConnectionStatus, params);
   },
   updateServerSettings(params: {
     url?: string;
     username?: string;
   }): Promise<ConnectionStatus> {
-    return invokeJson("updateServerSettings", params);
+    return invokeJson("updateServerSettings", isConnectionStatus, params);
   },
   restoreSession(): Promise<ConnectionStatus> {
-    return invokeJson("restoreSession");
+    return invokeJson("restoreSession", isConnectionStatus);
   },
   disconnectServer(): Promise<void> {
-    return invokeJson("disconnectServer");
+    return invokeJson("disconnectServer", isNull).then(() => undefined);
   },
   async syncLibrary(): Promise<void> {
-    await invokeJson<void>("syncLibrary");
+    await invokeJson("syncLibrary", isNull);
     startSyncStatusPolling();
   },
   async syncLibraryIncremental(): Promise<void> {
-    await invokeJson<void>("syncLibraryIncremental");
+    await invokeJson("syncLibraryIncremental", isNull);
     startSyncStatusPolling();
   },
   getSyncSettings(): Promise<SyncSettings> {
-    return invokeJson("getSyncSettings");
+    return invokeJson("getSyncSettings", isSyncSettings);
   },
   setSyncSettings(settings: SyncSettings): Promise<SyncSettings> {
-    return invokeJson("setSyncSettings", settings);
+    return invokeJson("setSyncSettings", isSyncSettings, settings);
   },
   getConnectivitySettings(): Promise<ConnectivitySettings> {
-    return invokeJson("getConnectivitySettings");
+    return invokeJson("getConnectivitySettings", isConnectivitySettings);
   },
   setConnectivitySettings(
     settings: ConnectivitySettings
   ): Promise<ConnectivitySettings> {
-    return invokeJson("setConnectivitySettings", settings);
+    return invokeJson(
+      "setConnectivitySettings",
+      isConnectivitySettings,
+      settings
+    );
   },
   runDueLibrarySync(): Promise<string | null> {
-    return invokeJson("runDueLibrarySync");
+    return invokeJson("runDueLibrarySync", isNullable(isString));
   },
   getScanStatus(): Promise<ScanStatus> {
-    return invokeJson("getScanStatus");
+    return invokeJson("getScanStatus", isScanStatus);
   },
   startScan(): Promise<ScanStatus> {
-    return invokeJson("startScan");
+    return invokeJson("startScan", isScanStatus);
   },
   getLibrarySyncStatus(): Promise<LibrarySyncStatus> {
-    return invokeJson<LibrarySyncStatus>("getLibrarySyncStatus").then(
+    return invokeJson("getLibrarySyncStatus", isLibrarySyncStatus).then(
       (status) => {
-        if (status.active_job) {
+        if (status.active_job !== null && status.active_job.length > 0) {
           startSyncStatusPolling();
         }
         return status;
@@ -271,177 +755,218 @@ export const stereodromeCore = {
     );
   },
   getArtists(): Promise<Artist[]> {
-    return invokeJson("getArtists");
+    return invokeJson("getArtists", isArrayOf(isArtist));
   },
   getAlbums(artistId?: string): Promise<Album[]> {
-    return invokeJson("getAlbums", artistId ?? null);
+    return invokeJson("getAlbums", isArrayOf(isAlbum), artistId ?? null);
   },
   getAlbumList(
     listType: string,
     size = 50,
     offset = 0
   ): Promise<AlbumListEntry[]> {
-    return invokeJson("getAlbumList", { list_type: listType, size, offset });
+    return invokeJson("getAlbumList", isArrayOf(isAlbumListEntry), {
+      list_type: listType,
+      size,
+      offset,
+    });
   },
   getSongs(albumId?: string, artistId?: string): Promise<Song[]> {
-    return invokeJson("getSongs", {
+    return invokeJson("getSongs", isArrayOf(isSong), {
       first: albumId ?? null,
       second: artistId ?? null,
     });
   },
   getPlaylists(): Promise<Playlist[]> {
-    return invokeJson("getPlaylists");
+    return invokeJson("getPlaylists", isArrayOf(isPlaylist));
   },
   getPlaylistSongs(id: string): Promise<Song[]> {
-    return invokeJson("getPlaylistSongs", id);
+    return invokeJson("getPlaylistSongs", isArrayOf(isSong), id);
   },
   createPlaylist(name: string, songIds: string[] = []): Promise<Playlist> {
-    return invokeJson("createPlaylist", { name, song_ids: songIds });
-  },
-  renamePlaylist(playlistId: string, name: string): Promise<void> {
-    return invokeJson("renamePlaylist", { playlist_id: playlistId, name });
-  },
-  deletePlaylist(playlistId: string): Promise<void> {
-    return invokeJson("deletePlaylist", playlistId);
-  },
-  addSongsToPlaylist(playlistId: string, songIds: string[]): Promise<void> {
-    return invokeJson("addSongsToPlaylist", {
-      playlist_id: playlistId,
+    return invokeJson("createPlaylist", isPlaylist, {
+      name,
       song_ids: songIds,
     });
+  },
+  renamePlaylist(playlistId: string, name: string): Promise<void> {
+    return invokeJson("renamePlaylist", isNull, {
+      playlist_id: playlistId,
+      name,
+    }).then(() => undefined);
+  },
+  deletePlaylist(playlistId: string): Promise<void> {
+    return invokeJson("deletePlaylist", isNull, playlistId).then(
+      () => undefined
+    );
+  },
+  addSongsToPlaylist(playlistId: string, songIds: string[]): Promise<void> {
+    return invokeJson("addSongsToPlaylist", isNull, {
+      playlist_id: playlistId,
+      song_ids: songIds,
+    }).then(() => undefined);
   },
   removeSongsFromPlaylist(
     playlistId: string,
     songIndexes: number[]
   ): Promise<void> {
-    return invokeJson("removeSongsFromPlaylist", {
+    return invokeJson("removeSongsFromPlaylist", isNull, {
       playlist_id: playlistId,
       song_indexes: songIndexes,
-    });
+    }).then(() => undefined);
   },
   searchLibrary(query: string, limit = 25): Promise<SearchResults> {
-    return invokeJson("searchLibrary", { query, limit });
+    return invokeJson("searchLibrary", isSearchResults, { query, limit });
   },
   getCoverArtUri(coverArtId: string, size = 512): Promise<string> {
-    return invokeJson("getCoverArtUri", { id: coverArtId, size });
+    return invokeJson("getCoverArtUri", isString, { id: coverArtId, size });
   },
   getSongCoverArtUri(songId: string, size = 512): Promise<string | null> {
-    return invokeJson("getSongCoverArtUri", { id: songId, size });
+    return invokeJson("getSongCoverArtUri", isNullable(isString), {
+      id: songId,
+      size,
+    });
   },
   getStreamUri(songId: string): Promise<string> {
-    return invokeJson("getStreamUri", songId);
+    return invokeJson("getStreamUri", isString, songId);
   },
   getAudioCacheStats(): Promise<CacheStats> {
-    return invokeJson("getAudioCacheStats");
+    return invokeJson("getAudioCacheStats", isCacheStats);
   },
   getOfflineSongIds(): Promise<string[]> {
-    return invokeJson("getOfflineSongIds");
+    return invokeJson("getOfflineSongIds", isStringArray);
   },
   setMaxCacheSize(maxSize: number): Promise<CacheStats> {
-    return invokeJson("setMaxCacheSize", maxSize);
+    return invokeJson("setMaxCacheSize", isCacheStats, maxSize);
   },
   clearAudioCache(): Promise<CacheStats> {
-    return invokeJson("clearAudioCache");
+    return invokeJson("clearAudioCache", isCacheStats);
   },
   isSongCached(songId: string): Promise<DownloadStatus> {
-    return invokeJson("isSongCached", songId);
+    return invokeJson("isSongCached", isDownloadStatus, songId);
   },
   downloadSong(songId: string): Promise<DownloadStatus> {
-    return invokeJson("downloadSong", songId);
+    return invokeJson("downloadSong", isDownloadStatus, songId);
   },
   removeCachedSong(songId: string): Promise<DownloadStatus> {
-    return invokeJson("removeCachedSong", songId);
+    return invokeJson("removeCachedSong", isDownloadStatus, songId);
   },
   downloadAlbum(albumId: string): Promise<DownloadStatus[]> {
-    return invokeJson("downloadAlbum", albumId);
+    return invokeJson("downloadAlbum", isArrayOf(isDownloadStatus), albumId);
   },
   downloadPlaylist(playlistId: string): Promise<DownloadStatus[]> {
-    return invokeJson("downloadPlaylist", playlistId);
+    return invokeJson(
+      "downloadPlaylist",
+      isArrayOf(isDownloadStatus),
+      playlistId
+    );
   },
   setPlaylistSavedOffline(
     playlistId: string,
     savedOffline: boolean
   ): Promise<SavedPlaylistOfflineResult> {
-    return invokeJson("setPlaylistSavedOffline", {
+    return invokeJson("setPlaylistSavedOffline", isSavedPlaylistOfflineResult, {
       playlist_id: playlistId,
       saved_offline: savedOffline,
     });
   },
   reconcileSavedPlaylistsOffline(): Promise<SavedPlaylistOfflineResult[]> {
-    return invokeJson("reconcileSavedPlaylistsOffline");
+    return invokeJson(
+      "reconcileSavedPlaylistsOffline",
+      isArrayOf(isSavedPlaylistOfflineResult)
+    );
   },
   startSavedPlaylistsOfflineReconcile(): Promise<void> {
-    return invokeJson("startSavedPlaylistsOfflineReconcile");
+    return invokeJson("startSavedPlaylistsOfflineReconcile", isNull).then(
+      () => undefined
+    );
   },
   getSavedPlaylistsOfflineReconcileStatus(): Promise<SavedPlaylistOfflineStatus> {
-    return invokeJson("getSavedPlaylistsOfflineReconcileStatus");
+    return invokeJson(
+      "getSavedPlaylistsOfflineReconcileStatus",
+      isSavedPlaylistOfflineStatus
+    );
   },
   prefetchNext(reserveFirst = false): Promise<void> {
-    return invokeJson("prefetchNext", { reserve_first: reserveFirst });
+    return invokeJson("prefetchNext", isNull, {
+      reserve_first: reserveFirst,
+    }).then(() => undefined);
   },
   getPlaybackState(): Promise<PlaybackStateSnapshot> {
-    return invokeJson("getPlaybackState");
+    return invokeJson("getPlaybackState", isPlaybackStateSnapshot);
   },
   getPlaybackSnapshot(): Promise<PlaybackSnapshot> {
-    return invokeJson("getPlaybackSnapshot");
+    return invokeJson("getPlaybackSnapshot", isPlaybackSnapshot);
   },
   savePlaybackPosition(
     progress: PlaybackProgress
   ): Promise<PlaybackStateSnapshot> {
-    return invokeJson("savePlaybackPosition", progress);
+    return invokeJson(
+      "savePlaybackPosition",
+      isPlaybackStateSnapshot,
+      progress
+    );
   },
   getLastfmStatus(): Promise<LastfmStatus> {
-    return invokeJson("getLastfmStatus");
+    return invokeJson("getLastfmStatus", isLastfmStatus);
   },
   beginLastfmAuth(): Promise<LastfmAuthStart> {
-    return invokeJson("beginLastfmAuth");
+    return invokeJson("beginLastfmAuth", isLastfmAuthStart);
   },
   completeLastfmAuth(): Promise<LastfmStatus> {
-    return invokeJson("completeLastfmAuth");
+    return invokeJson("completeLastfmAuth", isLastfmStatus);
   },
   disconnectLastfm(): Promise<LastfmStatus> {
-    return invokeJson("disconnectLastfm");
+    return invokeJson("disconnectLastfm", isLastfmStatus);
   },
   getLastfmQueue(): Promise<LastfmQueueItem[]> {
-    return invokeJson("getLastfmQueue");
+    return invokeJson("getLastfmQueue", isArrayOf(isLastfmQueueItem));
   },
   retryLastfmQueue(): Promise<number> {
-    return invokeJson("retryLastfmQueue");
+    return invokeJson("retryLastfmQueue", isNumber);
   },
   audioPlayCurrent(): Promise<AudioPlaybackStatus> {
-    return invokeJson("audioPlayCurrent");
+    return invokeJson("audioPlayCurrent", isAudioPlaybackStatus);
   },
   audioApplySettings(): Promise<AudioPlaybackStatus> {
-    return invokeJson("audioApplySettings");
+    return invokeJson("audioApplySettings", isAudioPlaybackStatus);
   },
   audioPrepareNextTransition(): Promise<void> {
-    return invokeJson("audioPrepareNextTransition");
+    return invokeJson("audioPrepareNextTransition", isNull).then(
+      () => undefined
+    );
   },
   audioPause(): Promise<void> {
-    return invokeJson("audioPause");
+    return invokeJson("audioPause", isNull).then(() => undefined);
   },
   audioResume(): Promise<void> {
-    return invokeJson("audioResume");
+    return invokeJson("audioResume", isNull).then(() => undefined);
   },
   audioRebuildOutput(): Promise<void> {
-    return invokeJson("audioRebuildOutput");
+    return invokeJson("audioRebuildOutput", isNull).then(() => undefined);
   },
   audioStop(): Promise<void> {
-    return invokeJson("audioStop");
+    return invokeJson("audioStop", isNull).then(() => undefined);
   },
   audioSeek(positionSeconds: number): Promise<void> {
-    return invokeJson("audioSeek", positionSeconds);
+    return invokeJson("audioSeek", isNull, positionSeconds).then(
+      () => undefined
+    );
   },
   audioSetVolume(volume: number): Promise<void> {
-    return invokeJson("audioSetVolume", volume);
+    return invokeJson("audioSetVolume", isNull, volume).then(() => undefined);
   },
   getAudioProcessingSettings(): Promise<AudioProcessingSettings> {
-    return invokeJson("getAudioProcessingSettings");
+    return invokeJson("getAudioProcessingSettings", isAudioProcessingSettings);
   },
   setAudioProcessingSettings(
     settings: AudioProcessingSettings
   ): Promise<AudioProcessingSettings> {
-    return invokeJson("setAudioProcessingSettings", settings);
+    return invokeJson(
+      "setAudioProcessingSettings",
+      isAudioProcessingSettings,
+      settings
+    );
   },
   playSongWithQueue(songId: string, songIds: string[]): Promise<QueueState> {
     return queueMutation("playSongWithQueue", {
@@ -479,15 +1004,15 @@ export const stereodromeCore = {
     return queueMutation("moveQueueItem", { from, to });
   },
   async playQueueItem(index: number): Promise<QueueState> {
-    await invokeJson<QueueItem | null>("playQueueItem", index);
+    await invokeJson("playQueueItem", isNullable(isQueueItem), index);
     return (await this.getPlaybackSnapshot()).queue;
   },
   async playNext(force = true): Promise<QueueState> {
-    await invokeJson<QueueItem | null>("playNext", force);
+    await invokeJson("playNext", isNullable(isQueueItem), force);
     return (await this.getPlaybackSnapshot()).queue;
   },
   async playPrevious(): Promise<QueueState> {
-    await invokeJson<QueueItem | null>("playPrevious");
+    await invokeJson("playPrevious", isNullable(isQueueItem));
     return (await this.getPlaybackSnapshot()).queue;
   },
   toggleShuffle(): Promise<QueueState> {

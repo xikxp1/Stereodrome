@@ -47,57 +47,59 @@ type SelectableRowProps = {
 };
 
 const SelectableRow = memo(
-  function SelectableRow({
+  ({
     disabled,
     index,
     item,
     selected,
     onLongPress,
     onPress,
-  }: SelectableRowProps) {
-    return (
-      <Pressable
-        delayLongPress={450}
-        disabled={disabled || item.disabled}
-        onLongPress={() => onLongPress(index)}
-        onPress={() => onPress(index)}
-        style={[
-          styles.row,
-          selected && styles.selected,
-          item.disabled && styles.disabled,
-        ]}
-      >
-        {item.fileState ? (
-          <FileStateIcon state={item.fileState} selected={selected} />
-        ) : null}
-        <View style={styles.labelGroup}>
+  }: SelectableRowProps) => (
+    <Pressable
+      delayLongPress={450}
+      disabled={disabled || item.disabled === true}
+      onLongPress={() => {
+        onLongPress(index);
+      }}
+      onPress={() => {
+        onPress(index);
+      }}
+      style={[
+        styles.row,
+        selected && styles.selected,
+        item.disabled === true && styles.disabled,
+      ]}
+    >
+      {item.fileState !== undefined ? (
+        <FileStateIcon state={item.fileState} selected={selected} />
+      ) : null}
+      <View style={styles.labelGroup}>
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.label,
+            selected && styles.selectedText,
+            item.disabled === true && !selected && styles.disabledText,
+          ]}
+        >
+          {item.label}
+        </Text>
+        {item.sublabel !== undefined && item.sublabel.length > 0 ? (
           <Text
             numberOfLines={1}
             style={[
-              styles.label,
+              styles.sublabel,
               selected && styles.selectedText,
-              item.disabled && !selected && styles.disabledText,
+              item.disabled === true && !selected && styles.disabledText,
             ]}
           >
-            {item.label}
+            {item.sublabel}
           </Text>
-          {item.sublabel ? (
-            <Text
-              numberOfLines={1}
-              style={[
-                styles.sublabel,
-                selected && styles.selectedText,
-                item.disabled && !selected && styles.disabledText,
-              ]}
-            >
-              {item.sublabel}
-            </Text>
-          ) : null}
-        </View>
-        <RowAccessory kind={item.kind ?? "action"} selected={selected} />
-      </Pressable>
-    );
-  },
+        ) : null}
+      </View>
+      <RowAccessory kind={item.kind ?? "action"} selected={selected} />
+    </Pressable>
+  ),
   (previous, next) =>
     previous.disabled === next.disabled &&
     previous.index === next.index &&
@@ -217,7 +219,9 @@ export function SelectableList({
   const scrollSelectedIntoView = useCallback((index: number) => {
     const listHeight = listHeightRef.current;
     const optionCount = optionsRef.current.length;
-    if (listHeight <= 0 || optionCount === 0) return;
+    if (listHeight <= 0 || optionCount === 0) {
+      return;
+    }
 
     const visibleRows = Math.max(1, Math.floor(listHeight / rowHeight));
     const firstVisibleIndex = Math.floor(scrollOffsetRef.current / rowHeight);
@@ -234,7 +238,9 @@ export function SelectableList({
       nextOffset = (index - visibleRows + edgePaddingRows + 1) * rowHeight;
     }
 
-    if (nextOffset === null) return;
+    if (nextOffset === null) {
+      return;
+    }
 
     const maxOffset = Math.max(0, optionCount * rowHeight - listHeight);
     const clampedOffset = Math.max(0, Math.min(nextOffset, maxOffset));
@@ -308,14 +314,14 @@ export function SelectableList({
         }
         if (input === "select") {
           const option = optionsRef.current[activeIndexRef.current];
-          if (!option?.disabled) {
-            void option?.onSelect();
+          if (option !== undefined && option.disabled !== true) {
+            void option.onSelect();
           }
         }
         if (input === "select_long") {
           const option = optionsRef.current[activeIndexRef.current];
-          if (!option?.disabled) {
-            void option?.onLongSelect?.();
+          if (option !== undefined && option.disabled !== true) {
+            void option.onLongSelect?.();
           }
         }
       }),
@@ -327,7 +333,7 @@ export function SelectableList({
     (index: number) => {
       rowLongPressed.current = true;
       activateIndex(index);
-      if (optionsRef.current[index]?.wheelOnly) {
+      if (optionsRef.current[index]?.wheelOnly === true) {
         return;
       }
       void optionsRef.current[index]?.onLongSelect?.();
@@ -342,7 +348,7 @@ export function SelectableList({
       }
 
       activateIndex(index);
-      if (optionsRef.current[index]?.wheelOnly) {
+      if (optionsRef.current[index]?.wheelOnly === true) {
         return;
       }
       void optionsRef.current[index]?.onSelect();
@@ -360,7 +366,7 @@ export function SelectableList({
         selected={index === activeIndex}
       />
     ),
-    [activeIndex, handleRowLongPress, handleRowPress]
+    [activeIndex, disabled, handleRowLongPress, handleRowPress]
   );
   const footer = useMemo(
     () =>

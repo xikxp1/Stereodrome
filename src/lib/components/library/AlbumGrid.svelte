@@ -32,6 +32,7 @@
       >
         {#each query.data as album (album.id)}
           <button
+            type="button"
             class="card bg-base-200 hover:bg-base-300 transition-colors cursor-pointer text-left"
             class:ring-2={selectedId === album.id}
             class:ring-primary={selectedId === album.id}

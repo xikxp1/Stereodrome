@@ -11,12 +11,17 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use super::handle::SubsonicClientHandle;
-use super::messages::*;
+use super::messages::{
+    AlbumDetail, AlbumInfo, AlbumListEntry, AlbumListOrder, AlbumSummaryInfo, ArtistDetail,
+    ArtistSummaryInfo, ClientError, ClientRequest, ClientResult, ConnectionInfo, NowPlayingChild,
+    NowPlayingEntryInfo, NowPlayingInfo, PlaylistDetail, PlaylistInfo, ScanStatusInfo,
+    ServerConfig, SongInfo,
+};
 
 /// Timeout for API requests (get artists, albums, etc.)
 const API_TIMEOUT: Duration = Duration::from_secs(15);
 /// Timeout for streaming audio
-const STREAM_TIMEOUT: Duration = Duration::from_secs(60);
+const STREAM_TIMEOUT: Duration = Duration::from_mins(1);
 /// Timeout for ping/connection validation
 const PING_TIMEOUT: Duration = Duration::from_secs(5);
 /// Interval between connection validation pings
@@ -77,7 +82,7 @@ impl ClientThread {
                 _ = heartbeat.tick() => {
                     if self.client.is_some()
                         && let Err(e) = self.validate_connection().await {
-                            warn!("Connection validation failed: {}, retrying in background", e);
+                            warn!("Connection validation failed: {e}, retrying in background");
                             self.handle_connection_lost();
                             let _ = self.try_reconnect().await;
                         }
@@ -138,13 +143,14 @@ impl ClientThread {
                 Ok(())
             }
             Err(e) => {
-                warn!("Background reconnect failed: {}", e);
+                warn!("Background reconnect failed: {e}");
                 Err(e)
             }
         }
     }
 
     /// Handle a single request
+    #[allow(clippy::too_many_lines)]
     async fn handle_request(&mut self, request: ClientRequest) {
         match request {
             // === Authentication ===
@@ -373,11 +379,11 @@ impl ClientThread {
                 Ok(ping.version)
             }
             Ok(Err(e)) => {
-                error!("Ping API error: {}", e);
+                error!("Ping API error: {e}");
                 Err(ClientError::ApiError(e.to_string()))
             }
             Err(_) => {
-                error!("Ping timeout after {:?}", PING_TIMEOUT);
+                error!("Ping timeout after {PING_TIMEOUT:?}");
                 Err(ClientError::Timeout)
             }
         }
@@ -390,11 +396,11 @@ impl ClientThread {
         let indexes = match timeout(API_TIMEOUT, client.get_artists(None::<String>)).await {
             Ok(Ok(indexes)) => indexes,
             Ok(Err(e)) => {
-                error!("Get artists API error: {}", e);
+                error!("Get artists API error: {e}");
                 return Err(ClientError::ApiError(e.to_string()));
             }
             Err(_) => {
-                error!("Get artists timeout after {:?}", API_TIMEOUT);
+                error!("Get artists timeout after {API_TIMEOUT:?}");
                 return Err(ClientError::Timeout);
             }
         };
@@ -415,16 +421,16 @@ impl ClientThread {
     }
 
     async fn fetch_artist(client: &Client, artist_id: &str) -> ClientResult<ArtistDetail> {
-        debug!("Getting artist: {}", artist_id);
+        debug!("Getting artist: {artist_id}");
 
         let artist = match timeout(API_TIMEOUT, client.get_artist(artist_id)).await {
             Ok(Ok(artist)) => artist,
             Ok(Err(e)) => {
-                error!("Get artist {} API error: {}", artist_id, e);
+                error!("Get artist {artist_id} API error: {e}");
                 return Err(ClientError::ApiError(e.to_string()));
             }
             Err(_) => {
-                error!("Get artist {} timeout after {:?}", artist_id, API_TIMEOUT);
+                error!("Get artist {artist_id} timeout after {API_TIMEOUT:?}");
                 return Err(ClientError::Timeout);
             }
         };
@@ -447,16 +453,16 @@ impl ClientThread {
     }
 
     async fn fetch_album(client: &Client, album_id: &str) -> ClientResult<AlbumDetail> {
-        debug!("Getting album: {}", album_id);
+        debug!("Getting album: {album_id}");
 
         let album = match timeout(API_TIMEOUT, client.get_album(album_id)).await {
             Ok(Ok(album)) => album,
             Ok(Err(e)) => {
-                error!("Get album {} API error: {}", album_id, e);
+                error!("Get album {album_id} API error: {e}");
                 return Err(ClientError::ApiError(e.to_string()));
             }
             Err(_) => {
-                error!("Get album {} timeout after {:?}", album_id, API_TIMEOUT);
+                error!("Get album {album_id} timeout after {API_TIMEOUT:?}");
                 return Err(ClientError::Timeout);
             }
         };
@@ -489,7 +495,7 @@ impl ClientThread {
         size: usize,
         offset: usize,
     ) -> ClientResult<Vec<AlbumSummaryInfo>> {
-        debug!("Getting newest albums: size={}, offset={}", size, offset);
+        debug!("Getting newest albums: size={size}, offset={offset}");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
         let albums = match timeout(
@@ -500,11 +506,11 @@ impl ClientThread {
         {
             Ok(Ok(albums)) => albums,
             Ok(Err(e)) => {
-                error!("Get newest albums API error: {}", e);
+                error!("Get newest albums API error: {e}");
                 return Err(ClientError::ApiError(e.to_string()));
             }
             Err(_) => {
-                error!("Get newest albums timeout after {:?}", API_TIMEOUT);
+                error!("Get newest albums timeout after {API_TIMEOUT:?}");
                 return Err(ClientError::Timeout);
             }
         };
@@ -525,10 +531,7 @@ impl ClientThread {
         size: usize,
         offset: usize,
     ) -> ClientResult<Vec<AlbumListEntry>> {
-        debug!(
-            "Getting album list: order={:?}, size={}, offset={}",
-            order, size, offset
-        );
+        debug!("Getting album list: order={order:?}, size={size}, offset={offset}");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
         let sub_order = order.to_submarine_order();
 
@@ -540,14 +543,11 @@ impl ClientThread {
         {
             Ok(Ok(albums)) => albums,
             Ok(Err(e)) => {
-                error!("Get album list ({:?}) API error: {}", order, e);
+                error!("Get album list ({order:?}) API error: {e}");
                 return Err(ClientError::ApiError(e.to_string()));
             }
             Err(_) => {
-                error!(
-                    "Get album list ({:?}) timeout after {:?}",
-                    order, API_TIMEOUT
-                );
+                error!("Get album list ({order:?}) timeout after {API_TIMEOUT:?}");
                 return Err(ClientError::Timeout);
             }
         };
@@ -589,11 +589,11 @@ impl ClientThread {
                 })
             }
             Ok(Err(e)) => {
-                error!("Get scan status API error: {}", e);
+                error!("Get scan status API error: {e}");
                 Err(ClientError::ApiError(e.to_string()))
             }
             Err(_) => {
-                error!("Get scan status timeout after {:?}", API_TIMEOUT);
+                error!("Get scan status timeout after {API_TIMEOUT:?}");
                 Err(ClientError::Timeout)
             }
         }
@@ -615,18 +615,18 @@ impl ClientThread {
                 })
             }
             Ok(Err(e)) => {
-                error!("Start scan API error: {}", e);
+                error!("Start scan API error: {e}");
                 Err(ClientError::ApiError(e.to_string()))
             }
             Err(_) => {
-                error!("Start scan timeout after {:?}", API_TIMEOUT);
+                error!("Start scan timeout after {API_TIMEOUT:?}");
                 Err(ClientError::Timeout)
             }
         }
     }
 
     async fn handle_stream(&self, song_id: &str) -> ClientResult<Vec<u8>> {
-        debug!("Streaming song: {}", song_id);
+        debug!("Streaming song: {song_id}");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
         match timeout(
@@ -648,11 +648,11 @@ impl ClientThread {
                 Ok(data)
             }
             Ok(Err(e)) => {
-                error!("Stream API error for {}: {}", song_id, e);
+                error!("Stream API error for {song_id}: {e}");
                 Err(ClientError::ApiError(e.to_string()))
             }
             Err(_) => {
-                error!("Stream timeout for {} after {:?}", song_id, STREAM_TIMEOUT);
+                error!("Stream timeout for {song_id} after {STREAM_TIMEOUT:?}");
                 Err(ClientError::Timeout)
             }
         }
@@ -663,7 +663,7 @@ impl ClientThread {
         cover_art_id: &str,
         size: Option<i32>,
     ) -> ClientResult<Vec<u8>> {
-        debug!("Getting cover art: {}", cover_art_id);
+        debug!("Getting cover art: {cover_art_id}");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
         match timeout(API_TIMEOUT, client.get_cover_art(cover_art_id, size)).await {
@@ -672,14 +672,11 @@ impl ClientThread {
                 Ok(data)
             }
             Ok(Err(e)) => {
-                error!("Get cover art {} API error: {}", cover_art_id, e);
+                error!("Get cover art {cover_art_id} API error: {e}");
                 Err(ClientError::ApiError(e.to_string()))
             }
             Err(_) => {
-                error!(
-                    "Get cover art {} timeout after {:?}",
-                    cover_art_id, API_TIMEOUT
-                );
+                error!("Get cover art {cover_art_id} timeout after {API_TIMEOUT:?}");
                 Err(ClientError::Timeout)
             }
         }
@@ -691,7 +688,7 @@ impl ClientThread {
         time: Option<usize>,
         submission: Option<bool>,
     ) -> ClientResult<()> {
-        debug!("Scrobbling song: {} (submission={:?})", song_id, submission);
+        debug!("Scrobbling song: {song_id} (submission={submission:?})");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
         match timeout(
@@ -701,15 +698,15 @@ impl ClientThread {
         .await
         {
             Ok(Ok(_)) => {
-                debug!("Scrobble successful for {}", song_id);
+                debug!("Scrobble successful for {song_id}");
                 Ok(())
             }
             Ok(Err(e)) => {
-                error!("Scrobble API error for {}: {}", song_id, e);
+                error!("Scrobble API error for {song_id}: {e}");
                 Err(ClientError::ApiError(e.to_string()))
             }
             Err(_) => {
-                error!("Scrobble timeout for {} after {:?}", song_id, API_TIMEOUT);
+                error!("Scrobble timeout for {song_id} after {API_TIMEOUT:?}");
                 Err(ClientError::Timeout)
             }
         }
@@ -722,11 +719,11 @@ impl ClientThread {
         let now_playing = match timeout(API_TIMEOUT, client.get_now_playing()).await {
             Ok(Ok(np)) => np,
             Ok(Err(e)) => {
-                error!("Get now playing API error: {}", e);
+                error!("Get now playing API error: {e}");
                 return Err(ClientError::ApiError(e.to_string()));
             }
             Err(_) => {
-                error!("Get now playing timeout after {:?}", API_TIMEOUT);
+                error!("Get now playing timeout after {API_TIMEOUT:?}");
                 return Err(ClientError::Timeout);
             }
         };
@@ -777,18 +774,18 @@ impl ClientThread {
                     .collect())
             }
             Ok(Err(e)) => {
-                error!("Get playlists API error: {}", e);
+                error!("Get playlists API error: {e}");
                 Err(ClientError::ApiError(e.to_string()))
             }
             Err(_) => {
-                error!("Get playlists timeout after {:?}", API_TIMEOUT);
+                error!("Get playlists timeout after {API_TIMEOUT:?}");
                 Err(ClientError::Timeout)
             }
         }
     }
 
     async fn handle_get_playlist(&self, playlist_id: &str) -> ClientResult<PlaylistDetail> {
-        debug!("Getting playlist: {}", playlist_id);
+        debug!("Getting playlist: {playlist_id}");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
         match timeout(API_TIMEOUT, client.get_playlist(playlist_id)).await {
@@ -829,14 +826,11 @@ impl ClientThread {
                 Ok(PlaylistDetail { info, entries })
             }
             Ok(Err(e)) => {
-                error!("Get playlist {} API error: {}", playlist_id, e);
+                error!("Get playlist {playlist_id} API error: {e}");
                 Err(ClientError::ApiError(e.to_string()))
             }
             Err(_) => {
-                error!(
-                    "Get playlist {} timeout after {:?}",
-                    playlist_id, API_TIMEOUT
-                );
+                error!("Get playlist {playlist_id} timeout after {API_TIMEOUT:?}");
                 Err(ClientError::Timeout)
             }
         }
@@ -847,7 +841,7 @@ impl ClientThread {
         name: &str,
         song_ids: Vec<String>,
     ) -> ClientResult<PlaylistDetail> {
-        debug!("Creating playlist: {}", name);
+        debug!("Creating playlist: {name}");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
         match timeout(API_TIMEOUT, client.create_playlist(name, song_ids)).await {
@@ -884,11 +878,11 @@ impl ClientThread {
                 Ok(PlaylistDetail { info, entries })
             }
             Ok(Err(e)) => {
-                error!("Create playlist API error: {}", e);
+                error!("Create playlist API error: {e}");
                 Err(ClientError::ApiError(e.to_string()))
             }
             Err(_) => {
-                error!("Create playlist timeout after {:?}", API_TIMEOUT);
+                error!("Create playlist timeout after {API_TIMEOUT:?}");
                 Err(ClientError::Timeout)
             }
         }
@@ -901,7 +895,7 @@ impl ClientThread {
         song_ids_to_add: Vec<String>,
         song_indexes_to_remove: Vec<i64>,
     ) -> ClientResult<()> {
-        debug!("Updating playlist: {}", playlist_id);
+        debug!("Updating playlist: {playlist_id}");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
         match timeout(
@@ -918,45 +912,44 @@ impl ClientThread {
         .await
         {
             Ok(Ok(_)) => {
-                debug!("Updated playlist: {}", playlist_id);
+                debug!("Updated playlist: {playlist_id}");
                 Ok(())
             }
             Ok(Err(e)) => {
-                error!("Update playlist {} API error: {}", playlist_id, e);
+                error!("Update playlist {playlist_id} API error: {e}");
                 Err(ClientError::ApiError(e.to_string()))
             }
             Err(_) => {
-                error!(
-                    "Update playlist {} timeout after {:?}",
-                    playlist_id, API_TIMEOUT
-                );
+                error!("Update playlist {playlist_id} timeout after {API_TIMEOUT:?}");
                 Err(ClientError::Timeout)
             }
         }
     }
 
     async fn handle_delete_playlist(&self, playlist_id: &str) -> ClientResult<()> {
-        debug!("Deleting playlist: {}", playlist_id);
+        debug!("Deleting playlist: {playlist_id}");
         let client = self.client.as_ref().ok_or(ClientError::NotConnected)?;
 
         match timeout(API_TIMEOUT, client.delete_playlist(playlist_id)).await {
             Ok(Ok(_)) => {
-                debug!("Deleted playlist: {}", playlist_id);
+                debug!("Deleted playlist: {playlist_id}");
                 Ok(())
             }
             Ok(Err(e)) => {
-                error!("Delete playlist {} API error: {}", playlist_id, e);
+                error!("Delete playlist {playlist_id} API error: {e}");
                 Err(ClientError::ApiError(e.to_string()))
             }
             Err(_) => {
-                error!(
-                    "Delete playlist {} timeout after {:?}",
-                    playlist_id, API_TIMEOUT
-                );
+                error!("Delete playlist {playlist_id} timeout after {API_TIMEOUT:?}");
                 Err(ClientError::Timeout)
             }
         }
     }
+}
+
+/// Spawn the client thread and return a handle
+pub fn spawn() -> SubsonicClientHandle {
+    ClientThread::spawn()
 }
 
 #[cfg(test)]
@@ -1003,9 +996,4 @@ mod tests {
         assert!(thread.server_config.is_none());
         assert!(!thread.connected.load(Ordering::SeqCst));
     }
-}
-
-/// Spawn the client thread and return a handle
-pub fn spawn() -> SubsonicClientHandle {
-    ClientThread::spawn()
 }

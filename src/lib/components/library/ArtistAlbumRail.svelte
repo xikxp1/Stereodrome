@@ -38,6 +38,7 @@
     <div class="album-scroll flex gap-3 overflow-x-auto px-4 pb-3 pt-2">
       {#each albums as album (album.id)}
         <button
+          type="button"
           class="album-card group w-28 shrink-0 rounded-md p-2 text-left transition-colors hover:bg-base-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
           title={album.name}
           onclick={() => onSelect?.(album)}

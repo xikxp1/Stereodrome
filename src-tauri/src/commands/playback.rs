@@ -33,6 +33,11 @@ struct SongData {
     equalizer_settings: Option<EqualizerSettings>,
 }
 
+fn duration_seconds(duration: i64) -> f64 {
+    let duration = duration.clamp(0, i64::from(u32::MAX));
+    f64::from(u32::try_from(duration).expect("clamped duration fits in u32"))
+}
+
 /// Fetch all data needed to play a song: metadata, audio bytes, normalization gain.
 async fn fetch_song_data(
     app_handle: &AppHandle,
@@ -58,7 +63,7 @@ async fn fetch_song_data(
             [song_id],
             |row| {
                 Ok((
-                    row.get::<_, Option<i64>>(0)?.unwrap_or(0) as f64,
+                    duration_seconds(row.get::<_, Option<i64>>(0)?.unwrap_or(0)),
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(3)?.unwrap_or_default(),
@@ -174,8 +179,7 @@ fn prefetch_next_song(app_handle: &AppHandle, state: &AppState) {
                     [&item.song_id],
                     |row| row.get::<_, i64>(0),
                 )
-                .map(|count| count == 0)
-                .unwrap_or(false);
+                .is_ok_and(|count| count == 0);
 
         // Preserve the previous behavior of analyzing an already-cached immediate
         // next song, but do not analyze every cached song found during lookahead.
@@ -423,12 +427,11 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
         let mut queue = state.queue.lock_recover();
         let current_id = queue.current_item().map(|i| i.song_id.clone());
         let next_id = queue.peek_next().map(|i| i.song_id.clone());
-        match (current_id, next_id) {
-            (Some(curr), Some(next)) => (curr, next),
-            _ => {
-                reset_crossfade_initiated(&state);
-                return;
-            }
+        if let (Some(curr), Some(next)) = (current_id, next_id) {
+            (curr, next)
+        } else {
+            reset_crossfade_initiated(&state);
+            return;
         }
     };
 
@@ -455,7 +458,7 @@ pub async fn initiate_crossfade(app_handle: &AppHandle, crossfade_duration_ms: u
         return;
     }
 
-    info!("Initiating crossfade to song {}", next_song_id);
+    info!("Initiating crossfade to song {next_song_id}");
 
     let data = match fetch_song_data(app_handle, &state, &next_song_id).await {
         Ok(d) => d,
@@ -535,14 +538,12 @@ fn spawn_loudness_analysis_if_needed(
         let suffix = suffix.to_string();
         let app_handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
-            let cache = match AudioCache::new(&app_handle) {
-                Ok(c) => c,
-                Err(_) => return,
+            let Ok(cache) = AudioCache::new(&app_handle) else {
+                return;
             };
             let cache_path = cache.get_cache_path(&song_id, &suffix);
-            let audio_data = match tokio::fs::read(&cache_path).await {
-                Ok(data) => data,
-                Err(_) => return,
+            let Ok(audio_data) = tokio::fs::read(&cache_path).await else {
+                return;
             };
             let song_id_inner = song_id.clone();
             let app_handle_inner = app_handle.clone();
@@ -571,36 +572,42 @@ fn spawn_loudness_analysis_if_needed(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn pause_playback(state: State<'_, AppState>) -> AppResult<()> {
     let audio_player = state.audio_player.lock_recover();
     audio_player.pause()
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn resume_playback(state: State<'_, AppState>) -> AppResult<()> {
     let audio_player = state.audio_player.lock_recover();
     audio_player.resume()
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn stop_playback(state: State<'_, AppState>) -> AppResult<()> {
     let audio_player = state.audio_player.lock_recover();
     audio_player.stop()
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn set_volume(state: State<'_, AppState>, volume: f32) -> AppResult<()> {
     let audio_player = state.audio_player.lock_recover();
     audio_player.set_volume(volume)
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn seek_playback(state: State<'_, AppState>, position: f64) -> AppResult<()> {
     let audio_player = state.audio_player.lock_recover();
     audio_player.seek(position)
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
     let audio_player = state.audio_player.lock_recover();
     audio_player.get_status()
@@ -628,13 +635,11 @@ fn is_gapless_eligible(
         .ok()
     };
 
-    let current = match get_track_info(current_song_id) {
-        Some(info) => info,
-        None => return false,
+    let Some(current) = get_track_info(current_song_id) else {
+        return false;
     };
-    let next = match get_track_info(next_song_id) {
-        Some(info) => info,
-        None => return false,
+    let Some(next) = get_track_info(next_song_id) else {
+        return false;
     };
 
     // Must be same album
@@ -693,7 +698,7 @@ fn check_and_queue_gapless(app_handle: &AppHandle, state: &AppState) {
         return;
     }
 
-    info!("Gapless eligible: queuing next song {}", next_song_id);
+    info!("Gapless eligible: queuing next song {next_song_id}");
 
     // Spawn async task to fetch audio and send AppendGapless command
     let app = app_handle.clone();
@@ -726,12 +731,12 @@ fn check_and_queue_gapless(app_handle: &AppHandle, state: &AppState) {
 
 /// Handle the async portion of a gapless transition: scrobble, prefetch, and queue next.
 /// The queue has already been advanced synchronously by the position emitter to prevent
-/// a race with playback_finished detection.
+/// a race with `playback_finished` detection.
 pub async fn after_gapless_transition(app_handle: &AppHandle, next_song_id: Option<String>) {
     let state: State<'_, AppState> = app_handle.state();
 
     if let Some(ref song_id) = next_song_id {
-        info!("Gapless transition to song {}", song_id);
+        info!("Gapless transition to song {song_id}");
 
         // Scrobble the new song
         if !crate::commands::settings::manual_offline_enabled(app_handle) {
@@ -756,7 +761,7 @@ pub async fn after_gapless_transition(app_handle: &AppHandle, next_song_id: Opti
                             album: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                             cover_art_id: row.get::<_, Option<String>>(3)?,
                         },
-                        row.get::<_, Option<i64>>(4)?.unwrap_or(0) as f64,
+                        duration_seconds(row.get::<_, Option<i64>>(4)?.unwrap_or(0)),
                     ))
                 },
             )

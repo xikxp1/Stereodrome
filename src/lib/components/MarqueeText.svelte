@@ -131,10 +131,8 @@
   });
 
   // Cleanup on unmount
-  $effect(() => {
-    return () => {
-      stopAnimation();
-    };
+  $effect(() => () => {
+    stopAnimation();
   });
 </script>
 

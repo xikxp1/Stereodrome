@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { error } from "@tauri-apps/plugin-log";
 import type { Song } from "$lib/types";
 import { queue } from "./queue.svelte";
+import { logError } from "$lib/services/logging";
 import { notifications } from "$lib/services/notifications.svelte";
 import { setPersistedVolume } from "$lib/api/commands";
 
@@ -63,16 +63,19 @@ class PlaybackStore {
     getCurrentWindow().label === "main";
 
   constructor() {
-    this.setupEventListeners();
+    void this.setupEventListeners();
   }
 
   private toCurrentTrack(song: SongMetadata): CurrentTrack {
     return {
       id: song.id,
       title: song.title,
-      artist: song.artist || "Unknown Artist",
-      album: song.album || "",
-      coverArtId: song.cover_art_id || null,
+      artist: song.artist !== "" ? song.artist : "Unknown Artist",
+      album: song.album,
+      coverArtId:
+        song.cover_art_id !== null && song.cover_art_id !== ""
+          ? song.cover_art_id
+          : null,
     };
   }
 
@@ -116,11 +119,15 @@ class PlaybackStore {
 
           // Notify song change when app is not focused
           if (songChanged && this.shouldHandleSideEffects) {
-            notifications.notifySongChange(
-              state.song.title,
-              state.song.artist,
-              state.song.cover_art_id
-            );
+            void notifications
+              .notifySongChange(
+                state.song.title,
+                state.song.artist,
+                state.song.cover_art_id
+              )
+              .catch((cause: unknown) => {
+                logError("Failed to send song change notification", cause);
+              });
           }
 
           if (!this.sameTrackMetadata(this.currentTrack, nextTrack)) {
@@ -135,19 +142,17 @@ class PlaybackStore {
               this.scrobbledSongId !== state.song.id
             ) {
               this.scrobbledSongId = state.song.id;
-              invoke("scrobble_submit", { songId: state.song.id }).catch(
-                (e) => {
-                  error(`Failed to submit scrobble: ${e}`);
-                }
-              );
+              void invoke("scrobble_submit", {
+                songId: state.song.id,
+              }).catch((cause: unknown) => {
+                logError("Failed to submit scrobble", cause);
+              });
             }
           }
 
           this.lastPosition = state.position;
-        } else {
-          if (this.currentTrack !== null) {
-            this.currentTrack = null;
-          }
+        } else if (this.currentTrack !== null) {
+          this.currentTrack = null;
         }
       }
     );
@@ -171,10 +176,15 @@ class PlaybackStore {
       await invoke("play_song", { songId: song.id });
       this.isPlaying = true;
       this.position = 0;
-      this.duration = song.duration || 0;
-    } catch (e) {
-      error(`Failed to play song: ${e}`);
-      throw e;
+      this.duration =
+        song.duration !== null &&
+        song.duration !== 0 &&
+        !Number.isNaN(song.duration)
+          ? song.duration
+          : 0;
+    } catch (cause) {
+      logError("Failed to play song", cause);
+      throw cause;
     }
   }
 
@@ -182,8 +192,8 @@ class PlaybackStore {
     try {
       await invoke("pause_playback");
       this.isPlaying = false;
-    } catch (e) {
-      error(`Failed to pause: ${e}`);
+    } catch (cause) {
+      logError("Failed to pause", cause);
     }
   }
 
@@ -191,8 +201,8 @@ class PlaybackStore {
     try {
       await invoke("resume_playback");
       this.isPlaying = true;
-    } catch (e) {
-      error(`Failed to resume: ${e}`);
+    } catch (cause) {
+      logError("Failed to resume", cause);
     }
   }
 
@@ -217,8 +227,8 @@ class PlaybackStore {
       this.isPlaying = false;
       this.position = 0;
       this.currentTrack = null;
-    } catch (e) {
-      error(`Failed to stop: ${e}`);
+    } catch (cause) {
+      logError("Failed to stop", cause);
     }
   }
 
@@ -228,8 +238,8 @@ class PlaybackStore {
       await invoke("set_volume", { volume: clamped });
       this.volume = clamped;
       this.scheduleVolumePersistence(clamped);
-    } catch (e) {
-      error(`Failed to set volume: ${e}`);
+    } catch (cause) {
+      logError("Failed to set volume", cause);
     }
   }
 
@@ -241,8 +251,8 @@ class PlaybackStore {
     }
 
     this.persistVolumeTimeout = setTimeout(() => {
-      void setPersistedVolume(volume).catch((e) => {
-        error(`Failed to persist volume: ${e}`);
+      void setPersistedVolume(volume).catch((cause: unknown) => {
+        logError("Failed to persist volume", cause);
       });
       this.persistVolumeTimeout = null;
     }, PlaybackStore.PERSIST_DEBOUNCE_MS);
@@ -255,8 +265,8 @@ class PlaybackStore {
       this.position = status.position;
       this.duration = status.duration;
       this.volume = status.volume;
-    } catch (e) {
-      error(`Failed to get playback status: ${e}`);
+    } catch (cause) {
+      logError("Failed to get playback status", cause);
     }
   }
 

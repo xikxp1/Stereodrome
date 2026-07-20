@@ -7,6 +7,17 @@ members = [
 ]
 resolver = "3"
 
+[workspace.lints.rust]
+warnings = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+# Multiple versions are dictated by Tauri and compatibility dependencies.
+multiple_crate_versions = "allow"
+
 [profile.dev.package.ebur128]
 opt-level = 3
 

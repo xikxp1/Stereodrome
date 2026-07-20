@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 
@@ -36,14 +36,18 @@ export function SearchScreen() {
 
   useEffect(() => {
     const focusTimeout = setTimeout(() => inputRef.current?.focus(), 120);
-    return () => clearTimeout(focusTimeout);
+    return () => {
+      clearTimeout(focusTimeout);
+    };
   }, []);
 
   useEffect(() => {
     const timeout = setTimeout(() => {
       setDebouncedQuery(query.trim());
     }, 300);
-    return () => clearTimeout(timeout);
+    return () => {
+      clearTimeout(timeout);
+    };
   }, [query]);
 
   async function playAlbum(albumId: string) {
@@ -52,8 +56,9 @@ export function SearchScreen() {
       stereodrome.offlineMode,
       stereodrome.offlineSongIds
     );
-    if (albumSongs.length > 0) {
-      await playback.playSong(albumSongs[0], albumSongs);
+    const firstSong = albumSongs[0];
+    if (firstSong) {
+      await playback.playSong(firstSong, albumSongs);
       view.showNowPlaying();
     }
   }
@@ -64,8 +69,9 @@ export function SearchScreen() {
       stereodrome.offlineMode,
       stereodrome.offlineSongIds
     );
-    if (artistSongs.length > 0) {
-      await playback.playSong(artistSongs[0], artistSongs);
+    const firstSong = artistSongs[0];
+    if (firstSong) {
+      await playback.playSong(firstSong, artistSongs);
       view.showNowPlaying();
     }
   }
@@ -76,7 +82,7 @@ export function SearchScreen() {
     stereodrome.offlineMode,
     stereodrome.offlineSongIds
   );
-  const resultSongs = data?.songs ?? [];
+  const resultSongs = useMemo(() => data?.songs ?? [], [data?.songs]);
   const handleActiveIndexChange = useCallback(
     (index: number) => {
       const song = resultSongs[index] ?? null;
@@ -92,9 +98,12 @@ export function SearchScreen() {
     [resultSongs, setActiveSongTarget]
   );
 
-  useEffect(() => {
-    return () => clearActiveSongTarget();
-  }, [clearActiveSongTarget]);
+  useEffect(
+    () => () => {
+      clearActiveSongTarget();
+    },
+    [clearActiveSongTarget]
+  );
 
   const options = [
     ...resultSongs.map((song) => ({
@@ -104,7 +113,7 @@ export function SearchScreen() {
         stereodrome.offlineSongIds,
         stereodrome.downloadingSongIds
       ),
-      sublabel: song.artist ?? undefined,
+      ...(song.artist == null ? {} : { sublabel: song.artist }),
       onSelect: async () => {
         await playback.playSong(song);
         view.showNowPlaying();
@@ -112,24 +121,26 @@ export function SearchScreen() {
     })),
     ...(data?.albums ?? []).map((album) => ({
       label: album.name,
-      sublabel: album.artist ?? undefined,
-      onSelect: () =>
+      ...(album.artist == null ? {} : { sublabel: album.artist }),
+      onSelect: () => {
         view.push({
           name: "album",
           title: album.name,
           params: { albumId: album.id, title: album.name },
-        }),
+        });
+      },
       onLongSelect: () => playAlbum(album.id),
     })),
     ...(data?.artists ?? []).map((artist) => ({
       label: artist.name,
       sublabel: `${artist.album_count} albums`,
-      onSelect: () =>
+      onSelect: () => {
         view.push({
           name: "artist",
           title: artist.name,
           params: { artistId: artist.id, title: artist.name },
-        }),
+        });
+      },
       onLongSelect: () => playArtist(artist.id),
     })),
   ];
@@ -146,7 +157,12 @@ export function SearchScreen() {
           style={styles.input}
           value={query}
         />
-        <Pressable onPress={() => setQuery("")} style={styles.clear}>
+        <Pressable
+          onPress={() => {
+            setQuery("");
+          }}
+          style={styles.clear}
+        >
           <Text style={styles.clearText}>x</Text>
         </Pressable>
       </View>

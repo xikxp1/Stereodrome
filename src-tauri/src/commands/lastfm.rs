@@ -5,6 +5,7 @@ use crate::lastfm::{LastfmAuthStart, LastfmQueueItem, LastfmStatus};
 use crate::state::AppState;
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_lastfm_status(app_handle: AppHandle, state: State<'_, AppState>) -> LastfmStatus {
     crate::lastfm::lastfm_status(&app_handle, state.inner())
 }
@@ -31,6 +32,7 @@ pub async fn complete_lastfm_auth(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn disconnect_lastfm(
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -39,6 +41,7 @@ pub fn disconnect_lastfm(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_lastfm_queue(state: State<'_, AppState>) -> AppResult<Vec<LastfmQueueItem>> {
     crate::lastfm::queue(state.inner())
 }

@@ -28,6 +28,10 @@ const SYNC_ALREADY_RUNNING_MESSAGE: &str = "Library sync already in progress";
 const ARTIST_FETCH_CONCURRENCY: usize = 8;
 const ALBUM_FETCH_CONCURRENCY: usize = 12;
 
+fn usize_to_i32_saturating(value: usize) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanStatus {
     pub scanning: bool,
@@ -402,6 +406,7 @@ pub async fn reconcile_library_state(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_library_sync_status(
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -459,6 +464,7 @@ async fn run_sync_job_with_status(
     Ok(result)
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_incremental_sync(state: &AppState) -> AppResult<(SyncResult, NewItemCounts)> {
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);
@@ -492,14 +498,12 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<(SyncResult, NewIte
                 if newest_scan.stop_reason == NewestScanStopReason::ReachedPreviousHead =>
             {
                 info!(
-                    "Library sync skipped: no albums found before previous newest head ({})",
-                    previous_head_album_id
+                    "Library sync skipped: no albums found before previous newest head ({previous_head_album_id})"
                 );
             }
             Some(previous_head_album_id) => {
                 info!(
-                    "Library sync skipped: newest-album feed exhausted before previous newest head ({})",
-                    previous_head_album_id
+                    "Library sync skipped: newest-album feed exhausted before previous newest head ({previous_head_album_id})"
                 );
             }
             None => {
@@ -554,7 +558,7 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<(SyncResult, NewIte
         let artist_albums = match artist_result {
             Ok(albums) => albums,
             Err(e) => {
-                warn!("Error fetching artist {}: {}", artist_id, e);
+                warn!("Error fetching artist {artist_id}: {e}");
                 continue;
             }
         };
@@ -571,7 +575,7 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<(SyncResult, NewIte
         artists_data.push(ArtistData {
             id: artist_id.clone(),
             name: artist_name,
-            album_count: artist_albums.len() as i32,
+            album_count: usize_to_i32_saturating(artist_albums.len()),
             cover_art,
         });
 
@@ -709,6 +713,7 @@ async fn run_incremental_sync(state: &AppState) -> AppResult<(SyncResult, NewIte
     ))
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_full_reconcile_sync(state: &AppState) -> AppResult<(SyncResult, NewItemCounts)> {
     if !state.client.is_connected() {
         return Err(AppError::NotConnected);
@@ -753,10 +758,7 @@ async fn run_full_reconcile_sync(state: &AppState) -> AppResult<(SyncResult, New
             Ok(albums) => albums,
             Err(e) => {
                 had_fetch_errors = true;
-                warn!(
-                    "Error fetching artist {} during full reconcile: {}",
-                    artist_id, e
-                );
+                warn!("Error fetching artist {artist_id} during full reconcile: {e}");
                 continue;
             }
         };
@@ -764,7 +766,9 @@ async fn run_full_reconcile_sync(state: &AppState) -> AppResult<(SyncResult, New
         artists_data.push(ArtistData {
             id: artist_id.clone(),
             name: artist_summary.name,
-            album_count: artist_summary.album_count.max(artist_albums.len() as i32),
+            album_count: artist_summary
+                .album_count
+                .max(usize_to_i32_saturating(artist_albums.len())),
             cover_art: artist_summary.cover_art,
         });
 
@@ -831,10 +835,7 @@ async fn run_full_reconcile_sync(state: &AppState) -> AppResult<(SyncResult, New
     let newest_head_album_id = match state.client.get_newest_albums(1, 0).await {
         Ok(newest) => newest.first().map(|album| album.id.clone()),
         Err(e) => {
-            warn!(
-                "Failed to fetch newest head album during full reconcile: {}",
-                e
-            );
+            warn!("Failed to fetch newest head album during full reconcile: {e}");
             None
         }
     };
@@ -873,12 +874,12 @@ async fn run_full_reconcile_sync(state: &AppState) -> AppResult<(SyncResult, New
             )?;
         }
 
-        if !had_fetch_errors {
-            prune_stale_library_rows(&db, &now)?;
-        } else {
+        if had_fetch_errors {
             warn!(
                 "Full reconcile completed with fetch errors, skipping stale-row deletion for safety"
             );
+        } else {
+            prune_stale_library_rows(&db, &now)?;
         }
 
         if let Some(head_album_id) = newest_head_album_id.as_deref() {
@@ -1042,7 +1043,7 @@ async fn fetch_artist_albums_bounded(
         match join_result {
             Ok(result) => results.push(result),
             Err(e) => {
-                warn!("Artist fetch task failed: {}", e);
+                warn!("Artist fetch task failed: {e}");
             }
         }
 
@@ -1104,7 +1105,7 @@ async fn fetch_album_songs_bounded(
         match join_result {
             Ok(result) => results.push(result),
             Err(e) => {
-                warn!("Album fetch task failed: {}", e);
+                warn!("Album fetch task failed: {e}");
             }
         }
 
@@ -1616,7 +1617,7 @@ fn is_job_due(
         return true;
     };
 
-    now.signed_duration_since(last_attempt) >= ChronoDuration::minutes(interval_minutes as i64)
+    now.signed_duration_since(last_attempt) >= ChronoDuration::minutes(i64::from(interval_minutes))
 }
 
 fn compute_next_run_at(
@@ -1634,7 +1635,7 @@ fn compute_next_run_at(
     };
 
     Some(
-        (last_attempt + ChronoDuration::minutes(interval_minutes as i64))
+        (last_attempt + ChronoDuration::minutes(i64::from(interval_minutes)))
             .with_timezone(&Utc)
             .to_rfc3339(),
     )
@@ -1737,6 +1738,7 @@ fn emit_library_sync_status_changed(state: &AppState, app_handle: &AppHandle) {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn emit_library_content_updated(app_handle: &AppHandle, event: LibraryContentUpdatedEvent) {
     if !event.has_new_items {
         return;
@@ -1745,6 +1747,7 @@ fn emit_library_content_updated(app_handle: &AppHandle, event: LibraryContentUpd
     let _ = app_handle.emit("library-content-updated", &event);
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn update_search_index_for_incremental_sync(
     state: &AppState,
     artists: &[ArtistData],
@@ -1818,7 +1821,7 @@ fn update_search_index_for_incremental_sync(
                 *search_index_guard = Some(manager);
             }
             Err(e) => {
-                warn!("Failed to create search index: {}", e);
+                warn!("Failed to create search index: {e}");
                 return Ok(());
             }
         }
@@ -1827,7 +1830,7 @@ fn update_search_index_for_incremental_sync(
     if let Some(ref index_manager) = *search_index_guard
         && let Err(e) = index_manager.upsert_documents(&artist_docs, &album_docs, &song_docs)
     {
-        warn!("Failed to incrementally update search index: {}", e);
+        warn!("Failed to incrementally update search index: {e}");
     }
 
     Ok(())
@@ -1907,7 +1910,7 @@ fn rebuild_search_index_from_db(state: &AppState) -> AppResult<()> {
                 *search_index_guard = Some(manager);
             }
             Err(e) => {
-                warn!("Failed to create search index: {}", e);
+                warn!("Failed to create search index: {e}");
                 return Ok(()); // Don't fail the sync.
             }
         }
@@ -1916,7 +1919,7 @@ fn rebuild_search_index_from_db(state: &AppState) -> AppResult<()> {
     if let Some(ref index_manager) = *search_index_guard
         && let Err(e) = index_manager.rebuild_index(&artists, &albums, &songs)
     {
-        warn!("Failed to rebuild search index: {}", e);
+        warn!("Failed to rebuild search index: {e}");
     }
 
     Ok(())
@@ -1945,6 +1948,7 @@ pub async fn get_artists(state: State<'_, AppState>) -> AppResult<Vec<Artist>> {
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_album_count(state: State<'_, AppState>) -> AppResult<i64> {
     let db = state.db.lock_recover();
     let count: i64 = db.query_row("SELECT COUNT(*) FROM albums", [], |row| row.get(0))?;
@@ -2048,10 +2052,8 @@ pub async fn get_songs(
     };
 
     let songs: Vec<Song> = if let Some(aid) = album_id {
-        let query = format!(
-            "{} WHERE s.album_id = ?1 ORDER BY s.disc_number, s.track_number",
-            base_query
-        );
+        let query =
+            format!("{base_query} WHERE s.album_id = ?1 ORDER BY s.disc_number, s.track_number");
         let mut stmt = db.prepare(&query)?;
         let result: Vec<Song> = stmt
             .query_map([aid], map_row)?
@@ -2059,8 +2061,7 @@ pub async fn get_songs(
         result
     } else if let Some(aid) = artist_id {
         let query = format!(
-            "{} WHERE s.artist_id = ?1 ORDER BY al.name COLLATE NOCASE, s.disc_number, s.track_number",
-            base_query
+            "{base_query} WHERE s.artist_id = ?1 ORDER BY al.name COLLATE NOCASE, s.disc_number, s.track_number"
         );
         let mut stmt = db.prepare(&query)?;
         let result: Vec<Song> = stmt
@@ -2069,8 +2070,7 @@ pub async fn get_songs(
         result
     } else {
         let query = format!(
-            "{} ORDER BY ar.name COLLATE NOCASE, al.name COLLATE NOCASE, s.disc_number, s.track_number",
-            base_query
+            "{base_query} ORDER BY ar.name COLLATE NOCASE, al.name COLLATE NOCASE, s.disc_number, s.track_number"
         );
         let mut stmt = db.prepare(&query)?;
         let result: Vec<Song> = stmt
@@ -2099,7 +2099,7 @@ pub async fn get_album_list(
     }
 
     let order = crate::client::AlbumListOrder::from_str(&list_type)
-        .ok_or_else(|| AppError::Subsonic(format!("Unknown album list type: {}", list_type)))?;
+        .ok_or_else(|| AppError::Subsonic(format!("Unknown album list type: {list_type}")))?;
 
     let size = size.unwrap_or(40) as usize;
     let offset = offset.unwrap_or(0) as usize;

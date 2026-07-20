@@ -2,6 +2,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { error } from "@tauri-apps/plugin-log";
   import { Database, RefreshCw } from "lucide-svelte";
+  import { on } from "svelte/events";
   import {
     getLibrarySyncStatus,
     getSystemTimePreferences,
@@ -205,7 +206,7 @@
     if (!connection.status.connected || connection.manualOfflineEnabled) {
       librarySyncStatus = null;
       syncPopoverOpen = false;
-      return;
+      return undefined;
     }
 
     void loadLibrarySyncStatus();
@@ -219,7 +220,7 @@
   });
 
   $effect(() => {
-    if (!syncPopoverOpen) return;
+    if (!syncPopoverOpen) return undefined;
 
     const handleDocumentClick = (event: MouseEvent) => {
       if (!(event.target instanceof Node)) return;
@@ -227,10 +228,7 @@
       syncPopoverOpen = false;
     };
 
-    document.addEventListener("click", handleDocumentClick, true);
-    return () => {
-      document.removeEventListener("click", handleDocumentClick, true);
-    };
+    return on(document, "click", handleDocumentClick, { capture: true });
   });
 
   $effect(() => {
@@ -339,15 +337,15 @@
     return null;
   });
 
-  const hasSyncError = $derived.by(() =>
+  const hasSyncError = $derived(
     Boolean(
       librarySyncStatus?.incremental.last_error ||
       librarySyncStatus?.full_reconcile.last_error
     )
   );
 
-  const hasActiveSyncJob = $derived.by(
-    () => Boolean(librarySyncStatus?.active_job) || runningManualJob !== null
+  const hasActiveSyncJob = $derived(
+    Boolean(librarySyncStatus?.active_job) || runningManualJob !== null
   );
 
   const controlToneClass = $derived.by(() => {
@@ -360,15 +358,13 @@
     return "opacity-60";
   });
 
-  const incrementalBusy = $derived.by(
-    () =>
-      runningManualJob === "incremental" ||
+  const incrementalBusy = $derived(
+    runningManualJob === "incremental" ||
       librarySyncStatus?.active_job === "incremental"
   );
 
-  const fullBusy = $derived.by(
-    () =>
-      runningManualJob === "full_reconcile" ||
+  const fullBusy = $derived(
+    runningManualJob === "full_reconcile" ||
       librarySyncStatus?.active_job === "full_reconcile"
   );
 </script>

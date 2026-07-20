@@ -113,6 +113,7 @@
     <div class="py-2">
       <div class="sidebar-title">Library</div>
       <button
+        type="button"
         class="sidebar-item"
         class:active={activeView === "music" && !selectedPlaylistId}
         onclick={() => selectView("music")}
@@ -121,6 +122,7 @@
         Music
       </button>
       <button
+        type="button"
         class="sidebar-item"
         class:active={activeView === "artists" && !selectedPlaylistId}
         onclick={() => selectView("artists")}
@@ -129,6 +131,7 @@
         Artists
       </button>
       <button
+        type="button"
         class="sidebar-item"
         class:active={activeView === "albums" && !selectedPlaylistId}
         onclick={() => selectView("albums")}
@@ -137,6 +140,7 @@
         Albums
       </button>
       <button
+        type="button"
         class="sidebar-item sub-item"
         class:active={activeView === "recently_added" && !selectedPlaylistId}
         onclick={() => selectView("recently_added")}
@@ -145,6 +149,7 @@
         Recently Added
       </button>
       <button
+        type="button"
         class="sidebar-item sub-item"
         class:active={activeView === "recently_played" && !selectedPlaylistId}
         onclick={() => selectView("recently_played")}
@@ -153,6 +158,7 @@
         Recently Played
       </button>
       <button
+        type="button"
         class="sidebar-item sub-item"
         class:active={activeView === "most_played" && !selectedPlaylistId}
         onclick={() => selectView("most_played")}
@@ -185,12 +191,14 @@
           />
           <div class="flex gap-1 mt-1">
             <button
+              type="button"
               class="flex-1 px-2 py-0.5 text-[11px] bg-primary hover:bg-primary/50 text-primary-content rounded"
               onclick={handleCreatePlaylist}
             >
               Create
             </button>
             <button
+              type="button"
               class="flex-1 px-2 py-0.5 text-[11px] rounded bg-base-300 hover:bg-base-300/50"
               onclick={() => {
                 showCreatePlaylist = false;
@@ -202,7 +210,7 @@
           </div>
         </div>
       {:else}
-        <button class="sidebar-item" onclick={openCreatePlaylist}>
+        <button type="button" class="sidebar-item" onclick={openCreatePlaylist}>
           <Plus class="size-4" />
           New Playlist
         </button>
@@ -226,12 +234,14 @@
             />
             <div class="flex gap-1 mt-1">
               <button
+                type="button"
                 class="flex-1 px-2 py-0.5 text-[11px] bg-primary hover:bg-primary/50 text-primary-content rounded"
                 onclick={handleRename}
               >
                 Save
               </button>
               <button
+                type="button"
                 class="flex-1 px-2 py-0.5 text-[11px] rounded bg-base-300 hover:bg-base-300/50"
                 onclick={cancelRename}
               >
@@ -241,6 +251,7 @@
           </div>
         {:else}
           <button
+            type="button"
             class="sidebar-item"
             class:active={selectedPlaylistId === playlist.id}
             onclick={() => selectPlaylist(playlist)}

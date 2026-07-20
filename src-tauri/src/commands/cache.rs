@@ -12,12 +12,14 @@ use crate::state::AppState;
 
 /// Get configured cache locations.
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_cache_locations(app_handle: AppHandle) -> AppResult<CacheLocationInfo> {
     cache_location_info(&app_handle)
 }
 
 /// Set the cache root and move existing cache files into the new root.
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn set_cache_root(
     app_handle: AppHandle,
     cache_root: Option<String>,
@@ -36,6 +38,7 @@ pub async fn get_audio_cache_stats(app_handle: AppHandle) -> AppResult<CacheStat
 
 /// Get locally cached song IDs that can be played without a server connection.
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_offline_song_ids(
     app_handle: AppHandle,
     state: State<'_, AppState>,

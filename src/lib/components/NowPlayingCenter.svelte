@@ -125,6 +125,7 @@
       {/if}
 
       <button
+        type="button"
         class="relative z-10 flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded bg-base-200 transition-opacity hover:opacity-80"
         onclick={() => onCoverArtClick?.()}
         disabled={!coverArtUrl}

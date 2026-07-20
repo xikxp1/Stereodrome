@@ -9,6 +9,10 @@ use crate::commands::coverart::preserve_cover_art_for_offline;
 use crate::error::{AppResult, MutexExt};
 use crate::state::AppState;
 
+fn usize_to_i32_saturating(value: usize) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Playlist {
     pub id: String,
@@ -66,7 +70,7 @@ pub async fn sync_playlists(app_handle: AppHandle, state: State<'_, AppState>) -
 
     // Fetch all playlists from server
     let playlists = state.client.get_playlists().await?;
-    let playlist_count = playlists.len() as i32;
+    let playlist_count = usize_to_i32_saturating(playlists.len());
 
     // Fetch songs for each playlist
     let mut playlist_details = Vec::new();
@@ -129,7 +133,11 @@ pub async fn sync_playlists(app_handle: AppHandle, state: State<'_, AppState>) -
                 if song_exists {
                     db.execute(
                         "INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES (?1, ?2, ?3)",
-                        rusqlite::params![&info.id, &entry.id, position as i32],
+                        rusqlite::params![
+                            &info.id,
+                            &entry.id,
+                            usize_to_i32_saturating(position)
+                        ],
                     )?;
                 }
             }
@@ -148,6 +156,7 @@ pub async fn sync_playlists(app_handle: AppHandle, state: State<'_, AppState>) -
 
 /// Get all playlists from local cache
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_playlists(state: State<'_, AppState>) -> AppResult<Vec<Playlist>> {
     let db = state.db.lock_recover();
     let mut stmt = db.prepare(
@@ -176,13 +185,14 @@ pub fn get_playlists(state: State<'_, AppState>) -> AppResult<Vec<Playlist>> {
 
 /// Get songs for a playlist from local cache
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_playlist_songs(
     state: State<'_, AppState>,
     playlist_id: String,
 ) -> AppResult<Vec<PlaylistSong>> {
     let db = state.db.lock_recover();
     let mut stmt = db.prepare(
-        r#"
+        r"
         SELECT
             s.id, s.album_id, s.artist_id, s.title, s.track_number, s.disc_number,
             s.duration, s.bit_rate, s.size, s.suffix, s.content_type, s.path,
@@ -196,7 +206,7 @@ pub fn get_playlist_songs(
         LEFT JOIN albums al ON al.id = s.album_id
         WHERE ps.playlist_id = ?1
         ORDER BY ps.position
-        "#,
+        ",
     )?;
 
     let songs: Vec<PlaylistSong> = stmt
@@ -284,7 +294,7 @@ pub async fn create_playlist(
         if song_exists {
             db.execute(
                 "INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES (?1, ?2, ?3)",
-                rusqlite::params![&info.id, &entry.id, position as i32],
+                rusqlite::params![&info.id, &entry.id, usize_to_i32_saturating(position)],
             )?;
         }
     }
@@ -429,7 +439,7 @@ pub async fn remove_song_from_playlist(
         return Err(crate::error::AppError::OfflineMode);
     }
 
-    remove_playlist_positions(&app_handle, &state, &playlist_id, vec![position as i64]).await
+    remove_playlist_positions(&app_handle, &state, &playlist_id, vec![i64::from(position)]).await
 }
 
 /// Remove multiple songs from a playlist by position on server and refresh local cache
@@ -599,7 +609,7 @@ async fn refresh_playlist_cache(state: &State<'_, AppState>, playlist_id: &str) 
         if song_exists {
             db.execute(
                 "INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES (?1, ?2, ?3)",
-                rusqlite::params![playlist_id, &entry.id, position as i32],
+                rusqlite::params![playlist_id, &entry.id, usize_to_i32_saturating(position)],
             )?;
         }
     }
@@ -625,10 +635,7 @@ async fn reconcile_saved_playlists_offline_inner(
             match download_playlist_to_cache(app_handle, state, &playlist_id).await {
                 Ok(count) => count,
                 Err(error) => {
-                    warn!(
-                        "Failed to reconcile saved playlist {}: {}",
-                        playlist_id, error
-                    );
+                    warn!("Failed to reconcile saved playlist {playlist_id}: {error}");
                     0
                 }
             };
@@ -677,6 +684,7 @@ fn playlist_saved_offline(state: &State<'_, AppState>, playlist_id: &str) -> App
     Ok(playlist_offline_saved_at(state, playlist_id)?.is_some())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn playlist_offline_saved_at(
     state: &State<'_, AppState>,
     playlist_id: &str,
@@ -691,6 +699,7 @@ fn playlist_offline_saved_at(
         .unwrap_or(None))
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn set_playlist_offline_saved_at(
     state: &State<'_, AppState>,
     playlist_id: &str,
@@ -740,8 +749,7 @@ async fn download_playlist_to_cache(
             preserve_cover_art_for_offline(app_handle, &state.client, &cover_art_id).await
         {
             warn!(
-                "Failed to preserve cover art {} for offline playlist {}: {}",
-                cover_art_id, playlist_id, error
+                "Failed to preserve cover art {cover_art_id} for offline playlist {playlist_id}: {error}"
             );
         }
     }
@@ -872,7 +880,7 @@ mod tests {
         let song_ids = playlist_song_ids_to_add(
             vec![
                 "song-a".to_string(),
-                "".to_string(),
+                String::new(),
                 "  ".to_string(),
                 "song-b".to_string(),
             ],
@@ -902,7 +910,7 @@ mod tests {
             Some(" playlist-cover ".to_string()),
             Some("album-cover".to_string()),
             None,
-            Some("".to_string()),
+            Some(String::new()),
             Some("album-cover".to_string()),
             Some("artist-cover".to_string()),
             Some("playlist-cover".to_string()),

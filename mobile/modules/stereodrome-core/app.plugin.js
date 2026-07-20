@@ -3,13 +3,13 @@ const { withGradleProperties } = require("expo/config-plugins");
 const androidMinSdkVersion = "26";
 
 module.exports = function withStereodromeCore(config) {
-  return withGradleProperties(config, (config) => {
+  return withGradleProperties(config, (modConfig) => {
     setGradleProperty(
-      config.modResults,
+      modConfig.modResults,
       "android.minSdkVersion",
       androidMinSdkVersion
     );
-    return config;
+    return modConfig;
   });
 };
 

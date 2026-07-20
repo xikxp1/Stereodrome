@@ -1,7 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { error } from "@tauri-apps/plugin-log";
 import { seekPlayback } from "$lib/api/commands";
+import { logError } from "$lib/services/logging";
 import { playback } from "$lib/stores/playback.svelte";
 import { queue } from "$lib/stores/queue.svelte";
 
@@ -69,8 +69,8 @@ class MediaControlsService {
 
     try {
       await seekPlayback(clampedPosition);
-    } catch (e) {
-      error(`Failed to seek from media controls: ${e}`);
+    } catch (cause) {
+      logError("Failed to seek from media controls", cause);
     }
   }
 

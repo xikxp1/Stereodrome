@@ -30,6 +30,7 @@ pub struct ConnectionStatus {
 }
 
 impl ConnectionStatus {
+    #[must_use]
     pub fn disconnected() -> Self {
         Self {
             connected: false,
@@ -50,6 +51,11 @@ pub struct Artist {
 }
 
 impl Artist {
+    /// Builds an artist from the columns in a library query row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a required column is missing or has an incompatible type.
     pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
@@ -75,6 +81,11 @@ pub struct Album {
 }
 
 impl Album {
+    /// Builds an album from the columns in a library query row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a required column is missing or has an incompatible type.
     pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
@@ -126,6 +137,11 @@ pub struct Song {
 }
 
 impl Song {
+    /// Builds a song from the columns in a library query row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a required column is missing or has an incompatible type.
     pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
@@ -211,6 +227,7 @@ impl SyncSettings {
         self.full_reconcile_interval_hours = self.full_reconcile_interval_hours.clamp(1, 168);
     }
 
+    #[must_use]
     pub fn clamped(mut self) -> Self {
         self.clamp();
         self
@@ -322,6 +339,8 @@ pub struct PlaybackProgress {
     pub is_playing: bool,
 }
 
+// These booleans are stable, independently configurable serialized settings.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioProcessingSettings {
     pub normalization_enabled: bool,

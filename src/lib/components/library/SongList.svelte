@@ -70,19 +70,17 @@
   let pendingInternalSelectedSongId = $state<string | null>(null);
   let lastObservedSelectedSongId = $state<string | null | undefined>(undefined);
 
-  const songByKey = $derived.by(
-    () =>
-      new Map(
-        songs.map((song, index) => [getSongRowKey(song, index), song] as const)
-      )
+  const songByKey = $derived(
+    new Map(
+      songs.map((song, index) => [getSongRowKey(song, index), song] as const)
+    )
   );
-  const selectedSongLookup = $derived.by(
-    () =>
-      Object.fromEntries(
-        selectedSongKeys.map((songKey) => [songKey, true] as const)
-      ) as Record<SongRowKey, boolean>
+  const selectedSongLookup = $derived(
+    Object.fromEntries(
+      selectedSongKeys.map((songKey) => [songKey, true] as const)
+    ) as Record<SongRowKey, boolean>
   );
-  const selectedSongs = $derived.by(() =>
+  const selectedSongs = $derived(
     orderedSelectedSongKeys
       .map((songKey) => songByKey.get(songKey))
       .filter((song): song is Song => song !== undefined)
@@ -140,7 +138,8 @@
 
   function getFirstSongRowKeyById(songId: string): SongRowKey | null {
     const index = songs.findIndex((song) => song.id === songId);
-    return index >= 0 ? getSongRowKey(songs[index], index) : null;
+    const song = songs[index];
+    return song ? getSongRowKey(song, index) : null;
   }
 
   function replaceSelection(
@@ -229,7 +228,9 @@
       ...orderedSelectedSongKeys.filter((selectedKey) =>
         rangeSongKeys.includes(selectedKey)
       ),
-      ...rangeSongKeys.filter((songKey) => !selectedSongKeys.includes(songKey)),
+      ...rangeSongKeys.filter(
+        (rangeSongKey) => !selectedSongKeys.includes(rangeSongKey)
+      ),
     ];
 
     replaceSelection(rangeSongKeys, nextOrderedSongKeys, anchorKey);
@@ -288,7 +289,7 @@
     e.preventDefault();
 
     const songKey = getSongRowKey(song, index);
-    const isExistingSelection = !!selectedSongLookup[songKey];
+    const isExistingSelection = Boolean(selectedSongLookup[songKey]);
     const contextSelectedSongs = isExistingSelection
       ? selectedSongs.length > 0
         ? selectedSongs
@@ -313,33 +314,37 @@
       onAddToQueue: async () => {
         await queue.addSongs(contextSelectedSongs);
       },
-      showGoToArtist: isMultiSelect || !!primarySong?.artist_id,
-      showGoToAlbum: isMultiSelect || !!primarySong?.album_id,
+      showGoToArtist: isMultiSelect || Boolean(primarySong?.artist_id),
+      showGoToAlbum: isMultiSelect || Boolean(primarySong?.album_id),
       disableGoToArtist: isMultiSelect,
       disableGoToAlbum: isMultiSelect,
-      onGoToArtist:
-        !isMultiSelect && primarySong?.artist_id
-          ? () => {
+      ...(!isMultiSelect && primarySong?.artist_id
+        ? {
+            onGoToArtist: () => {
               onNavigateToArtist?.(primarySong);
-            }
-          : undefined,
-      onGoToAlbum:
-        !isMultiSelect && primarySong?.album_id
-          ? () => {
-              onNavigateToAlbum?.(primarySong);
-            }
-          : undefined,
-      onRemoveFromPlaylist: playlistId
-        ? async () => {
-            const positions = getPlaylistPositions(contextSelectedSongs);
-            if (positions.length > 0) {
-              await playlistStore.removeSongsFromPlaylist(
-                playlistId,
-                positions
-              );
-            }
+            },
           }
-        : undefined,
+        : {}),
+      ...(!isMultiSelect && primarySong?.album_id
+        ? {
+            onGoToAlbum: () => {
+              onNavigateToAlbum?.(primarySong);
+            },
+          }
+        : {}),
+      ...(playlistId
+        ? {
+            onRemoveFromPlaylist: async () => {
+              const positions = getPlaylistPositions(contextSelectedSongs);
+              if (positions.length > 0) {
+                await playlistStore.removeSongsFromPlaylist(
+                  playlistId,
+                  positions
+                );
+              }
+            },
+          }
+        : {}),
       onAddToPlaylist: async (targetPlaylistId: string) => {
         await playlistStore.addSongsToPlaylist(
           targetPlaylistId,
@@ -459,64 +464,68 @@
       >
         <div style="height: {totalSize}px; width: 100%; position: relative;">
           {#each virtualItems as row (row.index)}
-            {@const song = songs[row.index]}
-            {@const index = row.index}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="song-grid-row"
-              class:selected={!!selectedSongLookup[getSongRowKey(song, index)]}
-              class:playing={playingSongId === song.id}
-              class:even={index % 2 === 1}
-              onclick={(event) => handleRowClick(event, song, index)}
-              ondblclick={() => handleRowDoubleClick(song)}
-              oncontextmenu={(e) => handleRowContextMenu(e, song, index)}
-              style="position: absolute; top: 0; left: 0; width: 100%; height: {row.size}px; transform: translateY({row.start}px);"
-            >
-              <div class="cell-track dimmed">
-                {song.track_number || index + 1}
-              </div>
-              <div class="cell-download">
-                {#if downloadingSongIds.has(song.id)}
-                  <span class="downloading-icon" title="Downloading">
-                    <LoaderCircle class="h-3 w-3 animate-spin" />
-                  </span>
-                  <span class="sr-only">Downloading</span>
-                {:else if downloadedSongIds.has(song.id)}
-                  <span class="downloaded-icon">
-                    <Download class="h-3 w-3" />
-                  </span>
-                  <span class="sr-only">Downloaded</span>
-                {:else}
-                  <span class="not-downloaded" title="Not downloaded">-</span>
-                {/if}
-              </div>
-              <div class="cell-name font-medium">
-                {#if playingSongId === song.id}
-                  <span
-                    class="inline-flex min-w-0 max-w-full items-center gap-1.5"
-                  >
-                    <Volume2 class="w-3 h-3 shrink-0 animate-pulse" />
+            {const song = $derived(songs[row.index])}
+            {const index = $derived(row.index)}
+            {#if song}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="song-grid-row"
+                class:selected={Boolean(
+                  selectedSongLookup[getSongRowKey(song, index)]
+                )}
+                class:playing={playingSongId === song.id}
+                class:even={index % 2 === 1}
+                onclick={(event) => handleRowClick(event, song, index)}
+                ondblclick={() => handleRowDoubleClick(song)}
+                oncontextmenu={(e) => handleRowContextMenu(e, song, index)}
+                style="position: absolute; top: 0; left: 0; width: 100%; height: {row.size}px; transform: translateY({row.start}px);"
+              >
+                <div class="cell-track dimmed">
+                  {song.track_number || index + 1}
+                </div>
+                <div class="cell-download">
+                  {#if downloadingSongIds.has(song.id)}
+                    <span class="downloading-icon" title="Downloading">
+                      <LoaderCircle class="h-3 w-3 animate-spin" />
+                    </span>
+                    <span class="sr-only">Downloading</span>
+                  {:else if downloadedSongIds.has(song.id)}
+                    <span class="downloaded-icon">
+                      <Download class="h-3 w-3" />
+                    </span>
+                    <span class="sr-only">Downloaded</span>
+                  {:else}
+                    <span class="not-downloaded" title="Not downloaded">-</span>
+                  {/if}
+                </div>
+                <div class="cell-name font-medium">
+                  {#if playingSongId === song.id}
+                    <span
+                      class="inline-flex min-w-0 max-w-full items-center gap-1.5"
+                    >
+                      <Volume2 class="w-3 h-3 shrink-0 animate-pulse" />
+                      <span class="truncate">{song.title}</span>
+                    </span>
+                  {:else}
                     <span class="truncate">{song.title}</span>
-                  </span>
-                {:else}
-                  <span class="truncate">{song.title}</span>
-                {/if}
+                  {/if}
+                </div>
+                <div class="cell-time dimmed tabular-nums">
+                  {formatDuration(song.duration)}
+                </div>
+                <div class="cell-artist dimmed">
+                  <span class="truncate">{song.artist || "—"}</span>
+                </div>
+                <div class="cell-album dimmed">
+                  <span class="truncate">{song.album || "—"}</span>
+                </div>
+                <div class="cell-year dimmed">{song.year || "—"}</div>
+                <div class="cell-genre dimmed">
+                  <span class="truncate">{song.genre || "—"}</span>
+                </div>
               </div>
-              <div class="cell-time dimmed tabular-nums">
-                {formatDuration(song.duration)}
-              </div>
-              <div class="cell-artist dimmed">
-                <span class="truncate">{song.artist || "—"}</span>
-              </div>
-              <div class="cell-album dimmed">
-                <span class="truncate">{song.album || "—"}</span>
-              </div>
-              <div class="cell-year dimmed">{song.year || "—"}</div>
-              <div class="cell-genre dimmed">
-                <span class="truncate">{song.genre || "—"}</span>
-              </div>
-            </div>
+            {/if}
           {/each}
         </div>
       </div>
@@ -543,10 +552,15 @@
       }}
     />
     <div class="modal-action mt-3">
-      <button class="btn btn-sm" onclick={() => newPlaylistDialog?.close()}>
+      <button
+        type="button"
+        class="btn btn-sm"
+        onclick={() => newPlaylistDialog?.close()}
+      >
         Cancel
       </button>
       <button
+        type="button"
         class="btn btn-sm btn-primary"
         onclick={handleCreatePlaylistWithSongs}
       >
@@ -555,7 +569,7 @@
     </div>
   </div>
   <form method="dialog" class="modal-backdrop">
-    <button>close</button>
+    <button type="submit">close</button>
   </form>
 </dialog>
 

@@ -28,25 +28,35 @@
     const points: [number, number][] = [];
 
     // Generate points for each band across full width
-    for (let i = 0; i < bands.length; i++) {
-      const x = (i / (bands.length - 1)) * width;
-      const y = height - bands[i] * height * 0.85;
+    const bandSpan = Math.max(bands.length - 1, 1);
+    for (const [i, band] of bands.entries()) {
+      const x = (i / bandSpan) * width;
+      const y = height - band * height * 0.85;
       points.push([x, Math.max(y, height * 0.1)]);
     }
 
     // Create smooth bezier curve through points
+    const first = points[0];
+    if (!first) return "";
+
     let path = `M 0 ${height}`;
-    path += ` L ${points[0][0]} ${points[0][1]}`;
+    path += ` L ${first[0]} ${first[1]}`;
 
     for (let i = 0; i < points.length - 1; i++) {
-      const [x1, y1] = points[i];
-      const [x2, y2] = points[i + 1];
+      const current = points[i];
+      const next = points[i + 1];
+      if (!current || !next) continue;
+
+      const [x1, y1] = current;
+      const [x2, y2] = next;
       const cpx = (x1 + x2) / 2;
       path += ` Q ${x1} ${y1} ${cpx} ${(y1 + y2) / 2}`;
     }
 
     // Final point and close
     const last = points[points.length - 1];
+    if (!last) return "";
+
     path += ` Q ${last[0]} ${last[1]} ${last[0]} ${last[1]}`;
     path += ` L ${width} ${height}`;
     path += " Z";
