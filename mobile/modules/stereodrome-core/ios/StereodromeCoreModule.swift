@@ -63,8 +63,6 @@ private func performOnMainSync<T>(_ action: () -> T) -> T {
 
 private func clearSystemNowPlayingInfo() {
   let center = MPNowPlayingInfoCenter.default()
-  center.nowPlayingInfo = nil
-  center.playbackState = .stopped
   let commandCenter = MPRemoteCommandCenter.shared()
   commandCenter.nextTrackCommand.isEnabled = false
   commandCenter.previousTrackCommand.isEnabled = false
@@ -73,6 +71,10 @@ private func clearSystemNowPlayingInfo() {
   commandCenter.pauseCommand.isEnabled = false
   commandCenter.togglePlayPauseCommand.isEnabled = false
   commandCenter.stopCommand.isEnabled = false
+  center.playbackState = .stopped
+  // Clearing metadata must be the final MediaPlayer update. Publishing a playback
+  // state after this can make iOS retain an empty now-playing widget.
+  center.nowPlayingInfo = nil
 }
 
 private func stereodromeRustLogCallback(_ message: UnsafePointer<CChar>?) {
@@ -123,14 +125,14 @@ public class StereodromeCoreModule: Module {
   private var canPlayRemoteCommandsValue = false
 
   deinit {
-    clearRemoteCommandHandlers()
     clearAudioSessionObservers()
     if clearActiveStereodromeCoreModule(self) {
       stereodromeCoreSetPlaybackCallback(nil)
-      setCanPlayRemoteCommands(false)
       performOnMainSync {
-        clearSystemNowPlayingInfo()
+        self.clearNowPlayingInfo()
       }
+    } else {
+      clearRemoteCommandHandlers()
     }
     coreQueue.sync {
       stereodromeCoreDestroy(core)
@@ -150,7 +152,6 @@ public class StereodromeCoreModule: Module {
           dataDir.withCString { stereodromeCoreNew($0) }
         }
       }
-      self.configureRemoteCommandCenter()
       self.configureAudioSessionObservers()
       return self.core != nil
     }
@@ -304,6 +305,9 @@ public class StereodromeCoreModule: Module {
     let isPlaying = boolValue(snapshot["is_playing"])
     MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     updateNowPlayingPlaybackState(isPlaying: isPlaying)
+    if remoteCommandTargets.isEmpty {
+      configureRemoteCommandCenter()
+    }
     configureCommandAvailability(snapshot)
     return artworkUri
   }
@@ -311,7 +315,13 @@ public class StereodromeCoreModule: Module {
   private func clearNowPlayingInfo() {
     currentArtworkUri = nil
     setCanPlayRemoteCommands(false)
+    let hasPublishedSession =
+      MPNowPlayingInfoCenter.default().nowPlayingInfo != nil || !remoteCommandTargets.isEmpty
+    guard hasPublishedSession else {
+      return
+    }
     clearSystemNowPlayingInfo()
+    clearRemoteCommandHandlers()
   }
 
   private func configureRemoteCommandCenter() {
