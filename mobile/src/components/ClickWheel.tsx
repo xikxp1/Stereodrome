@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { FastForward, Menu, Pause, Play, Rewind } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
@@ -18,10 +18,20 @@ function tick() {
   }
 
   lastHapticTick = now;
+  if (Platform.OS === "android") {
+    void Haptics.performAndroidHapticsAsync(Haptics.AndroidHaptics.Clock_Tick);
+    return;
+  }
+
   void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 }
 
 function confirm() {
+  if (Platform.OS === "android") {
+    void Haptics.performAndroidHapticsAsync(Haptics.AndroidHaptics.Virtual_Key);
+    return;
+  }
+
   void Haptics.selectionAsync();
 }
 
