@@ -15,10 +15,12 @@ class SearchStore {
   matchedArtistIds = $state<Set<string>>(new Set());
 
   private debounceTimeout: ReturnType<typeof setTimeout> | null = null;
+  private searchRequestId = 0;
   private readonly DEBOUNCE_MS = 300;
 
   setQuery(query: string) {
     this.query = query;
+    const requestId = ++this.searchRequestId;
 
     // Clear existing timeout
     if (this.debounceTimeout) {
@@ -27,16 +29,22 @@ class SearchStore {
 
     // Debounce the search
     this.debounceTimeout = setTimeout(() => {
-      void this.search();
+      void this.search(requestId);
     }, this.DEBOUNCE_MS);
   }
 
-  async search() {
+  private async search(requestId: number) {
+    if (requestId !== this.searchRequestId) return;
+
     const q = this.query.trim();
-    if (q === this.activeQuery) return;
+    if (q === this.activeQuery) {
+      this.isSearching = false;
+      return;
+    }
 
     if (!q) {
       this.activeQuery = "";
+      this.isSearching = false;
       this.results = null;
       this.matchedSongIds = new Set();
       this.matchedAlbumIds = new Set();
@@ -49,6 +57,10 @@ class SearchStore {
     try {
       // Call Tantivy backend with high limit to get all matches
       const results = await searchLibrary(q, 1000);
+      if (requestId !== this.searchRequestId || this.query.trim() !== q) {
+        return;
+      }
+
       this.results = results;
 
       void debug(
@@ -64,9 +76,13 @@ class SearchStore {
 
       this.activeQuery = q;
     } catch (cause) {
-      logError("Search failed", cause);
+      if (requestId === this.searchRequestId && this.query.trim() === q) {
+        logError("Search failed", cause);
+      }
     } finally {
-      this.isSearching = false;
+      if (requestId === this.searchRequestId && this.query.trim() === q) {
+        this.isSearching = false;
+      }
     }
   }
 

@@ -58,9 +58,7 @@ export function renderView(view: ViewInstance) {
       );
     case "songs": {
       const artistId = view.params?.["artistId"];
-      return (
-        <SongsScreen {...(artistId === undefined ? {} : { artistId })} />
-      );
+      return <SongsScreen {...(artistId === undefined ? {} : { artistId })} />;
     }
     case "playlists":
       return <PlaylistsScreen />;

@@ -15,8 +15,7 @@ export function SongsScreen({ artistId }: { artistId?: string }) {
   const stereodrome = useStereodrome();
   const view = useViewStack();
   const songs = useQuery({
-    queryKey:
-      artistId === undefined ? ["songs"] : ["artist-songs", artistId],
+    queryKey: artistId === undefined ? ["songs"] : ["artist-songs", artistId],
     queryFn: () => stereodromeCore.getSongs(undefined, artistId),
   });
   const shownSongs = visibleSongs(
