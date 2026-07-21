@@ -21,7 +21,7 @@ class StereodromeMediaPlayer(
 ) : SimpleBasePlayer(playerLooper) {
   private val appContext = context.applicationContext
   private val handler = Handler(playerLooper)
-  private var info: NowPlayingInfo? = null
+  @Volatile private var info: NowPlayingInfo? = null
 
   override fun getState(): State {
     val currentInfo = info
@@ -50,6 +50,9 @@ class StereodromeMediaPlayer(
   fun clearNowPlayingInfo() {
     setNowPlayingInfoOnPlayerLooper(null)
   }
+
+  fun hasProjection(nextInfo: NowPlayingInfo?): Boolean =
+    hasSameNowPlayingProjection(info, nextInfo)
 
   override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<Any> {
     if (playWhenReady) {

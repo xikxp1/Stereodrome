@@ -21,6 +21,183 @@ private func stereodromeCoreFreeString(_ value: UnsafeMutablePointer<CChar>?)
 
 private typealias StereodromeRustLogCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
 private typealias StereodromePlaybackCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
+private let playbackPositionDeduplicationToleranceSeconds = 0.25
+
+fileprivate struct PlaybackProjection {
+  let isStopped: Bool
+  let songId: String
+  let title: String
+  let artist: String
+  let album: String
+  let durationSeconds: Double
+  let positionSeconds: Double
+  let isPlaying: Bool
+  let artworkUri: String?
+  let queueIndex: Int?
+  let queueCount: Int
+  let canNext: Bool
+  let canPlay: Bool
+  let canPrevious: Bool
+  let canSeek: Bool
+
+  private init(
+    isStopped: Bool,
+    songId: String,
+    title: String,
+    artist: String,
+    album: String,
+    durationSeconds: Double,
+    positionSeconds: Double,
+    isPlaying: Bool,
+    artworkUri: String?,
+    queueIndex: Int?,
+    queueCount: Int,
+    canNext: Bool,
+    canPlay: Bool,
+    canPrevious: Bool,
+    canSeek: Bool
+  ) {
+    self.isStopped = isStopped
+    self.songId = songId
+    self.title = title
+    self.artist = artist
+    self.album = album
+    self.durationSeconds = durationSeconds
+    self.positionSeconds = positionSeconds
+    self.isPlaying = isPlaying
+    self.artworkUri = artworkUri
+    self.queueIndex = queueIndex
+    self.queueCount = queueCount
+    self.canNext = canNext
+    self.canPlay = canPlay
+    self.canPrevious = canPrevious
+    self.canSeek = canSeek
+  }
+
+  private static func stringValue(_ value: Any?) -> String? {
+    if let value = value as? String, !value.isEmpty {
+      return value
+    }
+    return nil
+  }
+
+  private static func doubleValue(_ value: Any?) -> Double {
+    if let value = value as? Double {
+      return value
+    }
+    if let value = value as? NSNumber {
+      return value.doubleValue
+    }
+    if let value = value as? String {
+      return Double(value) ?? 0.0
+    }
+    return 0.0
+  }
+
+  private static func intValue(_ value: Any?) -> Int? {
+    if let value = value as? Int {
+      return value
+    }
+    if let value = value as? NSNumber {
+      return value.intValue
+    }
+    if let value = value as? String {
+      return Int(value)
+    }
+    return nil
+  }
+
+  private static func boolValue(_ value: Any?) -> Bool {
+    if let value = value as? Bool {
+      return value
+    }
+    if let value = value as? NSNumber {
+      return value.boolValue
+    }
+    if let value = value as? String {
+      return value == "true"
+    }
+    return false
+  }
+
+  init?(snapshotJson: String) {
+    guard
+      let data = snapshotJson.data(using: .utf8),
+      let snapshot = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+      return nil
+    }
+
+    guard
+      Self.stringValue(snapshot["state"]) != "stopped",
+      let song = snapshot["song"] as? [String: Any]
+    else {
+      self = PlaybackProjection.stopped
+      return
+    }
+
+    let duration = Self.doubleValue(snapshot["duration_seconds"]) > 0
+      ? Self.doubleValue(snapshot["duration_seconds"])
+      : Self.doubleValue(song["duration_seconds"])
+    self = PlaybackProjection(
+      isStopped: false,
+      songId: Self.stringValue(song["id"]) ?? "",
+      title: Self.stringValue(song["title"]) ?? "Unknown Title",
+      artist: Self.stringValue(song["artist"]) ?? "Unknown Artist",
+      album: Self.stringValue(song["album"]) ?? "Unknown Album",
+      durationSeconds: duration,
+      positionSeconds: Self.doubleValue(snapshot["position_seconds"]),
+      isPlaying: Self.boolValue(snapshot["is_playing"]),
+      artworkUri: Self.stringValue(song["artwork_uri"]),
+      queueIndex: Self.intValue(snapshot["queue_index"]),
+      queueCount: Self.intValue(snapshot["queue_length"]) ?? 0,
+      canNext: Self.boolValue(snapshot["can_next"]),
+      canPlay: Self.boolValue(snapshot["can_play"]),
+      canPrevious: Self.boolValue(snapshot["can_previous"]),
+      canSeek: Self.boolValue(snapshot["can_seek"])
+    )
+  }
+
+  func hasSameProjection(as other: PlaybackProjection) -> Bool {
+    let positionMatches = positionSeconds == other.positionSeconds
+      || (isPlaying && other.isPlaying
+        && abs(positionSeconds - other.positionSeconds)
+          < playbackPositionDeduplicationToleranceSeconds)
+    return isStopped == other.isStopped
+      && songId == other.songId
+      && title == other.title
+      && artist == other.artist
+      && album == other.album
+      && durationSeconds == other.durationSeconds
+      && positionMatches
+      && isPlaying == other.isPlaying
+      && artworkUri == other.artworkUri
+      && queueIndex == other.queueIndex
+      && queueCount == other.queueCount
+      && canNext == other.canNext
+      && canPlay == other.canPlay
+      && canPrevious == other.canPrevious
+      && canSeek == other.canSeek
+  }
+
+  private static let stopped = PlaybackProjection(
+    isStopped: true,
+    songId: "",
+    title: "",
+    artist: "",
+    album: "",
+    durationSeconds: 0,
+    positionSeconds: 0,
+    isPlaying: false,
+    artworkUri: nil,
+    queueIndex: nil,
+    queueCount: 0,
+    canNext: false,
+    canPlay: false,
+    canPrevious: false,
+    canSeek: false
+  )
+}
 
 @_silgen_name("stereodrome_core_set_log_callback")
 private func stereodromeCoreSetLogCallback(_ callback: StereodromeRustLogCallback?)
@@ -98,15 +275,32 @@ private func stereodromePlaybackCallback(_ snapshot: UnsafePointer<CChar>?) {
   guard let module = getActiveStereodromeCoreModule() else {
     return
   }
+  guard let projection = PlaybackProjection(snapshotJson: rawSnapshot) else {
+    module.enqueueDeferredPlaybackSnapshotUpdates(rawSnapshot, artworkUri: nil)
+    return
+  }
+  guard module.reservePlaybackProjection(projection) else {
+    module.enqueueDeferredPlaybackSnapshotUpdates(
+      rawSnapshot,
+      artworkUri: module.artworkUriNeedingLoad(for: projection)
+    )
+    return
+  }
   // Rust treats the snapshot callback return as transport completion. Keep the
   // scalar OS projection inside that boundary so suspension cannot preserve stale state.
-  let artworkUri: String? = performOnMainSync {
+  let projectionResult: (applied: Bool, artworkUri: String?) = performOnMainSync {
     guard getActiveStereodromeCoreModule() === module else {
-      return nil
+      return (false, nil)
     }
-    return module.applyPlaybackSnapshot(rawSnapshot)
+    return (true, module.applyPlaybackProjection(projection))
   }
-  module.enqueueDeferredPlaybackSnapshotUpdates(rawSnapshot, artworkUri: artworkUri)
+  if !projectionResult.applied {
+    _ = module.invalidatePlaybackProjection()
+  }
+  module.enqueueDeferredPlaybackSnapshotUpdates(
+    rawSnapshot,
+    artworkUri: projectionResult.artworkUri
+  )
 }
 
 public class StereodromeCoreModule: Module {
@@ -117,6 +311,8 @@ public class StereodromeCoreModule: Module {
   private let artworkCache = NSCache<NSString, MPMediaItemArtwork>()
   private let artworkQueue = DispatchQueue(
     label: "dev.xikxp1.stereodrome.mobile.artwork", qos: .utility)
+  private let playbackProjectionLock = NSLock()
+  private var playbackProjection: PlaybackProjection?
   private var currentArtworkUri: String?
   private let remoteCommandStateLock = NSLock()
   private var remoteCommandTargets: [Any] = []
@@ -185,6 +381,60 @@ public class StereodromeCoreModule: Module {
 
   fileprivate func emitRustLog(_ message: String) {
     appContext?.jsLogger.info(message)
+  }
+
+  fileprivate func reservePlaybackProjection(_ projection: PlaybackProjection) -> Bool {
+    playbackProjectionLock.lock()
+    defer { playbackProjectionLock.unlock() }
+    if playbackProjection?.hasSameProjection(as: projection) == true {
+      return false
+    }
+    playbackProjection = projection
+    return true
+  }
+
+  @discardableResult
+  fileprivate func invalidatePlaybackProjection() -> PlaybackProjection? {
+    playbackProjectionLock.lock()
+    let previous = playbackProjection
+    playbackProjection = nil
+    playbackProjectionLock.unlock()
+    return previous
+  }
+
+  fileprivate func reservePlaybackProjectionIfMissing(_ projection: PlaybackProjection) -> Bool {
+    playbackProjectionLock.lock()
+    defer { playbackProjectionLock.unlock() }
+    guard playbackProjection == nil else {
+      return false
+    }
+    playbackProjection = projection
+    return true
+  }
+
+  fileprivate func replayPlaybackProjectionIfCurrent(_ projection: PlaybackProjection) {
+    playbackProjectionLock.lock()
+    defer { playbackProjectionLock.unlock() }
+    guard playbackProjection?.hasSameProjection(as: projection) == true else {
+      return
+    }
+    performOnMainSync {
+      guard getActiveStereodromeCoreModule() === self else {
+        return
+      }
+      _ = applyPlaybackProjection(projection)
+    }
+  }
+
+  fileprivate func artworkUriNeedingLoad(for projection: PlaybackProjection) -> String? {
+    guard
+      !projection.isStopped,
+      let artworkUri = projection.artworkUri,
+      artworkCache.object(forKey: artworkUri as NSString) == nil
+    else {
+      return nil
+    }
+    return artworkUri
   }
 
   private func callSync(method: String, payload: String) -> String {
@@ -263,40 +513,27 @@ public class StereodromeCoreModule: Module {
     }
   }
 
-  fileprivate func applyPlaybackSnapshot(_ snapshotJson: String) -> String? {
-    guard
-      let data = snapshotJson.data(using: .utf8),
-      let snapshot = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    else {
-      return nil
-    }
-
-    guard
-      stringValue(snapshot["state"]) != "stopped",
-      let song = snapshot["song"] as? [String: Any]
-    else {
+  fileprivate func applyPlaybackProjection(_ projection: PlaybackProjection) -> String? {
+    if projection.isStopped {
       clearNowPlayingInfo()
       return nil
     }
 
-    let duration = doubleValue(snapshot["duration_seconds"]) > 0
-      ? doubleValue(snapshot["duration_seconds"])
-      : doubleValue(song["duration_seconds"])
     var info: [String: Any] = [
-      MPMediaItemPropertyTitle: stringValue(song["title"]) ?? "Unknown Title",
-      MPMediaItemPropertyArtist: stringValue(song["artist"]) ?? "Unknown Artist",
-      MPMediaItemPropertyAlbumTitle: stringValue(song["album"]) ?? "Unknown Album",
-      MPMediaItemPropertyPlaybackDuration: duration,
-      MPNowPlayingInfoPropertyElapsedPlaybackTime: doubleValue(snapshot["position_seconds"]),
-      MPNowPlayingInfoPropertyPlaybackRate: boolValue(snapshot["is_playing"]) ? 1.0 : 0.0,
-      MPNowPlayingInfoPropertyPlaybackQueueCount: intValue(snapshot["queue_length"]) ?? 0,
+      MPMediaItemPropertyTitle: projection.title,
+      MPMediaItemPropertyArtist: projection.artist,
+      MPMediaItemPropertyAlbumTitle: projection.album,
+      MPMediaItemPropertyPlaybackDuration: projection.durationSeconds,
+      MPNowPlayingInfoPropertyElapsedPlaybackTime: projection.positionSeconds,
+      MPNowPlayingInfoPropertyPlaybackRate: projection.isPlaying ? 1.0 : 0.0,
+      MPNowPlayingInfoPropertyPlaybackQueueCount: projection.queueCount,
     ]
 
-    if let queueIndex = intValue(snapshot["queue_index"]) {
+    if let queueIndex = projection.queueIndex {
       info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = queueIndex
     }
 
-    let artworkUri = stringValue(song["artwork_uri"])
+    let artworkUri = projection.artworkUri
     if let artworkUri,
       let artwork = artworkCache.object(forKey: artworkUri as NSString)
     {
@@ -304,13 +541,12 @@ public class StereodromeCoreModule: Module {
     }
 
     currentArtworkUri = artworkUri
-    let isPlaying = boolValue(snapshot["is_playing"])
     MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-    updateNowPlayingPlaybackState(isPlaying: isPlaying)
+    updateNowPlayingPlaybackState(isPlaying: projection.isPlaying)
     if remoteCommandTargets.isEmpty {
       configureRemoteCommandCenter()
     }
-    configureCommandAvailability(snapshot)
+    configureCommandAvailability(projection)
     return artworkUri
   }
 
@@ -475,10 +711,16 @@ public class StereodromeCoreModule: Module {
   }
 
   private func handleMediaServicesReset() {
+    let projectionToRestore = invalidatePlaybackProjection()
     remoteCommandQueue.async {
       self.shouldResumeAfterInterruption = false
       self.configureAudioSession()
       self.setAudioSessionActive(true)
+      if let projectionToRestore,
+        self.reservePlaybackProjectionIfMissing(projectionToRestore)
+      {
+        self.replayPlaybackProjectionIfCurrent(projectionToRestore)
+      }
       _ = self.callSync(method: "audioRebuildOutput", payload: "null")
     }
   }
@@ -524,8 +766,13 @@ public class StereodromeCoreModule: Module {
   }
 
   private func enqueueRemoteSeek(_ positionSeconds: TimeInterval) -> MPRemoteCommandHandlerStatus {
+    let positionSeconds = max(0.0, positionSeconds)
+    if var info = MPNowPlayingInfoCenter.default().nowPlayingInfo {
+      info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = positionSeconds
+      MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
     remoteCommandQueue.async {
-      _ = self.callSync(method: "audioSeek", payload: "\(max(0.0, positionSeconds))")
+      _ = self.callSync(method: "audioSeek", payload: "\(positionSeconds)")
     }
     return .success
   }
@@ -568,14 +815,14 @@ public class StereodromeCoreModule: Module {
     }
   }
 
-  private func configureCommandAvailability(_ payload: [String: Any]) {
+  private func configureCommandAvailability(_ projection: PlaybackProjection) {
     let commandCenter = MPRemoteCommandCenter.shared()
-    let canPlay = boolValue(payload["can_play"])
-    let isPlaying = boolValue(payload["is_playing"])
+    let canPlay = projection.canPlay
+    let isPlaying = projection.isPlaying
     setCanPlayRemoteCommands(canPlay)
-    commandCenter.nextTrackCommand.isEnabled = canPlay && boolValue(payload["can_next"])
-    commandCenter.previousTrackCommand.isEnabled = canPlay && boolValue(payload["can_previous"])
-    commandCenter.changePlaybackPositionCommand.isEnabled = boolValue(payload["can_seek"])
+    commandCenter.nextTrackCommand.isEnabled = canPlay && projection.canNext
+    commandCenter.previousTrackCommand.isEnabled = canPlay && projection.canPrevious
+    commandCenter.changePlaybackPositionCommand.isEnabled = projection.canSeek
     commandCenter.playCommand.isEnabled = canPlay
     commandCenter.pauseCommand.isEnabled = canPlay || isPlaying
     commandCenter.togglePlayPauseCommand.isEnabled = canPlay || isPlaying

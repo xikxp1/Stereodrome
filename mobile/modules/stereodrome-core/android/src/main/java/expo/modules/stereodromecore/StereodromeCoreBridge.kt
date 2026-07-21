@@ -1,9 +1,11 @@
 package expo.modules.stereodromecore
 
 import android.content.Context
+import android.util.Log
 import org.json.JSONObject
 
 object StereodromeCoreBridge {
+  private const val TAG = "StereodromeCoreBridge"
   private val jni = StereodromeCoreJni()
   private val lock = Any()
   @Volatile private var handle: Long = 0
@@ -44,8 +46,12 @@ object StereodromeCoreBridge {
     }
     // Apply the OS projection before returning through JNI; the Rust command
     // completes as soon as this callback returns.
-    applicationContext?.let { context ->
-      StereodromeMediaSessionState.applyPlaybackSnapshot(context, snapshot)
+    try {
+      applicationContext?.let { context ->
+        StereodromeMediaSessionState.applyPlaybackSnapshot(context, snapshot)
+      }
+    } catch (error: Throwable) {
+      Log.e(TAG, "Failed to apply synchronous playback projection", error)
     }
     playbackSnapshotListener?.invoke(snapshot)
   }

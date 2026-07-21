@@ -43,9 +43,9 @@ class StereodromeMediaSessionService : MediaSessionService() {
 
   override fun onDestroy() {
     unregisterReceiver(becomingNoisyReceiver)
+    StereodromeMediaSessionState.detachService(this)
     player?.release()
     mediaSession?.release()
-    StereodromeMediaSessionState.detachService(this)
     player = null
     mediaSession = null
     super.onDestroy()
