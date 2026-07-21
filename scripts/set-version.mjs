@@ -8,8 +8,8 @@ const semverPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 if (!version || !semverPattern.test(version)) {
-  console.error("Usage: vp node scripts/set-version.mjs <semver>");
-  console.error("Example: vp node scripts/set-version.mjs 0.1.18");
+  console.error("Usage: vp run version:set <semver>");
+  console.error("Example: vp run version:set 0.1.18");
   process.exit(1);
 }
 
