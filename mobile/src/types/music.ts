@@ -221,6 +221,7 @@ export type PlaybackSnapshot = {
   state: "playing" | "paused" | "stopped" | "stalled";
   is_playing: boolean;
   audio_loaded: boolean;
+  output_state: "closed" | "ready" | "failed" | "unavailable";
   song: PlaybackSnapshotSong | null;
   position_seconds: number;
   duration_seconds: number;

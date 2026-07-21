@@ -26,6 +26,7 @@ data class NowPlayingInfo(
   val canPlay: Boolean,
   val canPrevious: Boolean,
   val canSeek: Boolean,
+  val outputState: String = "closed",
 ) {
   fun hasSameProjection(other: NowPlayingInfo): Boolean {
     val positionMatches = positionSeconds == other.positionSeconds ||
@@ -45,7 +46,8 @@ data class NowPlayingInfo(
       canNext == other.canNext &&
       canPlay == other.canPlay &&
       canPrevious == other.canPrevious &&
-      canSeek == other.canSeek
+      canSeek == other.canSeek &&
+      outputState == other.outputState
   }
 
   companion object {
@@ -78,6 +80,7 @@ data class NowPlayingInfo(
           canPlay = snapshot.optBoolean("can_play", false),
           canPrevious = snapshot.optBoolean("can_previous", false),
           canSeek = snapshot.optBoolean("can_seek", false),
+          outputState = snapshot.optString("output_state", "closed"),
         )
       )
     }

@@ -32,6 +32,7 @@ fileprivate struct PlaybackProjection {
   let durationSeconds: Double
   let positionSeconds: Double
   let isPlaying: Bool
+  let outputState: String
   let artworkUri: String?
   let queueIndex: Int?
   let queueCount: Int
@@ -49,6 +50,7 @@ fileprivate struct PlaybackProjection {
     durationSeconds: Double,
     positionSeconds: Double,
     isPlaying: Bool,
+    outputState: String,
     artworkUri: String?,
     queueIndex: Int?,
     queueCount: Int,
@@ -65,6 +67,7 @@ fileprivate struct PlaybackProjection {
     self.durationSeconds = durationSeconds
     self.positionSeconds = positionSeconds
     self.isPlaying = isPlaying
+    self.outputState = outputState
     self.artworkUri = artworkUri
     self.queueIndex = queueIndex
     self.queueCount = queueCount
@@ -148,6 +151,7 @@ fileprivate struct PlaybackProjection {
       durationSeconds: duration,
       positionSeconds: Self.doubleValue(snapshot["position_seconds"]),
       isPlaying: Self.boolValue(snapshot["is_playing"]),
+      outputState: Self.stringValue(snapshot["output_state"]) ?? "closed",
       artworkUri: Self.stringValue(song["artwork_uri"]),
       queueIndex: Self.intValue(snapshot["queue_index"]),
       queueCount: Self.intValue(snapshot["queue_length"]) ?? 0,
@@ -171,6 +175,7 @@ fileprivate struct PlaybackProjection {
       && durationSeconds == other.durationSeconds
       && positionMatches
       && isPlaying == other.isPlaying
+      && outputState == other.outputState
       && artworkUri == other.artworkUri
       && queueIndex == other.queueIndex
       && queueCount == other.queueCount
@@ -189,6 +194,7 @@ fileprivate struct PlaybackProjection {
     durationSeconds: 0,
     positionSeconds: 0,
     isPlaying: false,
+    outputState: "closed",
     artworkUri: nil,
     queueIndex: nil,
     queueCount: 0,
@@ -618,6 +624,9 @@ public class StereodromeCoreModule: Module {
       clearNowPlayingInfo()
       releaseAudioSession()
       return nil
+    }
+    if projection.outputState == "unavailable" {
+      releaseAudioSession()
     }
 
     var info: [String: Any] = [

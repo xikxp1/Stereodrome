@@ -6,6 +6,8 @@ pub enum AudioError {
     Decode(String),
     #[error("Audio playback error: {0}")]
     Playback(String),
+    #[error("Audio output is unavailable: {0}")]
+    OutputUnavailable(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

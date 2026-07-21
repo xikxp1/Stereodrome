@@ -470,14 +470,13 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       if (isPlayingRef.current) {
         await stereodromeCore.audioPause();
         await reconcilePlaybackSnapshot();
-        await persistPlaybackPosition(false);
       } else if (canPlayRef.current) {
         await stereodromeCore.audioResume();
         restoredStartPositionRef.current = null;
         await reconcilePlaybackSnapshot();
       }
     });
-  }, [persistPlaybackPosition, reconcilePlaybackSnapshot, runPlaybackAction]);
+  }, [reconcilePlaybackSnapshot, runPlaybackAction]);
 
   const toggleRepeat = useCallback(async () => {
     await runPlaybackAction("queue", async () => {

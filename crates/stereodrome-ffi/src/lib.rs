@@ -21,8 +21,9 @@ use log::{Level, LevelFilter, Metadata, Record};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use stereodrome_audio::{
-    AudioError, AudioPlayer, BinauralPreset, CrossfadePlayRequest, DynamicsPreset,
-    EqualizerSettings, PlaybackLifecycleState, SongMetadata,
+    AudioError, AudioNotification, AudioOutputState, AudioPlayer, AudioStateHandle, BinauralPreset,
+    CrossfadePlayRequest, DynamicsPreset, EqualizerSettings, PlaybackIdentity,
+    PlaybackLifecycleState, SongMetadata,
 };
 use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
@@ -41,10 +42,8 @@ static PLAYBACK_CALLBACK: Mutex<Option<MobilePlaybackCallback>> = Mutex::new(Non
 type MobileLogCallback = extern "C" fn(*const c_char);
 type MobilePlaybackCallback = extern "C" fn(*const c_char);
 
-const MOBILE_PLAYBACK_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
-const MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD: Duration = Duration::from_secs(2);
 const MOBILE_CACHE_RECONCILE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-const MOBILE_CACHE_EVENTS_PER_TICK: usize = 256;
+const MOBILE_PROGRESS_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 struct MobileLogger;
 
@@ -131,7 +130,15 @@ pub struct MobileCore {
     prefetch_state: Arc<Mutex<BackgroundPrefetchState>>,
     cache_event_sender: Sender<CacheStateEvent>,
     monitor_running: Arc<AtomicBool>,
+    monitor_event_sender: Sender<MobileMonitorEvent>,
     monitor_thread: Option<thread::JoinHandle<()>>,
+}
+
+enum MobileMonitorEvent {
+    Audio(AudioNotification),
+    Cache(CacheStateEvent),
+    RecalculateDeadlines,
+    Shutdown,
 }
 
 #[derive(Clone)]
@@ -332,6 +339,7 @@ struct PlaybackSnapshot {
     state: &'static str,
     is_playing: bool,
     audio_loaded: bool,
+    output_state: AudioOutputState,
     song: Option<PlaybackSnapshotSong>,
     position_seconds: f64,
     duration_seconds: f64,
@@ -430,6 +438,7 @@ fn build_playback_snapshot(
         state,
         is_playing: audio_state.is_playing,
         audio_loaded,
+        output_state: audio_state.output_state,
         song,
         position_seconds,
         duration_seconds,
@@ -595,24 +604,35 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
 
         let data_dir = PathBuf::from(data_dir);
         let (cache_event_sender, cache_event_receiver) = std::sync::mpsc::channel();
+        let (monitor_event_sender, monitor_event_receiver) = std::sync::mpsc::channel();
         match (
             StereodromeCore::new_with_cache_events(&data_dir, cache_event_sender.clone()),
-            AudioPlayer::new_with_spectrum(false),
+            AudioPlayer::new_with_spectrum_and_notifications(false),
             tokio::runtime::Runtime::new(),
         ) {
-            (Ok(core), Ok(audio), Ok(runtime)) => {
+            (Ok(core), Ok((audio, audio_notifications)), Ok(runtime)) => {
                 let core = Arc::new(core);
                 let audio = Arc::new(audio);
                 let (announcer, file_state_initialized) = PlaybackAnnouncer::new(&core);
                 let prefetch_state = Arc::new(Mutex::new(BackgroundPrefetchState::default()));
                 let monitor_running = Arc::new(AtomicBool::new(true));
+                start_mobile_monitor_adapter(
+                    cache_event_receiver,
+                    monitor_event_sender.clone(),
+                    MobileMonitorEvent::Cache,
+                );
+                start_mobile_monitor_adapter(
+                    audio_notifications,
+                    monitor_event_sender.clone(),
+                    MobileMonitorEvent::Audio,
+                );
                 let monitor_thread = start_mobile_playback_monitor(
                     Arc::clone(&core),
                     Arc::clone(&audio),
                     announcer.clone(),
                     Arc::clone(&prefetch_state),
                     Arc::clone(&monitor_running),
-                    cache_event_receiver,
+                    monitor_event_receiver,
                     !file_state_initialized,
                 );
 
@@ -629,6 +649,7 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
                     prefetch_state,
                     cache_event_sender,
                     monitor_running,
+                    monitor_event_sender,
                     monitor_thread: Some(monitor_thread),
                 }))
             }
@@ -661,6 +682,9 @@ pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
         unsafe {
             let mut mobile = Box::from_raw(core);
             mobile.monitor_running.store(false, Ordering::SeqCst);
+            let _ = mobile
+                .monitor_event_sender
+                .send(MobileMonitorEvent::Shutdown);
             shutdown_queue_prefetch(&mobile);
             if let Err(error) = mobile.audio.stop() {
                 log::warn!(
@@ -1138,6 +1162,9 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
 
     if response.is_ok() && should_emit_playback_snapshot(method) {
         mobile.announcer.emit(core, &mobile.audio);
+        let _ = mobile
+            .monitor_event_sender
+            .send(MobileMonitorEvent::RecalculateDeadlines);
     }
 
     response
@@ -1809,13 +1836,28 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 #[allow(clippy::too_many_lines)]
+fn start_mobile_monitor_adapter<T: Send + 'static>(
+    receiver: Receiver<T>,
+    sender: Sender<MobileMonitorEvent>,
+    wrap: fn(T) -> MobileMonitorEvent,
+) {
+    thread::spawn(move || {
+        while let Ok(event) = receiver.recv() {
+            if sender.send(wrap(event)).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+#[allow(clippy::too_many_lines)]
 fn start_mobile_playback_monitor(
     core: Arc<StereodromeCore>,
     audio: Arc<AudioPlayer>,
     announcer: PlaybackAnnouncer,
     prefetch_state: Arc<Mutex<BackgroundPrefetchState>>,
     running: Arc<AtomicBool>,
-    cache_events: Receiver<CacheStateEvent>,
+    events: Receiver<MobileMonitorEvent>,
     mut cache_reconcile_pending: bool,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -1834,36 +1876,67 @@ fn start_mobile_playback_monitor(
         let mut last_segment_idx = 0usize;
         let mut last_report: Option<MobileProgressReport> = None;
         let mut last_snapshot_marker: Option<MobilePlaybackMarker> = None;
-        let mut last_tick = Instant::now();
         let mut cache_snapshot_pending = false;
         let mut last_cache_reconcile_attempt: Option<Instant> = None;
+        let mut crossfade_attempted: Option<PlaybackIdentity> = None;
 
         while running.load(Ordering::SeqCst) {
-            thread::sleep(MOBILE_PLAYBACK_MONITOR_INTERVAL);
-            if !running.load(Ordering::SeqCst) {
-                break;
+            let current_identity = audio.current_playback_identity();
+            if crossfade_attempted.is_some() && crossfade_attempted != current_identity {
+                crossfade_attempted = None;
             }
+            let wait = mobile_monitor_wait_duration(
+                &core,
+                &audio,
+                &state_handle,
+                last_report.as_ref(),
+                cache_reconcile_pending,
+                last_cache_reconcile_attempt,
+                crossfade_attempted.as_ref(),
+            );
+            let event = match wait {
+                Some(duration) if duration.is_zero() => None,
+                Some(duration) => match events.recv_timeout(duration) {
+                    Ok(event) => Some(event),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                },
+                None => match events.recv() {
+                    Ok(event) => Some(event),
+                    Err(_) => break,
+                },
+            };
 
-            for _ in 0..MOBILE_CACHE_EVENTS_PER_TICK {
-                let Ok(event) = cache_events.try_recv() else {
-                    break;
-                };
-                let reconciles = matches!(&event, CacheStateEvent::Reconcile);
-                match announcer.apply_cache_state_event(&core, event) {
-                    Ok(changed) => {
-                        cache_snapshot_pending |= changed;
-                        if reconciles {
-                            cache_reconcile_pending = false;
+            let mut terminal_identity = None;
+            match event {
+                Some(MobileMonitorEvent::Shutdown) => break,
+                Some(MobileMonitorEvent::Cache(cache_event)) => {
+                    let reconciles = matches!(&cache_event, CacheStateEvent::Reconcile);
+                    match announcer.apply_cache_state_event(&core, cache_event) {
+                        Ok(changed) => {
+                            cache_snapshot_pending |= changed;
+                            if reconciles {
+                                cache_reconcile_pending = false;
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                target: "stereodrome_ffi",
+                                "Failed to apply mobile cache event: {error}"
+                            );
+                            cache_reconcile_pending = true;
                         }
                     }
-                    Err(error) => {
-                        log::warn!(
-                            target: "stereodrome_ffi",
-                            "Failed to apply mobile cache event: {error}"
-                        );
-                        cache_reconcile_pending = true;
+                }
+                Some(MobileMonitorEvent::Audio(notification)) => {
+                    if !audio_notification_is_current(&audio, &notification) {
+                        continue;
+                    }
+                    if let AudioNotification::EndOfTrack { identity } = notification {
+                        terminal_identity = Some(identity);
                     }
                 }
+                Some(MobileMonitorEvent::RecalculateDeadlines) | None => {}
             }
 
             let cache_retry_due = cache_reconcile_pending
@@ -1892,11 +1965,6 @@ fn start_mobile_playback_monitor(
                 cache_snapshot_pending = false;
             }
 
-            let now = Instant::now();
-            let elapsed_since_last_tick = now.duration_since(last_tick);
-            last_tick = now;
-            let suspension_gap = is_mobile_monitor_suspension_gap(elapsed_since_last_tick);
-
             let (state, segment_idx) = state_handle.get_gapless_state();
             let marker = MobilePlaybackMarker::from_state(&state, segment_idx);
             if last_snapshot_marker.as_ref() != Some(&marker) {
@@ -1908,14 +1976,6 @@ fn start_mobile_playback_monitor(
                 }
                 announcer.emit(&core, &audio);
                 last_snapshot_marker = Some(marker);
-            }
-            if suspension_gap {
-                log::debug!(
-                    target: "stereodrome_ffi",
-                    "Skipping mobile playback monitor transition tick after {:.3}s gap",
-                    elapsed_since_last_tick.as_secs_f64()
-                );
-                continue;
             }
             let Some(song) = state.song.clone() else {
                 last_segment_idx = 0;
@@ -1994,12 +2054,13 @@ fn start_mobile_playback_monitor(
                             f64::from(settings.crossfade_duration_ms) / 1000.0;
                         let remaining = state.duration - state.position;
                         if remaining <= crossfade_window_seconds && remaining > 0.5 {
+                            crossfade_attempted = audio.current_playback_identity();
                             state_handle.set_crossfade_initiated(true);
                             let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
                             let Some(crossfade_result) = block_on_monitor_future(
                                 &runtime,
                                 &running,
-                                crossfade_next_from(&core, &audio),
+                                crossfade_next_from(&core, &audio, crossfade_attempted.as_ref()),
                             ) else {
                                 break;
                             };
@@ -2042,13 +2103,13 @@ fn start_mobile_playback_monitor(
                 }
             }
 
-            let playback_finished = state.duration > 0.0
+            let playback_finished = terminal_identity.is_some()
+                && state.duration > 0.0
                 && state.position >= state.duration - 0.2
                 && !state.is_playing
                 && !state_handle.is_crossfade_initiated();
 
             if playback_finished {
-                state_handle.clear_finished_state();
                 last_segment_idx = 0;
                 last_report = None;
                 let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
@@ -2056,7 +2117,12 @@ fn start_mobile_playback_monitor(
                 let Some(navigation_result) = block_on_monitor_future(
                     &runtime,
                     &running,
-                    play_queue_navigation_from(&core, &audio, QueueNavigation::Next(false)),
+                    play_queue_navigation_from(
+                        &core,
+                        &audio,
+                        QueueNavigation::Next(false),
+                        terminal_identity.clone(),
+                    ),
                 ) else {
                     break;
                 };
@@ -2092,7 +2158,9 @@ fn start_mobile_playback_monitor(
                             target: "stereodrome_ffi",
                             "Failed to prepare mobile playback after track ended: {error}"
                         );
-                        if let Err(stop_error) = audio.stop() {
+                        if terminal_identity.as_ref() == audio.current_playback_identity().as_ref()
+                            && let Err(stop_error) = audio.stop()
+                        {
                             log::warn!(
                                 target: "stereodrome_ffi",
                                 "Failed to release mobile audio after terminal transition error: \
@@ -2118,11 +2186,13 @@ struct MobileProgressReport {
     is_playing: bool,
     position: f64,
     song_id: String,
+    pending: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct MobilePlaybackMarker {
     state: stereodrome_audio::PlaybackLifecycleState,
+    output_state: AudioOutputState,
     is_playing: bool,
     song_id: Option<String>,
     segment_idx: usize,
@@ -2132,6 +2202,7 @@ impl MobilePlaybackMarker {
     fn from_state(state: &stereodrome_audio::PlaybackState, segment_idx: usize) -> Self {
         Self {
             state: state.state,
+            output_state: state.output_state,
             is_playing: state.is_playing,
             song_id: state.song.as_ref().map(|song| song.id.clone()),
             segment_idx,
@@ -2139,8 +2210,73 @@ impl MobilePlaybackMarker {
     }
 }
 
-fn is_mobile_monitor_suspension_gap(elapsed: Duration) -> bool {
-    elapsed >= MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD
+fn audio_notification_is_current(audio: &AudioPlayer, notification: &AudioNotification) -> bool {
+    let current = audio.current_playback_identity();
+    match notification {
+        AudioNotification::PlaybackChanged { identity, .. } => identity == &current,
+        AudioNotification::GaplessSegmentChanged { identity, .. }
+        | AudioNotification::EndOfTrack { identity }
+        | AudioNotification::PositionChanged { identity } => current.as_ref() == Some(identity),
+        AudioNotification::OutputStateChanged { .. } => true,
+    }
+}
+
+fn earlier_deadline(current: Option<Instant>, candidate: Instant) -> Instant {
+    current.map_or(candidate, |deadline| deadline.min(candidate))
+}
+
+fn mobile_monitor_wait_duration(
+    core: &StereodromeCore,
+    audio: &AudioPlayer,
+    state_handle: &AudioStateHandle,
+    last_report: Option<&MobileProgressReport>,
+    cache_reconcile_pending: bool,
+    last_cache_reconcile_attempt: Option<Instant>,
+    crossfade_attempted: Option<&PlaybackIdentity>,
+) -> Option<Duration> {
+    let now = Instant::now();
+    let mut deadline = None;
+
+    if cache_reconcile_pending {
+        let retry_at = last_cache_reconcile_attempt.map_or(now, |attempt| {
+            attempt + MOBILE_CACHE_RECONCILE_RETRY_INTERVAL
+        });
+        deadline = Some(earlier_deadline(deadline, retry_at));
+    }
+
+    let (state, segment_idx) = state_handle.get_gapless_state();
+    if state.is_playing {
+        let report_at = last_report.map_or(now, |report| report.at + Duration::from_secs(15));
+        deadline = Some(earlier_deadline(deadline, report_at));
+
+        if !state_handle.is_crossfade_initiated()
+            && state_handle.is_last_gapless_segment(segment_idx)
+            && let Ok(settings) = core.get_audio_processing_settings()
+            && settings.crossfade_enabled
+            && let Some(identity) = audio.current_playback_identity()
+            && crossfade_attempted != Some(&identity)
+        {
+            let remaining = (state.duration - state.position).max(0.0);
+            if remaining > 0.5 {
+                let until_window =
+                    (remaining - f64::from(settings.crossfade_duration_ms) / 1000.0).max(0.0);
+                deadline = Some(earlier_deadline(
+                    deadline,
+                    now + Duration::from_secs_f64(until_window),
+                ));
+            }
+        }
+    }
+    if let Some(report) = last_report
+        && report.pending
+    {
+        deadline = Some(earlier_deadline(
+            deadline,
+            report.at + MOBILE_PROGRESS_RETRY_INTERVAL,
+        ));
+    }
+
+    deadline.map(|deadline| deadline.saturating_duration_since(now))
 }
 
 fn block_on_monitor_future<F>(
@@ -2175,23 +2311,11 @@ fn report_mobile_progress(
     state: &stereodrome_audio::PlaybackState,
 ) -> bool {
     let now = Instant::now();
-    let should_report = last_report.as_ref().is_none_or(|previous| {
-        previous.song_id != song_id
-            || previous.is_playing != state.is_playing
-            || (previous.position - state.position).abs() >= 15.0
-            || now.duration_since(previous.at) >= Duration::from_secs(15)
-    });
+    let should_report = should_report_mobile_progress(last_report.as_ref(), song_id, state, now);
 
     if !should_report {
         return true;
     }
-
-    *last_report = Some(MobileProgressReport {
-        at: now,
-        is_playing: state.is_playing,
-        position: state.position,
-        song_id: song_id.to_string(),
-    });
 
     let progress = PlaybackProgress {
         song_id: song_id.to_string(),
@@ -2199,7 +2323,48 @@ fn report_mobile_progress(
         duration_seconds: state.duration,
         is_playing: state.is_playing,
     };
-    block_on_monitor_future(runtime, running, core.report_playback_progress(progress)).is_some()
+    match block_on_monitor_future(runtime, running, core.report_playback_progress(progress)) {
+        None => false,
+        Some(Ok(_)) => {
+            *last_report = Some(MobileProgressReport {
+                at: now,
+                is_playing: state.is_playing,
+                position: state.position,
+                song_id: song_id.to_string(),
+                pending: false,
+            });
+            true
+        }
+        Some(Err(error)) => {
+            log::warn!(
+                target: "stereodrome_ffi",
+                "Failed to report mobile playback progress: {error}"
+            );
+            *last_report = Some(MobileProgressReport {
+                at: now,
+                is_playing: state.is_playing,
+                position: state.position,
+                song_id: song_id.to_string(),
+                pending: true,
+            });
+            true
+        }
+    }
+}
+
+fn should_report_mobile_progress(
+    last_report: Option<&MobileProgressReport>,
+    song_id: &str,
+    state: &stereodrome_audio::PlaybackState,
+    now: Instant,
+) -> bool {
+    last_report.is_none_or(|previous| {
+        (previous.pending && now.duration_since(previous.at) >= MOBILE_PROGRESS_RETRY_INTERVAL)
+            || previous.song_id != song_id
+            || previous.is_playing != state.is_playing
+            || (previous.position - state.position).abs() >= 15.0
+            || (state.is_playing && now.duration_since(previous.at) >= Duration::from_secs(15))
+    })
 }
 
 async fn play_current_queue_item(
@@ -2227,7 +2392,7 @@ async fn play_current_queue_item_from(
 
     let prepared = prepare_queue_item_audio_from(core, item).await?;
 
-    let status = play_prepared_audio(core, audio, prepared)?;
+    let status = play_prepared_audio(core, audio, prepared, None)?;
 
     if let Some(position) = seek_position
         && let Err(error) = audio.seek(position)
@@ -2272,6 +2437,30 @@ impl QueueNavigation {
         }
     }
 
+    fn commit_if_matches(
+        self,
+        core: &StereodromeCore,
+        expected_current_song_id: Option<&str>,
+        expected_target_song_id: &str,
+    ) -> Result<Option<QueueItem>, String> {
+        match self {
+            Self::Index(index) => core.play_queue_item_if_matches(
+                index,
+                expected_current_song_id,
+                expected_target_song_id,
+            ),
+            Self::Next(force) => core.play_next_if_matches(
+                Some(force),
+                expected_current_song_id,
+                expected_target_song_id,
+            ),
+            Self::Previous => {
+                core.play_previous_if_matches(expected_current_song_id, expected_target_song_id)
+            }
+        }
+        .map_err(|error| error.to_string())
+    }
+
     fn commit(self, core: &StereodromeCore) -> Result<Option<QueueItem>, String> {
         match self {
             Self::Index(index) => core.play_queue_item(index),
@@ -2286,14 +2475,26 @@ async fn play_queue_navigation(
     mobile: &MobileCore,
     navigation: QueueNavigation,
 ) -> Result<stereodrome_audio::PlaybackStatus, String> {
-    play_queue_navigation_from(&mobile.core, &mobile.audio, navigation).await
+    play_queue_navigation_from(&mobile.core, &mobile.audio, navigation, None).await
 }
 
 async fn play_queue_navigation_from(
     core: &StereodromeCore,
     audio: &AudioPlayer,
     navigation: QueueNavigation,
+    expected_playback: Option<PlaybackIdentity>,
 ) -> Result<stereodrome_audio::PlaybackStatus, String> {
+    if expected_playback
+        .as_ref()
+        .is_some_and(|expected| audio.current_playback_identity().as_ref() != Some(expected))
+    {
+        return Err("playback changed before queue navigation began".to_string());
+    }
+    let queue_before = core.get_queue().map_err(|error| error.to_string())?;
+    let expected_current_song_id = queue_before
+        .current_index
+        .and_then(|index| queue_before.items.get(index))
+        .map(|item| item.song_id.clone());
     let preview = navigation.preview(core)?;
 
     let Some(item) = preview else {
@@ -2307,8 +2508,18 @@ async fn play_queue_navigation_from(
 
     let expected_song_id = item.song_id.clone();
     let prepared = prepare_queue_item_audio_from(core, item).await?;
-    let status = play_prepared_audio(core, audio, prepared)?;
-    let committed = match navigation.commit(core) {
+    if expected_playback
+        .as_ref()
+        .is_some_and(|expected| audio.current_playback_identity().as_ref() != Some(expected))
+    {
+        return Err("playback changed while queue navigation was being prepared".to_string());
+    }
+    let status = play_prepared_audio(core, audio, prepared, expected_playback)?;
+    let committed = match navigation.commit_if_matches(
+        core,
+        expected_current_song_id.as_deref(),
+        &expected_song_id,
+    ) {
         Ok(committed) => committed,
         Err(error) => {
             if let Err(stop_error) = audio.stop() {
@@ -2468,7 +2679,13 @@ async fn prepare_next_transition_from(
 async fn crossfade_next_from(
     core: &StereodromeCore,
     audio: &AudioPlayer,
+    expected_playback: Option<&PlaybackIdentity>,
 ) -> Result<Option<QueueState>, String> {
+    if expected_playback
+        .is_some_and(|expected| audio.current_playback_identity().as_ref() != Some(expected))
+    {
+        return Ok(None);
+    }
     let settings = core
         .get_audio_processing_settings()
         .map_err(|e| e.to_string())?;
@@ -2486,6 +2703,7 @@ async fn crossfade_next_from(
     let Some(current) = queue.items.get(current_index) else {
         return Ok(None);
     };
+    let current_song_id = current.song_id.clone();
     let Some(next) = core.peek_next_queue_item().map_err(|e| e.to_string())? else {
         return Ok(None);
     };
@@ -2500,8 +2718,14 @@ async fn crossfade_next_from(
 
     let next_song_id = next.song_id.clone();
     let prepared = prepare_queue_item_audio_from(core, next).await?;
+    if expected_playback
+        .is_some_and(|expected| audio.current_playback_identity().as_ref() != Some(expected))
+    {
+        return Ok(None);
+    }
     audio
         .crossfade_play(CrossfadePlayRequest {
+            expected_playback: expected_playback.cloned(),
             audio_data: prepared.audio_data,
             metadata: prepared.metadata,
             duration_secs: prepared.duration_secs,
@@ -2516,7 +2740,12 @@ async fn crossfade_next_from(
             error.to_string()
         })?;
 
-    core.play_next(Some(false)).map_err(|e| e.to_string())?;
+    if let Err(error) =
+        core.play_next_if_matches(Some(false), Some(&current_song_id), &next_song_id)
+    {
+        let _ = audio.stop();
+        return Err(error.to_string());
+    }
     Ok(Some(core.get_queue().map_err(|e| e.to_string())?))
 }
 
@@ -2554,9 +2783,11 @@ fn play_prepared_audio(
     core: &StereodromeCore,
     audio: &AudioPlayer,
     prepared: PreparedAudioItem,
+    expected_playback: Option<PlaybackIdentity>,
 ) -> Result<stereodrome_audio::PlaybackStatus, String> {
     let song_id = prepared.metadata.id.clone();
-    if let Err(error) = audio.play(
+    if let Err(error) = audio.play_with_expected(
+        expected_playback,
         prepared.audio_data,
         prepared.metadata,
         prepared.duration_secs,
@@ -2770,7 +3001,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().expect("runtime initializes");
 
         let result = runtime.block_on(async {
-            play_queue_navigation_from(&core, &audio, QueueNavigation::Next(true)).await
+            play_queue_navigation_from(&core, &audio, QueueNavigation::Next(true), None).await
         });
 
         assert!(
@@ -2790,22 +3021,6 @@ mod tests {
     }
 
     #[test]
-    fn mobile_monitor_gap_under_threshold_is_not_suspension() {
-        assert!(!is_mobile_monitor_suspension_gap(
-            MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD
-                .checked_sub(Duration::from_millis(1))
-                .unwrap()
-        ));
-    }
-
-    #[test]
-    fn mobile_monitor_gap_at_threshold_is_suspension() {
-        assert!(is_mobile_monitor_suspension_gap(
-            MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD
-        ));
-    }
-
-    #[test]
     fn mobile_monitor_future_stops_when_shutdown_is_requested() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime initializes");
         let running = AtomicBool::new(false);
@@ -2813,6 +3028,60 @@ mod tests {
         let result = block_on_monitor_future(&runtime, &running, std::future::pending::<()>());
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn stopped_mobile_monitor_has_no_playback_deadline() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "stereodrome-ffi-idle-monitor-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let audio = AudioPlayer::new_with_spectrum(false).expect("audio initializes");
+        let state_handle = audio.state_handle();
+
+        let wait =
+            mobile_monitor_wait_duration(&core, &audio, &state_handle, None, false, None, None);
+
+        assert!(wait.is_none());
+        drop(audio);
+        drop(core);
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn paused_progress_is_not_reported_again_on_elapsed_time() {
+        let now = Instant::now();
+        let previous = MobileProgressReport {
+            at: now - Duration::from_secs(30),
+            is_playing: false,
+            position: 10.0,
+            song_id: "song".to_string(),
+            pending: false,
+        };
+        let state = stereodrome_audio::PlaybackState {
+            state: PlaybackLifecycleState::Paused,
+            is_playing: false,
+            position: 10.0,
+            duration: 180.0,
+            volume: 0.8,
+            song: Some(SongMetadata {
+                id: "song".to_string(),
+                title: "Song".to_string(),
+                artist: "Artist".to_string(),
+                album: "Album".to_string(),
+                cover_art_id: None,
+            }),
+            output_state: AudioOutputState::Ready,
+        };
+
+        assert!(!should_report_mobile_progress(
+            Some(&previous),
+            "song",
+            &state,
+            now
+        ));
     }
 
     #[test]

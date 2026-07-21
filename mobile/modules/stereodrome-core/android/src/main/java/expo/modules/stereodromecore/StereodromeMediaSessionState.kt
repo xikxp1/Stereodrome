@@ -73,6 +73,10 @@ object StereodromeMediaSessionState {
       is NowPlayingProjection.Active -> projection.info
     }
 
+    if (info.outputState == "unavailable") {
+      StereodromeAudioFocus.abandon(context.applicationContext)
+    }
+
     val update = synchronized(lock) {
       val currentService = service?.get()
       val currentPlayer = player

@@ -2,6 +2,7 @@ use log::{debug, error, info, warn};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::any::Any;
+use std::collections::HashSet;
 use std::io::Cursor;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -27,13 +28,20 @@ const SPECTRUM_BUFFER_SIZE: usize = 32768;
 /// the native media controls, so the state change must be visible before
 /// the call returns. Bounded so a wedged audio thread cannot hang callers.
 const TRANSPORT_ACK_TIMEOUT: Duration = Duration::from_secs(1);
+const COMMAND_APPLY_GRACE_TIMEOUT: Duration = Duration::from_millis(250);
 const STALL_GRACE_DURATION: Duration = Duration::from_millis(750);
 const STALL_TIMEOUT: Duration = Duration::from_millis(2500);
 const POSITION_EPSILON_SECONDS: f64 = 0.01;
-const AUDIO_THREAD_RESTART_DELAY: Duration = Duration::from_millis(50);
+const AUDIO_THREAD_RESTART_INITIAL_DELAY: Duration = Duration::from_millis(50);
+const AUDIO_THREAD_RESTART_MAX_DELAY: Duration = Duration::from_secs(2);
+const AUDIO_THREAD_MAX_AUTOMATIC_RESTARTS: u32 = 5;
+const AUDIO_THREAD_FAILURE_RESET_WINDOW: Duration = Duration::from_secs(30);
 const COMMAND_PENDING: u8 = 0;
 const COMMAND_COMMITTED: u8 = 1;
 const COMMAND_CANCELLED: u8 = 2;
+const COMMAND_APPLYING: u8 = 3;
+const COMMAND_APPLIED: u8 = 4;
+const COMMAND_ABORT_REQUESTED: u8 = 5;
 
 /// Coordinates an expensive start-like command with its waiting caller.
 ///
@@ -67,6 +75,36 @@ impl CommandPermit {
             )
             .is_ok()
     }
+
+    fn begin_apply(&self) -> bool {
+        self.state
+            .compare_exchange(
+                COMMAND_COMMITTED,
+                COMMAND_APPLYING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn finish_apply(&self) {
+        self.state.store(COMMAND_APPLIED, Ordering::Release);
+    }
+
+    fn abort_committed(&self) -> bool {
+        self.state
+            .compare_exchange(
+                COMMAND_COMMITTED,
+                COMMAND_ABORT_REQUESTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn is_applied(&self) -> bool {
+        self.state.load(Ordering::Acquire) == COMMAND_APPLIED
+    }
 }
 
 fn wait_for_start_result(
@@ -79,13 +117,32 @@ fn wait_for_start_result(
         Err(mpsc::RecvTimeoutError::Timeout) if permit.cancel() => Err(AudioError::Playback(
             format!("Audio thread did not acknowledge {name} command in time; command cancelled"),
         )),
-        // The worker crossed the atomic commit point. Its next operation is to
-        // publish state and acknowledge; backend cleanup happens afterward.
-        Err(mpsc::RecvTimeoutError::Timeout) => ack_rx.recv().unwrap_or_else(|_| {
-            Err(AudioError::Playback(format!(
+        Err(mpsc::RecvTimeoutError::Timeout) => match ack_rx.recv_timeout(TRANSPORT_ACK_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) if permit.abort_committed() => {
+                Err(AudioError::Playback(format!(
+                    "Audio thread did not apply committed {name} command in time; command aborted"
+                )))
+            }
+            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected)
+                if permit.is_applied() =>
+            {
+                Ok(())
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                match ack_rx.recv_timeout(COMMAND_APPLY_GRACE_TIMEOUT) {
+                    Ok(result) => result,
+                    Err(_) if permit.is_applied() => Ok(()),
+                    Err(_) => Err(AudioError::Playback(format!(
+                        "Audio thread did not finish {name} command apply phase in time"
+                    ))),
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(AudioError::Playback(format!(
                 "Audio thread disconnected while committing {name} command"
-            )))
-        }),
+            ))),
+        },
+        Err(mpsc::RecvTimeoutError::Disconnected) if permit.is_applied() => Ok(()),
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(AudioError::Playback(format!(
             "Audio thread disconnected while applying {name} command"
         ))),
@@ -99,6 +156,57 @@ pub enum PlaybackLifecycleState {
     Paused,
     Stopped,
     Stalled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioOutputState {
+    Closed,
+    Ready,
+    Failed,
+    Unavailable,
+}
+
+impl AudioOutputState {
+    const fn as_u8(self) -> u8 {
+        match self {
+            Self::Closed => 0,
+            Self::Ready => 1,
+            Self::Failed => 2,
+            Self::Unavailable => 3,
+        }
+    }
+
+    const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Ready,
+            2 => Self::Failed,
+            3 => Self::Unavailable,
+            _ => Self::Closed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioNotification {
+    PlaybackChanged {
+        identity: Option<PlaybackIdentity>,
+        state: PlaybackLifecycleState,
+    },
+    GaplessSegmentChanged {
+        identity: PlaybackIdentity,
+        segment_index: usize,
+    },
+    EndOfTrack {
+        identity: PlaybackIdentity,
+    },
+    PositionChanged {
+        identity: PlaybackIdentity,
+    },
+    OutputStateChanged {
+        state: AudioOutputState,
+        message: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, Default)]
@@ -118,6 +226,7 @@ pub struct PlaybackStatus {
     pub position: f64,
     pub duration: f64,
     pub volume: f32,
+    pub output_state: AudioOutputState,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -128,6 +237,7 @@ pub struct PlaybackState {
     pub duration: f64,
     pub volume: f32,
     pub song: Option<SongMetadata>,
+    pub output_state: AudioOutputState,
 }
 
 /// Identifies the exact source and song that were active when asynchronous
@@ -148,6 +258,7 @@ impl PlaybackIdentity {
 /// Commands sent to the audio thread
 enum AudioCommand {
     Play {
+        expected_playback: Option<PlaybackIdentity>,
         audio_data: Arc<[u8]>,
         metadata: SongMetadata,
         duration_secs: f64,
@@ -159,7 +270,7 @@ enum AudioCommand {
         ack: Sender<AudioResult<()>>,
     },
     Pause {
-        ack: Sender<()>,
+        ack: Sender<AudioResult<()>>,
     },
     Resume {
         permit: Arc<CommandPermit>,
@@ -170,12 +281,12 @@ enum AudioCommand {
         ack: Sender<AudioResult<()>>,
     },
     Stop {
-        ack: Sender<()>,
+        ack: Sender<AudioResult<()>>,
     },
     SetVolume(f32),
     Seek {
         position_secs: f64,
-        ack: Sender<()>,
+        ack: Sender<AudioResult<()>>,
     },
     /// Append a song to the existing player for gapless playback.
     /// Unlike Play, this does NOT create a new player.
@@ -186,6 +297,7 @@ enum AudioCommand {
     /// Crossfade to a new song: keep the current sink fading out
     /// while a new sink fades in over the specified duration.
     CrossfadePlay {
+        expected_playback: Option<PlaybackIdentity>,
         audio_data: Arc<[u8]>,
         metadata: SongMetadata,
         duration_secs: f64,
@@ -202,6 +314,7 @@ enum AudioCommand {
 
 #[derive(Debug)]
 pub struct CrossfadePlayRequest {
+    pub expected_playback: Option<PlaybackIdentity>,
     pub audio_data: Arc<[u8]>,
     pub metadata: SongMetadata,
     pub duration_secs: f64,
@@ -305,20 +418,32 @@ impl Default for PlaybackInner {
 struct SharedState {
     is_playing: AtomicBool,
     stalled: AtomicBool,
-    stream_failed: AtomicBool,
+    output_state: AtomicU8,
     crossfade_initiated: AtomicBool,
     next_source_generation: AtomicU64,
+    next_output_generation: AtomicU64,
+    output_generations: Mutex<OutputGenerationState>,
+    notifications: Sender<AudioNotification>,
     inner: RwLock<PlaybackInner>,
 }
 
+#[derive(Default)]
+struct OutputGenerationState {
+    active: u64,
+    failed: HashSet<u64>,
+}
+
 impl SharedState {
-    fn new() -> Self {
+    fn new(notifications: Sender<AudioNotification>) -> Self {
         Self {
             is_playing: AtomicBool::new(false),
             stalled: AtomicBool::new(false),
-            stream_failed: AtomicBool::new(false),
+            output_state: AtomicU8::new(AudioOutputState::Closed.as_u8()),
             crossfade_initiated: AtomicBool::new(false),
             next_source_generation: AtomicU64::new(1),
+            next_output_generation: AtomicU64::new(1),
+            output_generations: Mutex::new(OutputGenerationState::default()),
+            notifications,
             inner: RwLock::new(PlaybackInner::default()),
         }
     }
@@ -361,13 +486,65 @@ impl SharedState {
     }
 
     fn mark_playing(&self) {
-        self.stream_failed.store(false, Ordering::SeqCst);
         self.stalled.store(false, Ordering::SeqCst);
         self.is_playing.store(true, Ordering::SeqCst);
     }
 
-    fn mark_output_ready(&self) {
-        self.stream_failed.store(false, Ordering::SeqCst);
+    fn mark_output_ready_for(&self, generation: u64) -> bool {
+        let mut generations = self
+            .output_generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if generations.failed.remove(&generation) {
+            return false;
+        }
+        generations.active = generation;
+        let changed = self
+            .output_state
+            .swap(AudioOutputState::Ready.as_u8(), Ordering::SeqCst)
+            != AudioOutputState::Ready.as_u8();
+        drop(generations);
+        if changed {
+            self.notify(AudioNotification::OutputStateChanged {
+                state: AudioOutputState::Ready,
+                message: None,
+            });
+        }
+        true
+    }
+
+    fn begin_output_apply(&self, generation: u64, permit: &CommandPermit) -> bool {
+        let mut generations = self
+            .output_generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if generations.failed.remove(&generation) || !permit.begin_apply() {
+            return false;
+        }
+        generations.active = generation;
+        let changed = self
+            .output_state
+            .swap(AudioOutputState::Ready.as_u8(), Ordering::SeqCst)
+            != AudioOutputState::Ready.as_u8();
+        drop(generations);
+        if changed {
+            self.notify(AudioNotification::OutputStateChanged {
+                state: AudioOutputState::Ready,
+                message: None,
+            });
+        }
+        true
+    }
+
+    fn commit_current_output(&self, permit: &CommandPermit) -> bool {
+        let generations = self
+            .output_generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        generations.active != 0
+            && !generations.failed.contains(&generations.active)
+            && self.output_state() == AudioOutputState::Ready
+            && permit.try_commit()
     }
 
     fn mark_paused(&self) {
@@ -383,12 +560,76 @@ impl SharedState {
     }
 
     fn mark_stream_failed(&self) {
-        self.stream_failed.store(true, Ordering::SeqCst);
+        self.set_output_state(AudioOutputState::Failed, None);
         self.mark_stalled();
+        self.notify_playback_changed();
+    }
+
+    fn mark_stream_failed_for(&self, generation: u64, message: String) {
+        let mut generations = self
+            .output_generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        generations.failed.insert(generation);
+        if generations.active != generation {
+            return;
+        }
+        self.output_state
+            .store(AudioOutputState::Failed.as_u8(), Ordering::SeqCst);
+        self.mark_stalled();
+        drop(generations);
+        self.notify(AudioNotification::OutputStateChanged {
+            state: AudioOutputState::Failed,
+            message: Some(message),
+        });
+        self.notify_playback_changed();
+    }
+
+    fn next_output_generation(&self) -> u64 {
+        self.next_output_generation.fetch_add(1, Ordering::SeqCst)
+    }
+
+    fn invalidate_output_generation(&self) {
+        self.output_generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active = 0;
+    }
+
+    fn mark_output_closed(&self) {
+        self.invalidate_output_generation();
+        self.set_output_state(AudioOutputState::Closed, None);
+    }
+
+    fn mark_output_unavailable(&self, message: String) {
+        self.set_output_state(AudioOutputState::Unavailable, Some(message));
+        self.mark_stalled();
+        self.notify_playback_changed();
+    }
+
+    fn output_state(&self) -> AudioOutputState {
+        AudioOutputState::from_u8(self.output_state.load(Ordering::SeqCst))
+    }
+
+    fn set_output_state(&self, state: AudioOutputState, message: Option<String>) {
+        let previous = self.output_state.swap(state.as_u8(), Ordering::SeqCst);
+        if previous != state.as_u8() || message.is_some() {
+            self.notify(AudioNotification::OutputStateChanged { state, message });
+        }
+    }
+
+    fn notify(&self, event: AudioNotification) {
+        let _ = self.notifications.send(event);
+    }
+
+    fn notify_playback_changed(&self) {
+        self.notify(AudioNotification::PlaybackChanged {
+            identity: self.playback_identity(),
+            state: self.state(),
+        });
     }
 
     fn mark_stopped(&self) {
-        self.stream_failed.store(false, Ordering::SeqCst);
         self.stalled.store(false, Ordering::SeqCst);
         self.is_playing.store(false, Ordering::SeqCst);
     }
@@ -468,6 +709,10 @@ impl SharedState {
         Some((segment.request.clone(), position))
     }
 
+    fn has_active_request(&self) -> bool {
+        self.read_inner().active_request.is_some()
+    }
+
     fn set_active_request(&self, generation: u64, request: ActiveAudioRequest) {
         let mut inner = self.write_inner();
         inner.current_song = Some(request.metadata.clone());
@@ -528,6 +773,7 @@ impl SharedState {
                     duration: seg.duration,
                     volume: inner.volume,
                     song: Some(seg.metadata.clone()),
+                    output_state: self.output_state(),
                 },
                 seg_idx,
             )
@@ -540,6 +786,7 @@ impl SharedState {
                     duration: inner.duration,
                     volume: inner.volume,
                     song: inner.current_song.clone(),
+                    output_state: self.output_state(),
                 },
                 0,
             )
@@ -555,6 +802,7 @@ impl SharedState {
             position: state.position,
             duration: state.duration,
             volume: state.volume,
+            output_state: state.output_state,
         }
     }
 
@@ -647,8 +895,23 @@ impl AudioPlayer {
     ///
     /// Returns an error if the audio player cannot be initialized.
     pub fn new_with_spectrum(spectrum_enabled: bool) -> AudioResult<Self> {
+        Self::new_with_spectrum_and_notifications(spectrum_enabled).map(|(player, _)| player)
+    }
+
+    /// Creates an audio player and a transition-only notification receiver.
+    ///
+    /// Position advancement is intentionally not emitted; consumers receive
+    /// only lifecycle, segment, terminal, discontinuity, and output changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the audio player cannot be initialized.
+    pub fn new_with_spectrum_and_notifications(
+        spectrum_enabled: bool,
+    ) -> AudioResult<(Self, Receiver<AudioNotification>)> {
         let (command_tx, command_rx) = mpsc::channel::<AudioCommand>();
-        let shared_state = Arc::new(SharedState::new());
+        let (notification_tx, notification_rx) = mpsc::channel::<AudioNotification>();
+        let shared_state = Arc::new(SharedState::new(notification_tx));
         let state_clone = Arc::clone(&shared_state);
         let spectrum_enabled = Arc::new(AtomicBool::new(spectrum_enabled));
 
@@ -662,25 +925,23 @@ impl AudioPlayer {
         let spectrum_enabled_clone = Arc::clone(&spectrum_enabled);
         let audio_thread = thread::spawn(move || {
             supervise_audio_thread(
-                || {
-                    run_audio_thread(
-                        &command_rx,
-                        &state_clone,
-                        &producer_clone,
-                        &spectrum_enabled_clone,
-                    )
-                },
+                &command_rx,
                 &state_clone,
+                &producer_clone,
+                &spectrum_enabled_clone,
             );
         });
 
-        Ok(Self {
-            command_tx,
-            shared_state,
-            spectrum_consumer,
-            spectrum_enabled,
-            audio_thread: Some(audio_thread),
-        })
+        Ok((
+            Self {
+                command_tx,
+                shared_state,
+                spectrum_consumer,
+                spectrum_enabled,
+                audio_thread: Some(audio_thread),
+            },
+            notification_rx,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -700,7 +961,38 @@ impl AudioPlayer {
         binaural_preset: Option<BinauralPreset>,
         equalizer_settings: Option<EqualizerSettings>,
     ) -> AudioResult<()> {
+        self.play_with_expected(
+            None,
+            audio_data,
+            metadata,
+            duration_secs,
+            normalization_gain,
+            dynamics_preset,
+            binaural_preset,
+            equalizer_settings,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// Starts playback only if the supplied identity is still current.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if playback changed, preparation was cancelled, or
+    /// the source/output cannot be started.
+    pub fn play_with_expected(
+        &self,
+        expected_playback: Option<PlaybackIdentity>,
+        audio_data: Arc<[u8]>,
+        metadata: SongMetadata,
+        duration_secs: f64,
+        normalization_gain: Option<f32>,
+        dynamics_preset: Option<DynamicsPreset>,
+        binaural_preset: Option<BinauralPreset>,
+        equalizer_settings: Option<EqualizerSettings>,
+    ) -> AudioResult<()> {
         self.send_start_command("play", |permit, ack| AudioCommand::Play {
+            expected_playback,
             audio_data,
             metadata,
             duration_secs,
@@ -755,6 +1047,7 @@ impl AudioPlayer {
     /// thread cannot apply the command.
     pub fn crossfade_play(&self, request: CrossfadePlayRequest) -> AudioResult<()> {
         let CrossfadePlayRequest {
+            expected_playback,
             audio_data,
             metadata,
             duration_secs,
@@ -769,6 +1062,7 @@ impl AudioPlayer {
         let (ack_tx, ack_rx) = mpsc::channel();
         self.command_tx
             .send(AudioCommand::CrossfadePlay {
+                expected_playback,
                 audio_data,
                 metadata,
                 duration_secs,
@@ -795,28 +1089,6 @@ impl AudioPlayer {
         self.shared_state
             .crossfade_initiated
             .store(value, Ordering::SeqCst);
-    }
-
-    /// Send a transport command and wait until the audio thread has applied
-    /// it, so that `get_status()` immediately afterwards reflects the change.
-    fn send_transport_command(
-        &self,
-        name: &str,
-        make_command: impl FnOnce(Sender<()>) -> AudioCommand,
-    ) -> AudioResult<()> {
-        let (ack_tx, ack_rx) = mpsc::channel();
-        self.command_tx
-            .send(make_command(ack_tx))
-            .map_err(|e| AudioError::Playback(format!("Failed to send {name} command: {e}")))?;
-        match ack_rx.recv_timeout(TRANSPORT_ACK_TIMEOUT) {
-            Ok(()) => Ok(()),
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(AudioError::Playback(format!(
-                "Audio thread did not acknowledge {name} command in time"
-            ))),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(AudioError::Playback(format!(
-                "Audio thread disconnected while applying {name} command"
-            ))),
-        }
     }
 
     fn send_start_command(
@@ -858,7 +1130,7 @@ impl AudioPlayer {
     ///
     /// Returns an error if the audio thread cannot apply the command.
     pub fn pause(&self) -> AudioResult<()> {
-        self.send_transport_command("pause", |ack| AudioCommand::Pause { ack })
+        self.send_result_command("pause", |ack| AudioCommand::Pause { ack })
     }
 
     /// Resumes the current source, rebuilding output if necessary.
@@ -887,7 +1159,7 @@ impl AudioPlayer {
     ///
     /// Returns an error if the audio thread cannot apply the command.
     pub fn stop(&self) -> AudioResult<()> {
-        self.send_transport_command("stop", |ack| AudioCommand::Stop { ack })
+        self.send_result_command("stop", |ack| AudioCommand::Stop { ack })
     }
 
     /// Sets the playback volume, clamped to the inclusive range 0.0–1.0.
@@ -911,7 +1183,7 @@ impl AudioPlayer {
     pub fn seek(&self, position_secs: f64) -> AudioResult<()> {
         let duration = self.shared_state.read_inner().duration;
         let clamped = position_secs.clamp(0.0, duration);
-        self.send_transport_command("seek", |ack| AudioCommand::Seek {
+        self.send_result_command("seek", |ack| AudioCommand::Seek {
             position_secs: clamped,
             ack,
         })
@@ -1066,6 +1338,10 @@ impl CrossfadeState {
 
     fn is_complete(&self) -> bool {
         self.progress() >= 1.0
+    }
+
+    fn requires_poll(&self) -> bool {
+        !self.paused
     }
 }
 
@@ -1225,18 +1501,24 @@ impl PlaybackWatchdog {
     }
 }
 
-fn open_output_stream(shared_state: &Arc<SharedState>) -> AudioResult<MixerDeviceSink> {
+struct OpenedOutput {
+    stream: MixerDeviceSink,
+    generation: u64,
+}
+
+fn open_output_stream(shared_state: &Arc<SharedState>) -> AudioResult<OpenedOutput> {
+    let generation = shared_state.next_output_generation();
     let callback_state = Arc::clone(shared_state);
     let mut stream = DeviceSinkBuilder::from_default_device()
         .map_err(|e| AudioError::Playback(format!("Failed to create audio stream builder: {e:?}")))?
         .with_error_callback(move |error| {
             warn!("Rust audio stream error: {error:?}");
-            callback_state.mark_stream_failed();
+            callback_state.mark_stream_failed_for(generation, format!("{error:?}"));
         })
         .open_sink_or_fallback()
         .map_err(|e| AudioError::Playback(format!("Failed to open audio stream: {e:?}")))?;
     stream.log_on_drop(false);
-    Ok(stream)
+    Ok(OpenedOutput { stream, generation })
 }
 
 fn append_request_to_sink(
@@ -1294,10 +1576,14 @@ fn ensure_output_stream<'a>(
 ) -> AudioResult<&'a MixerDeviceSink> {
     if stream.is_none() {
         match open_output_stream(shared_state) {
-            Ok(next_stream) => {
+            Ok(next_output) => {
                 info!("Rust audio output stream opened");
-                *stream = Some(next_stream);
-                shared_state.mark_output_ready();
+                if !shared_state.mark_output_ready_for(next_output.generation) {
+                    return Err(AudioError::Playback(
+                        "Audio output failed before it could be activated".to_string(),
+                    ));
+                }
+                *stream = Some(next_output.stream);
             }
             Err(e) => {
                 shared_state.mark_stream_failed();
@@ -1362,17 +1648,16 @@ fn rebuild_active_output(
         ));
     };
 
-    let mut next_stream = match open_output_stream(shared_state) {
-        Ok(stream) => stream,
+    let next_output = match open_output_stream(shared_state) {
+        Ok(output) => output,
         Err(e) => {
             shared_state.mark_stream_failed();
             return Err(e);
         }
     };
-    next_stream.log_on_drop(false);
     let volume = shared_state.read_inner().volume;
     let sink = match connect_request_sink(
-        &next_stream,
+        &next_output.stream,
         &request,
         volume,
         spectrum_producer,
@@ -1401,6 +1686,13 @@ fn rebuild_active_output(
             "Audio output rebuild was cancelled before commit".to_string(),
         ));
     }
+    sink.play();
+    if !shared_state.begin_output_apply(next_output.generation, permit) {
+        sink.stop();
+        return Err(AudioError::Playback(
+            "Audio output rebuild was aborted or failed before apply".to_string(),
+        ));
+    }
 
     let generation = shared_state.next_generation();
 
@@ -1411,11 +1703,11 @@ fn rebuild_active_output(
         .crossfade_initiated
         .store(false, Ordering::SeqCst);
 
-    let previous_stream = stream.replace(next_stream);
+    let previous_stream = stream.replace(next_output.stream);
     shared_state.replace_with_rebuilt_request(generation, request, restored_position);
     shared_state.mark_playing();
-    sink.play();
     *current_sink = Some(sink);
+    permit.finish_apply();
     Ok(RebuiltOutput {
         generation,
         position: restored_position,
@@ -1426,11 +1718,11 @@ fn rebuild_active_output(
 }
 
 fn should_poll_audio_thread(
-    has_current_sink: bool,
-    has_crossfade_state: bool,
+    current_sink_active: bool,
+    crossfade_active: bool,
     lifecycle_state: PlaybackLifecycleState,
 ) -> bool {
-    has_current_sink || has_crossfade_state || lifecycle_state == PlaybackLifecycleState::Playing
+    current_sink_active || crossfade_active || lifecycle_state == PlaybackLifecycleState::Playing
 }
 
 fn mark_missing_sink_if_playing(
@@ -1491,9 +1783,24 @@ impl<'a> AudioThread<'a> {
     }
 
     fn next_event(&self, command_rx: &Receiver<AudioCommand>) -> AudioThreadEvent {
+        let output_ready = self.shared_state.output_state() == AudioOutputState::Ready;
+        let current_sink_active = output_ready
+            && self
+                .current_sink
+                .as_ref()
+                .is_some_and(|sink| !sink.is_paused() && !sink.empty());
+        let crossfade_active = output_ready
+            && (self
+                .crossfade_state
+                .as_ref()
+                .is_some_and(CrossfadeState::requires_poll)
+                || self
+                    .crossfade_sink
+                    .as_ref()
+                    .is_some_and(|sink| !sink.is_paused() && !sink.empty()));
         if should_poll_audio_thread(
-            self.current_sink.is_some(),
-            self.crossfade_state.is_some(),
+            current_sink_active,
+            crossfade_active,
             self.shared_state.state(),
         ) {
             match command_rx.recv_timeout(Duration::from_millis(50)) {
@@ -1512,6 +1819,7 @@ impl<'a> AudioThread<'a> {
     fn handle_command(&mut self, command: AudioCommand) -> bool {
         match command {
             AudioCommand::Play {
+                expected_playback,
                 audio_data,
                 metadata,
                 duration_secs,
@@ -1522,6 +1830,7 @@ impl<'a> AudioThread<'a> {
                 permit,
                 ack,
             } => self.play(
+                expected_playback.as_ref(),
                 ActiveAudioRequest::new(
                     audio_data,
                     metadata,
@@ -1566,6 +1875,7 @@ impl<'a> AudioThread<'a> {
                 );
             }
             AudioCommand::CrossfadePlay {
+                expected_playback,
                 audio_data,
                 metadata,
                 duration_secs,
@@ -1577,6 +1887,7 @@ impl<'a> AudioThread<'a> {
                 permit,
                 ack,
             } => self.crossfade_play(
+                expected_playback.as_ref(),
                 ActiveAudioRequest::new(
                     audio_data,
                     metadata,
@@ -1600,6 +1911,7 @@ impl<'a> AudioThread<'a> {
 
     fn play(
         &mut self,
+        expected_playback: Option<&PlaybackIdentity>,
         request: ActiveAudioRequest,
         permit: &CommandPermit,
         ack: &Sender<AudioResult<()>>,
@@ -1625,12 +1937,33 @@ impl<'a> AudioThread<'a> {
         };
         match result {
             Ok(sink) => {
-                if !permit.try_commit() {
+                if expected_playback.is_some_and(|expected| {
+                    !matches_expected_playback(self.shared_state, self.current_generation, expected)
+                }) {
+                    let _ = ack.send(Err(AudioError::Playback(
+                        "Play command was rejected because playback changed".to_string(),
+                    )));
+                    return;
+                }
+                if !self.shared_state.commit_current_output(permit) {
                     if !had_output && self.current_sink.is_none() {
                         self.stream.take();
+                        self.shared_state.mark_output_closed();
                     }
                     let _ = ack.send(Err(AudioError::Playback(
                         "Play command was cancelled before commit".to_string(),
+                    )));
+                    return;
+                }
+                sink.play();
+                if !permit.begin_apply() {
+                    sink.stop();
+                    if !had_output && self.current_sink.is_none() {
+                        self.stream.take();
+                        self.shared_state.mark_output_closed();
+                    }
+                    let _ = ack.send(Err(AudioError::Playback(
+                        "Play command was aborted before apply".to_string(),
                     )));
                     return;
                 }
@@ -1646,8 +1979,9 @@ impl<'a> AudioThread<'a> {
                 self.shared_state.mark_playing();
                 self.current_generation = generation;
                 self.watchdog.reset(0.0);
-                sink.play();
                 self.current_sink = Some(sink);
+                self.shared_state.notify_playback_changed();
+                permit.finish_apply();
                 debug!("Playback thread started song");
                 let _ = ack.send(Ok(()));
                 if let Some(old_sink) = old_sink {
@@ -1662,6 +1996,7 @@ impl<'a> AudioThread<'a> {
             Err(error) => {
                 if !had_output && self.current_sink.is_none() {
                     self.stream.take();
+                    self.shared_state.mark_output_closed();
                 }
                 error!("{error}");
                 let _ = ack.send(Err(error));
@@ -1669,7 +2004,8 @@ impl<'a> AudioThread<'a> {
         }
     }
 
-    fn pause(&mut self, ack: &Sender<()>) {
+    fn pause(&mut self, ack: &Sender<AudioResult<()>>) {
+        let previous_state = self.shared_state.state();
         if let Some(ref sink) = self.current_sink
             && !sink.is_paused()
         {
@@ -1685,7 +2021,10 @@ impl<'a> AudioThread<'a> {
             self.shared_state.mark_paused();
             debug!("Playback thread paused current sink");
         }
-        let _ = ack.send(());
+        if self.shared_state.state() != previous_state {
+            self.shared_state.notify_playback_changed();
+        }
+        let _ = ack.send(Ok(()));
     }
 
     fn resume(&mut self, permit: &CommandPermit, ack: &Sender<AudioResult<()>>) {
@@ -1700,9 +2039,15 @@ impl<'a> AudioThread<'a> {
                 )));
                 return;
             }
-            if let Some(ref sink) = self.current_sink
-                && sink.is_paused()
-            {
+            let was_paused = self
+                .current_sink
+                .as_ref()
+                .is_some_and(rodio::Player::is_paused);
+            if was_paused {
+                let sink = self
+                    .current_sink
+                    .as_ref()
+                    .expect("resumable sink checked above");
                 sink.play();
                 if let Some(ref crossfade_sink) = self.crossfade_sink {
                     crossfade_sink.play();
@@ -1711,12 +2056,31 @@ impl<'a> AudioThread<'a> {
                     crossfade_state.resume();
                 }
             }
+            if !permit.begin_apply() {
+                if was_paused {
+                    if let Some(ref sink) = self.current_sink {
+                        sink.pause();
+                    }
+                    if let Some(ref crossfade_sink) = self.crossfade_sink {
+                        crossfade_sink.pause();
+                    }
+                    if let Some(ref mut crossfade_state) = self.crossfade_state {
+                        crossfade_state.pause();
+                    }
+                }
+                let _ = ack.send(Err(AudioError::Playback(
+                    "Resume command was aborted before apply".to_string(),
+                )));
+                return;
+            }
             let position = self.current_sink.as_ref().map_or_else(
                 || self.shared_state.get_position(),
                 |sink| sink.get_pos().as_secs_f64(),
             );
             self.shared_state.mark_playing();
             self.watchdog.reset(position);
+            self.shared_state.notify_playback_changed();
+            permit.finish_apply();
             debug!("Playback thread ensured current sink is playing");
             let _ = ack.send(Ok(()));
         } else {
@@ -1743,6 +2107,7 @@ impl<'a> AudioThread<'a> {
             Ok(rebuilt) => {
                 self.current_generation = rebuilt.generation;
                 self.watchdog.reset(rebuilt.position);
+                self.shared_state.notify_playback_changed();
                 let _ = ack.send(Ok(()));
                 rebuilt.cleanup();
             }
@@ -1752,7 +2117,7 @@ impl<'a> AudioThread<'a> {
         }
     }
 
-    fn stop(&mut self, ack: &Sender<()>) {
+    fn stop(&mut self, ack: &Sender<AudioResult<()>>) {
         info!("Playback thread stop");
         if let Some(sink) = self.current_sink.take() {
             sink.stop();
@@ -1777,7 +2142,9 @@ impl<'a> AudioThread<'a> {
         self.current_generation = 0;
         self.watchdog.reset(0.0);
         self.stream.take();
-        let _ = ack.send(());
+        self.shared_state.mark_output_closed();
+        self.shared_state.notify_playback_changed();
+        let _ = ack.send(Ok(()));
     }
 
     fn set_volume(&self, volume: f32) {
@@ -1789,7 +2156,7 @@ impl<'a> AudioThread<'a> {
         }
     }
 
-    fn seek(&mut self, position_secs: f64, ack: &Sender<()>) {
+    fn seek(&mut self, position_secs: f64, ack: &Sender<AudioResult<()>>) {
         debug!("Playback thread seek requested: {position_secs:.3}s");
         if self.crossfade_state.is_some() {
             debug!("Aborting crossfade before seek");
@@ -1803,10 +2170,13 @@ impl<'a> AudioThread<'a> {
             }
         }
 
-        if let Some(ref sink) = self.current_sink {
+        let result = if let Some(ref sink) = self.current_sink {
             let (seek_position, cumulative_position) = self.seek_positions(position_secs);
             if let Err(error) = sink.try_seek(Duration::from_secs_f64(seek_position)) {
                 warn!("Seek failed: {error:?}");
+                Err(AudioError::Playback(format!(
+                    "Failed to seek audio: {error:?}"
+                )))
             } else {
                 self.shared_state
                     .set_consumed_position(self.current_generation, cumulative_position);
@@ -1814,13 +2184,22 @@ impl<'a> AudioThread<'a> {
                     self.shared_state.mark_playing();
                 }
                 self.watchdog.reset(cumulative_position);
+                if let Some(identity) = self.shared_state.playback_identity() {
+                    self.shared_state
+                        .notify(AudioNotification::PositionChanged { identity });
+                }
                 debug!(
                     "Playback thread seek complete: segment={seek_position:.3}s \
                      cumulative={cumulative_position:.3}s"
                 );
+                Ok(())
             }
-        }
-        let _ = ack.send(());
+        } else {
+            Err(AudioError::Playback(
+                "Cannot seek because there is no active sink".to_string(),
+            ))
+        };
+        let _ = ack.send(result);
     }
 
     fn seek_positions(&self, position_secs: f64) -> (f64, f64) {
@@ -1914,6 +2293,7 @@ impl<'a> AudioThread<'a> {
 
     fn crossfade_play(
         &mut self,
+        expected_playback: Option<&PlaybackIdentity>,
         request: ActiveAudioRequest,
         crossfade_duration_ms: u32,
         permit: &CommandPermit,
@@ -1940,15 +2320,42 @@ impl<'a> AudioThread<'a> {
         };
         match result {
             Ok(new_sink) => {
-                if !permit.try_commit() {
+                if expected_playback.is_some_and(|expected| {
+                    !matches_expected_playback(self.shared_state, self.current_generation, expected)
+                }) {
+                    self.shared_state
+                        .crossfade_initiated
+                        .store(false, Ordering::SeqCst);
+                    let _ = ack.send(Err(AudioError::Playback(
+                        "Crossfade command was rejected because playback changed".to_string(),
+                    )));
+                    return;
+                }
+                if !self.shared_state.commit_current_output(permit) {
                     if !had_output && self.current_sink.is_none() {
                         self.stream.take();
+                        self.shared_state.mark_output_closed();
                     }
                     self.shared_state
                         .crossfade_initiated
                         .store(false, Ordering::SeqCst);
                     let _ = ack.send(Err(AudioError::Playback(
                         "Crossfade command was cancelled before commit".to_string(),
+                    )));
+                    return;
+                }
+                new_sink.play();
+                if !permit.begin_apply() {
+                    new_sink.stop();
+                    if !had_output && self.current_sink.is_none() {
+                        self.stream.take();
+                        self.shared_state.mark_output_closed();
+                    }
+                    self.shared_state
+                        .crossfade_initiated
+                        .store(false, Ordering::SeqCst);
+                    let _ = ack.send(Err(AudioError::Playback(
+                        "Crossfade command was aborted before apply".to_string(),
                     )));
                     return;
                 }
@@ -1960,11 +2367,12 @@ impl<'a> AudioThread<'a> {
                 self.shared_state
                     .crossfade_initiated
                     .store(false, Ordering::SeqCst);
-                new_sink.play();
                 self.current_sink = Some(new_sink);
                 self.current_generation = generation;
                 self.watchdog.reset(0.0);
                 self.crossfade_state = Some(CrossfadeState::new(crossfade_duration_ms));
+                self.shared_state.notify_playback_changed();
+                permit.finish_apply();
                 debug!("Playback thread started crossfade");
                 let _ = ack.send(Ok(()));
                 if let Some(old_crossfade_sink) = old_crossfade_sink {
@@ -1975,6 +2383,7 @@ impl<'a> AudioThread<'a> {
             Err(error) => {
                 if !had_output && self.current_sink.is_none() {
                     self.stream.take();
+                    self.shared_state.mark_output_closed();
                 }
                 error!("{error}");
                 self.shared_state
@@ -1986,6 +2395,8 @@ impl<'a> AudioThread<'a> {
     }
 
     fn handle_timeout(&mut self) {
+        let previous_state = self.shared_state.state();
+        let previous_segment = self.shared_state.get_gapless_state().1;
         if let Some(ref sink) = self.current_sink {
             let source_position = sink.get_pos().as_secs_f64();
             let advanced = self
@@ -2004,6 +2415,19 @@ impl<'a> AudioThread<'a> {
             }
         } else {
             mark_missing_sink_if_playing(self.shared_state, &mut self.watchdog);
+        }
+        let current_segment = self.shared_state.get_gapless_state().1;
+        if current_segment != previous_segment
+            && let Some(identity) = self.shared_state.playback_identity()
+        {
+            self.shared_state
+                .notify(AudioNotification::GaplessSegmentChanged {
+                    identity,
+                    segment_index: current_segment,
+                });
+        }
+        if self.shared_state.state() != previous_state {
+            self.shared_state.notify_playback_changed();
         }
         self.update_crossfade();
         self.mark_finished_playback();
@@ -2056,6 +2480,11 @@ impl<'a> AudioThread<'a> {
                 inner.consumed_position = inner.duration;
             }
             self.shared_state.mark_paused();
+            if let Some(identity) = self.shared_state.playback_identity() {
+                self.shared_state
+                    .notify(AudioNotification::EndOfTrack { identity });
+            }
+            self.shared_state.notify_playback_changed();
             info!("Playback thread reached end of current sink");
         }
     }
@@ -2070,6 +2499,8 @@ impl<'a> AudioThread<'a> {
         }
         self.stream.take();
         self.shared_state.mark_stopped();
+        self.shared_state.mark_output_closed();
+        self.shared_state.notify_playback_changed();
     }
 }
 
@@ -2091,24 +2522,181 @@ fn panic_payload_message(payload: &(dyn Any + Send)) -> &str {
     }
 }
 
-fn supervise_audio_thread(
-    mut run_thread: impl FnMut() -> AudioThreadExit,
+enum SupervisorWait {
+    Retry(Option<Box<AudioCommand>>),
+    Shutdown,
+    Disconnected,
+}
+
+fn audio_restart_delay(failures: u32) -> Duration {
+    let exponent = failures.saturating_sub(1).min(16);
+    AUDIO_THREAD_RESTART_INITIAL_DELAY
+        .saturating_mul(1_u32 << exponent)
+        .min(AUDIO_THREAD_RESTART_MAX_DELAY)
+}
+
+fn clear_playback_after_worker_loss(shared_state: &SharedState) {
+    {
+        let mut inner = shared_state.write_inner();
+        inner.current_song = None;
+        inner.consumed_position = 0.0;
+        inner.duration = 0.0;
+        inner.active_request = None;
+        inner.source_generation = 0;
+        inner.gapless_segments.clear();
+    }
+    shared_state
+        .crossfade_initiated
+        .store(false, Ordering::SeqCst);
+    shared_state.mark_stopped();
+    shared_state.mark_output_closed();
+    shared_state.notify_playback_changed();
+}
+
+fn reject_supervisor_command(command: AudioCommand, message: &str) {
+    let error = || AudioError::OutputUnavailable(message.to_string());
+    match command {
+        AudioCommand::Play { ack, .. }
+        | AudioCommand::Resume { ack, .. }
+        | AudioCommand::RebuildOutput { ack, .. }
+        | AudioCommand::AppendGapless { ack, .. }
+        | AudioCommand::CrossfadePlay { ack, .. }
+        | AudioCommand::Pause { ack }
+        | AudioCommand::Stop { ack }
+        | AudioCommand::Seek { ack, .. } => {
+            let _ = ack.send(Err(error()));
+        }
+        AudioCommand::SetVolume(_) | AudioCommand::Shutdown => {}
+    }
+}
+
+fn wait_for_audio_recovery(
+    command_rx: &Receiver<AudioCommand>,
     shared_state: &SharedState,
-) {
+    delay: Option<Duration>,
+    allow_explicit_retry: bool,
+) -> SupervisorWait {
+    let deadline = delay.map(|delay| Instant::now() + delay);
     loop {
-        match panic::catch_unwind(AssertUnwindSafe(&mut run_thread)) {
+        let command = match deadline {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return SupervisorWait::Retry(None);
+                }
+                match command_rx.recv_timeout(remaining) {
+                    Ok(command) => command,
+                    Err(mpsc::RecvTimeoutError::Timeout) => return SupervisorWait::Retry(None),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return SupervisorWait::Disconnected;
+                    }
+                }
+            }
+            None => match command_rx.recv() {
+                Ok(command) => command,
+                Err(_) => return SupervisorWait::Disconnected,
+            },
+        };
+
+        match command {
+            AudioCommand::Shutdown => return SupervisorWait::Shutdown,
+            command @ (AudioCommand::Play { .. }
+            | AudioCommand::Resume { .. }
+            | AudioCommand::RebuildOutput { .. }) => {
+                if allow_explicit_retry {
+                    return SupervisorWait::Retry(Some(Box::new(command)));
+                }
+                reject_supervisor_command(command, "audio worker restart backoff is active");
+            }
+            AudioCommand::Stop { ack } => {
+                clear_playback_after_worker_loss(shared_state);
+                let _ = ack.send(Ok(()));
+            }
+            AudioCommand::SetVolume(_) => {}
+            command => reject_supervisor_command(
+                command,
+                "audio worker is recovering from repeated failures",
+            ),
+        }
+    }
+}
+
+fn automatic_recovery_command(shared_state: &SharedState) -> Option<AudioCommand> {
+    if !shared_state.has_active_request() {
+        shared_state.mark_output_closed();
+        return None;
+    }
+    let (ack, _receiver) = mpsc::channel();
+    Some(AudioCommand::RebuildOutput {
+        permit: Arc::new(CommandPermit::default()),
+        ack,
+    })
+}
+
+fn supervise_audio_thread(
+    command_rx: &Receiver<AudioCommand>,
+    shared_state: &Arc<SharedState>,
+    spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
+    spectrum_enabled: &Arc<AtomicBool>,
+) {
+    let mut failures = 0_u32;
+    let mut last_failure: Option<Instant> = None;
+    let mut initial_command = None;
+
+    loop {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            run_audio_thread(
+                command_rx,
+                shared_state,
+                spectrum_producer,
+                spectrum_enabled,
+                initial_command.take(),
+            )
+        }));
+        match result {
             Ok(AudioThreadExit::Shutdown) => break,
             Ok(AudioThreadExit::Disconnected) => {
                 warn!("Audio command channel disconnected; playback thread exiting");
                 break;
             }
             Err(payload) => {
+                let now = Instant::now();
+                if last_failure.is_none_or(|last| {
+                    now.duration_since(last) >= AUDIO_THREAD_FAILURE_RESET_WINDOW
+                }) {
+                    failures = 0;
+                }
+                failures = failures.saturating_add(1);
+                last_failure = Some(now);
+                let message = panic_payload_message(payload.as_ref()).to_string();
+                let max_attempts = AUDIO_THREAD_MAX_AUTOMATIC_RESTARTS;
                 error!(
-                    "Rust audio playback thread panicked; restarting: {}",
-                    panic_payload_message(payload.as_ref())
+                    "Rust audio playback thread panicked (attempt {failures}/{max_attempts}): \
+                     {message}"
                 );
                 shared_state.mark_stream_failed();
-                thread::sleep(AUDIO_THREAD_RESTART_DELAY);
+
+                let terminal = failures >= AUDIO_THREAD_MAX_AUTOMATIC_RESTARTS;
+                if terminal {
+                    shared_state.mark_output_unavailable(message);
+                }
+                let delay = (!terminal).then(|| audio_restart_delay(failures));
+                match wait_for_audio_recovery(command_rx, shared_state, delay, terminal) {
+                    SupervisorWait::Retry(command) => {
+                        if terminal && command.is_some() {
+                            failures = 0;
+                            last_failure = None;
+                        }
+                        initial_command = command
+                            .map(|command| *command)
+                            .or_else(|| automatic_recovery_command(shared_state));
+                    }
+                    SupervisorWait::Shutdown => break,
+                    SupervisorWait::Disconnected => {
+                        warn!("Audio command channel disconnected during recovery");
+                        break;
+                    }
+                }
             }
         }
     }
@@ -2120,9 +2708,16 @@ fn run_audio_thread(
     shared_state: &Arc<SharedState>,
     spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
     spectrum_enabled: &Arc<AtomicBool>,
+    initial_command: Option<AudioCommand>,
 ) -> AudioThreadExit {
     info!("Rust audio playback thread starting");
     let mut audio_thread = AudioThread::new(shared_state, spectrum_producer, spectrum_enabled);
+
+    if let Some(command) = initial_command
+        && !audio_thread.handle_command(command)
+    {
+        return AudioThreadExit::Shutdown;
+    }
 
     loop {
         match audio_thread.next_event(command_rx) {
@@ -2140,6 +2735,11 @@ fn run_audio_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_shared_state() -> SharedState {
+        let (notifications, _receiver) = mpsc::channel();
+        SharedState::new(notifications)
+    }
 
     fn test_request(song_id: &str, duration_secs: f64) -> ActiveAudioRequest {
         ActiveAudioRequest::new(
@@ -2166,7 +2766,7 @@ mod tests {
         let (_producer, consumer) = ring_buffer.split();
         AudioPlayer {
             command_tx,
-            shared_state: Arc::new(SharedState::new()),
+            shared_state: Arc::new(test_shared_state()),
             spectrum_consumer: Arc::new(Mutex::new(consumer)),
             spectrum_enabled: Arc::new(AtomicBool::new(false)),
             audio_thread: Some(thread::spawn(|| {})),
@@ -2187,11 +2787,23 @@ mod tests {
 
         assert!(permit.try_commit());
         assert!(!permit.cancel());
+        assert!(permit.begin_apply());
+        permit.finish_apply();
+        assert!(permit.is_applied());
+    }
+
+    #[test]
+    fn command_permit_can_abort_committed_work_before_apply() {
+        let permit = CommandPermit::default();
+
+        assert!(permit.try_commit());
+        assert!(permit.abort_committed());
+        assert!(!permit.begin_apply());
     }
 
     #[test]
     fn audio_thread_starts_without_opening_output() {
-        let shared = Arc::new(SharedState::new());
+        let shared = Arc::new(test_shared_state());
         let ring_buffer = HeapRb::<f32>::new(SPECTRUM_BUFFER_SIZE);
         let (producer, _consumer) = ring_buffer.split();
         let producer = Arc::new(Mutex::new(producer));
@@ -2255,7 +2867,7 @@ mod tests {
 
     #[test]
     fn stale_gapless_playback_identity_is_rejected() {
-        let shared = SharedState::new();
+        let shared = test_shared_state();
         let first_generation = shared.next_generation();
         shared.set_active_request(first_generation, test_request("a", 30.0));
         let expected = shared
@@ -2285,26 +2897,38 @@ mod tests {
     }
 
     #[test]
-    fn audio_thread_supervisor_restarts_after_panic() {
-        let shared = SharedState::new();
-        let mut attempts = 0;
+    fn audio_restart_backoff_grows_and_caps() {
+        assert_eq!(audio_restart_delay(1), Duration::from_millis(50));
+        assert_eq!(audio_restart_delay(2), Duration::from_millis(100));
+        assert_eq!(audio_restart_delay(10), AUDIO_THREAD_RESTART_MAX_DELAY);
+    }
 
-        supervise_audio_thread(
-            || {
-                attempts += 1;
-                assert!(attempts > 1, "simulated audio worker panic");
-                AudioThreadExit::Shutdown
-            },
-            &shared,
-        );
+    #[test]
+    fn unavailable_supervisor_keeps_receiver_alive_for_stop() {
+        let shared = test_shared_state();
+        let generation = shared.next_generation();
+        shared.set_active_request(generation, test_request("a", 30.0));
+        shared.mark_output_unavailable("repeated panic".to_string());
+        let (command_tx, command_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        command_tx
+            .send(AudioCommand::Stop { ack: stop_tx })
+            .expect("stop queues");
+        command_tx
+            .send(AudioCommand::Shutdown)
+            .expect("shutdown queues");
 
-        assert_eq!(attempts, 2);
-        assert!(shared.stream_failed.load(Ordering::SeqCst));
+        let result = wait_for_audio_recovery(&command_rx, &shared, None, true);
+
+        assert!(matches!(result, SupervisorWait::Shutdown));
+        assert!(stop_rx.recv().expect("stop acknowledged").is_ok());
+        assert_eq!(shared.state(), PlaybackLifecycleState::Stopped);
+        assert_eq!(shared.output_state(), AudioOutputState::Closed);
     }
 
     #[test]
     fn consumed_position_does_not_advance_from_wall_clock() {
-        let shared = SharedState::new();
+        let shared = test_shared_state();
         let generation = shared.next_generation();
         shared.set_active_request(generation, test_request("a", 30.0));
         shared.mark_playing();
@@ -2317,7 +2941,7 @@ mod tests {
 
     #[test]
     fn stale_generation_position_updates_are_ignored() {
-        let shared = SharedState::new();
+        let shared = test_shared_state();
         let generation = shared.next_generation();
         shared.set_active_request(generation, test_request("a", 30.0));
 
@@ -2330,7 +2954,7 @@ mod tests {
 
     #[test]
     fn watchdog_enters_stalled_when_position_freezes() {
-        let shared = SharedState::new();
+        let shared = test_shared_state();
         let generation = shared.next_generation();
         shared.set_active_request(generation, test_request("a", 30.0));
         shared.mark_playing();
@@ -2356,7 +2980,7 @@ mod tests {
 
     #[test]
     fn watchdog_recovers_from_stalled_when_position_advances() {
-        let shared = SharedState::new();
+        let shared = test_shared_state();
         let generation = shared.next_generation();
         shared.set_active_request(generation, test_request("a", 30.0));
         shared.mark_stalled();
@@ -2384,8 +3008,34 @@ mod tests {
     }
 
     #[test]
+    fn paused_crossfade_does_not_require_audio_polling() {
+        let mut crossfade = CrossfadeState::new(5_000);
+        crossfade.pause();
+
+        assert!(!crossfade.requires_poll());
+        assert!(!should_poll_audio_thread(
+            false,
+            crossfade.requires_poll(),
+            PlaybackLifecycleState::Paused
+        ));
+    }
+
+    #[test]
+    fn stale_output_failure_does_not_poison_replacement_output() {
+        let (notifications, receiver) = mpsc::channel();
+        let shared = SharedState::new(notifications);
+        shared.mark_output_ready_for(2);
+        let _ = receiver.recv().expect("ready transition is emitted");
+
+        shared.mark_stream_failed_for(1, "stale output failed".to_string());
+
+        assert_eq!(shared.output_state(), AudioOutputState::Ready);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
     fn missing_sink_guard_marks_playback_stalled() {
-        let shared = SharedState::new();
+        let shared = test_shared_state();
         let generation = shared.next_generation();
         shared.set_active_request(generation, test_request("a", 30.0));
         shared.mark_playing();
@@ -2399,7 +3049,7 @@ mod tests {
 
     #[test]
     fn gapless_source_position_rollover_becomes_cumulative() {
-        let shared = SharedState::new();
+        let shared = test_shared_state();
         let generation = shared.next_generation();
         let first = test_request("a", 10.0);
         let second = test_request("b", 20.0);

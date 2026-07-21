@@ -396,6 +396,9 @@ export function isPlaybackSnapshot(value: unknown): value is PlaybackSnapshot {
     ) &&
     typeof value["is_playing"] === "boolean" &&
     typeof value["audio_loaded"] === "boolean" &&
+    ["closed", "ready", "failed", "unavailable"].includes(
+      typeof value["output_state"] === "string" ? value["output_state"] : ""
+    ) &&
     (value["song"] === null || isPlaybackSnapshotSong(value["song"])) &&
     typeof value["position_seconds"] === "number" &&
     typeof value["duration_seconds"] === "number" &&

@@ -380,6 +380,7 @@ pub async fn crossfade_play_by_id(
     {
         let audio_player = state.audio_player.lock_recover();
         audio_player.crossfade_play(CrossfadePlayRequest {
+            expected_playback: None,
             audio_data: data.audio_data,
             metadata: data.metadata,
             duration_secs: data.duration,
@@ -478,6 +479,7 @@ pub async fn initiate_crossfade(
     {
         let audio_player = state.audio_player.lock_recover();
         if let Err(e) = audio_player.crossfade_play(CrossfadePlayRequest {
+            expected_playback: None,
             audio_data: data.audio_data,
             metadata: data.metadata,
             duration_secs: data.duration,

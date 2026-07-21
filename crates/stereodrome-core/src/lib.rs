@@ -336,6 +336,24 @@ pub struct StereodromeCore {
     cache_event_sender: Option<Sender<CacheStateEvent>>,
 }
 
+fn ensure_queue_navigation_matches(
+    queue: &PlayQueue,
+    expected_current_song_id: Option<&str>,
+    target: Option<&QueueItem>,
+    expected_target_song_id: &str,
+) -> CoreResult<()> {
+    let current_song_id = queue.current_item().map(|item| item.song_id.as_str());
+    let target_song_id = target.map(|item| item.song_id.as_str());
+    if current_song_id != expected_current_song_id
+        || target_song_id != Some(expected_target_song_id)
+    {
+        return Err(CoreError::InvalidInput(
+            "queue changed while playback was being prepared".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 impl StereodromeCore {
     /// # Errors
     /// Returns an error if required directories, persisted state, or the database cannot be initialized.
@@ -2420,6 +2438,29 @@ impl StereodromeCore {
             .map(|(item, _)| item)
     }
 
+    /// Selects a queue item only if the current and target songs still match
+    /// the state observed before asynchronous playback preparation.
+    ///
+    /// # Errors
+    /// Returns an error if the queue changed, cannot be locked, or cannot be persisted.
+    pub fn play_queue_item_if_matches(
+        &self,
+        index: usize,
+        expected_current_song_id: Option<&str>,
+        expected_target_song_id: &str,
+    ) -> CoreResult<Option<QueueItem>> {
+        self.with_queue_mutation_result(|queue| {
+            ensure_queue_navigation_matches(
+                queue,
+                expected_current_song_id,
+                queue.items().get(index),
+                expected_target_song_id,
+            )?;
+            Ok(queue.set_current(index).cloned())
+        })
+        .map(|(item, _)| item)
+    }
+
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn play_next(&self, force: Option<bool>) -> CoreResult<Option<QueueItem>> {
@@ -2427,11 +2468,56 @@ impl StereodromeCore {
             .map(|(item, _)| item)
     }
 
+    /// Advances only if queue navigation still resolves to the prepared target.
+    ///
+    /// # Errors
+    /// Returns an error if the queue changed, cannot be locked, or cannot be persisted.
+    pub fn play_next_if_matches(
+        &self,
+        force: Option<bool>,
+        expected_current_song_id: Option<&str>,
+        expected_target_song_id: &str,
+    ) -> CoreResult<Option<QueueItem>> {
+        self.with_queue_mutation_result(|queue| {
+            let target = queue.preview_next(force.unwrap_or(false));
+            ensure_queue_navigation_matches(
+                queue,
+                expected_current_song_id,
+                target.as_ref(),
+                expected_target_song_id,
+            )?;
+            Ok(queue.next(force.unwrap_or(false)).cloned())
+        })
+        .map(|(item, _)| item)
+    }
+
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn play_previous(&self) -> CoreResult<Option<QueueItem>> {
         self.with_queue_mutation_result(|queue| Ok(queue.previous().cloned()))
             .map(|(item, _)| item)
+    }
+
+    /// Moves backward only if queue navigation still resolves to the prepared target.
+    ///
+    /// # Errors
+    /// Returns an error if the queue changed, cannot be locked, or cannot be persisted.
+    pub fn play_previous_if_matches(
+        &self,
+        expected_current_song_id: Option<&str>,
+        expected_target_song_id: &str,
+    ) -> CoreResult<Option<QueueItem>> {
+        self.with_queue_mutation_result(|queue| {
+            let target = queue.preview_previous();
+            ensure_queue_navigation_matches(
+                queue,
+                expected_current_song_id,
+                target.as_ref(),
+                expected_target_song_id,
+            )?;
+            Ok(queue.previous().cloned())
+        })
+        .map(|(item, _)| item)
     }
 
     /// # Errors
