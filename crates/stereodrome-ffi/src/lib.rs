@@ -3195,7 +3195,9 @@ mod tests {
     fn paused_progress_is_not_reported_again_on_elapsed_time() {
         let now = Instant::now();
         let previous = MobileProgressReport {
-            at: now - Duration::from_secs(30),
+            at: now
+                .checked_sub(Duration::from_secs(30))
+                .expect("test instant supports a 30-second offset"),
             is_playing: false,
             position: 10.0,
             song_id: "song".to_string(),

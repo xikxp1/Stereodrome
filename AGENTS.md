@@ -34,7 +34,6 @@
   - `cargo clippy -p stereodrome-core -p stereodrome-ffi -- -D warnings`
   - `cargo test -p stereodrome-core -p stereodrome-ffi`
 - Mobile native bridge checks (from `mobile`) when changing `crates/stereodrome-ffi`, `crates/stereodrome-core`, `mobile/modules/stereodrome-core`, or generated native library artifacts:
-  - `vp run rust:check`
 - If a change crosses desktop, mobile, and/or shared Rust boundaries, run the checks for every affected area.
 
 ## Project Conventions
