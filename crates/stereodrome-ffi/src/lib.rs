@@ -11,6 +11,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,8 +25,8 @@ use stereodrome_audio::{
 };
 use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
-    AudioProcessingSettings, ConnectParams, ConnectivitySettings, DueSyncJob, LibrarySyncStatus,
-    PlaybackProgress, ServerSettingsUpdate, StereodromeCore, SyncSettings,
+    AudioProcessingSettings, CacheStateEvent, ConnectParams, ConnectivitySettings, DueSyncJob,
+    LibrarySyncStatus, PlaybackProgress, ServerSettingsUpdate, StereodromeCore, SyncSettings,
 };
 use url::Url;
 
@@ -39,9 +40,9 @@ type MobileLogCallback = extern "C" fn(*const c_char);
 type MobilePlaybackCallback = extern "C" fn(*const c_char);
 
 const MOBILE_PLAYBACK_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
-const MOBILE_FILE_STATE_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
-const MOBILE_FILE_STATE_FULL_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD: Duration = Duration::from_secs(2);
+const MOBILE_CACHE_RECONCILE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const MOBILE_CACHE_EVENTS_PER_TICK: usize = 256;
 
 struct MobileLogger;
 
@@ -126,6 +127,7 @@ pub struct MobileCore {
     sync_state: Arc<Mutex<MobileSyncState>>,
     saved_playlist_offline_state: Arc<Mutex<SavedPlaylistOfflineState>>,
     prefetch_state: Arc<Mutex<BackgroundPrefetchState>>,
+    cache_event_sender: Sender<CacheStateEvent>,
     monitor_running: Arc<AtomicBool>,
 }
 
@@ -158,45 +160,78 @@ impl PlaybackSnapshotSequencer {
 }
 
 impl PlaybackAnnouncer {
-    fn new(core: &StereodromeCore) -> Self {
+    fn new(core: &StereodromeCore) -> (Self, bool) {
         let announcer = Self {
             sequencer: Arc::new(Mutex::new(PlaybackSnapshotSequencer::new())),
             file_state: Arc::new(Mutex::new(MobileFileStateSnapshot::default())),
         };
-        announcer.refresh_file_state(core);
-        announcer
-    }
-
-    fn refresh_file_state(&self, core: &StereodromeCore) -> bool {
-        let mut downloaded_song_ids = match core.get_offline_song_ids() {
-            Ok(song_ids) => song_ids,
+        let initialized = match announcer.refresh_file_state(core) {
+            Ok(_) => true,
             Err(error) => {
                 log::warn!(
                     target: "stereodrome_ffi",
-                    "Failed to refresh mobile downloaded song state: {error}"
+                    "Failed to initialize mobile file state: {error}"
                 );
-                return false;
+                false
             }
         };
+        (announcer, initialized)
+    }
+
+    fn refresh_file_state(&self, core: &StereodromeCore) -> Result<bool, String> {
+        let mut downloaded_song_ids = core
+            .get_offline_song_ids()
+            .map_err(|error| error.to_string())?;
         downloaded_song_ids.sort_unstable();
         let next = MobileFileStateSnapshot {
             downloaded_song_ids,
             downloading_song_ids: core.get_downloading_song_ids(),
         };
-        self.file_state.lock().is_ok_and(|mut current| {
-            if *current == next {
-                false
-            } else {
-                *current = next;
-                true
-            }
-        })
-    }
-
-    fn downloading_state_changed(&self, song_ids: &[String]) -> bool {
         self.file_state
             .lock()
-            .is_ok_and(|current| current.downloading_song_ids != song_ids)
+            .map_err(|_| "mobile file state lock is poisoned".to_string())
+            .map(|mut current| {
+                if *current == next {
+                    false
+                } else {
+                    *current = next;
+                    true
+                }
+            })
+    }
+
+    fn apply_cache_state_event(
+        &self,
+        core: &StereodromeCore,
+        event: CacheStateEvent,
+    ) -> Result<bool, String> {
+        match event {
+            CacheStateEvent::DownloadingChanged {
+                song_id,
+                downloading,
+            } => self
+                .file_state
+                .lock()
+                .map_err(|_| "mobile file state lock is poisoned".to_string())
+                .map(|mut current| {
+                    update_sorted_song_ids(&mut current.downloading_song_ids, song_id, downloading)
+                }),
+            CacheStateEvent::CachedChanged { song_id, cached } => {
+                let cached = if cached {
+                    core.has_library_song(&song_id)
+                        .map_err(|error| error.to_string())?
+                } else {
+                    false
+                };
+                self.file_state
+                    .lock()
+                    .map_err(|_| "mobile file state lock is poisoned".to_string())
+                    .map(|mut current| {
+                        update_sorted_song_ids(&mut current.downloaded_song_ids, song_id, cached)
+                    })
+            }
+            CacheStateEvent::Reconcile => self.refresh_file_state(core),
+        }
     }
 
     fn file_state_snapshot(&self) -> MobileFileStateSnapshot {
@@ -216,7 +251,7 @@ impl PlaybackAnnouncer {
         })
     }
 
-    fn emit(&self, core: &StereodromeCore, audio: &AudioPlayer) {
+    fn emit(&self, core: &StereodromeCore, audio: &AudioPlayer) -> bool {
         let result = self.sequence_snapshot(|seq| {
             let snapshot = build_playback_snapshot(seq, core, audio, self.file_state_snapshot())?;
             let json = serde_json::to_string(&snapshot)
@@ -253,6 +288,9 @@ impl PlaybackAnnouncer {
                     );
                 }
             }
+            false
+        } else {
+            true
         }
     }
 
@@ -267,6 +305,20 @@ impl PlaybackAnnouncer {
             .lock()
             .map_err(|_| "playback snapshot sequencer lock poisoned".to_string())?;
         sequencer.sequence(build)
+    }
+}
+
+fn update_sorted_song_ids(song_ids: &mut Vec<String>, song_id: String, present: bool) -> bool {
+    match (song_ids.binary_search(&song_id), present) {
+        (Ok(_), true) | (Err(_), false) => false,
+        (Ok(index), false) => {
+            song_ids.remove(index);
+            true
+        }
+        (Err(index), true) => {
+            song_ids.insert(index, song_id);
+            true
+        }
     }
 }
 
@@ -539,29 +591,26 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
         };
 
         let data_dir = PathBuf::from(data_dir);
+        let (cache_event_sender, cache_event_receiver) = std::sync::mpsc::channel();
         match (
-            StereodromeCore::new(&data_dir),
+            StereodromeCore::new_with_cache_events(&data_dir, cache_event_sender.clone()),
             AudioPlayer::new_with_spectrum(false),
             tokio::runtime::Runtime::new(),
         ) {
             (Ok(core), Ok(audio), Ok(runtime)) => {
                 let core = Arc::new(core);
                 let audio = Arc::new(audio);
-                let announcer = PlaybackAnnouncer::new(&core);
+                let (announcer, file_state_initialized) = PlaybackAnnouncer::new(&core);
                 let prefetch_state = Arc::new(Mutex::new(BackgroundPrefetchState::default()));
                 let monitor_running = Arc::new(AtomicBool::new(true));
-                start_mobile_file_state_monitor(
-                    Arc::clone(&core),
-                    Arc::clone(&audio),
-                    announcer.clone(),
-                    Arc::clone(&monitor_running),
-                );
                 start_mobile_playback_monitor(
                     Arc::clone(&core),
                     Arc::clone(&audio),
                     announcer.clone(),
                     Arc::clone(&prefetch_state),
                     Arc::clone(&monitor_running),
+                    cache_event_receiver,
+                    !file_state_initialized,
                 );
 
                 Box::into_raw(Box::new(MobileCore {
@@ -575,6 +624,7 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
                         SavedPlaylistOfflineState::default(),
                     )),
                     prefetch_state,
+                    cache_event_sender,
                     monitor_running,
                 }))
             }
@@ -1048,37 +1098,11 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         other => Err(format!("unknown method: {other}")),
     };
 
-    if response.is_ok() {
-        let file_state_changed =
-            should_refresh_file_state(method) && mobile.announcer.refresh_file_state(core);
-        if file_state_changed || should_emit_playback_snapshot(method) {
-            mobile.announcer.emit(core, &mobile.audio);
-        }
+    if response.is_ok() && should_emit_playback_snapshot(method) {
+        mobile.announcer.emit(core, &mobile.audio);
     }
 
     response
-}
-
-fn should_refresh_file_state(method: &str) -> bool {
-    matches!(
-        method,
-        "importPortableBackup"
-            | "setMaxCacheSize"
-            | "clearAudioCache"
-            | "downloadSong"
-            | "removeCachedSong"
-            | "downloadAlbum"
-            | "downloadPlaylist"
-            | "setPlaylistSavedOffline"
-            | "reconcileSavedPlaylistsOffline"
-            | "prefetchNext"
-            | "setAudioProcessingSettings"
-            | "audioPlayCurrent"
-            | "audioPlayQueueItem"
-            | "audioPlayNext"
-            | "audioPlayPrevious"
-            | "audioPrepareNextTransition"
-    )
 }
 
 fn should_emit_playback_snapshot(method: &str) -> bool {
@@ -1218,8 +1242,11 @@ fn start_sync_job(mobile: &MobileCore, job: MobileSyncJob) -> Result<(), String>
 
     let data_dir = mobile.data_dir.clone();
     let sync_state = Arc::clone(&mobile.sync_state);
+    let cache_event_sender = mobile.cache_event_sender.clone();
     thread::spawn(move || {
-        let result = panic::catch_unwind(AssertUnwindSafe(|| run_sync_job(data_dir, job)));
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            run_sync_job(data_dir, job, cache_event_sender)
+        }));
         match result {
             Ok(Ok(())) => {
                 log::info!(
@@ -1284,13 +1311,18 @@ fn ensure_backup_jobs_idle(mobile: &MobileCore) -> Result<(), String> {
     Ok(())
 }
 
-fn run_sync_job(data_dir: PathBuf, job: MobileSyncJob) -> Result<(), String> {
+fn run_sync_job(
+    data_dir: PathBuf,
+    job: MobileSyncJob,
+    cache_event_sender: Sender<CacheStateEvent>,
+) -> Result<(), String> {
     log::info!(
         target: "stereodrome_ffi",
         "Starting mobile {} in background",
         job.display_name()
     );
-    let core = StereodromeCore::new(data_dir).map_err(|error| error.to_string())?;
+    let core = StereodromeCore::new_with_cache_events(data_dir, cache_event_sender)
+        .map_err(|error| error.to_string())?;
     let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
     runtime
         .block_on(async { core.restore_session().await })
@@ -1434,10 +1466,11 @@ fn start_saved_playlist_offline_job(
 
     let data_dir = mobile.data_dir.clone();
     let saved_playlist_offline_state = Arc::clone(&mobile.saved_playlist_offline_state);
+    let cache_event_sender = mobile.cache_event_sender.clone();
     thread::spawn(move || {
         let job_name = target.display_name();
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            run_saved_playlist_offline_job(data_dir, target)
+            run_saved_playlist_offline_job(data_dir, target, cache_event_sender)
         }));
         let last_error = match result {
             Ok(Ok(())) => {
@@ -1476,13 +1509,15 @@ fn start_saved_playlist_offline_job(
 fn run_saved_playlist_offline_job(
     data_dir: PathBuf,
     target: SavedPlaylistOfflineTarget,
+    cache_event_sender: Sender<CacheStateEvent>,
 ) -> Result<(), String> {
     log::info!(
         target: "stereodrome_ffi",
         "Starting mobile {} in background",
         target.display_name()
     );
-    let core = StereodromeCore::new(data_dir).map_err(|error| error.to_string())?;
+    let core = StereodromeCore::new_with_cache_events(data_dir, cache_event_sender)
+        .map_err(|error| error.to_string())?;
     let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
     runtime
         .block_on(async { core.restore_session().await })
@@ -1599,34 +1634,6 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     "non-string panic payload".to_string()
 }
 
-fn start_mobile_file_state_monitor(
-    core: Arc<StereodromeCore>,
-    audio: Arc<AudioPlayer>,
-    announcer: PlaybackAnnouncer,
-    running: Arc<AtomicBool>,
-) {
-    thread::spawn(move || {
-        let mut last_full_refresh = Instant::now();
-        while running.load(Ordering::SeqCst) {
-            thread::sleep(MOBILE_FILE_STATE_MONITOR_INTERVAL);
-            if !running.load(Ordering::SeqCst) {
-                break;
-            }
-
-            let downloading_song_ids = core.get_downloading_song_ids();
-            let downloading_changed = announcer.downloading_state_changed(&downloading_song_ids);
-            let full_refresh_due =
-                last_full_refresh.elapsed() >= MOBILE_FILE_STATE_FULL_REFRESH_INTERVAL;
-            if downloading_changed || full_refresh_due {
-                last_full_refresh = Instant::now();
-                if announcer.refresh_file_state(&core) {
-                    announcer.emit(&core, &audio);
-                }
-            }
-        }
-    });
-}
-
 #[allow(clippy::too_many_lines)]
 fn start_mobile_playback_monitor(
     core: Arc<StereodromeCore>,
@@ -1634,6 +1641,8 @@ fn start_mobile_playback_monitor(
     announcer: PlaybackAnnouncer,
     prefetch_state: Arc<Mutex<BackgroundPrefetchState>>,
     running: Arc<AtomicBool>,
+    cache_events: Receiver<CacheStateEvent>,
+    mut cache_reconcile_pending: bool,
 ) {
     thread::spawn(move || {
         let runtime = match tokio::runtime::Runtime::new() {
@@ -1652,11 +1661,61 @@ fn start_mobile_playback_monitor(
         let mut last_report: Option<MobileProgressReport> = None;
         let mut last_snapshot_marker: Option<MobilePlaybackMarker> = None;
         let mut last_tick = Instant::now();
+        let mut cache_snapshot_pending = false;
+        let mut last_cache_reconcile_attempt: Option<Instant> = None;
 
         while running.load(Ordering::SeqCst) {
             thread::sleep(MOBILE_PLAYBACK_MONITOR_INTERVAL);
             if !running.load(Ordering::SeqCst) {
                 break;
+            }
+
+            for _ in 0..MOBILE_CACHE_EVENTS_PER_TICK {
+                let Ok(event) = cache_events.try_recv() else {
+                    break;
+                };
+                let reconciles = matches!(&event, CacheStateEvent::Reconcile);
+                match announcer.apply_cache_state_event(&core, event) {
+                    Ok(changed) => {
+                        cache_snapshot_pending |= changed;
+                        if reconciles {
+                            cache_reconcile_pending = false;
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            target: "stereodrome_ffi",
+                            "Failed to apply mobile cache event: {error}"
+                        );
+                        cache_reconcile_pending = true;
+                    }
+                }
+            }
+
+            let cache_retry_due = cache_reconcile_pending
+                && last_cache_reconcile_attempt.is_none_or(|last_attempt| {
+                    last_attempt.elapsed() >= MOBILE_CACHE_RECONCILE_RETRY_INTERVAL
+                });
+            if cache_retry_due {
+                last_cache_reconcile_attempt = Some(Instant::now());
+                match announcer.refresh_file_state(&core) {
+                    Ok(changed) => {
+                        cache_snapshot_pending |= changed;
+                        cache_reconcile_pending = false;
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            target: "stereodrome_ffi",
+                            "Failed to reconcile mobile cache state: {error}"
+                        );
+                    }
+                }
+            }
+            if !running.load(Ordering::SeqCst) {
+                break;
+            }
+            if cache_snapshot_pending && announcer.emit(&core, &audio) {
+                cache_snapshot_pending = false;
             }
 
             let now = Instant::now();
@@ -2490,6 +2549,32 @@ mod tests {
                 "{method} should not emit a playback snapshot from dispatch"
             );
         }
+    }
+
+    #[test]
+    fn cache_events_keep_mobile_song_ids_sorted_and_deduplicated() {
+        let mut song_ids = vec!["b".to_string(), "d".to_string()];
+
+        assert!(update_sorted_song_ids(&mut song_ids, "c".to_string(), true));
+        assert!(update_sorted_song_ids(&mut song_ids, "a".to_string(), true));
+        assert!(!update_sorted_song_ids(
+            &mut song_ids,
+            "c".to_string(),
+            true
+        ));
+        assert_eq!(song_ids, ["a", "b", "c", "d"]);
+
+        assert!(update_sorted_song_ids(
+            &mut song_ids,
+            "b".to_string(),
+            false
+        ));
+        assert!(!update_sorted_song_ids(
+            &mut song_ids,
+            "missing".to_string(),
+            false
+        ));
+        assert_eq!(song_ids, ["a", "c", "d"]);
     }
 
     #[test]

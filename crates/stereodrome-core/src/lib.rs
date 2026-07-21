@@ -8,6 +8,7 @@ mod subsonic;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, LazyLock, Mutex, Once, Weak};
 
 use backup::{BackupSummary, PortablePreferences};
@@ -46,6 +47,7 @@ static DOWNLOADS_IN_PROGRESS: LazyLock<Mutex<HashMap<String, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static SONG_DOWNLOAD_LOCKS: LazyLock<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static CACHE_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
 fn song_download_lock(song_id: &str) -> Arc<AsyncMutex<()>> {
     SONG_DOWNLOAD_LOCKS.lock().map_or_else(
@@ -62,30 +64,62 @@ fn song_download_lock(song_id: &str) -> Arc<AsyncMutex<()>> {
     )
 }
 
+fn cache_mutation_guard() -> CoreResult<std::sync::MutexGuard<'static, ()>> {
+    CACHE_MUTATION_LOCK
+        .lock()
+        .map_err(|_| CoreError::LockPoisoned)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheStateEvent {
+    DownloadingChanged { song_id: String, downloading: bool },
+    CachedChanged { song_id: String, cached: bool },
+    Reconcile,
+}
+
 struct DownloadInProgressGuard {
     song_id: String,
+    cache_event_sender: Option<Sender<CacheStateEvent>>,
 }
 
 impl DownloadInProgressGuard {
-    fn new(song_id: &str) -> Self {
-        if let Ok(mut downloads) = DOWNLOADS_IN_PROGRESS.lock() {
+    fn new(song_id: &str, cache_event_sender: Option<Sender<CacheStateEvent>>) -> Self {
+        let started = if let Ok(mut downloads) = DOWNLOADS_IN_PROGRESS.lock() {
             *downloads.entry(song_id.to_string()).or_default() += 1;
+            true
+        } else {
+            false
+        };
+        if started && let Some(sender) = &cache_event_sender {
+            let _ = sender.send(CacheStateEvent::DownloadingChanged {
+                song_id: song_id.to_string(),
+                downloading: true,
+            });
         }
         Self {
             song_id: song_id.to_string(),
+            cache_event_sender,
         }
     }
 }
 
 impl Drop for DownloadInProgressGuard {
     fn drop(&mut self) {
+        let mut finished = false;
         if let Ok(mut downloads) = DOWNLOADS_IN_PROGRESS.lock()
             && let Some(count) = downloads.get_mut(&self.song_id)
         {
             *count -= 1;
             if *count == 0 {
                 downloads.remove(&self.song_id);
+                finished = true;
             }
+        }
+        if finished && let Some(sender) = &self.cache_event_sender {
+            let _ = sender.send(CacheStateEvent::DownloadingChanged {
+                song_id: self.song_id.clone(),
+                downloading: false,
+            });
         }
     }
 }
@@ -230,12 +264,31 @@ pub struct StereodromeCore {
     client: AsyncMutex<Option<Client>>,
     queue: Mutex<PlayQueue>,
     lastfm_retry_lock: AsyncMutex<()>,
+    cache_event_sender: Option<Sender<CacheStateEvent>>,
 }
 
 impl StereodromeCore {
     /// # Errors
     /// Returns an error if required directories, persisted state, or the database cannot be initialized.
     pub fn new(data_dir: impl AsRef<Path>) -> CoreResult<Self> {
+        Self::new_inner(data_dir, None)
+    }
+
+    /// Creates a core that publishes cache and download state mutations.
+    ///
+    /// # Errors
+    /// Returns an error if required directories, persisted state, or the database cannot be initialized.
+    pub fn new_with_cache_events(
+        data_dir: impl AsRef<Path>,
+        cache_event_sender: Sender<CacheStateEvent>,
+    ) -> CoreResult<Self> {
+        Self::new_inner(data_dir, Some(cache_event_sender))
+    }
+
+    fn new_inner(
+        data_dir: impl AsRef<Path>,
+        cache_event_sender: Option<Sender<CacheStateEvent>>,
+    ) -> CoreResult<Self> {
         init_rustls_crypto_provider();
 
         let data_dir = data_dir.as_ref();
@@ -260,7 +313,14 @@ impl StereodromeCore {
             client: AsyncMutex::new(None),
             queue: Mutex::new(queue),
             lastfm_retry_lock: AsyncMutex::new(()),
+            cache_event_sender,
         })
+    }
+
+    fn emit_cache_state_event(&self, event: CacheStateEvent) {
+        if let Some(sender) = &self.cache_event_sender {
+            let _ = sender.send(event);
+        }
     }
 
     /// # Errors
@@ -409,6 +469,12 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if the server cannot be queried or synchronized library data cannot be persisted.
     pub async fn sync_library(&self) -> CoreResult<SyncResult> {
+        let result = self.sync_library_inner().await;
+        self.emit_cache_state_event(CacheStateEvent::Reconcile);
+        result
+    }
+
+    async fn sync_library_inner(&self) -> CoreResult<SyncResult> {
         info!("Starting full library sync");
         let client = self.connected_client().await?;
         self.record_sync_attempt("library_full", None)?;
@@ -470,6 +536,12 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if incremental synchronization cannot query the server or update persisted state.
     pub async fn sync_library_incremental(&self) -> CoreResult<SyncResult> {
+        let result = self.sync_library_incremental_inner().await;
+        self.emit_cache_state_event(CacheStateEvent::Reconcile);
+        result
+    }
+
+    async fn sync_library_incremental_inner(&self) -> CoreResult<SyncResult> {
         info!("Starting incremental library sync");
         self.record_sync_attempt_keyed(
             INCREMENTAL_LAST_ATTEMPT_AT_KEY,
@@ -503,6 +575,12 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if library reconciliation cannot query the server or update persisted state.
     pub async fn reconcile_library(&self) -> CoreResult<SyncResult> {
+        let result = self.reconcile_library_inner().await;
+        self.emit_cache_state_event(CacheStateEvent::Reconcile);
+        result
+    }
+
+    async fn reconcile_library_inner(&self) -> CoreResult<SyncResult> {
         info!("Starting full library sync with reconciliation");
         self.record_sync_attempt_keyed(FULL_LAST_ATTEMPT_AT_KEY, FULL_LAST_ERROR_KEY, None)?;
 
@@ -1137,16 +1215,54 @@ impl StereodromeCore {
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let library_song_ids = rows.collect::<Result<Vec<_>, _>>()?;
         drop(stmt);
-        drop(conn);
 
+        let mut stmt = conn.prepare(
+            "SELECT song_id, path FROM download_items
+             WHERE status = 'downloaded' AND path IS NOT NULL
+             ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut recorded_paths = HashMap::new();
+        for row in rows {
+            let (song_id, path) = row?;
+            recorded_paths.entry(song_id).or_insert(path);
+        }
+        drop(stmt);
+
+        let cache_dir = self.audio_cache_dir()?;
         let mut song_ids = Vec::new();
         for song_id in library_song_ids {
-            if self.cached_song_path(&song_id)?.is_some() {
+            let direct_path = cache_dir.join(format!(
+                "{}.{}",
+                sanitize_file_component(&song_id),
+                MOBILE_PLAYBACK_FORMAT
+            ));
+            let recorded_path = recorded_paths.get(&song_id).map(PathBuf::from);
+            let cached = direct_path.exists()
+                || recorded_path
+                    .is_some_and(|path| path.exists() && is_mobile_playback_cache_path(&path));
+            if cached {
                 song_ids.push(song_id);
             }
         }
 
         Ok(song_ids)
+    }
+
+    /// Returns whether a song belongs to the synchronized local library.
+    ///
+    /// # Errors
+    /// Returns an error if library state cannot be read from the database.
+    pub fn has_library_song(&self, song_id: &str) -> CoreResult<bool> {
+        let conn = Connection::open(&self.db_path)?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM songs WHERE id = ?1)",
+            [song_id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
     }
 
     /// # Errors
@@ -1161,34 +1277,41 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if cached files or their persisted records cannot be removed.
     pub fn clear_audio_cache(&self) -> CoreResult<CacheStats> {
-        let protected_paths = self.protected_audio_cache_paths()?;
-        for (path, _) in self.audio_cache_entries()? {
-            if protected_paths.contains(&path) {
-                continue;
+        let _cache_guard = cache_mutation_guard()?;
+        let mutation_result = (|| -> CoreResult<()> {
+            let protected_paths = self.protected_audio_cache_paths()?;
+            for (path, _) in self.audio_cache_entries()? {
+                if protected_paths.contains(&path) {
+                    continue;
+                }
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
-            match std::fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        let conn = Connection::open(&self.db_path)?;
-        conn.execute(
-            "DELETE FROM download_items
-             WHERE song_id NOT IN (
-                SELECT DISTINCT ps.song_id
-                FROM playlist_songs ps
-                JOIN playlists p ON p.id = ps.playlist_id
-                WHERE p.offline_saved_at IS NOT NULL
-             )",
-            [],
-        )?;
+            let conn = Connection::open(&self.db_path)?;
+            conn.execute(
+                "DELETE FROM download_items
+                 WHERE song_id NOT IN (
+                    SELECT DISTINCT ps.song_id
+                    FROM playlist_songs ps
+                    JOIN playlists p ON p.id = ps.playlist_id
+                    WHERE p.offline_saved_at IS NOT NULL
+                )",
+                [],
+            )?;
+            Ok(())
+        })();
+        self.emit_cache_state_event(CacheStateEvent::Reconcile);
+        mutation_result?;
         self.get_audio_cache_stats()
     }
 
     /// # Errors
     /// Returns an error if the song's cache path or metadata cannot be inspected.
     pub fn is_song_cached(&self, song_id: String) -> CoreResult<DownloadStatus> {
+        let _cache_guard = cache_mutation_guard()?;
         let path = self.cached_song_path(&song_id)?;
         let bytes = path
             .as_ref()
@@ -1208,23 +1331,34 @@ impl StereodromeCore {
         let download_lock = song_download_lock(&song_id);
         let _download_lock = download_lock.lock().await;
 
-        if let Some(path) = self.cached_song_path(&song_id)? {
-            let bytes = path.metadata().map_or(0, |metadata| metadata.len());
+        let cached_status = {
+            let _cache_guard = cache_mutation_guard()?;
+            self.cached_song_path(&song_id)?.map(|path| {
+                let bytes = path.metadata().map_or(0, |metadata| metadata.len());
+                self.emit_cache_state_event(CacheStateEvent::CachedChanged {
+                    song_id: song_id.clone(),
+                    cached: true,
+                });
+                DownloadStatus {
+                    song_id: song_id.clone(),
+                    cached: true,
+                    path: Some(path_to_file_uri(&path)),
+                    bytes,
+                }
+            })
+        };
+        if let Some(status) = cached_status {
             self.preserve_cached_song_cover_art_if_connected(&song_id)
                 .await;
-            return Ok(DownloadStatus {
-                song_id,
-                cached: true,
-                path: Some(path_to_file_uri(&path)),
-                bytes,
-            });
+            return Ok(status);
         }
 
         if self.manual_offline_enabled()? {
             return Err(CoreError::OfflineMode);
         }
 
-        let _download_guard = DownloadInProgressGuard::new(&song_id);
+        let _download_guard =
+            DownloadInProgressGuard::new(&song_id, self.cache_event_sender.clone());
         let client = self.connected_client().await?;
         let path = self.audio_cache_path(&song_id, MOBILE_PLAYBACK_FORMAT)?;
         if let Some(parent) = path.parent() {
@@ -1253,16 +1387,23 @@ impl StereodromeCore {
             .await
         {
             Ok(bytes) => {
-                std::fs::write(&path, &bytes)?;
-                self.record_download(DownloadRecord {
-                    entity_type: "song",
-                    entity_id: &song_id,
-                    song_id: &song_id,
-                    status: "downloaded",
-                    path: Some(&path),
-                    bytes: bytes.len() as u64,
-                    error: None,
-                })?;
+                {
+                    let _cache_guard = cache_mutation_guard()?;
+                    write_file_atomically(&path, &bytes)?;
+                    self.emit_cache_state_event(CacheStateEvent::CachedChanged {
+                        song_id: song_id.clone(),
+                        cached: true,
+                    });
+                    self.record_download(DownloadRecord {
+                        entity_type: "song",
+                        entity_id: &song_id,
+                        song_id: &song_id,
+                        status: "downloaded",
+                        path: Some(&path),
+                        bytes: bytes.len() as u64,
+                        error: None,
+                    })?;
+                }
                 self.preserve_song_cover_art_for_offline(&client, &song_id)
                     .await;
                 self.enforce_audio_cache_limit()?;
@@ -1292,6 +1433,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if the cached song or its persisted record cannot be removed.
     pub fn remove_cached_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
+        let _cache_guard = cache_mutation_guard()?;
         if self.song_protected_by_saved_playlist(&song_id)? {
             return Err(CoreError::InvalidInput(format!(
                 "song {song_id} is preserved by a saved playlist"
@@ -1299,10 +1441,25 @@ impl StereodromeCore {
         }
         if let Some(path) = self.cached_song_path(&song_id)? {
             match std::fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(()) => {
+                    self.emit_cache_state_event(CacheStateEvent::CachedChanged {
+                        song_id: song_id.clone(),
+                        cached: false,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.emit_cache_state_event(CacheStateEvent::CachedChanged {
+                        song_id: song_id.clone(),
+                        cached: false,
+                    });
+                }
                 Err(error) => return Err(error.into()),
             }
+        } else {
+            self.emit_cache_state_event(CacheStateEvent::CachedChanged {
+                song_id: song_id.clone(),
+                cached: false,
+            });
         }
         let conn = Connection::open(&self.db_path)?;
         conn.execute("DELETE FROM download_items WHERE song_id = ?1", [&song_id])?;
@@ -1796,6 +1953,7 @@ impl StereodromeCore {
             backup.queue.shuffle,
             backup.queue.repeat_mode,
         );
+        self.emit_cache_state_event(CacheStateEvent::Reconcile);
         Ok(summary)
     }
 
@@ -2289,6 +2447,7 @@ impl StereodromeCore {
     }
 
     fn remove_unprotected_cached_songs(&self, song_ids: HashSet<String>) -> CoreResult<(i32, i32)> {
+        let _cache_guard = cache_mutation_guard()?;
         let mut removed_count = 0;
         let mut skipped_protected_count = 0;
 
@@ -2301,12 +2460,26 @@ impl StereodromeCore {
                 match std::fs::remove_file(&path) {
                     Ok(()) => {
                         removed_count += 1;
+                        self.emit_cache_state_event(CacheStateEvent::CachedChanged {
+                            song_id: song_id.clone(),
+                            cached: false,
+                        });
                         let conn = Connection::open(&self.db_path)?;
                         conn.execute("DELETE FROM download_items WHERE song_id = ?1", [&song_id])?;
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        self.emit_cache_state_event(CacheStateEvent::CachedChanged {
+                            song_id: song_id.clone(),
+                            cached: false,
+                        });
+                    }
                     Err(error) => return Err(error.into()),
                 }
+            } else {
+                self.emit_cache_state_event(CacheStateEvent::CachedChanged {
+                    song_id,
+                    cached: false,
+                });
             }
         }
 
@@ -2671,15 +2844,6 @@ impl StereodromeCore {
     fn cached_song_path(&self, song_id: &str) -> CoreResult<Option<PathBuf>> {
         let mp3_path = self.audio_cache_path(song_id, MOBILE_PLAYBACK_FORMAT)?;
         if mp3_path.exists() {
-            self.record_download(DownloadRecord {
-                entity_type: "song",
-                entity_id: song_id,
-                song_id,
-                status: "downloaded",
-                path: Some(&mp3_path),
-                bytes: mp3_path.metadata().map_or(0, |m| m.len()),
-                error: None,
-            })?;
             return Ok(Some(mp3_path));
         }
 
@@ -2697,7 +2861,6 @@ impl StereodromeCore {
         if let Some(path) = saved_path {
             let path = PathBuf::from(path);
             if path.exists() && is_mobile_playback_cache_path(&path) {
-                self.touch_download(song_id)?;
                 return Ok(Some(path));
             }
         }
@@ -2764,6 +2927,7 @@ impl StereodromeCore {
     }
 
     fn enforce_audio_cache_limit(&self) -> CoreResult<()> {
+        let _cache_guard = cache_mutation_guard()?;
         let max_size = self.max_cache_size()?;
         let mut entries = self.audio_cache_entries()?;
         let protected_paths = self.protected_audio_cache_paths()?;
@@ -2785,14 +2949,31 @@ impl StereodromeCore {
             if protected_paths.contains(&path) {
                 continue;
             }
+            let path_string = path.to_string_lossy().to_string();
+            let conn = Connection::open(&self.db_path)?;
+            let song_id = conn
+                .query_row(
+                    "SELECT song_id FROM download_items WHERE path = ?1 LIMIT 1",
+                    [&path_string],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
             match std::fs::remove_file(&path) {
                 Ok(()) => {
                     total_size = total_size.saturating_sub(size);
-                    let path_string = path.to_string_lossy().to_string();
-                    let conn = Connection::open(&self.db_path)?;
+                    if let Some(song_id) = song_id {
+                        self.emit_cache_state_event(CacheStateEvent::CachedChanged {
+                            song_id,
+                            cached: false,
+                        });
+                    } else {
+                        self.emit_cache_state_event(CacheStateEvent::Reconcile);
+                    }
                     conn.execute("DELETE FROM download_items WHERE path = ?1", [&path_string])?;
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.emit_cache_state_event(CacheStateEvent::Reconcile);
+                }
                 Err(error) => return Err(error.into()),
             }
         }
@@ -2819,15 +3000,6 @@ impl StereodromeCore {
                 record.error,
                 Utc::now().to_rfc3339()
             ],
-        )?;
-        Ok(())
-    }
-
-    fn touch_download(&self, song_id: &str) -> CoreResult<()> {
-        let conn = Connection::open(&self.db_path)?;
-        conn.execute(
-            "UPDATE download_items SET updated_at = ?1 WHERE song_id = ?2",
-            params![Utc::now().to_rfc3339(), song_id],
         )?;
         Ok(())
     }
@@ -3704,6 +3876,24 @@ fn sanitize_file_component(value: &str) -> String {
         .collect()
 }
 
+fn write_file_atomically(path: &Path, bytes: &[u8]) -> CoreResult<()> {
+    let temporary_path = path.with_extension(format!(
+        "{}.part",
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("download")
+    ));
+    if let Err(error) = std::fs::write(&temporary_path, bytes) {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(error.into());
+    }
+    if let Err(error) = std::fs::rename(&temporary_path, path) {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
 fn cover_cache_filename(cover_art_id: &str, size: Option<i32>) -> String {
     let safe_id = sanitize_file_component(cover_art_id);
     match size {
@@ -3846,18 +4036,19 @@ pub(crate) fn clamp_audio_processing_settings(settings: &mut AudioProcessingSett
 #[cfg(test)]
 mod tests {
     use super::{
-        ConnectivitySettings, CoreError, DueSyncJob, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT,
-        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, ServerConfig, Song,
-        StereodromeCore, SyncSettings, build_client, compute_next_run_at,
-        cover_art_filename_matches, cover_cache_filename, distinct_nonempty_cover_art_ids,
-        ensure_incremental_albums_complete, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
-        prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
-        write_sync_value,
+        CacheStateEvent, ConnectivitySettings, CoreError, DownloadInProgressGuard, DueSyncJob,
+        LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate, NewestAlbumPageEntry,
+        NewestPageScanResult, ServerConfig, Song, StereodromeCore, SyncSettings, build_client,
+        compute_next_run_at, cover_art_filename_matches, cover_cache_filename,
+        distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete, is_job_due,
+        path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
+        scan_newest_album_page, should_prefetch_large_cover_art, write_sync_value,
     };
     use chrono::{Duration as ChronoDuration, Utc};
     use rusqlite::Connection;
     use std::collections::HashSet;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::mpsc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn prefetches_large_cover_art_for_small_requests() {
@@ -4357,6 +4548,83 @@ mod tests {
         std::fs::remove_dir_all(data_dir).ok();
     }
 
+    #[test]
+    fn download_guard_publishes_start_and_finish_events() {
+        let (sender, receiver) = mpsc::channel();
+        let song_id = format!("event-song-{}", std::process::id());
+
+        {
+            let _guard = DownloadInProgressGuard::new(&song_id, Some(sender));
+            assert_eq!(
+                receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("download start event"),
+                CacheStateEvent::DownloadingChanged {
+                    song_id: song_id.clone(),
+                    downloading: true,
+                }
+            );
+        }
+
+        assert_eq!(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("download finish event"),
+            CacheStateEvent::DownloadingChanged {
+                song_id,
+                downloading: false,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_mutations_publish_incremental_events() {
+        let data_dir = unique_temp_dir("cache-state-events");
+        let (sender, receiver) = mpsc::channel();
+        let core = StereodromeCore::new_with_cache_events(&data_dir, sender)
+            .expect("core initializes with cache events");
+        let song_id = "cached-song";
+        let cache_path = core
+            .audio_cache_path(song_id, MOBILE_PLAYBACK_FORMAT)
+            .expect("cache path");
+        std::fs::write(&cache_path, b"cached audio").expect("write cache file");
+
+        core.download_song(song_id.to_string())
+            .await
+            .expect("cache hit succeeds");
+        assert_eq!(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cached event"),
+            CacheStateEvent::CachedChanged {
+                song_id: song_id.to_string(),
+                cached: true,
+            }
+        );
+
+        core.remove_cached_song(song_id.to_string())
+            .expect("cache removal succeeds");
+        assert_eq!(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("removed event"),
+            CacheStateEvent::CachedChanged {
+                song_id: song_id.to_string(),
+                cached: false,
+            }
+        );
+
+        core.clear_audio_cache().expect("cache clear succeeds");
+        assert_eq!(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cache reconciliation event"),
+            CacheStateEvent::Reconcile
+        );
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
     #[tokio::test]
     async fn download_song_returns_existing_cache_without_connection() {
         let data_dir = unique_temp_dir("download-song-cache-hit");
@@ -4615,11 +4883,26 @@ mod tests {
         let cache_path = core
             .audio_cache_path("cached-song", MOBILE_PLAYBACK_FORMAT)
             .expect("cache path");
-        std::fs::write(cache_path, b"cached audio").expect("write cache file");
+        std::fs::write(&cache_path, b"cached audio").expect("write cache file");
+        conn.execute(
+            "INSERT INTO download_items
+             (entity_type, entity_id, song_id, status, path, bytes, error, updated_at)
+             VALUES ('song', 'cached-song', 'cached-song', 'downloaded', ?1, 12, NULL, 'old')",
+            [cache_path.to_string_lossy().to_string()],
+        )
+        .expect("insert cached download record");
 
         let song_ids = core.get_offline_song_ids().expect("offline song ids load");
 
         assert_eq!(song_ids, vec!["cached-song"]);
+        let updated_at = conn
+            .query_row(
+                "SELECT updated_at FROM download_items WHERE song_id = 'cached-song'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("read cached download timestamp");
+        assert_eq!(updated_at, "old", "offline lookup must remain read-only");
         std::fs::remove_dir_all(data_dir).ok();
     }
 
