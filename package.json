@@ -2,6 +2,7 @@
   "name": "stereodrome",
   "description": "",
   "type": "module",
+  "packageManager": "bun@1.3.14",
   "scripts": {
     "dev": "vp dev",
     "build": "vp build",
@@ -59,12 +60,5 @@
     "flatted": "^3.4.2",
     "yaml": "^1.10.3",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.2.5"
-  },
-  "devEngines": {
-    "packageManager": {
-      "name": "bun",
-      "version": "1.3.14",
-      "onFail": "download"
-    }
   }
 }
