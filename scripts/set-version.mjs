@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -8,8 +8,8 @@ const semverPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 if (!version || !semverPattern.test(version)) {
-  console.error("Usage: bun scripts/set-version.mjs <semver>");
-  console.error("Example: bun scripts/set-version.mjs 0.1.18");
+  console.error("Usage: vp node scripts/set-version.mjs <semver>");
+  console.error("Example: vp node scripts/set-version.mjs 0.1.18");
   process.exit(1);
 }
 

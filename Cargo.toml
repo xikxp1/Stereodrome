@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "crates/stereodrome-audio",
-    "crates/stereodrome-core",
-    "crates/stereodrome-ffi",
-    "src-tauri",
+  "crates/stereodrome-audio",
+  "crates/stereodrome-core",
+  "crates/stereodrome-ffi",
+  "src-tauri",
 ]
 resolver = "3"
 

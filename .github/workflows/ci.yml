@@ -10,9 +10,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  BUN_VERSION: 1.3.14
-
 jobs:
   desktop:
     runs-on: ubuntu-latest
@@ -21,10 +18,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
-          bun-version: ${{ env.BUN_VERSION }}
+          node-version: "24.18.0"
+          cache: true
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -42,20 +40,16 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libasound2-dev
 
       - name: Install frontend dependencies
-        shell: bash
-        run: scripts/bun-install-with-retry.sh install --frozen-lockfile
+        run: vp install --frozen-lockfile
 
       - name: Audit frontend dependencies
-        run: bun audit --production
+        run: vp pm audit --production
 
-      - name: Type check frontend
-        run: bun run check
+      - name: Check frontend
+        run: vp check
 
-      - name: Lint frontend
-        run: bun run lint
-
-      - name: Format check frontend
-        run: bun run format:check
+      - name: Check Svelte frontend
+        run: vp run check:svelte
 
       - name: Rust format check
         run: cargo fmt --check
@@ -67,7 +61,7 @@ jobs:
         run: cargo test --workspace --all-features
 
       - name: Build desktop app
-        run: bun run tauri build --no-bundle
+        run: vp exec tauri build --no-bundle
 
   mobile-android:
     runs-on: ubuntu-latest
@@ -76,10 +70,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
-          bun-version: ${{ env.BUN_VERSION }}
+          node-version: "24.18.0"
+          cache: true
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -109,28 +104,27 @@ jobs:
 
       - name: Install mobile dependencies
         working-directory: mobile
-        shell: bash
-        run: ../scripts/bun-install-with-retry.sh install --frozen-lockfile
+        run: vp install --frozen-lockfile
 
       - name: Type check mobile
         working-directory: mobile
-        run: bun run typecheck
+        run: vp run typecheck
 
-      - name: Lint mobile
+      - name: Check mobile
         working-directory: mobile
-        run: bun run lint
+        run: vp check
 
       - name: Audit mobile dependencies
         working-directory: mobile
         # xcode uses uuid.v4 only; GHSA-w5hq-g745-h8pq affects buffered v3/v5/v6.
-        run: bun audit --production --ignore GHSA-w5hq-g745-h8pq
+        run: vp pm audit -- --ignore GHSA-w5hq-g745-h8pq
 
       - name: Build Android Rust core
         run: scripts/build-mobile-rust.sh android
 
       - name: Generate Android project
         working-directory: mobile
-        run: bunx expo prebuild --platform android --no-install
+        run: vp exec expo prebuild --platform android --no-install
 
       - name: Build Android app
         working-directory: mobile/android
@@ -143,10 +137,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
-          bun-version: ${{ env.BUN_VERSION }}
+          node-version: "24.18.0"
+          cache: true
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -165,23 +160,22 @@ jobs:
 
       - name: Install mobile dependencies
         working-directory: mobile
-        shell: bash
-        run: ../scripts/bun-install-with-retry.sh install --frozen-lockfile
+        run: vp install --frozen-lockfile
 
       - name: Type check mobile
         working-directory: mobile
-        run: bun run typecheck
+        run: vp run typecheck
 
-      - name: Lint mobile
+      - name: Check mobile
         working-directory: mobile
-        run: bun run lint
+        run: vp check
 
       - name: Build iOS Rust core
         run: scripts/build-mobile-rust.sh ios
 
       - name: Generate iOS project
         working-directory: mobile
-        run: bunx expo prebuild --platform ios --no-install
+        run: vp exec expo prebuild --platform ios --no-install
 
       - name: Install iOS pods
         working-directory: mobile/ios

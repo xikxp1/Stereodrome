@@ -87,7 +87,7 @@ export async function showSongContextMenu(opts: {
   const playlistSubItems: (MenuItem | PredefinedMenuItem)[] = [];
   for (const p of opts.playlists) {
     playlistSubItems.push(
-      // eslint-disable-next-line no-await-in-loop -- Preserve menu item creation and playlist order.
+      // oxlint-disable-next-line no-await-in-loop -- Preserve menu item creation and playlist order.
       await MenuItem.new({
         text: p.name,
         action: () => {

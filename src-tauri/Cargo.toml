@@ -33,7 +33,12 @@ keyring-core = "1.0.0"
 log = "0.4.33"
 md5 = "0.8.0"
 rand = "0.10.2"
-reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls", "system-proxy"] }
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "form",
+  "json",
+  "rustls",
+  "system-proxy",
+] }
 ringbuf = "0.5.0"
 rodio = { version = "0.22.2", features = ["symphonia-all"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }

@@ -17,8 +17,8 @@ The Swift/Kotlin module files are intentionally thin. They keep one native
 Before creating a dev build, generate the Rust native artifacts:
 
 ```sh
-bun run rust:ios
-bun run rust:android
+vp run rust:ios
+vp run rust:android
 ```
 
 The iOS script writes `ios/rust-libs/StereodromeFfi.xcframework`.

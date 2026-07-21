@@ -1,7 +1,8 @@
 import { requireNativeModule, type EventSubscription } from "expo-modules-core";
 
 export type NativeEnvelope<T> =
-  { ok: true; value: T } | { ok: false; error: string };
+  | { ok: true; value: T }
+  | { ok: false; error: string };
 
 export type StereodromeCoreNativeModule = {
   initialize?(dataDir: string): Promise<boolean>;

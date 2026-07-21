@@ -12,7 +12,12 @@ chrono = { version = "0.4.45", features = ["serde"] }
 log = "0.4.33"
 md5 = "0.8.0"
 rand = "0.10.2"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "form", "system-proxy", "rustls-no-provider"] }
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "json",
+  "form",
+  "system-proxy",
+  "rustls-no-provider",
+] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 rustls = { version = "0.23.41", default-features = false, features = ["ring"] }
 serde = { version = "1.0.228", features = ["derive"] }

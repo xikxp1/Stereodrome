@@ -3,9 +3,9 @@
   "productName": "Stereodrome",
   "identifier": "dev.xikxp1.stereodrome",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "vp dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "vp build",
     "frontendDist": "../build"
   },
   "app": {

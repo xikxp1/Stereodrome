@@ -260,7 +260,7 @@ Ordered so every phase ships independently and reduces divergence on its own.
 - Add `PlaybackSnapshot` + `seq` + announcer in `stereodrome-ffi`; new FFI callback registration; `getPlaybackSnapshot` method.
 - iOS/Android modules consume snapshots for the OS session; forward to JS via the existing event mechanism.
 - JS switches to snapshot events + foreground reconciliation; fast poll demoted to position ticker.
-- Follow the Mobile FFI checklist in `AGENTS.md` (ffi → core → native bridges → TS types → `bun run rust:check`).
+- Follow the Mobile FFI checklist in `AGENTS.md` (ffi → core → native bridges → TS types → `vp run rust:check`).
 - **Acceptance:** with the app backgrounded and JS provably suspended: (a) auto-advance updates the lock screen within ~1 s (S4); (b) end of queue clears/pauses the lock-screen state (S1); (c) killing the Android service and resuming shows a correct notification (S5).
 
 ### Phase 2 — Device-grounded engine (R3)

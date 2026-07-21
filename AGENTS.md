@@ -11,22 +11,21 @@
 ## Dependency Management
 
 - Rust dependencies: use `cargo add` from the workspace root, or pass `-p <crate>` for a specific crate.
-- Root desktop/frontend dependencies: use `bun add` from the repository root.
-- Mobile dependencies: use `bun add` from `mobile`.
+- Root desktop/frontend dependencies: use `vp add` from the repository root.
+- Mobile dependencies: use `vp add` from `mobile`.
 - Do not use `npm`.
-- After root dependency changes, run `bun install` from the repository root to refresh `bun.lock`.
-- After mobile dependency changes, run `bun install` from `mobile` to refresh `mobile/bun.lock`.
+- After root dependency changes, run `vp install` from the repository root to refresh `bun.lock`.
+- After mobile dependency changes, run `vp install` from `mobile` to refresh `mobile/bun.lock`.
 
 ## Validation
 
 - Run checks after making code changes.
 - Root desktop/frontend checks:
-  - `bun run check`
-  - `bun run lint`
-  - `bun run format:check`
+  - `vp check`
+  - `vp run check:svelte`
 - Mobile JS checks (from `mobile`):
-  - `bun run typecheck`
-  - `bun run lint`
+  - `vp check`
+  - `vp run typecheck`
 - Desktop/Tauri Rust checks:
   - `cargo fmt --check`
   - `cargo clippy -p stereodrome -- -D warnings`
@@ -35,7 +34,7 @@
   - `cargo clippy -p stereodrome-core -p stereodrome-ffi -- -D warnings`
   - `cargo test -p stereodrome-core -p stereodrome-ffi`
 - Mobile native bridge checks (from `mobile`) when changing `crates/stereodrome-ffi`, `crates/stereodrome-core`, `mobile/modules/stereodrome-core`, or generated native library artifacts:
-  - `bun run rust:check`
+  - `vp run rust:check`
 - If a change crosses desktop, mobile, and/or shared Rust boundaries, run the checks for every affected area.
 
 ## Project Conventions
@@ -64,7 +63,7 @@ When adding, removing, or renaming a mobile FFI operation, update all affected l
 2. Keep shared business logic in `crates/stereodrome-core` where it is needed by both desktop and mobile.
 3. Update native module bindings in `mobile/modules/stereodrome-core` for iOS and Android when exported symbols or native bridge behavior changes.
 4. Update the mobile TypeScript wrapper/types in `mobile` for payload/response shape changes.
-5. Run `bun run rust:check` from `mobile` when native artifacts or FFI behavior are affected.
+5. Run `vp run rust:check` from `mobile` when native artifacts or FFI behavior are affected.
 
 ## Persistence & Migration Rules
 

@@ -523,15 +523,15 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       positionRef.current = nextPosition;
       setPosition(nextPosition);
       if (audioLoadedRef.current) {
-        // eslint-disable-next-line no-await-in-loop -- Serialize coalesced native seeks.
+        // oxlint-disable-next-line no-await-in-loop -- Serialize coalesced native seeks.
         await stereodromeCore.audioSeek(nextPosition);
-        // eslint-disable-next-line no-await-in-loop -- Base the next batch on authoritative state.
+        // oxlint-disable-next-line no-await-in-loop -- Base the next batch on authoritative state.
         await reconcilePlaybackSnapshot();
       } else {
         restoredStartPositionRef.current = nextPosition;
       }
 
-      // eslint-disable-next-line no-await-in-loop -- Persist each coalesced batch before draining the next.
+      // oxlint-disable-next-line no-await-in-loop -- Persist each coalesced batch before draining the next.
       await persistPlaybackPosition(isPlayingRef.current);
     } while (pendingSeekDeltasRef.current.length > 0);
   }, [persistPlaybackPosition, reconcilePlaybackSnapshot]);

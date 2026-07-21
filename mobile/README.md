@@ -7,13 +7,13 @@ Expo React Native dev-build app for Stereodrome’s mobile interface.
 Install dependencies from this directory:
 
 ```sh
-bun install
+vp install
 ```
 
 Build the Rust native library before creating native dev builds:
 
 ```sh
-bun run rust:ios
+vp run rust:ios
 ```
 
 Android builds additionally require the Android SDK/NDK and `cargo-ndk`.
@@ -22,13 +22,13 @@ or newer:
 
 ```sh
 cargo install cargo-ndk
-bun run rust:android
+vp run rust:android
 ```
 
 Start Metro for an Expo development build:
 
 ```sh
-bun run start
+vp run start
 ```
 
 The app uses a local Expo module in `modules/stereodrome-core` to call the Rust
