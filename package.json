@@ -43,7 +43,7 @@
     "@tauri-apps/cli": "2.11.4",
     "@types/node": "26.1.0",
     "brace-expansion": "5.0.7",
-    "daisyui": "5.6.14",
+    "daisyui": "5.7.0",
     "eslint-plugin-svelte": "3.20.0",
     "jiti": "2.7.0",
     "svelte": "5.56.4",
