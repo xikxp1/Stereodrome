@@ -66,6 +66,7 @@ object StereodromeMediaSessionState {
     val info = when (val projection = NowPlayingInfo.fromSnapshotJson(snapshot)) {
       NowPlayingProjection.Invalid -> return
       NowPlayingProjection.Stopped -> {
+        StereodromeAudioFocus.abandon(context.applicationContext)
         clear(context, force = false)
         return
       }

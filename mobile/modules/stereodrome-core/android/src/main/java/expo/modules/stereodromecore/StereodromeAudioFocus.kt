@@ -7,15 +7,24 @@ import android.media.AudioManager
 import android.os.Build
 
 object StereodromeAudioFocus {
+  class Lease internal constructor(val acquiredNow: Boolean)
+
+  private val lock = Any()
   private var focusRequest: AudioFocusRequest? = null
+  private var ownsFocus = false
+  private var focusGeneration = 0L
   @Volatile private var shouldResumeAfterTransientLoss = false
   private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
     handleFocusChange(focusChange)
   }
 
-  fun request(context: Context) {
+  fun request(context: Context): Lease? = synchronized(lock) {
+    if (ownsFocus) {
+      return@synchronized Lease(acquiredNow = false)
+    }
+
     val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+    val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       val request = focusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
         .setAudioAttributes(
           AudioAttributes.Builder()
@@ -35,10 +44,19 @@ object StereodromeAudioFocus {
         AudioManager.AUDIOFOCUS_GAIN
       )
     }
+    if (result != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+      return@synchronized null
+    }
+    ownsFocus = true
+    focusGeneration += 1
+    Lease(acquiredNow = true)
   }
 
-  fun abandon(context: Context) {
+  fun abandon(context: Context) = synchronized(lock) {
     shouldResumeAfterTransientLoss = false
+    if (!ownsFocus) {
+      return@synchronized
+    }
     val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
@@ -46,24 +64,56 @@ object StereodromeAudioFocus {
       @Suppress("DEPRECATION")
       audioManager.abandonAudioFocus(focusChangeListener)
     }
+    ownsFocus = false
+    focusGeneration += 1
+  }
+
+  fun rollback(context: Context, lease: Lease) {
+    if (lease.acquiredNow) {
+      abandon(context)
+    }
   }
 
   private fun handleFocusChange(focusChange: Int) {
     when (focusChange) {
       AudioManager.AUDIOFOCUS_LOSS -> {
+        val lossGeneration = synchronized(lock) {
+          ownsFocus = false
+          focusGeneration += 1
+          focusGeneration
+        }
         StereodromeCoreCommandQueue.enqueue("audioFocusLoss") {
+          if (!isCurrentGeneration(lossGeneration)) {
+            return@enqueue
+          }
           shouldResumeAfterTransientLoss = false
           StereodromeCoreBridge.pauseFromAudioFocusLoss()
         }
       }
       AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+        val lossGeneration = synchronized(lock) {
+          ownsFocus = false
+          focusGeneration += 1
+          focusGeneration
+        }
         StereodromeCoreCommandQueue.enqueue("audioFocusLossTransient") {
+          if (!isCurrentGeneration(lossGeneration)) {
+            return@enqueue
+          }
           shouldResumeAfterTransientLoss =
             StereodromeCoreBridge.pauseFromTransientAudioFocusLoss()
         }
       }
       AudioManager.AUDIOFOCUS_GAIN -> {
+        val gainGeneration = synchronized(lock) {
+          ownsFocus = true
+          focusGeneration += 1
+          focusGeneration
+        }
         StereodromeCoreCommandQueue.enqueue("audioFocusGain") {
+          if (!isCurrentGeneration(gainGeneration)) {
+            return@enqueue
+          }
           val shouldResume = shouldResumeAfterTransientLoss
           shouldResumeAfterTransientLoss = false
           if (shouldResume) {
@@ -72,5 +122,9 @@ object StereodromeAudioFocus {
         }
       }
     }
+  }
+
+  private fun isCurrentGeneration(expected: Long): Boolean = synchronized(lock) {
+    focusGeneration == expected
   }
 }

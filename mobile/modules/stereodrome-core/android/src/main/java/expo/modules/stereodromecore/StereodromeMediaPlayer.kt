@@ -60,9 +60,18 @@ class StereodromeMediaPlayer(
         invalidateOnPlayerLooper()
         return Futures.immediateFuture(Any())
       }
-      StereodromeAudioFocus.request(appContext)
       StereodromeCoreCommandQueue.enqueue("audioResume") {
-        StereodromeCoreBridge.play()
+        val result = StereodromeCoreBridge.callWithAudioFocus(
+          appContext,
+          "audioResume",
+          "null",
+        )
+        if (!StereodromeCoreBridge.isSuccessfulResponse(result)) {
+          handler.post {
+            info = info?.copy(isPlaying = false)
+            invalidateState()
+          }
+        }
       }
     } else {
       StereodromeCoreCommandQueue.enqueue("audioPause") {
@@ -85,18 +94,16 @@ class StereodromeMediaPlayer(
         if (info?.canPlay != true) {
           return Futures.immediateFuture(Any())
         }
-        StereodromeAudioFocus.request(appContext)
         StereodromeCoreCommandQueue.enqueue("playNext") {
-          StereodromeCoreBridge.next()
+          StereodromeCoreBridge.callWithAudioFocus(appContext, "audioPlayNext", "true")
         }
       }
       Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> {
         if (info?.canPlay != true) {
           return Futures.immediateFuture(Any())
         }
-        StereodromeAudioFocus.request(appContext)
         StereodromeCoreCommandQueue.enqueue("playPrevious") {
-          StereodromeCoreBridge.previous()
+          StereodromeCoreBridge.callWithAudioFocus(appContext, "audioPlayPrevious", "null")
         }
       }
       Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM -> {
@@ -112,10 +119,18 @@ class StereodromeMediaPlayer(
   }
 
   override fun handleStop(): ListenableFuture<Any> {
+    val wasPlaying = info?.isPlaying == true
     StereodromeCoreCommandQueue.enqueue("audioStop") {
-      StereodromeCoreBridge.stop()
+      val result = StereodromeCoreBridge.call("audioStop", "null")
+      if (StereodromeCoreBridge.isSuccessfulResponse(result)) {
+        StereodromeAudioFocus.abandon(appContext)
+      } else if (wasPlaying) {
+        handler.post {
+          info = info?.copy(isPlaying = true)
+          invalidateState()
+        }
+      }
     }
-    StereodromeAudioFocus.abandon(appContext)
     info = info?.copy(isPlaying = false, positionSeconds = 0.0)
     invalidateOnPlayerLooper()
     return Futures.immediateFuture(Any())

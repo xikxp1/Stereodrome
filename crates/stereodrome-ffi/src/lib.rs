@@ -6,6 +6,7 @@
 //! Tauri adapter.
 
 use std::ffi::{CStr, CString, c_char};
+use std::future::Future;
 use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -130,6 +131,7 @@ pub struct MobileCore {
     prefetch_state: Arc<Mutex<BackgroundPrefetchState>>,
     cache_event_sender: Sender<CacheStateEvent>,
     monitor_running: Arc<AtomicBool>,
+    monitor_thread: Option<thread::JoinHandle<()>>,
 }
 
 #[derive(Clone)]
@@ -604,7 +606,7 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
                 let (announcer, file_state_initialized) = PlaybackAnnouncer::new(&core);
                 let prefetch_state = Arc::new(Mutex::new(BackgroundPrefetchState::default()));
                 let monitor_running = Arc::new(AtomicBool::new(true));
-                start_mobile_playback_monitor(
+                let monitor_thread = start_mobile_playback_monitor(
                     Arc::clone(&core),
                     Arc::clone(&audio),
                     announcer.clone(),
@@ -627,6 +629,7 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
                     prefetch_state,
                     cache_event_sender,
                     monitor_running,
+                    monitor_thread: Some(monitor_thread),
                 }))
             }
             _ => ptr::null_mut(),
@@ -656,9 +659,29 @@ pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
         }
 
         unsafe {
-            let mobile = Box::from_raw(core);
+            let mut mobile = Box::from_raw(core);
             mobile.monitor_running.store(false, Ordering::SeqCst);
             shutdown_queue_prefetch(&mobile);
+            if let Err(error) = mobile.audio.stop() {
+                log::warn!(
+                    target: "stereodrome_ffi",
+                    "Failed to stop mobile audio before monitor shutdown: {error}"
+                );
+            }
+            if let Some(monitor_thread) = mobile.monitor_thread.take()
+                && monitor_thread.join().is_err()
+            {
+                log::warn!(
+                    target: "stereodrome_ffi",
+                    "Mobile playback monitor panicked during shutdown"
+                );
+            }
+            if let Err(error) = mobile.audio.stop() {
+                log::warn!(
+                    target: "stereodrome_ffi",
+                    "Failed to finalize mobile audio shutdown during core destruction: {error}"
+                );
+            }
         }
     }));
 }
@@ -1014,12 +1037,17 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(result)
         }
         "audioRebuildOutput" => {
-            let result = mobile.audio.rebuild_output().and_then(|()| {
-                runtime
-                    .block_on(async { prepare_next_transition(mobile).await })
-                    .map_err(stereodrome_audio::AudioError::Playback)
+            let result = mobile.audio.rebuild_output().map(|()| {
+                if let Err(error) =
+                    runtime.block_on(async { prepare_next_transition(mobile).await })
+                {
+                    log::warn!(
+                        target: "stereodrome_ffi",
+                        "Failed to prepare next transition after rebuilding output: {error}"
+                    );
+                }
             });
-            json_result(result.map(|_| ()))
+            json_result(result)
         }
         "audioStop" => {
             let result = mobile.audio.stop();
@@ -1789,7 +1817,7 @@ fn start_mobile_playback_monitor(
     running: Arc<AtomicBool>,
     cache_events: Receiver<CacheStateEvent>,
     mut cache_reconcile_pending: bool,
-) {
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(runtime) => runtime,
@@ -1910,11 +1938,23 @@ fn start_mobile_playback_monitor(
                             duration_seconds: duration_seconds(next.duration),
                             is_playing: true,
                         };
-                        let _ = runtime
-                            .block_on(async { core.report_playback_progress(progress).await });
-                        let prepared = runtime
-                            .block_on(async { prepare_next_transition_from(&core, &audio).await })
-                            .unwrap_or(false);
+                        if block_on_monitor_future(
+                            &runtime,
+                            &running,
+                            core.report_playback_progress(progress),
+                        )
+                        .is_none()
+                        {
+                            break;
+                        }
+                        let Some(prepared) = block_on_monitor_future(
+                            &runtime,
+                            &running,
+                            prepare_next_transition_from(&core, &audio),
+                        ) else {
+                            break;
+                        };
+                        let prepared = prepared.unwrap_or(false);
                         let _ = spawn_queue_prefetch(
                             &runtime,
                             Arc::clone(&core),
@@ -1933,7 +1973,16 @@ fn start_mobile_playback_monitor(
                 }
             }
 
-            report_mobile_progress(&runtime, &core, &mut last_report, &song.id, &state);
+            if !report_mobile_progress(
+                &runtime,
+                &core,
+                &running,
+                &mut last_report,
+                &song.id,
+                &state,
+            ) {
+                break;
+            }
 
             if state.is_playing
                 && state_handle.is_last_gapless_segment(segment_idx)
@@ -1947,15 +1996,23 @@ fn start_mobile_playback_monitor(
                         if remaining <= crossfade_window_seconds && remaining > 0.5 {
                             state_handle.set_crossfade_initiated(true);
                             let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
-                            match runtime
-                                .block_on(async { crossfade_next_from(&core, &audio).await })
-                            {
+                            let Some(crossfade_result) = block_on_monitor_future(
+                                &runtime,
+                                &running,
+                                crossfade_next_from(&core, &audio),
+                            ) else {
+                                break;
+                            };
+                            match crossfade_result {
                                 Ok(Some(_)) => {
-                                    let prepared = runtime
-                                        .block_on(async {
-                                            prepare_next_transition_from(&core, &audio).await
-                                        })
-                                        .unwrap_or(false);
+                                    let Some(prepared) = block_on_monitor_future(
+                                        &runtime,
+                                        &running,
+                                        prepare_next_transition_from(&core, &audio),
+                                    ) else {
+                                        break;
+                                    };
+                                    let prepared = prepared.unwrap_or(false);
                                     let _ = spawn_queue_prefetch(
                                         &runtime,
                                         Arc::clone(&core),
@@ -1996,13 +2053,23 @@ fn start_mobile_playback_monitor(
                 last_report = None;
                 let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
 
-                match runtime.block_on(async {
-                    play_queue_navigation_from(&core, &audio, QueueNavigation::Next(false)).await
-                }) {
+                let Some(navigation_result) = block_on_monitor_future(
+                    &runtime,
+                    &running,
+                    play_queue_navigation_from(&core, &audio, QueueNavigation::Next(false)),
+                ) else {
+                    break;
+                };
+                match navigation_result {
                     Ok(status) if status.current_song_id.is_some() => {
-                        let prepared = runtime
-                            .block_on(async { prepare_next_transition_from(&core, &audio).await })
-                            .unwrap_or(false);
+                        let Some(prepared) = block_on_monitor_future(
+                            &runtime,
+                            &running,
+                            prepare_next_transition_from(&core, &audio),
+                        ) else {
+                            break;
+                        };
+                        let prepared = prepared.unwrap_or(false);
                         let _ = spawn_queue_prefetch(
                             &runtime,
                             Arc::clone(&core),
@@ -2025,11 +2092,25 @@ fn start_mobile_playback_monitor(
                             target: "stereodrome_ffi",
                             "Failed to prepare mobile playback after track ended: {error}"
                         );
+                        if let Err(stop_error) = audio.stop() {
+                            log::warn!(
+                                target: "stereodrome_ffi",
+                                "Failed to release mobile audio after terminal transition error: \
+                                 {stop_error}"
+                            );
+                        }
+                        let _ = core.save_playback_position(PlaybackProgress {
+                            song_id: song.id,
+                            position_seconds: 0.0,
+                            duration_seconds: state.duration,
+                            is_playing: false,
+                        });
+                        announcer.emit(&core, &audio);
                     }
                 }
             }
         }
-    });
+    })
 }
 
 struct MobileProgressReport {
@@ -2062,13 +2143,37 @@ fn is_mobile_monitor_suspension_gap(elapsed: Duration) -> bool {
     elapsed >= MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD
 }
 
+fn block_on_monitor_future<F>(
+    runtime: &tokio::runtime::Runtime,
+    running: &AtomicBool,
+    future: F,
+) -> Option<F::Output>
+where
+    F: Future,
+{
+    runtime.block_on(async move {
+        tokio::pin!(future);
+        loop {
+            tokio::select! {
+                result = &mut future => return Some(result),
+                () = tokio::time::sleep(Duration::from_millis(50)) => {
+                    if !running.load(Ordering::SeqCst) {
+                        return None;
+                    }
+                }
+            }
+        }
+    })
+}
+
 fn report_mobile_progress(
     runtime: &tokio::runtime::Runtime,
     core: &StereodromeCore,
+    running: &AtomicBool,
     last_report: &mut Option<MobileProgressReport>,
     song_id: &str,
     state: &stereodrome_audio::PlaybackState,
-) {
+) -> bool {
     let now = Instant::now();
     let should_report = last_report.as_ref().is_none_or(|previous| {
         previous.song_id != song_id
@@ -2078,7 +2183,7 @@ fn report_mobile_progress(
     });
 
     if !should_report {
-        return;
+        return true;
     }
 
     *last_report = Some(MobileProgressReport {
@@ -2094,7 +2199,7 @@ fn report_mobile_progress(
         duration_seconds: state.duration,
         is_playing: state.is_playing,
     };
-    let _ = runtime.block_on(async { core.report_playback_progress(progress).await });
+    block_on_monitor_future(runtime, running, core.report_playback_progress(progress)).is_some()
 }
 
 async fn play_current_queue_item(
@@ -2124,8 +2229,13 @@ async fn play_current_queue_item_from(
 
     let status = play_prepared_audio(core, audio, prepared)?;
 
-    if let Some(position) = seek_position {
-        audio.seek(position).map_err(|e| e.to_string())?;
+    if let Some(position) = seek_position
+        && let Err(error) = audio.seek(position)
+    {
+        log::warn!(
+            target: "stereodrome_ffi",
+            "Playback started but the restored position could not be applied: {error}"
+        );
     }
 
     Ok(if seek_position.is_some() {
@@ -2198,9 +2308,29 @@ async fn play_queue_navigation_from(
     let expected_song_id = item.song_id.clone();
     let prepared = prepare_queue_item_audio_from(core, item).await?;
     let status = play_prepared_audio(core, audio, prepared)?;
-    let committed = navigation.commit(core)?;
+    let committed = match navigation.commit(core) {
+        Ok(committed) => committed,
+        Err(error) => {
+            if let Err(stop_error) = audio.stop() {
+                log::warn!(
+                    target: "stereodrome_ffi",
+                    "Queue commit failed after playback started and stop was not acknowledged: \
+                     {stop_error}"
+                );
+                return Ok(status);
+            }
+            return Err(error);
+        }
+    };
 
     if committed.as_ref().map(|item| item.song_id.as_str()) != Some(expected_song_id.as_str()) {
+        if let Err(stop_error) = audio.stop() {
+            log::warn!(
+                target: "stereodrome_ffi",
+                "Queue changed after playback started and stop was not acknowledged: {stop_error}"
+            );
+            return Ok(status);
+        }
         return Err("queue navigation changed while playback was being prepared".to_string());
     }
 
@@ -2261,7 +2391,12 @@ async fn resume_current_playback(
     };
 
     let status = play_current_queue_item(mobile, seek_position).await?;
-    prepare_next_transition(mobile).await?;
+    if let Err(error) = prepare_next_transition(mobile).await {
+        log::warn!(
+            target: "stereodrome_ffi",
+            "Failed to prepare next transition after resuming playback: {error}"
+        );
+    }
     Ok(status)
 }
 
@@ -2668,6 +2803,16 @@ mod tests {
         assert!(is_mobile_monitor_suspension_gap(
             MOBILE_PLAYBACK_MONITOR_SUSPENSION_THRESHOLD
         ));
+    }
+
+    #[test]
+    fn mobile_monitor_future_stops_when_shutdown_is_requested() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime initializes");
+        let running = AtomicBool::new(false);
+
+        let result = block_on_monitor_future(&runtime, &running, std::future::pending::<()>());
+
+        assert!(result.is_none());
     }
 
     #[test]

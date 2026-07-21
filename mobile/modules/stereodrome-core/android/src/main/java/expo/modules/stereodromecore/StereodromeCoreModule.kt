@@ -14,6 +14,7 @@ class StereodromeCoreModule : Module() {
 
     OnDestroy {
       StereodromeCoreBridge.setPlaybackSnapshotListener(null)
+      StereodromeCoreBridge.destroy()
     }
 
     AsyncFunction("initialize") { dataDir: String ->
@@ -39,17 +40,24 @@ class StereodromeCoreModule : Module() {
     }
 
     AsyncFunction("call") { method: String, payload: String ->
-      if (
+      val result = if (
         method == "audioPlayCurrent" ||
         method == "audioPlayQueueItem" ||
         method == "audioPlayNext" ||
         method == "audioPlayPrevious" ||
-        method == "audioResume"
+        method == "audioResume" ||
+        method == "audioRebuildOutput"
       ) {
-        requestAudioFocus()
+        val context = applicationContext()
+        if (context == null) {
+          """{"ok":false,"error":"Android application context is unavailable"}"""
+        } else {
+          StereodromeCoreBridge.callWithAudioFocus(context, method, payload)
+        }
+      } else {
+        callCore(method, payload)
       }
-      val result = callCore(method, payload)
-      if (method == "audioStop") {
+      if (method == "audioStop" && StereodromeCoreBridge.isSuccessfulResponse(result)) {
         abandonAudioFocus()
       }
       result
@@ -63,13 +71,9 @@ class StereodromeCoreModule : Module() {
   private fun escapeJson(value: String): String =
     value.replace("\\", "\\\\").replace("\"", "\\\"")
 
-  private fun requestAudioFocus() {
-    val context = appContext.reactContext ?: return
-    StereodromeAudioFocus.request(context.applicationContext)
+  private fun abandonAudioFocus() {
+    applicationContext()?.let(StereodromeAudioFocus::abandon)
   }
 
-  private fun abandonAudioFocus() {
-    val context = appContext.reactContext ?: return
-    StereodromeAudioFocus.abandon(context.applicationContext)
-  }
+  private fun applicationContext() = appContext.reactContext?.applicationContext
 }

@@ -304,6 +304,15 @@ private func stereodromePlaybackCallback(_ snapshot: UnsafePointer<CChar>?) {
 }
 
 public class StereodromeCoreModule: Module {
+  private struct AudioSessionLease {
+    let acquiredNow: Bool
+  }
+
+  private enum AudioSessionAcquisition {
+    case acquired(AudioSessionLease)
+    case failed(String)
+  }
+
   private var core: OpaquePointer?
   private let coreQueue = DispatchQueue(label: "dev.xikxp1.stereodrome.mobile.core")
   private let remoteCommandQueue = DispatchQueue(
@@ -319,6 +328,9 @@ public class StereodromeCoreModule: Module {
   private var audioSessionObservers: [NSObjectProtocol] = []
   private var shouldResumeAfterInterruption = false
   private var canPlayRemoteCommandsValue = false
+  private let audioSessionStateLock = NSLock()
+  private var ownsAudioSession = false
+  private var audioSessionGeneration: UInt64 = 0
 
   deinit {
     clearAudioSessionObservers()
@@ -330,6 +342,7 @@ public class StereodromeCoreModule: Module {
     } else {
       clearRemoteCommandHandlers()
     }
+    releaseAudioSession()
     coreQueue.sync {
       stereodromeCoreDestroy(core)
     }
@@ -353,14 +366,11 @@ public class StereodromeCoreModule: Module {
     }
 
     AsyncFunction("call") { (_ method: String, _ payload: String) -> String in
-      if method == "audioPlayCurrent" || method == "audioPlayQueueItem"
-        || method == "audioPlayNext" || method == "audioPlayPrevious"
-        || method == "audioResume" {
-        self.setAudioSessionActive(true)
-      }
-      let result = self.callSync(method: method, payload: payload)
-      if method == "audioStop" {
-        self.setAudioSessionActive(false)
+      let result = self.requiresAudioSession(method)
+        ? self.callWithAudioSession(method: method, payload: payload)
+        : self.callSync(method: method, payload: payload)
+      if method == "audioStop" && self.isSuccessfulEnvelope(result) {
+        self.releaseAudioSession()
       }
       return result
     }
@@ -439,20 +449,24 @@ public class StereodromeCoreModule: Module {
 
   private func callSync(method: String, payload: String) -> String {
     return coreQueue.sync {
-      guard let core else {
-        return #"{"ok":false,"error":"Stereodrome Rust core is not initialized"}"#
-      }
+      callCore(method: method, payload: payload)
+    }
+  }
 
-      return method.withCString { methodPointer in
-        payload.withCString { payloadPointer in
-          guard let resultPointer = stereodromeCoreCall(core, methodPointer, payloadPointer) else {
-            return #"{"ok":false,"error":"Rust returned null"}"#
-          }
+  private func callCore(method: String, payload: String) -> String {
+    guard let core else {
+      return #"{"ok":false,"error":"Stereodrome Rust core is not initialized"}"#
+    }
 
-          let result = String(cString: resultPointer)
-          stereodromeCoreFreeString(resultPointer)
-          return result
+    return method.withCString { methodPointer in
+      payload.withCString { payloadPointer in
+        guard let resultPointer = stereodromeCoreCall(core, methodPointer, payloadPointer) else {
+          return #"{"ok":false,"error":"Rust returned null"}"#
         }
+
+        let result = String(cString: resultPointer)
+        stereodromeCoreFreeString(resultPointer)
+        return result
       }
     }
   }
@@ -467,17 +481,103 @@ public class StereodromeCoreModule: Module {
     }
   }
 
-  private func setAudioSessionActive(_ active: Bool) {
+  private func requiresAudioSession(_ method: String) -> Bool {
+    return method == "audioPlayCurrent" || method == "audioPlayQueueItem"
+      || method == "audioPlayNext" || method == "audioPlayPrevious"
+      || method == "audioResume" || method == "audioRebuildOutput"
+  }
+
+  private func acquireAudioSession() -> AudioSessionAcquisition {
+    audioSessionStateLock.lock()
+    defer { audioSessionStateLock.unlock() }
+    if ownsAudioSession {
+      return .acquired(AudioSessionLease(acquiredNow: false))
+    }
+
     let session = AVAudioSession.sharedInstance()
     do {
-      if active {
-        try session.setCategory(.playback, mode: .default)
-      }
-      let options: AVAudioSession.SetActiveOptions = active ? [] : [.notifyOthersOnDeactivation]
-      try session.setActive(active, options: options)
+      try session.setCategory(.playback, mode: .default)
+      try session.setActive(true)
+      ownsAudioSession = true
+      audioSessionGeneration &+= 1
+      return .acquired(AudioSessionLease(acquiredNow: true))
     } catch {
-      // Keep command handling best-effort; playback errors still flow through Rust.
+      return .failed(error.localizedDescription)
     }
+  }
+
+  private func releaseAudioSession() {
+    audioSessionStateLock.lock()
+    defer { audioSessionStateLock.unlock() }
+    guard ownsAudioSession else {
+      return
+    }
+    do {
+      try AVAudioSession.sharedInstance().setActive(
+        false,
+        options: [.notifyOthersOnDeactivation]
+      )
+      ownsAudioSession = false
+      audioSessionGeneration &+= 1
+    } catch {
+      appContext?.jsLogger.warn("Failed to deactivate audio session: \(error.localizedDescription)")
+    }
+  }
+
+  private func markAudioSessionInactive() -> UInt64 {
+    audioSessionStateLock.lock()
+    ownsAudioSession = false
+    audioSessionGeneration &+= 1
+    let generation = audioSessionGeneration
+    audioSessionStateLock.unlock()
+    return generation
+  }
+
+  private func isCurrentAudioSessionGeneration(_ expected: UInt64) -> Bool {
+    audioSessionStateLock.lock()
+    defer { audioSessionStateLock.unlock() }
+    return audioSessionGeneration == expected
+  }
+
+  private func rollbackAudioSession(_ lease: AudioSessionLease) {
+    if lease.acquiredNow {
+      releaseAudioSession()
+    }
+  }
+
+  private func callWithAudioSession(method: String, payload: String) -> String {
+    return coreQueue.sync {
+      switch acquireAudioSession() {
+      case .failed(let message):
+        return errorEnvelope("Failed to activate audio session: \(message)")
+      case .acquired(let lease):
+        let result = callCore(method: method, payload: payload)
+        if !isSuccessfulEnvelope(result) {
+          rollbackAudioSession(lease)
+        }
+        return result
+      }
+    }
+  }
+
+  private func isSuccessfulEnvelope(_ raw: String) -> Bool {
+    guard
+      let data = raw.data(using: .utf8),
+      let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+      return false
+    }
+    return boolValue(envelope["ok"])
+  }
+
+  private func errorEnvelope(_ message: String) -> String {
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: ["ok": false, "error": message]),
+      let result = String(data: data, encoding: .utf8)
+    else {
+      return #"{"ok":false,"error":"Audio session acquisition failed"}"#
+    }
+    return result
   }
 
   fileprivate func enqueueDeferredPlaybackSnapshotUpdates(
@@ -516,6 +616,7 @@ public class StereodromeCoreModule: Module {
   fileprivate func applyPlaybackProjection(_ projection: PlaybackProjection) -> String? {
     if projection.isStopped {
       clearNowPlayingInfo()
+      releaseAudioSession()
       return nil
     }
 
@@ -660,10 +761,14 @@ public class StereodromeCoreModule: Module {
       {
         return
       }
+      let interruptionGeneration = markAudioSessionInactive()
       // iOS has halted our audio output. Pause the Rust core so its state
       // matches reality; otherwise a later remote play command becomes a
       // no-op (resume on a sink that was never paused).
       remoteCommandQueue.async {
+        guard self.isCurrentAudioSessionGeneration(interruptionGeneration) else {
+          return
+        }
         let wasPlaying = self.isCorePlaying()
         self.shouldResumeAfterInterruption = wasPlaying
         if wasPlaying {
@@ -679,8 +784,7 @@ public class StereodromeCoreModule: Module {
           self.shouldResumeAfterInterruption && options.contains(.shouldResume)
         self.shouldResumeAfterInterruption = false
         if shouldResume {
-          self.setAudioSessionActive(true)
-          _ = self.callSync(method: "audioResume", payload: "null")
+          _ = self.callWithAudioSession(method: "audioResume", payload: "null")
         }
       }
     @unknown default:
@@ -715,13 +819,13 @@ public class StereodromeCoreModule: Module {
     remoteCommandQueue.async {
       self.shouldResumeAfterInterruption = false
       self.configureAudioSession()
-      self.setAudioSessionActive(true)
+      _ = self.markAudioSessionInactive()
       if let projectionToRestore,
         self.reservePlaybackProjectionIfMissing(projectionToRestore)
       {
         self.replayPlaybackProjectionIfCurrent(projectionToRestore)
       }
-      _ = self.callSync(method: "audioRebuildOutput", payload: "null")
+      _ = self.callWithAudioSession(method: "audioRebuildOutput", payload: "null")
     }
   }
 
@@ -783,8 +887,7 @@ public class StereodromeCoreModule: Module {
       guard canPlayRemoteCommands() else {
         return
       }
-      setAudioSessionActive(true)
-      _ = callSync(method: "audioResume", payload: "null")
+      _ = callWithAudioSession(method: "audioResume", payload: "null")
     case .pause:
       _ = callSync(method: "audioPause", payload: "null")
     case .toggle:
@@ -794,24 +897,23 @@ public class StereodromeCoreModule: Module {
       } else if !canPlayRemoteCommands() {
         return
       } else {
-        setAudioSessionActive(true)
-        _ = callSync(method: "audioResume", payload: "null")
+        _ = callWithAudioSession(method: "audioResume", payload: "null")
       }
     case .next:
       guard canPlayRemoteCommands() else {
         return
       }
-      setAudioSessionActive(true)
-      _ = callSync(method: "audioPlayNext", payload: "true")
+      _ = callWithAudioSession(method: "audioPlayNext", payload: "true")
     case .previous:
       guard canPlayRemoteCommands() else {
         return
       }
-      setAudioSessionActive(true)
-      _ = callSync(method: "audioPlayPrevious", payload: "null")
+      _ = callWithAudioSession(method: "audioPlayPrevious", payload: "null")
     case .stop:
-      _ = callSync(method: "audioStop", payload: "null")
-      setAudioSessionActive(false)
+      let result = callSync(method: "audioStop", payload: "null")
+      if isSuccessfulEnvelope(result) {
+        releaseAudioSession()
+      }
     }
   }
 

@@ -25,6 +25,7 @@ object StereodromeCoreBridge {
     val context = synchronized(lock) {
       val currentHandle = handle
       handle = 0
+      applicationContext?.let(StereodromeAudioFocus::abandon)
       if (currentHandle != 0L) {
         jni.destroy(currentHandle)
       }
@@ -63,6 +64,24 @@ object StereodromeCoreBridge {
     jni.call(handle, method, payload)
   }
 
+  fun callWithAudioFocus(
+    context: Context,
+    method: String,
+    payload: String,
+  ): String = synchronized(lock) {
+    val lease = StereodromeAudioFocus.request(context.applicationContext)
+      ?: return@synchronized errorEnvelope("Android audio focus request was denied")
+    val result = if (handle == 0L) {
+      errorEnvelope("Stereodrome Rust core is not initialized")
+    } else {
+      jni.call(handle, method, payload)
+    }
+    if (!isSuccessfulResponse(result)) {
+      StereodromeAudioFocus.rollback(context.applicationContext, lease)
+    }
+    result
+  }
+
   fun hasCore(): Boolean = synchronized(lock) {
     handle != 0L
   }
@@ -86,7 +105,13 @@ object StereodromeCoreBridge {
   }
 
   fun resumeFromAudioFocusGain() {
-    play()
+    if (!hasCore()) {
+      return
+    }
+    val result = call("audioResume", "null")
+    if (!isSuccessfulResponse(result)) {
+      applicationContext?.let(StereodromeAudioFocus::abandon)
+    }
   }
 
   fun play() {
@@ -144,4 +169,13 @@ object StereodromeCoreBridge {
       false
     }
   }
+
+  fun isSuccessfulResponse(raw: String): Boolean = try {
+    JSONObject(raw).optBoolean("ok", false)
+  } catch (error: Throwable) {
+    false
+  }
+
+  private fun errorEnvelope(message: String): String =
+    JSONObject(mapOf("ok" to false, "error" to message)).toString()
 }
