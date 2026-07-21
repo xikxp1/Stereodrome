@@ -5,7 +5,7 @@ import {
   SelectableList,
   type SelectableOption,
 } from "@/components/SelectableList";
-import { usePlayback } from "@/context/PlaybackContext";
+import { usePlaybackMetadata } from "@/context/PlaybackContext";
 import { useSongActions } from "@/context/SongActionContext";
 import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
@@ -17,7 +17,7 @@ function songSubtitle(song: { artist?: string | null; album?: string | null }) {
 }
 
 export function SongContextMenuScreen() {
-  const playback = usePlayback();
+  const playback = usePlaybackMetadata();
   const songActions = useSongActions();
   const stereodrome = useStereodrome();
   const view = useViewStack();

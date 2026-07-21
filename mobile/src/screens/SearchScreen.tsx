@@ -4,9 +4,9 @@ import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
 import { colors } from "@/components/theme";
-import { usePlayback } from "@/context/PlaybackContext";
+import { usePlaybackActions } from "@/context/PlaybackContext";
 import { useSongActions } from "@/context/SongActionContext";
-import { useStereodrome } from "@/context/StereodromeContext";
+import { useFileState, useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import {
   songFileState,
@@ -19,9 +19,10 @@ export function SearchScreen() {
   const inputRef = useRef<TextInput>(null);
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const playback = usePlayback();
+  const playback = usePlaybackActions();
   const { clearActiveSongTarget, setActiveSongTarget } = useSongActions();
   const stereodrome = useStereodrome();
+  const fileState = useFileState();
   const view = useViewStack();
   const results = useQuery({
     queryKey: ["search", debouncedQuery],
@@ -54,7 +55,7 @@ export function SearchScreen() {
     const albumSongs = visibleSongs(
       await stereodromeCore.getSongs(albumId),
       stereodrome.offlineMode,
-      stereodrome.offlineSongIds
+      fileState.offlineSongIds
     );
     const firstSong = albumSongs[0];
     if (firstSong) {
@@ -67,7 +68,7 @@ export function SearchScreen() {
     const artistSongs = visibleSongs(
       await stereodromeCore.getSongs(undefined, artistId),
       stereodrome.offlineMode,
-      stereodrome.offlineSongIds
+      fileState.offlineSongIds
     );
     const firstSong = artistSongs[0];
     if (firstSong) {
@@ -80,7 +81,7 @@ export function SearchScreen() {
     results.data,
     songs.data ?? [],
     stereodrome.offlineMode,
-    stereodrome.offlineSongIds
+    fileState.offlineSongIds
   );
   const resultSongs = useMemo(() => data?.songs ?? [], [data?.songs]);
   const handleActiveIndexChange = useCallback(
@@ -110,8 +111,8 @@ export function SearchScreen() {
       label: song.title,
       fileState: songFileState(
         song.id,
-        stereodrome.offlineSongIds,
-        stereodrome.downloadingSongIds
+        fileState.offlineSongIds,
+        fileState.downloadingSongIds
       ),
       ...(song.artist == null ? {} : { sublabel: song.artist }),
       onSelect: async () => {

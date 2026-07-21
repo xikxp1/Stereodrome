@@ -13,6 +13,10 @@ export type StereodromeCoreNativeModule = {
     eventName: "playback-snapshot",
     listener: (payload: { snapshot: string }) => void
   ): EventSubscription;
+  addListener?(
+    eventName: "core-event",
+    listener: (payload: { event: string }) => void
+  ): EventSubscription;
 };
 
 export default requireNativeModule<StereodromeCoreNativeModule>(

@@ -54,6 +54,12 @@ export async function configureLibrarySyncBackgroundTask(
     }
 
     if (registered) {
+      const options = await TaskManager.getTaskOptionsAsync<{
+        minimumInterval?: number;
+      }>(TASK_NAME);
+      if (options.minimumInterval === minimumInterval) {
+        return;
+      }
       await BackgroundTask.unregisterTaskAsync(TASK_NAME);
     }
 

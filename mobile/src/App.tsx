@@ -1,9 +1,13 @@
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StyleSheet } from "react-native";
-import { useMemo } from "react";
+import {
+  focusManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
+import { AppState, StyleSheet } from "react-native";
+import { useEffect, useMemo } from "react";
 
 import { IpodShell } from "@/components/IpodShell";
 import { InputProvider } from "@/context/InputContext";
@@ -15,6 +19,17 @@ import { ViewProvider } from "@/context/ViewContext";
 import "@/services/librarySyncScheduler";
 
 export default function App() {
+  useEffect(() => {
+    focusManager.setFocused(AppState.currentState === "active");
+    const subscription = AppState.addEventListener("change", (state) => {
+      focusManager.setFocused(state === "active");
+    });
+    return () => {
+      subscription.remove();
+      focusManager.setFocused(undefined);
+    };
+  }, []);
+
   const queryClient = useMemo(
     () =>
       new QueryClient({

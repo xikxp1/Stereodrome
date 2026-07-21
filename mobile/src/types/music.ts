@@ -233,6 +233,10 @@ export type PlaybackSnapshot = {
   can_next: boolean;
   can_previous: boolean;
   can_seek: boolean;
+};
+
+export type FileStateSnapshot = {
+  seq: number;
   downloaded_song_ids: string[];
   downloading_song_ids: string[];
 };

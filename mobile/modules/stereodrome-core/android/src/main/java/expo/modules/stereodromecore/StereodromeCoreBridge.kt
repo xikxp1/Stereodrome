@@ -11,13 +11,19 @@ object StereodromeCoreBridge {
   @Volatile private var handle: Long = 0
   private var applicationContext: Context? = null
   @Volatile private var playbackSnapshotListener: ((String) -> Unit)? = null
+  @Volatile private var coreEventListener: ((String) -> Unit)? = null
+  @Volatile private var eventStreamId: Long? = null
 
   fun initialize(context: Context, dataDir: String): Boolean = synchronized(lock) {
     applicationContext = context.applicationContext
     if (handle != 0L) {
       return@synchronized true
     }
+    eventStreamId = null
     handle = jni.initialize(dataDir)
+    if (handle != 0L) {
+      eventStreamId = envelopeLong(jni.call(handle, "getEventStreamId", "null"))
+    }
     handle != 0L
   }
 
@@ -25,6 +31,7 @@ object StereodromeCoreBridge {
     val context = synchronized(lock) {
       val currentHandle = handle
       handle = 0
+      eventStreamId = null
       applicationContext?.let(StereodromeAudioFocus::abandon)
       if (currentHandle != 0L) {
         jni.destroy(currentHandle)
@@ -36,6 +43,29 @@ object StereodromeCoreBridge {
 
   fun setPlaybackSnapshotListener(listener: ((String) -> Unit)?) {
     playbackSnapshotListener = listener
+  }
+
+  fun setCoreEventListener(listener: ((String) -> Unit)?) {
+    coreEventListener = listener
+  }
+
+  @JvmStatic
+  fun onRustCoreEvent(event: String) {
+    val streamId = try {
+      JSONObject(event).optLong("stream_id", -1L)
+    } catch (_: Throwable) {
+      -1L
+    }
+    if (handle != 0L && streamId >= 0L && streamId == eventStreamId) {
+      coreEventListener?.invoke(event)
+    }
+  }
+
+  private fun envelopeLong(envelope: String): Long? = try {
+    val parsed = JSONObject(envelope)
+    if (parsed.optBoolean("ok")) parsed.optLong("value") else null
+  } catch (_: Throwable) {
+    null
   }
 
   @JvmStatic

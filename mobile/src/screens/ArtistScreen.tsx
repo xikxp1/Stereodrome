@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
-import { usePlayback } from "@/context/PlaybackContext";
-import { useStereodrome } from "@/context/StereodromeContext";
+import { usePlaybackActions } from "@/context/PlaybackContext";
+import { useFileState, useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { visibleAlbums, visibleSongs } from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
@@ -15,8 +15,9 @@ export function ArtistScreen({
   title: string;
 }) {
   const view = useViewStack();
-  const playback = usePlayback();
+  const playback = usePlaybackActions();
   const stereodrome = useStereodrome();
+  const fileState = useFileState();
   const albums = useQuery({
     queryKey: ["artist-albums", artistId],
     queryFn: () => stereodromeCore.getAlbums(artistId),
@@ -31,7 +32,7 @@ export function ArtistScreen({
     albums.data ?? [],
     songs.data ?? [],
     stereodrome.offlineMode,
-    stereodrome.offlineSongIds
+    fileState.offlineSongIds
   );
   const isLoading =
     albums.isLoading || (stereodrome.offlineMode && songs.isLoading);
@@ -40,7 +41,7 @@ export function ArtistScreen({
     const albumSongs = visibleSongs(
       await stereodromeCore.getSongs(albumId),
       stereodrome.offlineMode,
-      stereodrome.offlineSongIds
+      fileState.offlineSongIds
     );
     const firstSong = albumSongs[0];
     if (firstSong) {
@@ -53,7 +54,7 @@ export function ArtistScreen({
     const artistSongs = visibleSongs(
       await stereodromeCore.getSongs(undefined, artistId),
       stereodrome.offlineMode,
-      stereodrome.offlineSongIds
+      fileState.offlineSongIds
     );
     const firstSong = artistSongs[0];
     if (firstSong) {

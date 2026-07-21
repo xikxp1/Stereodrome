@@ -3,10 +3,11 @@ import { useEffect } from "react";
 
 import { SelectableList } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
-import { useStereodrome } from "@/context/StereodromeContext";
+import { useFileState, useStereodrome } from "@/context/StereodromeContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function DownloadsScreen() {
+  const fileState = useFileState();
   const stereodrome = useStereodrome();
   const queryClient = useQueryClient();
   const cacheStats = useQuery({
@@ -21,13 +22,13 @@ export function DownloadsScreen() {
     void queryClient.invalidateQueries({ queryKey: ["audio-cache-stats"] });
   }, [
     queryClient,
-    stereodrome.downloadingSongIds.size,
-    stereodrome.offlineSongIds.size,
+    fileState.downloadingSongIds.size,
+    fileState.offlineSongIds.size,
   ]);
 
   async function refreshCache() {
     await queryClient.invalidateQueries({ queryKey: ["audio-cache-stats"] });
-    await stereodrome.refreshOfflineSongIds();
+    await fileState.refreshOfflineSongIds();
   }
 
   const options = cacheStats.isLoading

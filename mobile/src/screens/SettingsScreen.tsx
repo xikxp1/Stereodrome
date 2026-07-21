@@ -16,7 +16,7 @@ import {
 } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
-import { useStereodrome } from "@/context/StereodromeContext";
+import { useFileState, useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { configureLibrarySyncBackgroundTask } from "@/services/librarySyncScheduler";
 import { stereodromeCore } from "@/services/stereodromeCore";
@@ -160,6 +160,7 @@ const eqPresets: EqPreset[] = [
 
 export function SettingsScreen({ category }: { category?: string }) {
   const stereodrome = useStereodrome();
+  const fileState = useFileState();
   const mobileSettings = useMobileSettings();
   const view = useViewStack();
   const queryClient = useQueryClient();
@@ -176,14 +177,6 @@ export function SettingsScreen({ category }: { category?: string }) {
     queryKey: librarySyncStatusQueryKey,
     queryFn: stereodromeCore.getLibrarySyncStatus,
     enabled: selectedCategory === "sync",
-    refetchInterval: (query) => {
-      const activeJob = query.state.data?.active_job;
-      return activeJob !== null &&
-        activeJob !== undefined &&
-        activeJob.length > 0
-        ? 2000
-        : false;
-    },
   });
   const syncSettings = useQuery({
     queryKey: syncSettingsQueryKey,
@@ -293,7 +286,7 @@ export function SettingsScreen({ category }: { category?: string }) {
           onImported: async (summary) => {
             queryClient.clear();
             await stereodrome.refreshStatus();
-            await stereodrome.refreshOfflineSongIds();
+            await fileState.refreshOfflineSongIds();
             const importedSyncSettings =
               await stereodromeCore.getSyncSettings();
             await configureLibrarySyncBackgroundTask(importedSyncSettings);
@@ -699,7 +692,7 @@ export function SettingsScreen({ category }: { category?: string }) {
             await queryClient.invalidateQueries({
               queryKey: ["audio-cache-stats"],
             });
-            await stereodrome.refreshOfflineSongIds();
+            await fileState.refreshOfflineSongIds();
             setMessage("Cache cleared");
           });
         },
@@ -786,9 +779,6 @@ export function SettingsScreen({ category }: { category?: string }) {
         await stereodrome.sync();
         setMessage("Full sync started");
       }
-      await queryClient.invalidateQueries({
-        queryKey: librarySyncStatusQueryKey,
-      });
     });
   }
 

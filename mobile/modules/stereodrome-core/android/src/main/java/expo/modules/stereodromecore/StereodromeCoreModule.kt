@@ -10,10 +10,11 @@ class StereodromeCoreModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("StereodromeCore")
-    Events("playback-snapshot")
+    Events("playback-snapshot", "core-event")
 
     OnDestroy {
       StereodromeCoreBridge.setPlaybackSnapshotListener(null)
+      StereodromeCoreBridge.setCoreEventListener(null)
       StereodromeCoreBridge.destroy()
     }
 
@@ -25,6 +26,11 @@ class StereodromeCoreModule : Module() {
         StereodromeCoreBridge.setPlaybackSnapshotListener { snapshot ->
           mainHandler.post {
             sendEvent("playback-snapshot", mapOf("snapshot" to snapshot))
+          }
+        }
+        StereodromeCoreBridge.setCoreEventListener { event ->
+          mainHandler.post {
+            sendEvent("core-event", mapOf("event" to event))
           }
         }
         StereodromeCoreBridge.initialize(context, dataDir)

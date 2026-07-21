@@ -1,16 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
-import { usePlayback } from "@/context/PlaybackContext";
-import { useStereodrome } from "@/context/StereodromeContext";
+import { usePlaybackActions } from "@/context/PlaybackContext";
+import { useFileState, useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { visibleSongs } from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function PlaylistsScreen() {
   const view = useViewStack();
-  const playback = usePlayback();
+  const playback = usePlaybackActions();
   const stereodrome = useStereodrome();
+  const fileState = useFileState();
   const playlists = useQuery({
     queryKey: ["playlists", stereodrome.offlineMode ? "offline" : "online"],
     queryFn: stereodromeCore.getPlaylists,
@@ -21,7 +22,7 @@ export function PlaylistsScreen() {
     const playableSongs = visibleSongs(
       songs,
       stereodrome.offlineMode,
-      stereodrome.offlineSongIds
+      fileState.offlineSongIds
     );
     const firstSong = playableSongs[0];
     if (firstSong) {

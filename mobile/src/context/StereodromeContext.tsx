@@ -12,12 +12,12 @@ import {
 } from "react";
 
 import { syncLibraryBackgroundRegistration } from "@/services/librarySyncScheduler";
-import {
-  isLibrarySyncStatus,
-  isPlaybackSnapshot,
-  stereodromeCore,
-} from "@/services/stereodromeCore";
-import type { ConnectionStatus, LibrarySyncStatus } from "@/types/music";
+import { stereodromeCore } from "@/services/stereodromeCore";
+import type {
+  ConnectionStatus,
+  FileStateSnapshot,
+  LibrarySyncStatus,
+} from "@/types/music";
 
 type StereodromeContextValue = {
   ready: boolean;
@@ -25,12 +25,8 @@ type StereodromeContextValue = {
   hasConfiguredServer: boolean;
   offlineMode: boolean;
   manualOfflineEnabled: boolean;
-  offlineSongIds: Set<string>;
-  downloadingSongIds: Set<string>;
   error: string | null;
   refreshStatus(): Promise<void>;
-  refreshOfflineSongIds(): Promise<void>;
-  reconcileSavedPlaylistsOffline(): Promise<void>;
   connect(params: {
     url: string;
     username: string;
@@ -45,6 +41,13 @@ type StereodromeContextValue = {
   syncIncremental(): Promise<void>;
 };
 
+type FileStateContextValue = {
+  offlineSongIds: Set<string>;
+  downloadingSongIds: Set<string>;
+  refreshOfflineSongIds(): Promise<void>;
+  reconcileSavedPlaylistsOffline(): Promise<void>;
+};
+
 const disconnected: ConnectionStatus = {
   connected: false,
   server_url: null,
@@ -53,7 +56,6 @@ const disconnected: ConnectionStatus = {
 };
 
 const librarySyncStatusQueryKey = ["library-sync-status"] as const;
-const savedPlaylistOfflinePollIntervalMs = 2000;
 const libraryQueryKeys = [
   ["artists"],
   ["albums"],
@@ -68,6 +70,21 @@ const libraryQueryKeys = [
 ] as const;
 
 const StereodromeContext = createContext<StereodromeContextValue | null>(null);
+const FileStateContext = createContext<FileStateContextValue | null>(null);
+
+function setsEqual(current: Set<string>, values: readonly string[]): boolean {
+  return (
+    current.size === values.length &&
+    values.every((value) => current.has(value))
+  );
+}
+
+function updateStringSet(
+  current: Set<string>,
+  values: readonly string[]
+): Set<string> {
+  return setsEqual(current, values) ? current : new Set(values);
+}
 
 export function StereodromeProvider({
   children,
@@ -86,76 +103,38 @@ export function StereodromeProvider({
   const syncWasActive = useRef(false);
   const lastCompletedSyncKey = useRef<string | null>(null);
   const statusRefreshGeneration = useRef(0);
-  const savedPlaylistOfflinePoll = useRef<ReturnType<
-    typeof setInterval
-  > | null>(null);
+  const appState = useRef(AppState.currentState);
+  const pendingLibraryRefresh = useRef(false);
+  const pendingOfflineRefresh = useRef(false);
+  const lastFileStateSeq = useRef(-1);
   const hasConfiguredServer = Boolean(status.server_url);
   const offlineMode =
     manualOfflineEnabled || (hasConfiguredServer && !status.connected);
 
+  const applyFileState = useCallback((fileState: FileStateSnapshot) => {
+    if (fileState.seq <= lastFileStateSeq.current) {
+      return;
+    }
+    lastFileStateSeq.current = fileState.seq;
+    setOfflineSongIds((current) =>
+      updateStringSet(current, fileState.downloaded_song_ids)
+    );
+    setDownloadingSongIds((current) =>
+      updateStringSet(current, fileState.downloading_song_ids)
+    );
+  }, []);
+
   const refreshOfflineSongIds = useCallback(async () => {
     try {
-      const songIds = await stereodromeCore.getOfflineSongIds();
-      setOfflineSongIds(new Set(songIds));
+      applyFileState(await stereodromeCore.getFileStateSnapshot());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, []);
-
-  const stopSavedPlaylistOfflinePolling = useCallback(() => {
-    if (savedPlaylistOfflinePoll.current === null) {
-      return;
-    }
-    clearInterval(savedPlaylistOfflinePoll.current);
-    savedPlaylistOfflinePoll.current = null;
-  }, []);
-
-  const pollSavedPlaylistOfflineReconcile = useCallback(async () => {
-    try {
-      const reconcileStatus =
-        await stereodromeCore.getSavedPlaylistsOfflineReconcileStatus();
-      if (reconcileStatus.running) {
-        return;
-      }
-
-      stopSavedPlaylistOfflinePolling();
-      if (
-        reconcileStatus.last_error !== null &&
-        reconcileStatus.last_error.length > 0
-      ) {
-        setError(reconcileStatus.last_error);
-      } else {
-        setError(null);
-      }
-      await refreshOfflineSongIds();
-    } catch (e) {
-      stopSavedPlaylistOfflinePolling();
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [refreshOfflineSongIds, stopSavedPlaylistOfflinePolling]);
-
-  const startSavedPlaylistOfflinePolling = useCallback(() => {
-    if (savedPlaylistOfflinePoll.current !== null) {
-      return;
-    }
-    pollSavedPlaylistOfflineReconcile().catch((pollError: unknown) => {
-      setError(
-        pollError instanceof Error ? pollError.message : String(pollError)
-      );
-    });
-    savedPlaylistOfflinePoll.current = setInterval(() => {
-      pollSavedPlaylistOfflineReconcile().catch((pollError: unknown) => {
-        setError(
-          pollError instanceof Error ? pollError.message : String(pollError)
-        );
-      });
-    }, savedPlaylistOfflinePollIntervalMs);
-  }, [pollSavedPlaylistOfflineReconcile]);
+  }, [applyFileState]);
 
   const reconcileSavedPlaylistsOfflineInBackground = useCallback(async () => {
     await stereodromeCore.startSavedPlaylistsOfflineReconcile();
-    startSavedPlaylistOfflinePolling();
-  }, [startSavedPlaylistOfflinePolling]);
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     const generation = ++statusRefreshGeneration.current;
@@ -349,48 +328,71 @@ export function StereodromeProvider({
       });
     return () => {
       mounted = false;
-      stopSavedPlaylistOfflinePolling();
     };
-  }, [refreshStatus, stopSavedPlaylistOfflinePolling]);
+  }, [refreshStatus]);
 
   useEffect(
     () =>
-      stereodromeCore.addEventListener(
-        "playback-snapshot",
-        (snapshot) => {
-          setOfflineSongIds(new Set(snapshot.downloaded_song_ids));
-          setDownloadingSongIds(new Set(snapshot.downloading_song_ids));
-        },
-        isPlaybackSnapshot
-      ),
-    []
+      stereodromeCore.addEventListener("file-state-changed", (snapshot) => {
+        if (appState.current === "active") {
+          applyFileState(snapshot);
+        } else {
+          pendingOfflineRefresh.current = true;
+        }
+      }),
+    [applyFileState]
   );
 
   useEffect(
     () =>
       stereodromeCore.addEventListener(
-        "sync-status-changed",
-        (syncStatus) => {
-          queryClient.setQueryData(librarySyncStatusQueryKey, syncStatus);
-          lastCompletedSyncKey.current = completedSyncKey(syncStatus);
-
-          const wasActive = syncWasActive.current;
-          const isActive =
-            syncStatus.active_job !== null && syncStatus.active_job.length > 0;
-          syncWasActive.current = isActive;
-
-          if (wasActive && !isActive) {
-            refreshLibraryAfterSync().catch((refreshError: unknown) => {
+        "saved-playlist-offline-status-changed",
+        (reconcileStatus) => {
+          if (reconcileStatus.running) {
+            return;
+          }
+          setError(reconcileStatus.last_error);
+          if (appState.current === "active") {
+            refreshOfflineSongIds().catch((refreshError: unknown) => {
               setError(
                 refreshError instanceof Error
                   ? refreshError.message
                   : String(refreshError)
               );
             });
+          } else {
+            pendingOfflineRefresh.current = true;
           }
-        },
-        isLibrarySyncStatus
+        }
       ),
+    [refreshOfflineSongIds]
+  );
+
+  useEffect(
+    () =>
+      stereodromeCore.addEventListener("sync-status-changed", (syncStatus) => {
+        queryClient.setQueryData(librarySyncStatusQueryKey, syncStatus);
+        lastCompletedSyncKey.current = completedSyncKey(syncStatus);
+
+        const wasActive = syncWasActive.current;
+        const isActive =
+          syncStatus.active_job !== null && syncStatus.active_job.length > 0;
+        syncWasActive.current = isActive;
+
+        if (wasActive && !isActive) {
+          if (appState.current !== "active") {
+            pendingLibraryRefresh.current = true;
+            return;
+          }
+          refreshLibraryAfterSync().catch((refreshError: unknown) => {
+            setError(
+              refreshError instanceof Error
+                ? refreshError.message
+                : String(refreshError)
+            );
+          });
+        }
+      }),
     [queryClient, refreshLibraryAfterSync]
   );
 
@@ -413,6 +415,7 @@ export function StereodromeProvider({
 
   useEffect(() => {
     function handleAppStateChange(nextState: AppStateStatus) {
+      appState.current = nextState;
       if (nextState === "active") {
         Network.getNetworkStateAsync()
           .then(refreshStatusForNetworkState)
@@ -423,24 +426,38 @@ export function StereodromeProvider({
                 : String(refreshError)
             );
           });
-        refreshSyncStatusAfterForeground().catch((refreshError: unknown) => {
-          setError(
-            refreshError instanceof Error
-              ? refreshError.message
-              : String(refreshError)
-          );
-        });
-        if (!manualOfflineEnabled) {
-          syncLibraryBackgroundRegistration().catch(
-            (registrationError: unknown) => {
-              setError(
-                registrationError instanceof Error
-                  ? registrationError.message
-                  : String(registrationError)
-              );
+        refreshSyncStatusAfterForeground()
+          .then(async () => {
+            if (pendingLibraryRefresh.current) {
+              pendingLibraryRefresh.current = false;
+              await refreshLibraryAfterSync();
             }
-          );
-        }
+          })
+          .catch((refreshError: unknown) => {
+            setError(
+              refreshError instanceof Error
+                ? refreshError.message
+                : String(refreshError)
+            );
+          });
+        stereodromeCore
+          .getSavedPlaylistsOfflineReconcileStatus()
+          .then(async (reconcileStatus) => {
+            if (!reconcileStatus.running) {
+              setError(reconcileStatus.last_error);
+              if (pendingOfflineRefresh.current) {
+                pendingOfflineRefresh.current = false;
+                await refreshOfflineSongIds();
+              }
+            }
+          })
+          .catch((refreshError: unknown) => {
+            setError(
+              refreshError instanceof Error
+                ? refreshError.message
+                : String(refreshError)
+            );
+          });
       }
     }
 
@@ -452,7 +469,8 @@ export function StereodromeProvider({
       subscription.remove();
     };
   }, [
-    manualOfflineEnabled,
+    refreshLibraryAfterSync,
+    refreshOfflineSongIds,
     refreshStatusForNetworkState,
     refreshSyncStatusAfterForeground,
   ]);
@@ -476,13 +494,8 @@ export function StereodromeProvider({
       hasConfiguredServer,
       offlineMode,
       manualOfflineEnabled,
-      offlineSongIds,
-      downloadingSongIds,
       error,
       refreshStatus,
-      refreshOfflineSongIds,
-      reconcileSavedPlaylistsOffline:
-        reconcileSavedPlaylistsOfflineInBackground,
       connect,
       updateServerSettings,
       setManualOfflineEnabled,
@@ -494,12 +507,8 @@ export function StereodromeProvider({
       hasConfiguredServer,
       manualOfflineEnabled,
       offlineMode,
-      offlineSongIds,
-      downloadingSongIds,
       connect,
-      reconcileSavedPlaylistsOfflineInBackground,
       ready,
-      refreshOfflineSongIds,
       refreshStatus,
       setManualOfflineEnabled,
       status,
@@ -509,11 +518,37 @@ export function StereodromeProvider({
     ]
   );
 
+  const fileStateValue = useMemo(
+    () => ({
+      offlineSongIds,
+      downloadingSongIds,
+      refreshOfflineSongIds,
+      reconcileSavedPlaylistsOffline:
+        reconcileSavedPlaylistsOfflineInBackground,
+    }),
+    [
+      downloadingSongIds,
+      offlineSongIds,
+      reconcileSavedPlaylistsOfflineInBackground,
+      refreshOfflineSongIds,
+    ]
+  );
+
   return (
     <StereodromeContext.Provider value={value}>
-      {children}
+      <FileStateContext.Provider value={fileStateValue}>
+        {children}
+      </FileStateContext.Provider>
     </StereodromeContext.Provider>
   );
+}
+
+export function useFileState() {
+  const value = useContext(FileStateContext);
+  if (!value) {
+    throw new Error("useFileState must be used inside StereodromeProvider");
+  }
+  return value;
 }
 
 export function useStereodrome() {

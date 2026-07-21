@@ -7,9 +7,9 @@ import {
   type SelectableOption,
 } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
-import { usePlayback } from "@/context/PlaybackContext";
+import { usePlaybackActions } from "@/context/PlaybackContext";
 import { useSongActions } from "@/context/SongActionContext";
-import { useStereodrome } from "@/context/StereodromeContext";
+import { useFileState, useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { songFileState, visibleSongs } from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
@@ -20,9 +20,10 @@ export function PlaylistScreen({
   playlistId: string;
   title: string;
 }) {
-  const playback = usePlayback();
+  const playback = usePlaybackActions();
   const { clearActiveSongTarget, setActiveSongTarget } = useSongActions();
   const stereodrome = useStereodrome();
+  const fileState = useFileState();
   const view = useViewStack();
   const queryClient = useQueryClient();
   const songs = useQuery({
@@ -45,7 +46,7 @@ export function PlaylistScreen({
   const shownSongs = visibleSongs(
     songs.data ?? [],
     stereodrome.offlineMode,
-    stereodrome.offlineSongIds
+    fileState.offlineSongIds
   );
   const songOptionOffset = stereodrome.offlineMode
     ? 0
@@ -87,9 +88,9 @@ export function PlaylistScreen({
       );
       await queryClient.invalidateQueries({ queryKey: ["playlists"] });
       if (nextSavedOffline) {
-        await stereodrome.reconcileSavedPlaylistsOffline();
+        await fileState.reconcileSavedPlaylistsOffline();
       } else {
-        await stereodrome.refreshOfflineSongIds();
+        await fileState.refreshOfflineSongIds();
       }
     } catch (saveError) {
       Alert.alert(
@@ -126,8 +127,8 @@ export function PlaylistScreen({
       label: song.title,
       fileState: songFileState(
         song.id,
-        stereodrome.offlineSongIds,
-        stereodrome.downloadingSongIds
+        fileState.offlineSongIds,
+        fileState.downloadingSongIds
       ),
       ...(song.artist == null ? {} : { sublabel: song.artist }),
       onSelect: async () => {

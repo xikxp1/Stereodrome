@@ -9,11 +9,13 @@ void stereodrome_core_destroy(void *core);
 char *stereodrome_core_call(void *core, const char *method, const char *payload);
 void stereodrome_core_set_log_callback(void (*callback)(const char *message));
 void stereodrome_core_set_playback_callback(void (*callback)(const char *snapshot));
+void stereodrome_core_set_event_callback(void (*callback)(const char *event));
 }
 
 static JavaVM *g_vm = nullptr;
 static jclass g_bridge_class = nullptr;
 static jmethodID g_playback_snapshot_method = nullptr;
+static jmethodID g_core_event_method = nullptr;
 
 static void rust_log_callback(const char *message) {
   if (message != nullptr) {
@@ -53,11 +55,44 @@ static void rust_playback_callback(const char *snapshot) {
   }
 }
 
+static void rust_core_event_callback(const char *event) {
+  if (event == nullptr || g_vm == nullptr || g_bridge_class == nullptr ||
+      g_core_event_method == nullptr) {
+    return;
+  }
+
+  JNIEnv *env = nullptr;
+  bool did_attach = false;
+  jint env_result = g_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+  if (env_result == JNI_EDETACHED) {
+    if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+      return;
+    }
+    did_attach = true;
+  } else if (env_result != JNI_OK || env == nullptr) {
+    return;
+  }
+
+  jstring payload = env->NewStringUTF(event);
+  if (payload != nullptr) {
+    env->CallStaticVoidMethod(g_bridge_class, g_core_event_method, payload);
+    env->DeleteLocalRef(payload);
+  }
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+  }
+
+  if (did_attach) {
+    g_vm->DetachCurrentThread();
+  }
+}
+
 static void cache_bridge_class(JNIEnv *env) {
   if (g_vm == nullptr) {
     env->GetJavaVM(&g_vm);
   }
-  if (g_bridge_class != nullptr && g_playback_snapshot_method != nullptr) {
+  if (g_bridge_class != nullptr && g_playback_snapshot_method != nullptr &&
+      g_core_event_method != nullptr) {
     return;
   }
 
@@ -80,6 +115,12 @@ static void cache_bridge_class(JNIEnv *env) {
   if (g_playback_snapshot_method == nullptr) {
     env->ExceptionClear();
   }
+  g_core_event_method =
+      env->GetStaticMethodID(g_bridge_class, "onRustCoreEvent",
+                             "(Ljava/lang/String;)V");
+  if (g_core_event_method == nullptr) {
+    env->ExceptionClear();
+  }
 }
 
 static jstring take_rust_string(JNIEnv *env, char *value) {
@@ -98,6 +139,7 @@ Java_expo_modules_stereodromecore_StereodromeCoreJni_nativeInitialize(
   cache_bridge_class(env);
   stereodrome_core_set_log_callback(rust_log_callback);
   stereodrome_core_set_playback_callback(rust_playback_callback);
+  stereodrome_core_set_event_callback(rust_core_event_callback);
   const char *data_dir_chars = env->GetStringUTFChars(data_dir, nullptr);
   void *core = stereodrome_core_new(data_dir_chars);
   env->ReleaseStringUTFChars(data_dir, data_dir_chars);

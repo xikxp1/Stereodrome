@@ -6,7 +6,7 @@ import * as Haptics from "expo-haptics";
 
 import { colors } from "@/components/theme";
 import { useInputBus } from "@/context/InputContext";
-import { usePlayback } from "@/context/PlaybackContext";
+import { usePlaybackMetadata } from "@/context/PlaybackContext";
 
 const hapticTickIntervalMs = 45;
 let lastHapticTick = 0;
@@ -37,7 +37,7 @@ function confirm() {
 
 export function ClickWheel() {
   const { emit } = useInputBus();
-  const playback = usePlayback();
+  const playback = usePlaybackMetadata();
   const lastAngle = useRef<number | null>(null);
   const centerLongPressed = useRef(false);
   const menuLongPressed = useRef(false);

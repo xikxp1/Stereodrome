@@ -2,7 +2,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
 import { SelectableList } from "@/components/SelectableList";
-import { usePlayback } from "@/context/PlaybackContext";
+import { usePlaybackActions } from "@/context/PlaybackContext";
 import { useViewStack } from "@/context/ViewContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
 import type { AlbumListEntry } from "@/types/music";
@@ -45,7 +45,7 @@ export function isRankedAlbumListKind(
 }
 
 export function AlbumListScreen({ kind }: { kind: RankedAlbumListKind }) {
-  const playback = usePlayback();
+  const playback = usePlaybackActions();
   const view = useViewStack();
   const config = albumListConfig[kind];
   const albums = useInfiniteQuery({

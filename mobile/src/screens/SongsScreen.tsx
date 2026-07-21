@@ -2,17 +2,18 @@ import { useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
-import { usePlayback } from "@/context/PlaybackContext";
+import { usePlaybackActions } from "@/context/PlaybackContext";
 import { useSongActions } from "@/context/SongActionContext";
-import { useStereodrome } from "@/context/StereodromeContext";
+import { useFileState, useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { songFileState, visibleSongs } from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function SongsScreen({ artistId }: { artistId?: string }) {
-  const playback = usePlayback();
+  const playback = usePlaybackActions();
   const { clearActiveSongTarget, setActiveSongTarget } = useSongActions();
   const stereodrome = useStereodrome();
+  const fileState = useFileState();
   const view = useViewStack();
   const songs = useQuery({
     queryKey: artistId === undefined ? ["songs"] : ["artist-songs", artistId],
@@ -21,7 +22,7 @@ export function SongsScreen({ artistId }: { artistId?: string }) {
   const shownSongs = visibleSongs(
     songs.data ?? [],
     stereodrome.offlineMode,
-    stereodrome.offlineSongIds
+    fileState.offlineSongIds
   );
   const handleActiveIndexChange = useCallback(
     (index: number) => {
@@ -59,8 +60,8 @@ export function SongsScreen({ artistId }: { artistId?: string }) {
         label: song.title,
         fileState: songFileState(
           song.id,
-          stereodrome.offlineSongIds,
-          stereodrome.downloadingSongIds
+          fileState.offlineSongIds,
+          fileState.downloadingSongIds
         ),
         sublabel: [song.artist, song.album].filter(Boolean).join(" - "),
         onSelect: async () => {

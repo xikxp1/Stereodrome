@@ -9,10 +9,7 @@ import {
 } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 
-import {
-  isPlaybackSnapshot,
-  stereodromeCore,
-} from "@/services/stereodromeCore";
+import { stereodromeCore } from "@/services/stereodromeCore";
 import type {
   PlaybackSnapshot,
   PlaybackStateSnapshot,
@@ -45,7 +42,37 @@ type PlaybackContextValue = {
   clearQueue(): Promise<void>;
 };
 
+type PlaybackActionsContextValue = Pick<
+  PlaybackContextValue,
+  | "playSong"
+  | "toggle"
+  | "toggleRepeat"
+  | "toggleShuffle"
+  | "rerollNext"
+  | "seekBy"
+  | "next"
+  | "previous"
+  | "playQueueIndex"
+  | "removeQueueIndex"
+  | "clearQueue"
+>;
+type PlaybackMetadataContextValue = Pick<
+  PlaybackContextValue,
+  | "currentSong"
+  | "error"
+  | "isPlaying"
+  | "nextSong"
+  | "queue"
+  | "repeatMode"
+  | "repeatEnabled"
+  | "shuffleEnabled"
+>;
+
 const PlaybackContext = createContext<PlaybackContextValue | null>(null);
+const PlaybackActionsContext =
+  createContext<PlaybackActionsContextValue | null>(null);
+const PlaybackMetadataContext =
+  createContext<PlaybackMetadataContextValue | null>(null);
 
 async function ensurePlayerReady() {
   await stereodromeCore.initialize();
@@ -63,6 +90,39 @@ function playableFromQueueItem(item: QueueItem): PlayableSong {
     album: item.album,
     duration: item.duration,
   };
+}
+
+function playableSongsEqual(
+  left: PlayableSong | null,
+  right: PlayableSong | null
+): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.id === right.id &&
+      left.title === right.title &&
+      left.artist === right.artist &&
+      left.album === right.album &&
+      left.duration === right.duration)
+  );
+}
+
+function canonicalizeQueue(
+  current: PlayableSong[],
+  items: QueueItem[]
+): PlayableSong[] {
+  let changed = current.length !== items.length;
+  const next = items.map((item, index) => {
+    const song = playableFromQueueItem(item);
+    const previous = current[index] ?? null;
+    if (previous !== null && playableSongsEqual(previous, song)) {
+      return previous;
+    }
+    changed = true;
+    return song;
+  });
+  return changed ? next : current;
 }
 
 type NextSongInput = {
@@ -129,6 +189,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const currentSongRef = useRef<PlayableSong | null>(null);
+  const queueRef = useRef<PlayableSong[]>([]);
   const isPlayingRef = useRef(false);
   const canPlayRef = useRef(false);
   const audioLoadedRef = useRef(false);
@@ -159,26 +220,20 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   );
 
   const applyQueueState = useCallback((state: QueueState) => {
-    const songs = state.items.map(playableFromQueueItem);
+    const songs = canonicalizeQueue(queueRef.current, state.items);
+    queueRef.current = songs;
     const preparedSong = state.prepared_next_item
       ? playableFromQueueItem(state.prepared_next_item)
       : null;
     const index = state.current_index;
     const pendingIndex = state.pending_navigation_index;
-    const removedCurrentIsStillPlaying =
-      index === null && pendingIndex !== null;
 
     setQueue(songs);
     setCurrentIndex(index);
     setPendingNavigationIndex(pendingIndex);
-    setPreparedNextSong(preparedSong);
-    if (removedCurrentIsStillPlaying) {
-      setCurrentSong(currentSongRef.current);
-    } else {
-      const nextCurrentSong = index === null ? null : (songs[index] ?? null);
-      currentSongRef.current = nextCurrentSong;
-      setCurrentSong(nextCurrentSong);
-    }
+    setPreparedNextSong((current) =>
+      playableSongsEqual(current, preparedSong) ? current : preparedSong
+    );
     setRepeatMode(state.repeat_mode);
     setShuffleEnabled(state.shuffle);
   }, []);
@@ -192,7 +247,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
       applyQueueState(snapshot.queue);
 
-      const current =
+      const nextCurrent =
         snapshot.song === null
           ? null
           : {
@@ -202,6 +257,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
               album: snapshot.song.album,
               duration: snapshot.song.duration_seconds,
             };
+      const current = playableSongsEqual(currentSongRef.current, nextCurrent)
+        ? currentSongRef.current
+        : nextCurrent;
 
       audioLoadedRef.current = snapshot.audio_loaded;
       isPlayingRef.current = snapshot.is_playing;
@@ -360,9 +418,10 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     const unsubscribePlayback = stereodromeCore.addEventListener(
       "playback-snapshot",
       (snapshot) => {
-        applyPlaybackSnapshot(snapshot);
-      },
-      isPlaybackSnapshot
+        if (AppState.currentState === "active") {
+          applyPlaybackSnapshot(snapshot);
+        }
+      }
     );
 
     return () => {
@@ -405,6 +464,21 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     let timeout: ReturnType<typeof setTimeout> | null = null;
 
+    const clearScheduledPoll = () => {
+      if (timeout !== null) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+    };
+
+    const schedulePoll = () => {
+      clearScheduledPoll();
+      if (cancelled || AppState.currentState !== "active") {
+        return;
+      }
+      timeout = setTimeout(poll, currentSongRef.current ? 30_000 : 60_000);
+    };
+
     const poll = () => {
       void reconcilePlaybackSnapshot()
         .catch((playbackError: unknown) => {
@@ -416,17 +490,19 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           if (cancelled) {
             return;
           }
-          timeout = setTimeout(poll, currentSongRef.current ? 30_000 : 60_000);
+          schedulePoll();
         });
     };
 
-    poll();
+    schedulePoll();
+    const appStateSubscription = AppState.addEventListener("change", () => {
+      schedulePoll();
+    });
 
     return () => {
       cancelled = true;
-      if (timeout !== null) {
-        clearTimeout(timeout);
-      }
+      clearScheduledPoll();
+      appStateSubscription.remove();
     };
   }, [reconcilePlaybackSnapshot]);
 
@@ -469,38 +545,35 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       await ensurePlayerReady();
       if (isPlayingRef.current) {
         await stereodromeCore.audioPause();
-        await reconcilePlaybackSnapshot();
+        isPlayingRef.current = false;
       } else if (canPlayRef.current) {
         await stereodromeCore.audioResume();
+        isPlayingRef.current = true;
         restoredStartPositionRef.current = null;
-        await reconcilePlaybackSnapshot();
       }
     });
-  }, [reconcilePlaybackSnapshot, runPlaybackAction]);
+  }, [runPlaybackAction]);
 
   const toggleRepeat = useCallback(async () => {
     await runPlaybackAction("queue", async () => {
       await ensurePlayerReady();
       await stereodromeCore.cycleRepeatMode();
-      await reconcilePlaybackSnapshot();
     });
-  }, [reconcilePlaybackSnapshot, runPlaybackAction]);
+  }, [runPlaybackAction]);
 
   const rerollNext = useCallback(async () => {
     await runPlaybackAction("queue", async () => {
       await ensurePlayerReady();
       await stereodromeCore.rerollNext();
-      await reconcilePlaybackSnapshot();
     });
-  }, [reconcilePlaybackSnapshot, runPlaybackAction]);
+  }, [runPlaybackAction]);
 
   const toggleShuffle = useCallback(async () => {
     await runPlaybackAction("queue", async () => {
       await ensurePlayerReady();
       await stereodromeCore.toggleShuffle();
-      await reconcilePlaybackSnapshot();
     });
-  }, [reconcilePlaybackSnapshot, runPlaybackAction]);
+  }, [runPlaybackAction]);
 
   const drainPendingSeeks = useCallback(async () => {
     await ensurePlayerReady();
@@ -587,10 +660,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     async (index: number) => {
       await runPlaybackAction("queue", async () => {
         await stereodromeCore.removeFromQueue(index);
-        await reconcilePlaybackSnapshot();
       });
     },
-    [reconcilePlaybackSnapshot, runPlaybackAction]
+    [runPlaybackAction]
   );
 
   const clearQueue = useCallback(async () => {
@@ -598,9 +670,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       await stereodromeCore.clearQueue();
       restoredStartPositionRef.current = null;
       await stereodromeCore.audioStop();
-      await reconcilePlaybackSnapshot();
     });
-  }, [reconcilePlaybackSnapshot, runPlaybackAction]);
+  }, [runPlaybackAction]);
 
   const nextSong = getNextSong({
     currentIndex,
@@ -609,6 +680,35 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     queue,
     repeatMode,
   });
+
+  const actions = useMemo(
+    () => ({
+      clearQueue,
+      next,
+      playQueueIndex,
+      playSong,
+      previous,
+      removeQueueIndex,
+      rerollNext,
+      seekBy,
+      toggle,
+      toggleRepeat,
+      toggleShuffle,
+    }),
+    [
+      clearQueue,
+      next,
+      playQueueIndex,
+      playSong,
+      previous,
+      removeQueueIndex,
+      rerollNext,
+      seekBy,
+      toggle,
+      toggleRepeat,
+      toggleShuffle,
+    ]
+  );
 
   const value = useMemo(
     () => ({
@@ -622,47 +722,61 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       repeatMode,
       repeatEnabled: repeatMode !== "Off",
       shuffleEnabled,
-      clearQueue,
-      playSong,
-      playQueueIndex,
-      removeQueueIndex,
-      toggle,
-      toggleRepeat,
-      toggleShuffle,
-      rerollNext,
-      seekBy,
-      next,
-      previous,
+      ...actions,
     }),
     [
       currentSong,
       duration,
       error,
       isPlaying,
-      next,
       nextSong,
       position,
-      previous,
       queue,
       repeatMode,
       shuffleEnabled,
-      clearQueue,
-      playSong,
-      playQueueIndex,
-      removeQueueIndex,
-      toggle,
-      toggleRepeat,
-      toggleShuffle,
-      rerollNext,
-      seekBy,
+      actions,
     ]
   );
 
-  return (
-    <PlaybackContext.Provider value={value}>
-      {children}
-    </PlaybackContext.Provider>
+  const metadata = useMemo(
+    () => ({
+      currentSong,
+      error,
+      isPlaying,
+      nextSong,
+      queue,
+      repeatMode,
+      repeatEnabled: repeatMode !== "Off",
+      shuffleEnabled,
+    }),
+    [currentSong, error, isPlaying, nextSong, queue, repeatMode, shuffleEnabled]
   );
+
+  return (
+    <PlaybackActionsContext.Provider value={actions}>
+      <PlaybackMetadataContext.Provider value={metadata}>
+        <PlaybackContext.Provider value={value}>
+          {children}
+        </PlaybackContext.Provider>
+      </PlaybackMetadataContext.Provider>
+    </PlaybackActionsContext.Provider>
+  );
+}
+
+export function usePlaybackMetadata() {
+  const context = useContext(PlaybackMetadataContext);
+  if (!context) {
+    throw new Error("usePlaybackMetadata must be used within PlaybackProvider");
+  }
+  return context;
+}
+
+export function usePlaybackActions() {
+  const context = useContext(PlaybackActionsContext);
+  if (!context) {
+    throw new Error("usePlaybackActions must be used within PlaybackProvider");
+  }
+  return context;
 }
 
 export function usePlayback() {

@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 
-import { usePlayback } from "@/context/PlaybackContext";
+import { usePlaybackMetadata } from "@/context/PlaybackContext";
 import { useViewStack, type ViewName } from "@/context/ViewContext";
 import type { PlayableSong, Song } from "@/types/music";
 
@@ -51,7 +51,7 @@ export function SongActionProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const playback = usePlayback();
+  const playback = usePlaybackMetadata();
   const view = useViewStack();
   const { current, push } = view;
   const [activeListTarget, setActiveListTarget] =

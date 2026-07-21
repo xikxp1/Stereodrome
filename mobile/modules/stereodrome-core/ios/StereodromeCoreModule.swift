@@ -21,6 +21,7 @@ private func stereodromeCoreFreeString(_ value: UnsafeMutablePointer<CChar>?)
 
 private typealias StereodromeRustLogCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
 private typealias StereodromePlaybackCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
+private typealias StereodromeEventCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
 private let playbackPositionDeduplicationToleranceSeconds = 0.25
 
 fileprivate struct PlaybackProjection {
@@ -211,6 +212,9 @@ private func stereodromeCoreSetLogCallback(_ callback: StereodromeRustLogCallbac
 @_silgen_name("stereodrome_core_set_playback_callback")
 private func stereodromeCoreSetPlaybackCallback(_ callback: StereodromePlaybackCallback?)
 
+@_silgen_name("stereodrome_core_set_event_callback")
+private func stereodromeCoreSetEventCallback(_ callback: StereodromeEventCallback?)
+
 private weak var activeStereodromeCoreModule: StereodromeCoreModule?
 private let activeStereodromeCoreModuleLock = NSLock()
 
@@ -309,6 +313,22 @@ private func stereodromePlaybackCallback(_ snapshot: UnsafePointer<CChar>?) {
   )
 }
 
+private func stereodromeEventCallback(_ event: UnsafePointer<CChar>?) {
+  guard let event else {
+    return
+  }
+  let rawEvent = String(cString: event)
+  DispatchQueue.main.async {
+    guard
+      let module = getActiveStereodromeCoreModule(),
+      module.acceptsMobileEvent(rawEvent)
+    else {
+      return
+    }
+    module.sendMobileEvent(rawEvent)
+  }
+}
+
 public class StereodromeCoreModule: Module {
   private struct AudioSessionLease {
     let acquiredNow: Bool
@@ -335,13 +355,17 @@ public class StereodromeCoreModule: Module {
   private var shouldResumeAfterInterruption = false
   private var canPlayRemoteCommandsValue = false
   private let audioSessionStateLock = NSLock()
+  private let eventStreamStateLock = NSLock()
   private var ownsAudioSession = false
   private var audioSessionGeneration: UInt64 = 0
+  private var eventStreamId: UInt64?
 
   deinit {
     clearAudioSessionObservers()
     if clearActiveStereodromeCoreModule(self) {
       stereodromeCoreSetPlaybackCallback(nil)
+      stereodromeCoreSetEventCallback(nil)
+      setEventStreamId(nil)
       performOnMainSync {
         self.clearNowPlayingInfo()
       }
@@ -361,10 +385,19 @@ public class StereodromeCoreModule: Module {
       setActiveStereodromeCoreModule(self)
       stereodromeCoreSetLogCallback(stereodromeRustLogCallback)
       stereodromeCoreSetPlaybackCallback(stereodromePlaybackCallback)
+      stereodromeCoreSetEventCallback(stereodromeEventCallback)
       self.configureAudioSession()
       if self.core == nil {
+        self.setEventStreamId(nil)
         self.core = self.coreQueue.sync {
           dataDir.withCString { stereodromeCoreNew($0) }
+        }
+        if self.core != nil {
+          self.setEventStreamId(
+            self.envelopeUInt64(
+              self.callSync(method: "getEventStreamId", payload: "null")
+            )
+          )
         }
       }
       self.configureAudioSessionObservers()
@@ -392,11 +425,45 @@ public class StereodromeCoreModule: Module {
       return self.callSync(method: "getStreamUri", payload: "\"\(escapedSongId)\"")
     }
 
-    Events("playback-snapshot")
+    Events("playback-snapshot", "core-event")
   }
 
   fileprivate func emitRustLog(_ message: String) {
     appContext?.jsLogger.info(message)
+  }
+
+  fileprivate func sendMobileEvent(_ event: String) {
+    sendEvent("core-event", ["event": event])
+  }
+
+  fileprivate func acceptsMobileEvent(_ event: String) -> Bool {
+    guard
+      let data = event.data(using: .utf8),
+      let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let streamId = (payload["stream_id"] as? NSNumber)?.uint64Value
+    else {
+      return false
+    }
+    eventStreamStateLock.lock()
+    defer { eventStreamStateLock.unlock() }
+    return eventStreamId == streamId
+  }
+
+  private func setEventStreamId(_ streamId: UInt64?) {
+    eventStreamStateLock.lock()
+    eventStreamId = streamId
+    eventStreamStateLock.unlock()
+  }
+
+  private func envelopeUInt64(_ raw: String) -> UInt64? {
+    guard
+      let data = raw.data(using: .utf8),
+      let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      (envelope["ok"] as? NSNumber)?.boolValue == true
+    else {
+      return nil
+    }
+    return (envelope["value"] as? NSNumber)?.uint64Value
   }
 
   fileprivate func reservePlaybackProjection(_ projection: PlaybackProjection) -> Bool {

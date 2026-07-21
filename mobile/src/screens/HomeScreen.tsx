@@ -1,10 +1,10 @@
 import { SelectableList } from "@/components/SelectableList";
-import { usePlayback } from "@/context/PlaybackContext";
+import { usePlaybackMetadata } from "@/context/PlaybackContext";
 import { useViewStack } from "@/context/ViewContext";
 
 export function HomeScreen() {
   const view = useViewStack();
-  const playback = usePlayback();
+  const playback = usePlaybackMetadata();
 
   return (
     <SelectableList
