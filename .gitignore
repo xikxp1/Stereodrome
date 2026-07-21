@@ -3,6 +3,7 @@ node_modules
 target
 mobile/node_modules
 mobile/.expo
+mobile/.svelte-kit
 mobile/android
 mobile/ios
 mobile/modules/stereodrome-core/android/build
