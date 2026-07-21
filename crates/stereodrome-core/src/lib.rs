@@ -8,8 +8,10 @@ mod subsonic;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, LazyLock, Mutex, Once, Weak};
+use std::time::{Duration, Instant};
 
 use backup::{BackupSummary, PortablePreferences};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -17,8 +19,9 @@ use log::{debug, info, warn};
 use queue::{PlayQueue, QueueItem, QueueState, RepeatMode};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use submarine::{Client, api::get_album_list::Order, auth::AuthBuilder};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tokio::task::JoinSet;
+pub use tokio_util::sync::CancellationToken as PrefetchCancellationToken;
 
 pub use error::{CoreError, CoreResult};
 pub use lastfm::{LastfmAuthStart, LastfmQueueItem, LastfmStatus};
@@ -41,12 +44,19 @@ const INCREMENTAL_LAST_SUCCESS_AT_KEY: &str = "library_incremental_last_success_
 const INCREMENTAL_LAST_ERROR_KEY: &str = "library_incremental_last_error";
 const ARTIST_FETCH_CONCURRENCY: usize = 8;
 const ALBUM_FETCH_CONCURRENCY: usize = 12;
+const SONG_DOWNLOAD_CONCURRENCY: usize = 2;
+const PREFETCH_MAX_ATTEMPTS: usize = 3;
+const PREFETCH_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
+const PREFETCH_FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
+const PREFETCH_MAX_FAILURE_COOLDOWN: Duration = Duration::from_mins(5);
 
 static INIT_RUSTLS_CRYPTO_PROVIDER: Once = Once::new();
 static DOWNLOADS_IN_PROGRESS: LazyLock<Mutex<HashMap<String, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static SONG_DOWNLOAD_LOCKS: LazyLock<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static SONG_DOWNLOAD_PERMITS: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(SONG_DOWNLOAD_CONCURRENCY));
 static CACHE_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
 fn song_download_lock(song_id: &str) -> Arc<AsyncMutex<()>> {
@@ -75,6 +85,25 @@ pub enum CacheStateEvent {
     DownloadingChanged { song_id: String, downloading: bool },
     CachedChanged { song_id: String, cached: bool },
     Reconcile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuePrefetchPlan {
+    pub queue_revision: u64,
+    pub current_index: Option<usize>,
+    pub song_ids: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct QueuePrefetchOutcome {
+    pub statuses: Vec<DownloadStatus>,
+    pub completed: bool,
+}
+
+#[derive(Debug)]
+struct PrefetchFailureState {
+    consecutive_failures: u32,
+    retry_after: Instant,
 }
 
 struct DownloadInProgressGuard {
@@ -121,6 +150,44 @@ impl Drop for DownloadInProgressGuard {
                 downloading: false,
             });
         }
+    }
+}
+
+struct DownloadRecordFinalizer {
+    db_path: PathBuf,
+    song_id: String,
+    armed: bool,
+}
+
+impl DownloadRecordFinalizer {
+    fn new(db_path: &Path, song_id: &str) -> Self {
+        Self {
+            db_path: db_path.to_path_buf(),
+            song_id: song_id.to_string(),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DownloadRecordFinalizer {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Ok(conn) = Connection::open(&self.db_path) else {
+            return;
+        };
+        let _ = conn.execute(
+            "UPDATE download_items
+             SET status = 'cancelled', path = NULL, bytes = 0,
+                 error = 'download interrupted', updated_at = ?1
+             WHERE song_id = ?2 AND status = 'downloading'",
+            params![Utc::now().to_rfc3339(), self.song_id],
+        );
     }
 }
 
@@ -263,6 +330,8 @@ pub struct StereodromeCore {
     server_config: Mutex<Option<ServerConfig>>,
     client: AsyncMutex<Option<Client>>,
     queue: Mutex<PlayQueue>,
+    queue_revision: AtomicU64,
+    prefetch_failures: Mutex<HashMap<String, PrefetchFailureState>>,
     lastfm_retry_lock: AsyncMutex<()>,
     cache_event_sender: Option<Sender<CacheStateEvent>>,
 }
@@ -312,6 +381,8 @@ impl StereodromeCore {
             server_config: Mutex::new(server_config),
             client: AsyncMutex::new(None),
             queue: Mutex::new(queue),
+            queue_revision: AtomicU64::new(0),
+            prefetch_failures: Mutex::new(HashMap::new()),
             lastfm_retry_lock: AsyncMutex::new(()),
             cache_event_sender,
         })
@@ -1207,6 +1278,17 @@ impl StereodromeCore {
         })
     }
 
+    /// Waits for an in-progress cache commit or removal to leave its critical section.
+    /// Callers signal cancellation before this barrier so no cancelled download can
+    /// commit after the barrier returns.
+    ///
+    /// # Errors
+    /// Returns an error if the cache mutation lock is poisoned.
+    pub fn cache_mutation_barrier(&self) -> CoreResult<()> {
+        drop(cache_mutation_guard()?);
+        Ok(())
+    }
+
     /// # Errors
     /// Returns an error if offline song state cannot be read from the database.
     pub fn get_offline_song_ids(&self) -> CoreResult<Vec<String>> {
@@ -1328,8 +1410,26 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if offline mode is active or the song cannot be downloaded, stored, or recorded.
     pub async fn download_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
+        self.download_song_cancellable(song_id, None)
+            .await?
+            .ok_or_else(|| CoreError::InvalidInput("song download was cancelled".to_string()))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn download_song_cancellable(
+        &self,
+        song_id: String,
+        cancellation: Option<&PrefetchCancellationToken>,
+    ) -> CoreResult<Option<DownloadStatus>> {
         let download_lock = song_download_lock(&song_id);
-        let _download_lock = download_lock.lock().await;
+        let download_lock_guard = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                () = cancellation.cancelled() => return Ok(None),
+                guard = download_lock.lock() => guard,
+            }
+        } else {
+            download_lock.lock().await
+        };
 
         let cached_status = {
             let _cache_guard = cache_mutation_guard()?;
@@ -1348,16 +1448,34 @@ impl StereodromeCore {
             })
         };
         if let Some(status) = cached_status {
-            self.preserve_cached_song_cover_art_if_connected(&song_id)
-                .await;
-            return Ok(status);
+            drop(download_lock_guard);
+            if let Some(cancellation) = cancellation {
+                tokio::select! {
+                    () = cancellation.cancelled() => {}
+                    () = self.preserve_cached_song_cover_art_if_connected(&song_id) => {}
+                }
+            } else {
+                self.preserve_cached_song_cover_art_if_connected(&song_id)
+                    .await;
+            }
+            return Ok(Some(status));
         }
 
         if self.manual_offline_enabled()? {
             return Err(CoreError::OfflineMode);
         }
 
-        let _download_guard =
+        let download_permit = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                () = cancellation.cancelled() => return Ok(None),
+                permit = SONG_DOWNLOAD_PERMITS.acquire() => permit,
+            }
+        } else {
+            SONG_DOWNLOAD_PERMITS.acquire().await
+        }
+        .map_err(|_| CoreError::InvalidInput("song download limiter is closed".to_string()))?;
+
+        let download_guard =
             DownloadInProgressGuard::new(&song_id, self.cache_event_sender.clone());
         let client = self.connected_client().await?;
         let path = self.audio_cache_path(&song_id, MOBILE_PLAYBACK_FORMAT)?;
@@ -1374,21 +1492,55 @@ impl StereodromeCore {
             bytes: 0,
             error: None,
         })?;
-        match client
-            .stream(
-                song_id.clone(),
-                None,
-                Some(MOBILE_PLAYBACK_FORMAT),
-                None,
-                None::<String>,
-                None,
-                None,
-            )
-            .await
-        {
-            Ok(bytes) => {
+        let mut record_finalizer = DownloadRecordFinalizer::new(&self.db_path, &song_id);
+        let stream = client.stream(
+            song_id.clone(),
+            None,
+            Some(MOBILE_PLAYBACK_FORMAT),
+            None,
+            None::<String>,
+            None,
+            None,
+        );
+        let stream_result = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                () = cancellation.cancelled() => None,
+                result = stream => Some(result),
+            }
+        } else {
+            Some(stream.await)
+        };
+
+        match stream_result {
+            None => {
+                self.record_download(DownloadRecord {
+                    entity_type: "song",
+                    entity_id: &song_id,
+                    song_id: &song_id,
+                    status: "cancelled",
+                    path: None,
+                    bytes: 0,
+                    error: Some("prefetch cancelled"),
+                })?;
+                record_finalizer.disarm();
+                Ok(None)
+            }
+            Some(Ok(bytes)) => {
                 {
                     let _cache_guard = cache_mutation_guard()?;
+                    if cancellation.is_some_and(PrefetchCancellationToken::is_cancelled) {
+                        self.record_download(DownloadRecord {
+                            entity_type: "song",
+                            entity_id: &song_id,
+                            song_id: &song_id,
+                            status: "cancelled",
+                            path: None,
+                            bytes: 0,
+                            error: Some("prefetch cancelled before cache commit"),
+                        })?;
+                        record_finalizer.disarm();
+                        return Ok(None);
+                    }
                     write_file_atomically(&path, &bytes)?;
                     self.emit_cache_state_event(CacheStateEvent::CachedChanged {
                         song_id: song_id.clone(),
@@ -1403,18 +1555,29 @@ impl StereodromeCore {
                         bytes: bytes.len() as u64,
                         error: None,
                     })?;
+                    record_finalizer.disarm();
                 }
-                self.preserve_song_cover_art_for_offline(&client, &song_id)
-                    .await;
+                drop(download_guard);
+                drop(download_permit);
+                drop(download_lock_guard);
                 self.enforce_audio_cache_limit()?;
-                Ok(DownloadStatus {
+                if let Some(cancellation) = cancellation {
+                    tokio::select! {
+                        () = cancellation.cancelled() => {}
+                        () = self.preserve_song_cover_art_for_offline(&client, &song_id) => {}
+                    }
+                } else {
+                    self.preserve_song_cover_art_for_offline(&client, &song_id)
+                        .await;
+                }
+                Ok(Some(DownloadStatus {
                     song_id,
                     cached: true,
                     path: Some(path_to_file_uri(&path)),
                     bytes: bytes.len() as u64,
-                })
+                }))
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 let error_message = error.to_string();
                 self.record_download(DownloadRecord {
                     entity_type: "song",
@@ -1425,6 +1588,7 @@ impl StereodromeCore {
                     bytes: 0,
                     error: Some(&error_message),
                 })?;
+                record_finalizer.disarm();
                 Err(CoreError::Subsonic(error.to_string()))
             }
         }
@@ -1469,6 +1633,30 @@ impl StereodromeCore {
             path: None,
             bytes: 0,
         })
+    }
+
+    /// Removes a cache entry that failed media decoding, even when the song is
+    /// normally protected by an offline-saved playlist. A later request may
+    /// download a clean replacement.
+    ///
+    /// # Errors
+    /// Returns an error if the cache file or persisted download record cannot be removed.
+    pub fn invalidate_cached_song(&self, song_id: &str) -> CoreResult<()> {
+        let _cache_guard = cache_mutation_guard()?;
+        if let Some(path) = self.cached_song_path(song_id)? {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let conn = Connection::open(&self.db_path)?;
+        conn.execute("DELETE FROM download_items WHERE song_id = ?1", [song_id])?;
+        self.emit_cache_state_event(CacheStateEvent::CachedChanged {
+            song_id: song_id.to_string(),
+            cached: false,
+        });
+        Ok(())
     }
 
     /// # Errors
@@ -1634,45 +1822,216 @@ impl StereodromeCore {
         self.prefetch_upcoming(prefetch_count).await
     }
 
+    /// Builds the bounded set of upcoming queue targets for one prefetch generation.
+    /// Cached and currently downloading songs remain in the window so repeated
+    /// requests cannot walk progressively farther through the queue.
+    ///
+    /// # Errors
+    /// Returns an error if queue state cannot be read.
+    pub fn queue_prefetch_plan(&self, prefetch_count: usize) -> CoreResult<QueuePrefetchPlan> {
+        let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
+        let queue_revision = self.queue_revision.load(Ordering::Acquire);
+        let current_index = queue.current_index();
+        if prefetch_count == 0 {
+            return Ok(QueuePrefetchPlan {
+                queue_revision,
+                current_index,
+                song_ids: Vec::new(),
+            });
+        }
+
+        let queue_length = queue.items().len();
+        let mut seen = HashSet::new();
+        let song_ids = queue
+            .peek_upcoming(queue_length)
+            .into_iter()
+            .filter_map(|item| seen.insert(item.song_id.clone()).then_some(item.song_id))
+            .take(prefetch_count)
+            .collect();
+
+        Ok(QueuePrefetchPlan {
+            queue_revision,
+            current_index,
+            song_ids,
+        })
+    }
+
+    /// Returns whether a completed plan still matches the queue generation and
+    /// every target remains present in the audio cache.
+    ///
+    /// # Errors
+    /// Returns an error if cache state cannot be inspected.
+    pub fn queue_prefetch_plan_is_satisfied(&self, plan: &QueuePrefetchPlan) -> CoreResult<bool> {
+        if self.queue_revision.load(Ordering::Acquire) != plan.queue_revision {
+            return Ok(false);
+        }
+        for song_id in &plan.song_ids {
+            if self.cached_song_path(song_id)?.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(self.queue_revision.load(Ordering::Acquire) == plan.queue_revision)
+    }
+
     /// # Errors
     /// Returns an error if queue state cannot be read or an upcoming song cannot be downloaded.
     pub async fn prefetch_upcoming(
         &self,
         prefetch_count: usize,
     ) -> CoreResult<Vec<DownloadStatus>> {
-        if prefetch_count == 0 {
-            return Ok(Vec::new());
-        }
-        let upcoming = {
-            let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
-            let queue_length = queue.items().len();
-            queue.peek_upcoming(queue_length)
-        };
-        let mut seen = HashSet::new();
-        let mut accounted_for = 0usize;
+        let plan = self.queue_prefetch_plan(prefetch_count)?;
         let mut statuses = Vec::new();
-
-        for item in upcoming {
-            if !seen.insert(item.song_id.clone()) || self.cached_song_path(&item.song_id)?.is_some()
-            {
+        for song_id in plan.song_ids {
+            if self.cached_song_path(&song_id)?.is_some() {
                 continue;
             }
             if self
                 .get_downloading_song_ids()
                 .into_iter()
-                .any(|song_id| song_id == item.song_id)
+                .any(|downloading_song_id| downloading_song_id == song_id)
             {
-                accounted_for += 1;
-            } else {
-                statuses.push(self.download_song(item.song_id).await?);
-                accounted_for += 1;
+                continue;
             }
-            if accounted_for >= prefetch_count {
+            statuses.push(self.download_song(song_id).await?);
+        }
+
+        Ok(statuses)
+    }
+
+    /// Executes a previously captured queue prefetch generation. Stale or
+    /// cancelled generations stop between songs and interrupt in-flight network requests.
+    /// Individual failures are retried with bounded backoff and then cooled down
+    /// so one unavailable song cannot keep a background worker hot.
+    ///
+    /// # Errors
+    /// Returns an error if cache, queue, offline, or failure state cannot be inspected.
+    pub async fn run_queue_prefetch_plan(
+        &self,
+        plan: &QueuePrefetchPlan,
+        cancellation: &PrefetchCancellationToken,
+    ) -> CoreResult<QueuePrefetchOutcome> {
+        let mut outcome = QueuePrefetchOutcome {
+            statuses: Vec::new(),
+            completed: true,
+        };
+
+        for song_id in &plan.song_ids {
+            if cancellation.is_cancelled()
+                || self.queue_revision.load(Ordering::Acquire) != plan.queue_revision
+                || self.manual_offline_enabled()?
+            {
+                outcome.completed = false;
+                break;
+            }
+
+            if self.cached_song_path(song_id)?.is_some() {
+                self.clear_prefetch_failure(song_id)?;
+                continue;
+            }
+            if self.prefetch_failure_is_cooling_down(song_id)? {
+                outcome.completed = false;
+                continue;
+            }
+
+            let mut downloaded = false;
+            for attempt in 0..PREFETCH_MAX_ATTEMPTS {
+                match self
+                    .download_song_cancellable(song_id.clone(), Some(cancellation))
+                    .await
+                {
+                    Ok(Some(status)) => {
+                        self.clear_prefetch_failure(song_id)?;
+                        outcome.statuses.push(status);
+                        downloaded = true;
+                        break;
+                    }
+                    Ok(None) | Err(CoreError::OfflineMode) => {
+                        outcome.completed = false;
+                        return Ok(outcome);
+                    }
+                    Err(error) if attempt + 1 < PREFETCH_MAX_ATTEMPTS => {
+                        let shift = u32::try_from(attempt).unwrap_or(u32::MAX).min(8);
+                        let delay = PREFETCH_RETRY_BASE_DELAY.saturating_mul(1_u32 << shift);
+                        warn!(
+                            "Prefetch attempt {} failed for {song_id}: {error}; retrying in {} ms",
+                            attempt + 1,
+                            delay.as_millis()
+                        );
+                        tokio::select! {
+                            () = cancellation.cancelled() => {
+                                outcome.completed = false;
+                                return Ok(outcome);
+                            }
+                            () = tokio::time::sleep(delay) => {}
+                        }
+                    }
+                    Err(error) => {
+                        self.record_prefetch_failure(song_id)?;
+                        warn!(
+                            "Prefetch failed for {song_id} after {PREFETCH_MAX_ATTEMPTS} attempts: {error}"
+                        );
+                        outcome.completed = false;
+                        break;
+                    }
+                }
+            }
+
+            if !downloaded {
+                continue;
+            }
+            if cancellation.is_cancelled()
+                || self.queue_revision.load(Ordering::Acquire) != plan.queue_revision
+            {
+                outcome.completed = false;
                 break;
             }
         }
 
-        Ok(statuses)
+        if outcome.completed && !self.queue_prefetch_plan_is_satisfied(plan)? {
+            outcome.completed = false;
+        }
+
+        Ok(outcome)
+    }
+
+    fn prefetch_failure_is_cooling_down(&self, song_id: &str) -> CoreResult<bool> {
+        let failures = self
+            .prefetch_failures
+            .lock()
+            .map_err(|_| CoreError::LockPoisoned)?;
+        Ok(failures
+            .get(song_id)
+            .is_some_and(|failure| failure.retry_after > Instant::now()))
+    }
+
+    fn record_prefetch_failure(&self, song_id: &str) -> CoreResult<()> {
+        let mut failures = self
+            .prefetch_failures
+            .lock()
+            .map_err(|_| CoreError::LockPoisoned)?;
+        let consecutive_failures = failures
+            .get(song_id)
+            .map_or(1, |failure| failure.consecutive_failures.saturating_add(1));
+        let shift = consecutive_failures.saturating_sub(1).min(8);
+        let cooldown = PREFETCH_FAILURE_COOLDOWN
+            .saturating_mul(1_u32 << shift)
+            .min(PREFETCH_MAX_FAILURE_COOLDOWN);
+        failures.insert(
+            song_id.to_string(),
+            PrefetchFailureState {
+                consecutive_failures,
+                retry_after: Instant::now() + cooldown,
+            },
+        );
+        Ok(())
+    }
+
+    fn clear_prefetch_failure(&self, song_id: &str) -> CoreResult<()> {
+        self.prefetch_failures
+            .lock()
+            .map_err(|_| CoreError::LockPoisoned)?
+            .remove(song_id);
+        Ok(())
     }
 
     /// # Errors
@@ -1953,6 +2312,7 @@ impl StereodromeCore {
             backup.queue.shuffle,
             backup.queue.repeat_mode,
         );
+        self.queue_revision.fetch_add(1, Ordering::AcqRel);
         self.emit_cache_state_event(CacheStateEvent::Reconcile);
         Ok(summary)
     }
@@ -1984,7 +2344,7 @@ impl StereodromeCore {
             .position(|item| item.song_id == song_id)
             .ok_or_else(|| CoreError::InvalidInput("Selected song is not available".to_string()))?;
 
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             *queue = PlayQueue::load(queue_items, Some(current_index), false, RepeatMode::Off);
             Ok(())
         })
@@ -1993,7 +2353,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn add_to_queue(&self, item: QueueItem) -> CoreResult<QueueState> {
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             queue.add(item);
             Ok(())
         })
@@ -2002,7 +2362,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn add_songs_to_queue(&self, items: Vec<QueueItem>) -> CoreResult<QueueState> {
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             queue.add_many(items);
             Ok(())
         })
@@ -2011,7 +2371,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn insert_next(&self, item: QueueItem) -> CoreResult<QueueState> {
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             queue.insert_next(item);
             Ok(())
         })
@@ -2020,7 +2380,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn insert_next_songs(&self, items: Vec<QueueItem>) -> CoreResult<QueueState> {
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             queue.insert_many_next(items);
             Ok(())
         })
@@ -2029,7 +2389,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn remove_from_queue(&self, index: usize) -> CoreResult<QueueState> {
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             queue.remove(index);
             Ok(())
         })
@@ -2038,7 +2398,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn clear_queue(&self) -> CoreResult<QueueState> {
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             queue.clear();
             Ok(())
         })
@@ -2047,7 +2407,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn move_queue_item(&self, from: usize, to: usize) -> CoreResult<QueueState> {
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             queue.move_item(from, to);
             Ok(())
         })
@@ -2056,28 +2416,28 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn play_queue_item(&self, index: usize) -> CoreResult<Option<QueueItem>> {
-        self.with_queue_result(|queue| Ok(queue.set_current(index).cloned()))
+        self.with_queue_mutation_result(|queue| Ok(queue.set_current(index).cloned()))
             .map(|(item, _)| item)
     }
 
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn play_next(&self, force: Option<bool>) -> CoreResult<Option<QueueItem>> {
-        self.with_queue_result(|queue| Ok(queue.next(force.unwrap_or(false)).cloned()))
+        self.with_queue_mutation_result(|queue| Ok(queue.next(force.unwrap_or(false)).cloned()))
             .map(|(item, _)| item)
     }
 
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn play_previous(&self) -> CoreResult<Option<QueueItem>> {
-        self.with_queue_result(|queue| Ok(queue.previous().cloned()))
+        self.with_queue_mutation_result(|queue| Ok(queue.previous().cloned()))
             .map(|(item, _)| item)
     }
 
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn toggle_shuffle(&self) -> CoreResult<QueueState> {
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             queue.toggle_shuffle();
             Ok(())
         })
@@ -2086,7 +2446,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn set_repeat_mode(&self, mode: RepeatMode) -> CoreResult<QueueState> {
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             queue.set_repeat_mode(mode);
             Ok(())
         })
@@ -2095,7 +2455,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn cycle_repeat_mode(&self) -> CoreResult<QueueState> {
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             queue.cycle_repeat_mode();
             Ok(())
         })
@@ -2104,7 +2464,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue state cannot be locked or persisted.
     pub fn reroll_next(&self) -> CoreResult<QueueState> {
-        self.with_queue_state(|queue| {
+        self.with_queue_mutation_state(|queue| {
             queue.reroll_next();
             Ok(())
         })
@@ -3064,6 +3424,30 @@ impl StereodromeCore {
             Ok(())
         })
         .map(|((), state)| state)
+    }
+
+    fn with_queue_mutation_state(
+        &self,
+        mutate: impl FnOnce(&mut PlayQueue) -> CoreResult<()>,
+    ) -> CoreResult<QueueState> {
+        self.with_queue_mutation_result(|queue| {
+            mutate(queue)?;
+            Ok(())
+        })
+        .map(|((), state)| state)
+    }
+
+    fn with_queue_mutation_result<T>(
+        &self,
+        mutate: impl FnOnce(&mut PlayQueue) -> CoreResult<T>,
+    ) -> CoreResult<(T, QueueState)> {
+        let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
+        let result = mutate(&mut queue)?;
+        let state = QueueState::from_queue(&mut queue);
+        let save_result = db::save_queue(&self.db_path, &state, queue.original_order());
+        self.queue_revision.fetch_add(1, Ordering::AcqRel);
+        save_result?;
+        Ok((result, state))
     }
 
     fn with_queue_result<T>(
@@ -4036,14 +4420,16 @@ pub(crate) fn clamp_audio_processing_settings(settings: &mut AudioProcessingSett
 #[cfg(test)]
 mod tests {
     use super::{
-        CacheStateEvent, ConnectivitySettings, CoreError, DownloadInProgressGuard, DueSyncJob,
-        LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate, NewestAlbumPageEntry,
-        NewestPageScanResult, ServerConfig, Song, StereodromeCore, SyncSettings, build_client,
-        compute_next_run_at, cover_art_filename_matches, cover_cache_filename,
-        distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete, is_job_due,
-        path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
-        scan_newest_album_page, should_prefetch_large_cover_art, write_sync_value,
+        CacheStateEvent, ConnectivitySettings, CoreError, DownloadInProgressGuard, DownloadRecord,
+        DownloadRecordFinalizer, DueSyncJob, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT,
+        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, ServerConfig, Song,
+        StereodromeCore, SyncSettings, build_client, compute_next_run_at,
+        cover_art_filename_matches, cover_cache_filename, distinct_nonempty_cover_art_ids,
+        ensure_incremental_albums_complete, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
+        prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
+        write_sync_value,
     };
+    use crate::queue::{PlayQueue, QueueItem, RepeatMode};
     use chrono::{Duration as ChronoDuration, Utc};
     use rusqlite::Connection;
     use std::collections::HashSet;
@@ -4066,6 +4452,172 @@ mod tests {
         )));
         assert!(!should_prefetch_large_cover_art(Some(0)));
         assert!(!should_prefetch_large_cover_art(None));
+    }
+
+    #[test]
+    fn queue_prefetch_plan_counts_cached_and_duplicate_targets_within_bound() {
+        let data_dir = unique_temp_dir("bounded-prefetch-plan");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        *core.queue.lock().expect("queue lock") = PlayQueue::load(
+            vec![
+                prefetch_queue_item("current"),
+                prefetch_queue_item("cached"),
+                prefetch_queue_item("cached"),
+                prefetch_queue_item("second"),
+                prefetch_queue_item("outside-window"),
+            ],
+            Some(0),
+            false,
+            RepeatMode::Off,
+        );
+        let cached_path = core
+            .audio_cache_path("cached", MOBILE_PLAYBACK_FORMAT)
+            .expect("cache path");
+        std::fs::write(cached_path, b"cached").expect("write cached song");
+
+        let plan = core.queue_prefetch_plan(2).expect("prefetch plan");
+
+        assert_eq!(plan.current_index, Some(0));
+        assert_eq!(plan.song_ids, vec!["cached", "second"]);
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn queue_mutation_invalidates_prefetch_generation() {
+        let data_dir = unique_temp_dir("prefetch-generation");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        *core.queue.lock().expect("queue lock") = PlayQueue::load(
+            vec![prefetch_queue_item("current"), prefetch_queue_item("next")],
+            Some(0),
+            false,
+            RepeatMode::Off,
+        );
+        let before = core.queue_prefetch_plan(1).expect("initial plan");
+
+        core.add_to_queue(prefetch_queue_item("added"))
+            .expect("queue mutation succeeds");
+        let after = core.queue_prefetch_plan(1).expect("updated plan");
+
+        assert_ne!(before.queue_revision, after.queue_revision);
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn completed_prefetch_plan_is_revalidated_after_cache_eviction() {
+        let data_dir = unique_temp_dir("prefetch-plan-cache-revalidation");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        *core.queue.lock().expect("queue lock") = PlayQueue::load(
+            vec![prefetch_queue_item("current"), prefetch_queue_item("next")],
+            Some(0),
+            false,
+            RepeatMode::Off,
+        );
+        let path = core
+            .audio_cache_path("next", MOBILE_PLAYBACK_FORMAT)
+            .expect("cache path");
+        std::fs::write(&path, b"cached").expect("write cached song");
+        let plan = core.queue_prefetch_plan(1).expect("prefetch plan");
+
+        assert!(
+            core.queue_prefetch_plan_is_satisfied(&plan)
+                .expect("satisfied plan")
+        );
+        std::fs::remove_file(path).expect("evict cached song");
+        assert!(
+            !core
+                .queue_prefetch_plan_is_satisfied(&plan)
+                .expect("revalidated plan")
+        );
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cancelled_prefetch_plan_stops_before_network_work() {
+        let data_dir = unique_temp_dir("cancelled-prefetch-plan");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        *core.queue.lock().expect("queue lock") = PlayQueue::load(
+            vec![prefetch_queue_item("current"), prefetch_queue_item("next")],
+            Some(0),
+            false,
+            RepeatMode::Off,
+        );
+        let plan = core.queue_prefetch_plan(1).expect("prefetch plan");
+        let cancellation = super::PrefetchCancellationToken::new();
+        cancellation.cancel();
+
+        let outcome = core
+            .run_queue_prefetch_plan(&plan, &cancellation)
+            .await
+            .expect("cancelled prefetch exits cleanly");
+
+        assert!(!outcome.completed);
+        assert!(outcome.statuses.is_empty());
+        assert!(core.get_downloading_song_ids().is_empty());
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn interrupted_download_record_is_finalized_synchronously() {
+        let data_dir = unique_temp_dir("interrupted-download-finalizer");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        core.record_download(DownloadRecord {
+            entity_type: "song",
+            entity_id: "interrupted-song",
+            song_id: "interrupted-song",
+            status: "downloading",
+            path: None,
+            bytes: 0,
+            error: None,
+        })
+        .expect("record active download");
+
+        drop(DownloadRecordFinalizer::new(
+            &core.db_path,
+            "interrupted-song",
+        ));
+
+        let conn = Connection::open(&core.db_path).expect("open database");
+        let status = conn
+            .query_row(
+                "SELECT status FROM download_items WHERE song_id = 'interrupted-song'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("read finalized status");
+        assert_eq!(status, "cancelled");
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn failed_prefetch_song_enters_cooldown_until_success() {
+        let data_dir = unique_temp_dir("prefetch-cooldown");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+
+        core.record_prefetch_failure("failed-song")
+            .expect("record failure");
+        assert!(
+            core.prefetch_failure_is_cooling_down("failed-song")
+                .expect("read cooldown")
+        );
+
+        core.clear_prefetch_failure("failed-song")
+            .expect("clear failure");
+        assert!(
+            !core
+                .prefetch_failure_is_cooling_down("failed-song")
+                .expect("read cleared cooldown")
+        );
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    fn prefetch_queue_item(song_id: &str) -> QueueItem {
+        QueueItem {
+            song_id: song_id.to_string(),
+            title: song_id.to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration: 180,
+        }
     }
 
     #[test]

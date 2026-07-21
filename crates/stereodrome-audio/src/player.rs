@@ -1171,7 +1171,7 @@ fn append_request_to_sink(
         .with_coarse_seek(true)
         .build()
         .map_err(|e| {
-            AudioError::Playback(format!(
+            AudioError::Decode(format!(
                 "Failed to decode audio for {}: {e:?}",
                 request.metadata.id
             ))

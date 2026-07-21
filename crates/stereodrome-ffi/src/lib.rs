@@ -20,13 +20,14 @@ use log::{Level, LevelFilter, Metadata, Record};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use stereodrome_audio::{
-    AudioPlayer, BinauralPreset, CrossfadePlayRequest, DynamicsPreset, EqualizerSettings,
-    PlaybackLifecycleState, SongMetadata,
+    AudioError, AudioPlayer, BinauralPreset, CrossfadePlayRequest, DynamicsPreset,
+    EqualizerSettings, PlaybackLifecycleState, SongMetadata,
 };
 use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
     AudioProcessingSettings, CacheStateEvent, ConnectParams, ConnectivitySettings, DueSyncJob,
-    LibrarySyncStatus, PlaybackProgress, ServerSettingsUpdate, StereodromeCore, SyncSettings,
+    LibrarySyncStatus, PlaybackProgress, PrefetchCancellationToken, QueuePrefetchPlan,
+    ServerSettingsUpdate, StereodromeCore, SyncSettings,
 };
 use url::Url;
 
@@ -657,6 +658,7 @@ pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
         unsafe {
             let mobile = Box::from_raw(core);
             mobile.monitor_running.store(false, Ordering::SeqCst);
+            shutdown_queue_prefetch(&mobile);
         }
     }));
 }
@@ -738,6 +740,14 @@ fn stereodrome_core_call_inner(
 fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String, String> {
     let runtime = &mobile.runtime;
     let core = &mobile.core;
+
+    if should_cancel_queue_prefetch(method) {
+        cancel_queue_prefetch(
+            core,
+            &mobile.prefetch_state,
+            matches!(method, "clearAudioCache" | "removeCachedSong"),
+        )?;
+    }
 
     let response = match method {
         "connectServer" => {
@@ -1139,6 +1149,42 @@ fn should_emit_playback_snapshot(method: &str) -> bool {
     )
 }
 
+fn should_cancel_queue_prefetch(method: &str) -> bool {
+    matches!(
+        method,
+        "importPortableBackup"
+            | "disconnectServer"
+            | "setConnectivitySettings"
+            | "clearAudioCache"
+            | "removeCachedSong"
+            | "setAudioProcessingSettings"
+            | "audioPlayCurrent"
+            | "audioPlayQueueItem"
+            | "audioPlayNext"
+            | "audioPlayPrevious"
+            | "audioApplySettings"
+            | "audioPrepareNextTransition"
+            | "audioResume"
+            | "audioRebuildOutput"
+            | "audioStop"
+            | "playSongWithQueue"
+            | "addToQueue"
+            | "addSongsToQueue"
+            | "insertNext"
+            | "insertNextSongs"
+            | "removeFromQueue"
+            | "clearQueue"
+            | "moveQueueItem"
+            | "playQueueItem"
+            | "playNext"
+            | "playPrevious"
+            | "toggleShuffle"
+            | "setRepeatMode"
+            | "cycleRepeatMode"
+            | "rerollNext"
+    )
+}
+
 #[derive(Default, Deserialize)]
 struct PrefetchPayload {
     #[serde(default)]
@@ -1299,7 +1345,7 @@ fn ensure_backup_jobs_idle(mobile: &MobileCore) -> Result<(), String> {
             .prefetch_state
             .lock()
             .map_err(|_| "background prefetch state lock is poisoned".to_string())?;
-        prefetch.running || prefetch.requested
+        prefetch.running || prefetch.requested_plan.is_some()
     };
     let downloads_running = !mobile.core.get_downloading_song_ids().is_empty();
     if sync_running || playlist_job_running || prefetch_running || downloads_running {
@@ -1342,28 +1388,96 @@ fn run_sync_job(
 
 #[derive(Default)]
 struct BackgroundPrefetchState {
+    closed: bool,
     running: bool,
-    requested: bool,
-    reserve_first: bool,
+    cancellation_generation: u64,
+    worker_generation: u64,
+    worker_handle: Option<tokio::task::JoinHandle<()>>,
+    active_plan: Option<QueuePrefetchPlan>,
+    requested_plan: Option<QueuePrefetchPlan>,
+    cancellation: Option<PrefetchCancellationToken>,
+    last_completed_plan: Option<QueuePrefetchPlan>,
 }
 
 struct BackgroundPrefetchGuard {
     state: Arc<Mutex<BackgroundPrefetchState>>,
+    worker_generation: u64,
 }
 
 impl Drop for BackgroundPrefetchGuard {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.state.lock() {
+        if let Ok(mut state) = self.state.lock()
+            && state.worker_generation == self.worker_generation
+        {
             state.running = false;
+            state.active_plan = None;
+            state.requested_plan = None;
+            state.cancellation = None;
         }
     }
+}
+
+fn cancel_queue_prefetch(
+    core: &StereodromeCore,
+    state: &Arc<Mutex<BackgroundPrefetchState>>,
+    invalidate_completed: bool,
+) -> Result<(), String> {
+    signal_queue_prefetch_cancellation(state, invalidate_completed)?;
+    core.cache_mutation_barrier()
+        .map_err(|error| error.to_string())
+}
+
+fn signal_queue_prefetch_cancellation(
+    state: &Arc<Mutex<BackgroundPrefetchState>>,
+    invalidate_completed: bool,
+) -> Result<(), String> {
+    let mut state = state
+        .lock()
+        .map_err(|_| "background prefetch state lock is poisoned".to_string())?;
+    if let Some(cancellation) = state.cancellation.take() {
+        cancellation.cancel();
+    }
+    state.cancellation_generation = state.cancellation_generation.wrapping_add(1);
+    state.active_plan = None;
+    state.requested_plan = None;
+    if invalidate_completed {
+        state.last_completed_plan = None;
+    }
+    Ok(())
+}
+
+fn shutdown_queue_prefetch(mobile: &MobileCore) {
+    let worker_handle = mobile.prefetch_state.lock().ok().and_then(|mut state| {
+        state.closed = true;
+        state.cancellation_generation = state.cancellation_generation.wrapping_add(1);
+        if let Some(cancellation) = state.cancellation.take() {
+            cancellation.cancel();
+        }
+        state.active_plan = None;
+        state.requested_plan = None;
+        state.worker_handle.take()
+    });
+    let _ = mobile.core.cache_mutation_barrier();
+    let Some(mut worker_handle) = worker_handle else {
+        return;
+    };
+
+    mobile.runtime.block_on(async {
+        tokio::select! {
+            _ = &mut worker_handle => {}
+            () = tokio::time::sleep(Duration::from_secs(2)) => {
+                worker_handle.abort();
+                let _ = worker_handle.await;
+            }
+        }
+    });
 }
 
 fn start_queue_prefetch(mobile: &MobileCore, reserve_first: bool) -> Result<(), String> {
     spawn_queue_prefetch(
         &mobile.runtime,
         Arc::clone(&mobile.core),
-        Arc::clone(&mobile.prefetch_state),
+        &mobile.prefetch_state,
         reserve_first,
     )
 }
@@ -1371,80 +1485,112 @@ fn start_queue_prefetch(mobile: &MobileCore, reserve_first: bool) -> Result<(), 
 fn spawn_queue_prefetch(
     runtime: &tokio::runtime::Runtime,
     core: Arc<StereodromeCore>,
-    state: Arc<Mutex<BackgroundPrefetchState>>,
-    reserve_first: bool,
+    state: &Arc<Mutex<BackgroundPrefetchState>>,
+    _reserve_first: bool,
 ) -> Result<(), String> {
-    let should_spawn = {
-        let mut state = state
+    let request_generation = {
+        let state = state
             .lock()
             .map_err(|_| "background prefetch state lock is poisoned".to_string())?;
-        if state.requested {
-            state.reserve_first &= reserve_first;
-        } else {
-            state.reserve_first = reserve_first;
+        if state.closed {
+            return Ok(());
         }
-        state.requested = true;
-        if state.running {
-            false
-        } else {
-            state.running = true;
-            true
-        }
+        state.cancellation_generation
     };
-    if !should_spawn {
+    let settings = core
+        .get_audio_processing_settings()
+        .map_err(|error| error.to_string())?;
+    let prefetch_count = settings.prefetch_count as usize;
+    let requested_plan = core
+        .queue_prefetch_plan(prefetch_count)
+        .map_err(|error| error.to_string())?;
+    let requested_plan_is_satisfied = core
+        .queue_prefetch_plan_is_satisfied(&requested_plan)
+        .map_err(|error| error.to_string())?;
+
+    let mut state_guard = state
+        .lock()
+        .map_err(|_| "background prefetch state lock is poisoned".to_string())?;
+    if state_guard.closed || state_guard.cancellation_generation != request_generation {
         return Ok(());
     }
+    if state_guard.active_plan.as_ref() == Some(&requested_plan)
+        || state_guard.requested_plan.as_ref() == Some(&requested_plan)
+        || (!state_guard.running
+            && requested_plan_is_satisfied
+            && state_guard.last_completed_plan.as_ref() == Some(&requested_plan))
+    {
+        return Ok(());
+    }
+    if state_guard.last_completed_plan.as_ref() == Some(&requested_plan)
+        && !requested_plan_is_satisfied
+    {
+        state_guard.last_completed_plan = None;
+    }
+    if let Some(cancellation) = state_guard.cancellation.take() {
+        cancellation.cancel();
+    }
+    state_guard.requested_plan = Some(requested_plan);
+    if state_guard.running {
+        return Ok(());
+    }
+    state_guard.running = true;
+    state_guard.worker_generation = state_guard.worker_generation.wrapping_add(1);
+    let worker_generation = state_guard.worker_generation;
 
-    runtime.spawn(async move {
+    let worker_state = Arc::clone(state);
+    let worker_handle = runtime.spawn(async move {
+        let state = worker_state;
         let _guard = BackgroundPrefetchGuard {
             state: Arc::clone(&state),
+            worker_generation,
         };
         loop {
-            let reserve_first = {
+            let Some((plan, cancellation)) = ({
                 let Ok(mut state) = state.lock() else {
                     return;
                 };
-                state.requested = false;
-                let reserve_first = state.reserve_first;
-                state.reserve_first = false;
-                reserve_first
-            };
-
-            match core.get_audio_processing_settings() {
-                Ok(settings) => {
-                    let prefetch_count = (settings.prefetch_count as usize)
-                        .saturating_sub(usize::from(reserve_first));
-                    if let Err(error) = core.prefetch_upcoming(prefetch_count).await {
-                        log::warn!(
-                            target: "stereodrome_ffi",
-                            "Failed to prefetch upcoming queue tracks: {error}"
-                        );
-                    }
-                }
-                Err(error) => {
-                    log::warn!(
-                        target: "stereodrome_ffi",
-                        "Failed to read settings for queue prefetch: {error}"
-                    );
-                }
-            }
-
-            let should_continue = {
-                let Ok(mut state) = state.lock() else {
-                    return;
-                };
-                if state.requested {
-                    true
+                if let Some(plan) = state.requested_plan.take() {
+                    let cancellation = PrefetchCancellationToken::new();
+                    state.active_plan = Some(plan.clone());
+                    state.cancellation = Some(cancellation.clone());
+                    Some((plan, cancellation))
                 } else {
-                    state.running = false;
-                    false
+                    if state.worker_generation == worker_generation {
+                        state.running = false;
+                    }
+                    None
                 }
-            };
-            if !should_continue {
+            }) else {
                 break;
+            };
+
+            let outcome = core.run_queue_prefetch_plan(&plan, &cancellation).await;
+            let Ok(mut state) = state.lock() else {
+                return;
+            };
+            if state.active_plan.as_ref() == Some(&plan) {
+                if outcome
+                    .as_ref()
+                    .is_ok_and(|outcome| outcome.completed && !cancellation.is_cancelled())
+                {
+                    state.last_completed_plan = Some(plan.clone());
+                }
+                state.active_plan = None;
+                state.cancellation = None;
+            }
+            drop(state);
+
+            if let Err(error) = outcome {
+                log::warn!(
+                    target: "stereodrome_ffi",
+                    "Failed to prefetch upcoming queue tracks: {error}"
+                );
             }
         }
     });
+    state_guard.worker_handle = Some(worker_handle);
+    drop(state_guard);
     Ok(())
 }
 
@@ -1726,6 +1872,12 @@ fn start_mobile_playback_monitor(
             let (state, segment_idx) = state_handle.get_gapless_state();
             let marker = MobilePlaybackMarker::from_state(&state, segment_idx);
             if last_snapshot_marker.as_ref() != Some(&marker) {
+                if last_snapshot_marker
+                    .as_ref()
+                    .is_some_and(|previous| previous.song_id.is_some() && marker.song_id.is_none())
+                {
+                    let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
+                }
                 announcer.emit(&core, &audio);
                 last_snapshot_marker = Some(marker);
             }
@@ -1749,6 +1901,7 @@ fn start_mobile_playback_monitor(
 
             if segment_idx > last_segment_idx {
                 last_segment_idx = segment_idx;
+                let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
                 match core.play_next(Some(false)) {
                     Ok(Some(next)) => {
                         let progress = PlaybackProgress {
@@ -1765,7 +1918,7 @@ fn start_mobile_playback_monitor(
                         let _ = spawn_queue_prefetch(
                             &runtime,
                             Arc::clone(&core),
-                            Arc::clone(&prefetch_state),
+                            &prefetch_state,
                             prepared,
                         );
                         announcer.emit(&core, &audio);
@@ -1793,6 +1946,7 @@ fn start_mobile_playback_monitor(
                         let remaining = state.duration - state.position;
                         if remaining <= crossfade_window_seconds && remaining > 0.5 {
                             state_handle.set_crossfade_initiated(true);
+                            let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
                             match runtime
                                 .block_on(async { crossfade_next_from(&core, &audio).await })
                             {
@@ -1805,7 +1959,7 @@ fn start_mobile_playback_monitor(
                                     let _ = spawn_queue_prefetch(
                                         &runtime,
                                         Arc::clone(&core),
-                                        Arc::clone(&prefetch_state),
+                                        &prefetch_state,
                                         prepared,
                                     );
                                     announcer.emit(&core, &audio);
@@ -1840,6 +1994,7 @@ fn start_mobile_playback_monitor(
                 state_handle.clear_finished_state();
                 last_segment_idx = 0;
                 last_report = None;
+                let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
 
                 match runtime.block_on(async {
                     play_queue_navigation_from(&core, &audio, QueueNavigation::Next(false)).await
@@ -1851,7 +2006,7 @@ fn start_mobile_playback_monitor(
                         let _ = spawn_queue_prefetch(
                             &runtime,
                             Arc::clone(&core),
-                            Arc::clone(&prefetch_state),
+                            &prefetch_state,
                             prepared,
                         );
                         announcer.emit(&core, &audio);
@@ -1967,7 +2122,7 @@ async fn play_current_queue_item_from(
 
     let prepared = prepare_queue_item_audio_from(core, item).await?;
 
-    let status = play_prepared_audio(audio, prepared)?;
+    let status = play_prepared_audio(core, audio, prepared)?;
 
     if let Some(position) = seek_position {
         audio.seek(position).map_err(|e| e.to_string())?;
@@ -2042,7 +2197,7 @@ async fn play_queue_navigation_from(
 
     let expected_song_id = item.song_id.clone();
     let prepared = prepare_queue_item_audio_from(core, item).await?;
-    let status = play_prepared_audio(audio, prepared)?;
+    let status = play_prepared_audio(core, audio, prepared)?;
     let committed = navigation.commit(core)?;
 
     if committed.as_ref().map(|item| item.song_id.as_str()) != Some(expected_song_id.as_str()) {
@@ -2155,6 +2310,7 @@ async fn prepare_next_transition_from(
         return Ok(false);
     }
 
+    let next_song_id = next.song_id.clone();
     let prepared = prepare_queue_item_audio_from(core, next).await?;
     audio
         .append_gapless(
@@ -2168,7 +2324,10 @@ async fn prepare_next_transition_from(
             prepared.processing.equalizer_settings,
         )
         .map(|()| true)
-        .map_err(|e| e.to_string())
+        .map_err(|error| {
+            invalidate_cache_after_decode_error(core, &next_song_id, &error);
+            error.to_string()
+        })
 }
 
 async fn crossfade_next_from(
@@ -2204,6 +2363,7 @@ async fn crossfade_next_from(
         return Ok(None);
     }
 
+    let next_song_id = next.song_id.clone();
     let prepared = prepare_queue_item_audio_from(core, next).await?;
     audio
         .crossfade_play(CrossfadePlayRequest {
@@ -2216,7 +2376,10 @@ async fn crossfade_next_from(
             equalizer_settings: prepared.processing.equalizer_settings,
             crossfade_duration_ms: settings.crossfade_duration_ms,
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| {
+            invalidate_cache_after_decode_error(core, &next_song_id, &error);
+            error.to_string()
+        })?;
 
     core.play_next(Some(false)).map_err(|e| e.to_string())?;
     Ok(Some(core.get_queue().map_err(|e| e.to_string())?))
@@ -2253,21 +2416,36 @@ struct PreparedAudioItem {
 }
 
 fn play_prepared_audio(
+    core: &StereodromeCore,
     audio: &AudioPlayer,
     prepared: PreparedAudioItem,
 ) -> Result<stereodrome_audio::PlaybackStatus, String> {
-    audio
-        .play(
-            prepared.audio_data,
-            prepared.metadata,
-            prepared.duration_secs,
-            prepared.processing.normalization_gain,
-            prepared.processing.dynamics_preset,
-            prepared.processing.binaural_preset,
-            prepared.processing.equalizer_settings,
-        )
-        .map_err(|error| error.to_string())?;
+    let song_id = prepared.metadata.id.clone();
+    if let Err(error) = audio.play(
+        prepared.audio_data,
+        prepared.metadata,
+        prepared.duration_secs,
+        prepared.processing.normalization_gain,
+        prepared.processing.dynamics_preset,
+        prepared.processing.binaural_preset,
+        prepared.processing.equalizer_settings,
+    ) {
+        invalidate_cache_after_decode_error(core, &song_id, &error);
+        return Err(error.to_string());
+    }
     Ok(audio.get_status())
+}
+
+fn invalidate_cache_after_decode_error(core: &StereodromeCore, song_id: &str, error: &AudioError) {
+    if !matches!(error, AudioError::Decode(_)) {
+        return;
+    }
+    if let Err(invalidation_error) = core.invalidate_cached_song(song_id) {
+        log::warn!(
+            target: "stereodrome_ffi",
+            "Failed to invalidate undecodable cached song {song_id}: {invalidation_error}"
+        );
+    }
 }
 
 async fn prepare_queue_item_audio_from(
@@ -2549,6 +2727,148 @@ mod tests {
                 "{method} should not emit a playback snapshot from dispatch"
             );
         }
+    }
+
+    #[test]
+    fn stale_prefetch_is_cancelled_for_queue_stop_and_offline_mutations() {
+        let cancelling_methods = [
+            "disconnectServer",
+            "setConnectivitySettings",
+            "audioPlayNext",
+            "audioPrepareNextTransition",
+            "audioStop",
+            "playSongWithQueue",
+            "insertNext",
+            "removeFromQueue",
+            "clearQueue",
+            "moveQueueItem",
+            "toggleShuffle",
+            "setRepeatMode",
+        ];
+
+        for method in cancelling_methods {
+            assert!(
+                should_cancel_queue_prefetch(method),
+                "{method} should cancel stale queue prefetch"
+            );
+        }
+        assert!(!should_cancel_queue_prefetch("prefetchNext"));
+        assert!(!should_cancel_queue_prefetch("getPlaybackSnapshot"));
+    }
+
+    #[test]
+    fn cancelling_prefetch_clears_bounded_pending_work() {
+        let plan = QueuePrefetchPlan {
+            queue_revision: 3,
+            current_index: Some(1),
+            song_ids: vec!["next".to_string()],
+        };
+        let cancellation = PrefetchCancellationToken::new();
+        let state = Arc::new(Mutex::new(BackgroundPrefetchState {
+            closed: false,
+            running: true,
+            cancellation_generation: 0,
+            worker_generation: 1,
+            worker_handle: None,
+            active_plan: Some(plan.clone()),
+            requested_plan: Some(plan.clone()),
+            cancellation: Some(cancellation.clone()),
+            last_completed_plan: Some(plan.clone()),
+        }));
+
+        signal_queue_prefetch_cancellation(&state, false).expect("prefetch cancellation");
+
+        let state_guard = state.lock().expect("prefetch state lock");
+        assert!(cancellation.is_cancelled());
+        assert!(state_guard.active_plan.is_none());
+        assert!(state_guard.requested_plan.is_none());
+        assert_eq!(state_guard.last_completed_plan.as_ref(), Some(&plan));
+        drop(state_guard);
+
+        signal_queue_prefetch_cancellation(&state, true).expect("prefetch invalidation");
+        assert!(
+            state
+                .lock()
+                .expect("prefetch state lock")
+                .last_completed_plan
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn old_prefetch_worker_cannot_clear_replacement_state() {
+        let state = Arc::new(Mutex::new(BackgroundPrefetchState {
+            running: true,
+            worker_generation: 2,
+            ..BackgroundPrefetchState::default()
+        }));
+
+        drop(BackgroundPrefetchGuard {
+            state: Arc::clone(&state),
+            worker_generation: 1,
+        });
+
+        assert!(state.lock().expect("prefetch state lock").running);
+    }
+
+    #[test]
+    fn closed_prefetch_state_rejects_late_monitor_start() {
+        static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+        let test_id = NEXT_TEST_ID.fetch_add(1, AtomicOrdering::Relaxed);
+        let data_dir = std::env::temp_dir().join(format!(
+            "stereodrome-ffi-prefetch-close-{}-{test_id}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let core = Arc::new(StereodromeCore::new(&data_dir).expect("core initializes"));
+        let runtime = tokio::runtime::Runtime::new().expect("runtime initializes");
+        let state = Arc::new(Mutex::new(BackgroundPrefetchState {
+            closed: true,
+            ..BackgroundPrefetchState::default()
+        }));
+
+        spawn_queue_prefetch(&runtime, core, &state, false)
+            .expect("closed prefetch start is ignored");
+
+        let state = state.lock().expect("prefetch state lock");
+        assert!(!state.running);
+        assert!(state.worker_handle.is_none());
+        assert!(state.requested_plan.is_none());
+        drop(state);
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn decode_failure_invalidates_cached_audio_but_output_failure_does_not() {
+        static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+        let test_id = NEXT_TEST_ID.fetch_add(1, AtomicOrdering::Relaxed);
+        let data_dir = std::env::temp_dir().join(format!(
+            "stereodrome-ffi-decode-cache-{}-{test_id}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let cache_path = data_dir.join("audio_cache").join("song.mp3");
+        std::fs::create_dir_all(cache_path.parent().expect("cache parent"))
+            .expect("create cache directory");
+        std::fs::write(&cache_path, b"invalid audio").expect("write invalid cache");
+
+        invalidate_cache_after_decode_error(
+            &core,
+            "song",
+            &AudioError::Playback("output unavailable".to_string()),
+        );
+        assert!(cache_path.exists());
+
+        invalidate_cache_after_decode_error(
+            &core,
+            "song",
+            &AudioError::Decode("invalid media".to_string()),
+        );
+        assert!(!cache_path.exists());
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[test]

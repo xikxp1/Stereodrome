@@ -6076,6 +6076,7 @@ dependencies = [
  "submarine",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-util",
  "url",
  "urlencoding",
  "windows-sys 0.61.2",
@@ -7394,6 +7395,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
