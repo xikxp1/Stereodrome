@@ -451,11 +451,12 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Select Xcode 26.3
+      - name: Select Xcode 26.6
         shell: bash
         run: |
-          # Xcode 26.4.1 on macos-26 currently fails Release archives while linking SwiftUICore.
-          xcode_app=/Applications/Xcode_26.3.app
+          # Expo SDK 57 requires Xcode 26.4 or newer. Xcode 26.6 also avoids
+          # the ExpoModulesJSI Swift type-inference failure present in 26.3.
+          xcode_app=/Applications/Xcode_26.6.app
           if [ ! -d "$xcode_app" ]; then
             echo "::error::$xcode_app is required for iOS release builds"
             exit 1
