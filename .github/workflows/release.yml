@@ -116,7 +116,7 @@ jobs:
             for (const failure of failures) {
               console.error(`- ${failure}`);
             }
-            console.error(`Run: vp node scripts/set-version.mjs ${expected}`);
+            console.error(`Run: vp run version:set ${expected}`);
             process.exit(1);
           }
           NODE
@@ -288,7 +288,7 @@ jobs:
         run: vp install
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -302,6 +302,7 @@ jobs:
           releaseBody: ${{ needs.release_notes.outputs.release_body }}
           releaseDraft: true
           prerelease: false
+          tauriScript: vp exec tauri
           args: ${{ matrix.args }}
 
   mobile-android:
