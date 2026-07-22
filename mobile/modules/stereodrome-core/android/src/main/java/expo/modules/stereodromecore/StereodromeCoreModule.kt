@@ -68,6 +68,10 @@ class StereodromeCoreModule : Module() {
       }
       result
     }
+
+    AsyncFunction("dispatch") { commandJson: String ->
+      StereodromeCoreBridge.dispatch(commandJson)
+    }
   }
 
   private fun callCore(method: String, payload: String): String {

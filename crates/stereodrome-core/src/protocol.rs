@@ -18,7 +18,7 @@ pub const CORE_PROTOCOL_VERSION: u32 = 1;
 pub struct CommandId(pub u64);
 
 /// Identifier assigned by the runtime to a mutating operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct OperationId(pub u64);
 
@@ -37,6 +37,55 @@ pub enum SyncKind {
     Full,
     Incremental,
     FullReconcile,
+}
+
+/// Platform lifecycle input used by runtime scheduling policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlatformLifecycle {
+    Foreground,
+    Background,
+}
+
+/// Kind of long-running work owned by the runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JobKind {
+    Connect,
+    RestoreSession,
+    Sync { kind: SyncKind },
+    BackgroundTick,
+    DownloadSong { song_id: String },
+    DownloadAlbum { album_id: String },
+    DownloadPlaylist { playlist_id: String },
+    SavedPlaylistReconcile,
+    QueuePrefetch,
+    ServerRequest,
+}
+
+/// Lifecycle of one operation in the runtime registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OperationPhase {
+    Running,
+    Cancelling,
+}
+
+/// Snapshot entry for active long-running work.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationSnapshot {
+    pub operation_id: OperationId,
+    pub cause_command_id: CommandId,
+    pub kind: JobKind,
+    pub phase: OperationPhase,
+}
+
+/// Authoritative saved-playlist offline job state.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SavedPlaylistOfflineStatus {
+    pub running: bool,
+    pub operation_id: Option<OperationId>,
+    pub last_error: Option<String>,
 }
 
 /// Commands currently owned by the runtime shell.
@@ -65,8 +114,18 @@ pub enum CoreCommand {
     SetConnectivity {
         settings: ConnectivitySettings,
     },
+    ReportNetwork {
+        available: bool,
+    },
+    ReportLifecycle {
+        lifecycle: PlatformLifecycle,
+    },
     StartSync {
         kind: SyncKind,
+    },
+    RunBackgroundTick,
+    CancelOperation {
+        operation_id: OperationId,
     },
     RunDueLibrarySync,
     GetScanStatus,
@@ -149,6 +208,16 @@ pub enum CoreCommand {
         saved_offline: bool,
     },
     ReconcileSavedPlaylistsOffline,
+    StartSavedPlaylistsOfflineReconcile,
+    GetSavedPlaylistsOfflineStatus,
+    StartQueuePrefetch {
+        #[serde(default)]
+        reserve_first: bool,
+    },
+    CancelQueuePrefetch {
+        #[serde(default)]
+        invalidate_completed: bool,
+    },
     GetPlaybackState,
     SavePlaybackPosition {
         progress: PlaybackProgress,
@@ -220,6 +289,7 @@ impl CoreCommand {
                 | Self::GetConnectionStatus
                 | Self::GetSyncSettings
                 | Self::GetConnectivitySettings
+                | Self::GetSavedPlaylistsOfflineStatus
                 | Self::GetScanStatus
                 | Self::GetLibrarySyncStatus
                 | Self::GetArtists
@@ -248,6 +318,7 @@ impl CoreCommand {
         matches!(
             self,
             Self::StartSync { .. }
+                | Self::RunBackgroundTick
                 | Self::RunDueLibrarySync
                 | Self::CreatePlaylist { .. }
                 | Self::RenamePlaylist { .. }
@@ -269,6 +340,82 @@ impl CoreCommand {
                 | Self::SetAudioProcessing { .. }
                 | Self::ImportPortableBackup { .. }
         )
+    }
+
+    #[must_use]
+    pub(crate) fn runs_as_effect(&self) -> bool {
+        matches!(
+            self,
+            Self::Connect { .. }
+                | Self::UpdateServerSettings { .. }
+                | Self::RestoreSession
+                | Self::ReportNetwork { available: true }
+                | Self::Disconnect
+                | Self::SetConnectivity { .. }
+                | Self::StartSync { .. }
+                | Self::RunBackgroundTick
+                | Self::RunDueLibrarySync
+                | Self::GetScanStatus
+                | Self::StartScan
+                | Self::GetAlbumList { .. }
+                | Self::GetPlaylists
+                | Self::GetPlaylistSongs { .. }
+                | Self::CreatePlaylist { .. }
+                | Self::RenamePlaylist { .. }
+                | Self::DeletePlaylist { .. }
+                | Self::AddSongsToPlaylist { .. }
+                | Self::RemoveSongsFromPlaylist { .. }
+                | Self::GetCoverArtUri { .. }
+                | Self::GetSongCoverArtUri { .. }
+                | Self::DownloadSong { .. }
+                | Self::DownloadAlbum { .. }
+                | Self::DownloadPlaylist { .. }
+                | Self::SetPlaylistSavedOffline { .. }
+                | Self::ReconcileSavedPlaylistsOffline
+                | Self::StartSavedPlaylistsOfflineReconcile
+                | Self::StartQueuePrefetch { .. }
+                | Self::BeginLastfmAuth
+                | Self::CompleteLastfmAuth
+                | Self::RetryLastfmQueue
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn is_detached_effect(&self) -> bool {
+        matches!(
+            self,
+            Self::StartSync { .. }
+                | Self::StartSavedPlaylistsOfflineReconcile
+                | Self::StartQueuePrefetch { .. }
+                | Self::SetPlaylistSavedOffline {
+                    saved_offline: true,
+                    ..
+                }
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn job_kind(&self) -> JobKind {
+        match self {
+            Self::Connect { .. } | Self::UpdateServerSettings { .. } => JobKind::Connect,
+            Self::RestoreSession | Self::ReportNetwork { .. } => JobKind::RestoreSession,
+            Self::StartSync { kind } => JobKind::Sync { kind: *kind },
+            Self::RunBackgroundTick | Self::RunDueLibrarySync => JobKind::BackgroundTick,
+            Self::DownloadSong { song_id } => JobKind::DownloadSong {
+                song_id: song_id.clone(),
+            },
+            Self::DownloadAlbum { album_id } => JobKind::DownloadAlbum {
+                album_id: album_id.clone(),
+            },
+            Self::DownloadPlaylist { playlist_id } => JobKind::DownloadPlaylist {
+                playlist_id: playlist_id.clone(),
+            },
+            Self::SetPlaylistSavedOffline { .. }
+            | Self::ReconcileSavedPlaylistsOffline
+            | Self::StartSavedPlaylistsOfflineReconcile => JobKind::SavedPlaylistReconcile,
+            Self::StartQueuePrefetch { .. } => JobKind::QueuePrefetch,
+            _ => JobKind::ServerRequest,
+        }
     }
 }
 
@@ -320,6 +467,10 @@ pub struct CoreSnapshot {
     pub queue: QueueState,
     pub sync: LibrarySyncStatus,
     pub downloads: DownloadSnapshot,
+    pub operations: Vec<OperationSnapshot>,
+    pub saved_playlist_offline: SavedPlaylistOfflineStatus,
+    pub platform_lifecycle: PlatformLifecycle,
+    pub network_available: bool,
     pub settings_revision: u64,
     pub library_revision: u64,
     pub last_failure: Option<OperationFailure>,
@@ -336,6 +487,7 @@ pub enum ProtocolErrorCode {
     OfflineMode,
     Conflict,
     RuntimeUnavailable,
+    Cancelled,
     Persistence,
     Network,
     Internal,

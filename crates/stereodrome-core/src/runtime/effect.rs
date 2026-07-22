@@ -9,11 +9,18 @@ use crate::{CoreError, CoreResult, StereodromeCore};
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn execute(core: &StereodromeCore, command: CoreCommand) -> CoreResult<Value> {
     match command {
-        CoreCommand::Initialize | CoreCommand::GetSnapshot | CoreCommand::Shutdown => {
-            Err(CoreError::InvalidInput(
-                "runtime control command reached the effect adapter".to_string(),
-            ))
-        }
+        CoreCommand::Initialize
+        | CoreCommand::GetSnapshot
+        | CoreCommand::ReportNetwork { .. }
+        | CoreCommand::ReportLifecycle { .. }
+        | CoreCommand::RunBackgroundTick
+        | CoreCommand::CancelOperation { .. }
+        | CoreCommand::GetSavedPlaylistsOfflineStatus
+        | CoreCommand::StartQueuePrefetch { .. }
+        | CoreCommand::CancelQueuePrefetch { .. }
+        | CoreCommand::Shutdown => Err(CoreError::InvalidInput(
+            "runtime control command reached the effect adapter".to_string(),
+        )),
         CoreCommand::Connect { params } => value(core.connect_server(params).await),
         CoreCommand::UpdateServerSettings { update } => {
             value(core.update_server_settings(update).await)
@@ -25,7 +32,11 @@ pub(crate) async fn execute(core: &StereodromeCore, command: CoreCommand) -> Cor
         CoreCommand::SetSyncSettings { settings } => value(core.set_sync_settings(settings)),
         CoreCommand::GetConnectivitySettings => value(core.get_connectivity_settings()),
         CoreCommand::SetConnectivity { settings } => {
-            value(core.set_connectivity_settings(settings))
+            let settings = core.set_connectivity_settings(settings)?;
+            if settings.manual_offline_enabled {
+                core.deactivate_session().await;
+            }
+            value(Ok(settings))
         }
         CoreCommand::StartSync { kind } => match kind {
             SyncKind::Full => value(core.sync_library().await),
@@ -95,7 +106,8 @@ pub(crate) async fn execute(core: &StereodromeCore, command: CoreCommand) -> Cor
             core.set_playlist_saved_offline(playlist_id, saved_offline)
                 .await,
         ),
-        CoreCommand::ReconcileSavedPlaylistsOffline => {
+        CoreCommand::ReconcileSavedPlaylistsOffline
+        | CoreCommand::StartSavedPlaylistsOfflineReconcile => {
             value(core.reconcile_saved_playlists_offline().await)
         }
         CoreCommand::GetPlaybackState => value(core.get_playback_state()),

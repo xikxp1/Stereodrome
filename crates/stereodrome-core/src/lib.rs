@@ -542,6 +542,11 @@ impl StereodromeCore {
         Ok(())
     }
 
+    /// Clears the active network client without deleting persisted server configuration.
+    pub async fn deactivate_session(&self) {
+        *self.client.lock().await = None;
+    }
+
     /// # Errors
     /// Returns an error if the shared server configuration lock is poisoned.
     pub fn get_connection_status(&self) -> CoreResult<ConnectionStatus> {

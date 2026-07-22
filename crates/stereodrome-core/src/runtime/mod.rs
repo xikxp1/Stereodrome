@@ -10,14 +10,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::broadcast;
+use tokio::task::AbortHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::protocol::{
     CORE_PROTOCOL_VERSION, CommandId, ConnectivityState, CoreCommand, CoreCommandRequest,
-    CoreCommandResult, CoreEvent, CoreEventKind, OperationFailure, OperationId, ProtocolError,
-    ProtocolErrorCode, RuntimeLifecycle,
+    CoreCommandResult, CoreEvent, CoreEventKind, JobKind, OperationFailure, OperationId,
+    OperationPhase, OperationSnapshot, ProtocolError, ProtocolErrorCode, RuntimeLifecycle,
 };
 use crate::{ConnectionStatus, CoreError, CoreResult, StereodromeCore};
 
@@ -38,7 +41,19 @@ enum MailboxMessage {
         request: CoreCommandRequest,
         response: mpsc::Sender<CoreCommandResult>,
     },
+    EffectCompleted {
+        operation_id: OperationId,
+        result: CoreResult<Value>,
+    },
     Stop,
+}
+
+struct PendingEffect {
+    command_id: CommandId,
+    command: CoreCommand,
+    response: Option<mpsc::Sender<CoreCommandResult>>,
+    cancellation: CancellationToken,
+    abort_handle: AbortHandle,
 }
 
 struct RuntimeInner {
@@ -91,10 +106,13 @@ impl StereodromeRuntimeHandle {
     ) -> CoreResult<Self> {
         let lease = RuntimeLease::acquire(data_dir.as_ref())?;
         let connectivity = initial_connectivity(&core)?;
-        let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+        let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("stereodrome-effect")
             .enable_all()
             .build()?;
         let (mailbox, receiver) = mpsc::sync_channel(MAILBOX_CAPACITY);
+        let completion_mailbox = mailbox.clone();
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let actor_events = events.clone();
         let stream_id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
@@ -103,6 +121,7 @@ impl StereodromeRuntimeHandle {
             .spawn(move || {
                 run_actor(
                     receiver,
+                    completion_mailbox,
                     actor_events,
                     stream_id,
                     core,
@@ -299,9 +318,14 @@ fn command_fingerprint(command: &CoreCommand) -> String {
     serde_json::to_string(command).unwrap_or_else(|_| format!("{command:?}"))
 }
 
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
 fn run_actor(
     receiver: mpsc::Receiver<MailboxMessage>,
+    completion_mailbox: SyncSender<MailboxMessage>,
     events: broadcast::Sender<CoreEvent>,
     stream_id: u64,
     core: Arc<StereodromeCore>,
@@ -314,10 +338,29 @@ fn run_actor(
     let mut next_operation_id = 1_u64;
     let mut next_event_id = 1_u64;
     let mut result_cache = ResultCache::new();
+    let mut pending_effects = HashMap::<OperationId, PendingEffect>::new();
 
     while let Ok(message) = receiver.recv() {
         let MailboxMessage::Dispatch { request, response } = message else {
-            break;
+            match message {
+                MailboxMessage::EffectCompleted {
+                    operation_id,
+                    result,
+                } => complete_effect(
+                    operation_id,
+                    result,
+                    &core,
+                    &events,
+                    stream_id,
+                    &mut state,
+                    &mut next_event_id,
+                    &mut pending_effects,
+                    &mut result_cache,
+                ),
+                MailboxMessage::Stop => break,
+                MailboxMessage::Dispatch { .. } => unreachable!(),
+            }
+            continue;
         };
         match result_cache.get(request.command_id, &request.command) {
             CacheLookup::Match(cached) => {
@@ -341,6 +384,75 @@ fn run_actor(
         }
 
         let should_stop = matches!(request.command, CoreCommand::Shutdown);
+        if let CoreCommand::CancelOperation { operation_id } = &request.command {
+            let result = cancel_operation(
+                request.command_id,
+                *operation_id,
+                &core,
+                &events,
+                stream_id,
+                &mut state,
+                &mut next_event_id,
+                &mut pending_effects,
+                &mut result_cache,
+            );
+            result_cache.insert(&request.command, result.clone());
+            let _ = response.send(result);
+            continue;
+        }
+        if let CoreCommand::CancelQueuePrefetch {
+            invalidate_completed: _,
+        } = &request.command
+        {
+            let prefetch = pending_effects.iter().find_map(|(id, pending)| {
+                matches!(pending.command, CoreCommand::StartQueuePrefetch { .. }).then_some(*id)
+            });
+            if let Some(operation_id) = prefetch {
+                let _ = cancel_operation(
+                    request.command_id,
+                    operation_id,
+                    &core,
+                    &events,
+                    stream_id,
+                    &mut state,
+                    &mut next_event_id,
+                    &mut pending_effects,
+                    &mut result_cache,
+                );
+            }
+            state.revision = state.revision.wrapping_add(1);
+            let result =
+                CoreCommandResult::succeeded(request.command_id, state.revision, None, Value::Null);
+            emit_snapshot_event(
+                &core,
+                &events,
+                stream_id,
+                &mut next_event_id,
+                &state,
+                request.command_id,
+                None,
+            );
+            result_cache.insert(&request.command, result.clone());
+            let _ = response.send(result);
+            continue;
+        }
+        if request.command.runs_as_effect() {
+            start_effect(
+                request,
+                response,
+                &core,
+                &tokio_runtime,
+                &completion_mailbox,
+                &events,
+                stream_id,
+                &mut state,
+                &mut next_operation_id,
+                &mut next_event_id,
+                &mut pending_effects,
+                &mut result_cache,
+            );
+            continue;
+        }
         let command_for_cache = request.command.clone();
         let result = process_request(
             request,
@@ -357,6 +469,486 @@ fn run_actor(
         if should_stop {
             break;
         }
+    }
+
+    cancel_all_effects(&mut pending_effects, state.revision);
+    tokio_runtime.shutdown_timeout(Duration::from_secs(2));
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
+fn start_effect(
+    request: CoreCommandRequest,
+    response: mpsc::Sender<CoreCommandResult>,
+    core: &Arc<StereodromeCore>,
+    tokio_runtime: &tokio::runtime::Runtime,
+    completion_mailbox: &SyncSender<MailboxMessage>,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_operation_id: &mut u64,
+    next_event_id: &mut u64,
+    pending_effects: &mut HashMap<OperationId, PendingEffect>,
+    result_cache: &mut ResultCache,
+) {
+    let mut detached_value = Value::Null;
+    let mut task_command = request.command.clone();
+    if let CoreCommand::SetPlaylistSavedOffline {
+        playlist_id,
+        saved_offline,
+    } = &request.command
+    {
+        let marked = match core.mark_playlist_saved_offline(playlist_id.clone(), *saved_offline) {
+            Ok(marked) => marked,
+            Err(error) => {
+                let result = CoreCommandResult::failed(
+                    request.command_id,
+                    state.revision,
+                    None,
+                    ProtocolError::from(&error),
+                );
+                result_cache.insert(&request.command, result.clone());
+                let _ = response.send(result);
+                return;
+            }
+        };
+        detached_value = match serde_json::to_value(marked) {
+            Ok(value) => value,
+            Err(error) => {
+                let error = CoreError::from(error);
+                let result = CoreCommandResult::failed(
+                    request.command_id,
+                    state.revision,
+                    None,
+                    ProtocolError::from(&error),
+                );
+                result_cache.insert(&request.command, result.clone());
+                let _ = response.send(result);
+                return;
+            }
+        };
+        state.library_revision = state.library_revision.wrapping_add(1);
+        if !*saved_offline {
+            state.revision = state.revision.wrapping_add(1);
+            let result = CoreCommandResult::succeeded(
+                request.command_id,
+                state.revision,
+                None,
+                detached_value,
+            );
+            emit_snapshot_event(
+                core,
+                events,
+                stream_id,
+                next_event_id,
+                state,
+                request.command_id,
+                None,
+            );
+            result_cache.insert(&request.command, result.clone());
+            let _ = response.send(result);
+            return;
+        }
+        task_command = CoreCommand::DownloadPlaylist {
+            playlist_id: playlist_id.clone(),
+        };
+    }
+
+    let mut kind = request.command.job_kind();
+    if matches!(kind, JobKind::BackgroundTick)
+        && let Ok(Some(due)) = core.next_due_library_sync_job()
+    {
+        kind = JobKind::Sync {
+            kind: match due {
+                crate::DueSyncJob::Incremental => crate::SyncKind::Incremental,
+                crate::DueSyncJob::FullReconcile => crate::SyncKind::FullReconcile,
+            },
+        };
+    }
+    let duplicate = pending_effects.iter().find_map(|(id, pending)| {
+        let pending_kind = pending.command.job_kind();
+        let conflicts = matches!(
+            (&kind, &pending_kind),
+            (
+                JobKind::Sync { .. } | JobKind::BackgroundTick,
+                JobKind::Sync { .. } | JobKind::BackgroundTick
+            ) | (
+                JobKind::SavedPlaylistReconcile,
+                JobKind::SavedPlaylistReconcile
+            ) | (JobKind::QueuePrefetch, JobKind::QueuePrefetch)
+        );
+        conflicts.then_some(*id)
+    });
+    if let Some(operation_id) = duplicate {
+        let result = if request.command.is_detached_effect()
+            && !matches!(kind, JobKind::Sync { .. } | JobKind::BackgroundTick)
+        {
+            CoreCommandResult::succeeded(
+                request.command_id,
+                state.revision,
+                Some(operation_id),
+                detached_value,
+            )
+        } else {
+            CoreCommandResult::failed(
+                request.command_id,
+                state.revision,
+                Some(operation_id),
+                ProtocolError::new(
+                    ProtocolErrorCode::Conflict,
+                    "a conflicting runtime operation is already running",
+                    true,
+                ),
+            )
+        };
+        result_cache.insert(&request.command, result.clone());
+        let _ = response.send(result);
+        return;
+    }
+
+    let operation_id = OperationId(*next_operation_id);
+    *next_operation_id = next_operation_id.wrapping_add(1);
+    let detached = request.command.is_detached_effect();
+    let operation = OperationSnapshot {
+        operation_id,
+        cause_command_id: request.command_id,
+        kind,
+        phase: OperationPhase::Running,
+    };
+    state.operations.insert(operation_id, operation);
+    if matches!(
+        request.command,
+        CoreCommand::ReconcileSavedPlaylistsOffline
+            | CoreCommand::StartSavedPlaylistsOfflineReconcile
+            | CoreCommand::SetPlaylistSavedOffline {
+                saved_offline: true,
+                ..
+            }
+    ) {
+        state.saved_playlist_offline.running = true;
+        state.saved_playlist_offline.operation_id = Some(operation_id);
+        state.saved_playlist_offline.last_error = None;
+    }
+    state.revision = state.revision.wrapping_add(1);
+    emit_snapshot_event(
+        core,
+        events,
+        stream_id,
+        next_event_id,
+        state,
+        request.command_id,
+        Some(operation_id),
+    );
+
+    let cancellation = CancellationToken::new();
+    let effect_cancellation = cancellation.clone();
+    let effect_core = Arc::clone(core);
+    let effect_command = task_command;
+    let sender = completion_mailbox.clone();
+    let task = tokio_runtime.spawn(async move {
+        let result = run_effect(&effect_core, effect_command, &effect_cancellation).await;
+        let _ = sender.send(MailboxMessage::EffectCompleted {
+            operation_id,
+            result,
+        });
+    });
+    let pending = PendingEffect {
+        command_id: request.command_id,
+        command: request.command.clone(),
+        response: (!detached).then_some(response.clone()),
+        cancellation,
+        abort_handle: task.abort_handle(),
+    };
+    pending_effects.insert(operation_id, pending);
+
+    if detached {
+        let result = CoreCommandResult::succeeded(
+            request.command_id,
+            state.revision,
+            Some(operation_id),
+            detached_value,
+        );
+        result_cache.insert(&request.command, result.clone());
+        let _ = response.send(result);
+    }
+}
+
+async fn run_effect(
+    core: &StereodromeCore,
+    command: CoreCommand,
+    cancellation: &CancellationToken,
+) -> CoreResult<Value> {
+    match command {
+        CoreCommand::RunBackgroundTick => {
+            if core.manual_offline_enabled()? {
+                return Ok(Value::Null);
+            }
+            let status = core.restore_session().await?;
+            if !status.connected {
+                return Ok(Value::Null);
+            }
+            serde_json::to_value(core.run_due_library_sync().await?).map_err(CoreError::from)
+        }
+        CoreCommand::ReportNetwork { available: true } => {
+            serde_json::to_value(core.restore_session().await?).map_err(CoreError::from)
+        }
+        CoreCommand::StartSavedPlaylistsOfflineReconcile => {
+            serde_json::to_value(core.reconcile_saved_playlists_offline().await?)
+                .map_err(CoreError::from)
+        }
+        CoreCommand::StartQueuePrefetch { .. } => {
+            let settings = core.get_audio_processing_settings()?;
+            let plan = core.queue_prefetch_plan(settings.prefetch_count as usize)?;
+            let outcome = core.run_queue_prefetch_plan(&plan, cancellation).await?;
+            serde_json::to_value(outcome.statuses).map_err(CoreError::from)
+        }
+        command => effect::execute(core, command).await,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn complete_effect(
+    operation_id: OperationId,
+    result: CoreResult<Value>,
+    core: &StereodromeCore,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_event_id: &mut u64,
+    pending_effects: &mut HashMap<OperationId, PendingEffect>,
+    result_cache: &mut ResultCache,
+) {
+    let Some(pending) = pending_effects.remove(&operation_id) else {
+        return;
+    };
+    state.operations.remove(&operation_id);
+    state.revision = state.revision.wrapping_add(1);
+    let changes_settings = pending.command.changes_settings();
+    let changes_library = pending.command.changes_library();
+
+    let command_result = match result {
+        Ok(value) => {
+            state.last_failure = None;
+            if changes_settings {
+                state.settings_revision = state.settings_revision.wrapping_add(1);
+            }
+            if changes_library
+                && !matches!(pending.command, CoreCommand::SetPlaylistSavedOffline { .. })
+                && !value.is_null()
+            {
+                state.library_revision = state.library_revision.wrapping_add(1);
+            }
+            update_connectivity(state, core, &pending.command, &value);
+            if state.saved_playlist_offline.operation_id == Some(operation_id) {
+                state.saved_playlist_offline.running = false;
+                state.saved_playlist_offline.operation_id = None;
+                state.saved_playlist_offline.last_error = None;
+            }
+            emit_snapshot_event(
+                core,
+                events,
+                stream_id,
+                next_event_id,
+                state,
+                pending.command_id,
+                Some(operation_id),
+            );
+            CoreCommandResult::succeeded(
+                pending.command_id,
+                state.revision,
+                Some(operation_id),
+                value,
+            )
+        }
+        Err(error) => {
+            let protocol_error = ProtocolError::from(&error);
+            let failure = OperationFailure {
+                command_id: pending.command_id,
+                operation_id: Some(operation_id),
+                error: protocol_error.clone(),
+            };
+            state.last_failure = Some(failure.clone());
+            if state.saved_playlist_offline.operation_id == Some(operation_id) {
+                state.saved_playlist_offline.running = false;
+                state.saved_playlist_offline.operation_id = None;
+                state.saved_playlist_offline.last_error = Some(protocol_error.message.clone());
+            }
+            emit_event(
+                events,
+                stream_id,
+                next_event_id,
+                state.revision,
+                pending.command_id,
+                Some(operation_id),
+                CoreEventKind::OperationFailed { failure },
+            );
+            emit_snapshot_event(
+                core,
+                events,
+                stream_id,
+                next_event_id,
+                state,
+                pending.command_id,
+                Some(operation_id),
+            );
+            CoreCommandResult::failed(
+                pending.command_id,
+                state.revision,
+                Some(operation_id),
+                protocol_error,
+            )
+        }
+    };
+
+    if let Some(response) = pending.response {
+        result_cache.insert(&pending.command, command_result.clone());
+        let _ = response.send(command_result);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cancel_operation(
+    cancel_command_id: CommandId,
+    operation_id: OperationId,
+    core: &StereodromeCore,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_event_id: &mut u64,
+    pending_effects: &mut HashMap<OperationId, PendingEffect>,
+    result_cache: &mut ResultCache,
+) -> CoreCommandResult {
+    let cancelled = cancel_pending_effect(
+        operation_id,
+        core,
+        events,
+        stream_id,
+        state,
+        next_event_id,
+        pending_effects,
+        result_cache,
+    );
+    if cancelled {
+        CoreCommandResult::succeeded(cancel_command_id, state.revision, None, Value::Null)
+    } else {
+        CoreCommandResult::failed(
+            cancel_command_id,
+            state.revision,
+            None,
+            ProtocolError::new(
+                ProtocolErrorCode::InvalidInput,
+                format!("operation {} is not running", operation_id.0),
+                false,
+            ),
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cancel_pending_effect(
+    operation_id: OperationId,
+    core: &StereodromeCore,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_event_id: &mut u64,
+    pending_effects: &mut HashMap<OperationId, PendingEffect>,
+    result_cache: &mut ResultCache,
+) -> bool {
+    let Some(pending) = pending_effects.remove(&operation_id) else {
+        return false;
+    };
+    pending.cancellation.cancel();
+    pending.abort_handle.abort();
+    state.operations.remove(&operation_id);
+    state.revision = state.revision.wrapping_add(1);
+    if state.saved_playlist_offline.operation_id == Some(operation_id) {
+        state.saved_playlist_offline.running = false;
+        state.saved_playlist_offline.operation_id = None;
+        state.saved_playlist_offline.last_error = Some("operation cancelled".to_string());
+    }
+    let error = ProtocolError::new(ProtocolErrorCode::Cancelled, "operation cancelled", false);
+    let failure = OperationFailure {
+        command_id: pending.command_id,
+        operation_id: Some(operation_id),
+        error: error.clone(),
+    };
+    state.last_failure = Some(failure.clone());
+    emit_event(
+        events,
+        stream_id,
+        next_event_id,
+        state.revision,
+        pending.command_id,
+        Some(operation_id),
+        CoreEventKind::OperationFailed { failure },
+    );
+    emit_snapshot_event(
+        core,
+        events,
+        stream_id,
+        next_event_id,
+        state,
+        pending.command_id,
+        Some(operation_id),
+    );
+    if let Some(response) = pending.response {
+        let result = CoreCommandResult::failed(
+            pending.command_id,
+            state.revision,
+            Some(operation_id),
+            error,
+        );
+        result_cache.insert(&pending.command, result.clone());
+        let _ = response.send(result);
+    }
+    true
+}
+
+fn cancel_all_effects(pending_effects: &mut HashMap<OperationId, PendingEffect>, revision: u64) {
+    for (operation_id, pending) in pending_effects.drain() {
+        pending.cancellation.cancel();
+        pending.abort_handle.abort();
+        if let Some(response) = pending.response {
+            let _ = response.send(CoreCommandResult::failed(
+                pending.command_id,
+                revision,
+                Some(operation_id),
+                ProtocolError::new(
+                    ProtocolErrorCode::Cancelled,
+                    "runtime is shutting down",
+                    false,
+                ),
+            ));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_snapshot_event(
+    core: &StereodromeCore,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    next_event_id: &mut u64,
+    state: &CoreState,
+    command_id: CommandId,
+    operation_id: Option<OperationId>,
+) {
+    if let Ok(snapshot) = build_snapshot(core, state) {
+        emit_event(
+            events,
+            stream_id,
+            next_event_id,
+            state.revision,
+            command_id,
+            operation_id,
+            CoreEventKind::SnapshotChanged {
+                snapshot: Box::new(snapshot),
+            },
+        );
     }
 }
 
@@ -397,6 +989,74 @@ fn process_request(
                 false,
             ),
         );
+    }
+
+    if matches!(
+        request.command,
+        CoreCommand::ExportPortableBackup { .. } | CoreCommand::ImportPortableBackup { .. }
+    ) && state.operations.values().any(|operation| {
+        matches!(
+            operation.kind,
+            JobKind::Sync { .. }
+                | JobKind::BackgroundTick
+                | JobKind::DownloadSong { .. }
+                | JobKind::DownloadAlbum { .. }
+                | JobKind::DownloadPlaylist { .. }
+                | JobKind::SavedPlaylistReconcile
+                | JobKind::QueuePrefetch
+        )
+    }) {
+        return CoreCommandResult::failed(
+            request.command_id,
+            state.revision,
+            None,
+            ProtocolError::new(
+                ProtocolErrorCode::Conflict,
+                "wait for background library or download jobs to finish before using backups",
+                true,
+            ),
+        );
+    }
+
+    if let CoreCommand::ReportLifecycle { lifecycle } = &request.command {
+        state.platform_lifecycle = *lifecycle;
+        state.revision = state.revision.wrapping_add(1);
+        emit_snapshot_event(
+            core,
+            events,
+            stream_id,
+            next_event_id,
+            state,
+            request.command_id,
+            None,
+        );
+        return CoreCommandResult::succeeded(request.command_id, state.revision, None, Value::Null);
+    }
+    if let CoreCommand::ReportNetwork { available: false } = &request.command {
+        state.network_available = false;
+        tokio_runtime.block_on(core.deactivate_session());
+        state.connectivity = match &state.connectivity {
+            ConnectivityState::Online {
+                server_url,
+                username,
+                ..
+            } => ConnectivityState::Disconnected {
+                server_url: server_url.clone(),
+                username: username.clone(),
+            },
+            connectivity => connectivity.clone(),
+        };
+        state.revision = state.revision.wrapping_add(1);
+        emit_snapshot_event(
+            core,
+            events,
+            stream_id,
+            next_event_id,
+            state,
+            request.command_id,
+            None,
+        );
+        return CoreCommandResult::succeeded(request.command_id, state.revision, None, Value::Null);
     }
 
     let is_mutation = request.command.is_mutation();
@@ -443,6 +1103,49 @@ fn process_request(
                 request.command_id,
                 state.revision,
                 operation_id,
+                ProtocolError::from(&error),
+            ),
+        };
+    }
+
+    if matches!(
+        request.command,
+        CoreCommand::GetConnectionStatus
+            | CoreCommand::GetLibrarySyncStatus
+            | CoreCommand::GetSavedPlaylistsOfflineStatus
+    ) {
+        return match build_snapshot(core, state) {
+            Ok(snapshot) => {
+                let value = match &request.command {
+                    CoreCommand::GetConnectionStatus => connectivity_status(&snapshot.connectivity),
+                    CoreCommand::GetLibrarySyncStatus => {
+                        serde_json::to_value(snapshot.sync).map_err(CoreError::from)
+                    }
+                    CoreCommand::GetSavedPlaylistsOfflineStatus => {
+                        serde_json::to_value(snapshot.saved_playlist_offline)
+                            .map_err(CoreError::from)
+                    }
+                    _ => unreachable!(),
+                };
+                match value {
+                    Ok(value) => CoreCommandResult::succeeded(
+                        request.command_id,
+                        state.revision,
+                        None,
+                        value,
+                    ),
+                    Err(error) => CoreCommandResult::failed(
+                        request.command_id,
+                        state.revision,
+                        None,
+                        ProtocolError::from(&error),
+                    ),
+                }
+            }
+            Err(error) => CoreCommandResult::failed(
+                request.command_id,
+                state.revision,
+                None,
                 ProtocolError::from(&error),
             ),
         };
@@ -521,8 +1224,19 @@ fn update_connectivity(
     match command {
         CoreCommand::Connect { .. }
         | CoreCommand::UpdateServerSettings { .. }
-        | CoreCommand::RestoreSession => {
-            if let Ok(status) = serde_json::from_value::<ConnectionStatus>(value.clone()) {
+        | CoreCommand::RestoreSession
+        | CoreCommand::ReportNetwork { available: true } => {
+            if matches!(command, CoreCommand::ReportNetwork { available: true }) {
+                state.network_available = true;
+            }
+            if core.manual_offline_enabled().unwrap_or(false) {
+                if let Ok(connectivity) = initial_connectivity(core) {
+                    state.connectivity = connectivity;
+                }
+            } else if let Ok(status) = serde_json::from_value::<ConnectionStatus>(value.clone()) {
+                if status.connected {
+                    state.network_available = true;
+                }
                 state.connectivity = connected_state(status);
             }
         }
@@ -543,6 +1257,41 @@ fn update_connectivity(
         }
         _ => {}
     }
+}
+
+fn connectivity_status(connectivity: &ConnectivityState) -> CoreResult<Value> {
+    let status = match connectivity {
+        ConnectivityState::Unconfigured => ConnectionStatus::disconnected(),
+        ConnectivityState::OfflineManual {
+            server_url,
+            username,
+        } => ConnectionStatus {
+            connected: false,
+            server_url: server_url.clone(),
+            username: username.clone(),
+            server_version: None,
+        },
+        ConnectivityState::Disconnected {
+            server_url,
+            username,
+        } => ConnectionStatus {
+            connected: false,
+            server_url: Some(server_url.clone()),
+            username: Some(username.clone()),
+            server_version: None,
+        },
+        ConnectivityState::Online {
+            server_url,
+            username,
+            server_version,
+        } => ConnectionStatus {
+            connected: true,
+            server_url: Some(server_url.clone()),
+            username: Some(username.clone()),
+            server_version: server_version.clone(),
+        },
+    };
+    serde_json::to_value(status).map_err(CoreError::from)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -589,6 +1338,7 @@ fn unavailable_result(command_id: CommandId) -> CoreCommandResult {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
 
     use crate::protocol::{CommandStatus, CoreCommand, CoreCommandRequest};
     use crate::queue::QueueItem;
@@ -611,6 +1361,19 @@ mod tests {
             artist: "Artist".to_string(),
             album: "Album".to_string(),
             duration: 180,
+        }
+    }
+
+    fn next_event(events: &mut broadcast::Receiver<CoreEvent>, timeout: Duration) -> CoreEvent {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match events.try_recv() {
+                Ok(event) => return event,
+                Err(broadcast::error::TryRecvError::Empty) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("runtime event unavailable: {error}"),
+            }
         }
     }
 
@@ -774,6 +1537,120 @@ mod tests {
         first.shutdown();
         let replacement = StereodromeRuntimeHandle::start(&data_dir).expect("lease is released");
         replacement.shutdown();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn sync_registry_is_authoritative_in_snapshot() {
+        let data_dir = test_dir("sync-registry");
+        let handle = StereodromeRuntimeHandle::start(&data_dir).expect("runtime starts");
+        let mut events = handle.subscribe();
+        let started = handle.dispatch_command(CoreCommand::StartSync {
+            kind: crate::SyncKind::FullReconcile,
+        });
+        assert_eq!(started.status, CommandStatus::Succeeded);
+        assert!(started.operation_id.is_some());
+
+        let event = next_event(&mut events, Duration::from_secs(1));
+        let CoreEventKind::SnapshotChanged { snapshot } = event.kind else {
+            panic!("sync start emits a snapshot");
+        };
+        assert_eq!(snapshot.sync.active_job.as_deref(), Some("full_reconcile"));
+        assert!(snapshot.sync.full_reconcile.running);
+        assert_eq!(snapshot.operations.len(), 1);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let event = next_event(&mut events, Duration::from_secs(1));
+            if let CoreEventKind::SnapshotChanged { snapshot } = event.kind
+                && snapshot.sync.active_job.is_none()
+            {
+                assert!(snapshot.operations.is_empty());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "sync completion repairs snapshot"
+            );
+        }
+
+        handle.shutdown();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn connectivity_and_platform_inputs_are_authoritative() {
+        let data_dir = test_dir("connectivity-state");
+        let handle = StereodromeRuntimeHandle::start(&data_dir).expect("runtime starts");
+        let offline = handle.dispatch_command(CoreCommand::SetConnectivity {
+            settings: crate::ConnectivitySettings {
+                manual_offline_enabled: true,
+            },
+        });
+        assert_eq!(offline.status, CommandStatus::Succeeded);
+        let network = handle.dispatch_command(CoreCommand::ReportNetwork { available: false });
+        assert_eq!(network.status, CommandStatus::Succeeded);
+        let lifecycle = handle.dispatch_command(CoreCommand::ReportLifecycle {
+            lifecycle: crate::PlatformLifecycle::Background,
+        });
+        assert_eq!(lifecycle.status, CommandStatus::Succeeded);
+
+        let snapshot = handle.snapshot().value.expect("snapshot value");
+        assert_eq!(snapshot["connectivity"]["status"], "offline-manual");
+        assert_eq!(snapshot["network_available"], false);
+        assert_eq!(snapshot["platform_lifecycle"], "background");
+        handle.shutdown();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn prefetch_cancellation_and_backup_exclusion_are_runtime_invariants() {
+        let data_dir = test_dir("prefetch-registry");
+        let handle = StereodromeRuntimeHandle::start(&data_dir).expect("runtime starts");
+        let _ = handle.dispatch_command(CoreCommand::AddSongsToQueue {
+            items: vec![queue_item(1), queue_item(2)],
+        });
+        let _ = handle.dispatch_command(CoreCommand::PlayQueueItem { index: 0 });
+
+        let started = handle.dispatch_command(CoreCommand::StartQueuePrefetch {
+            reserve_first: false,
+        });
+        let operation_id = started.operation_id.expect("prefetch has operation ID");
+        let backup = handle.dispatch_command(CoreCommand::ExportPortableBackup {
+            path: data_dir.join("blocked.zip").to_string_lossy().into_owned(),
+        });
+        assert_eq!(backup.status, CommandStatus::Failed);
+        assert!(matches!(
+            backup.error,
+            Some(ProtocolError {
+                code: ProtocolErrorCode::Conflict,
+                ..
+            })
+        ));
+
+        let cancelled = handle.dispatch_command(CoreCommand::CancelOperation { operation_id });
+        assert_eq!(cancelled.status, CommandStatus::Succeeded);
+        let snapshot = handle.snapshot().value.expect("snapshot value");
+        assert!(snapshot["operations"].as_array().unwrap().is_empty());
+        handle.shutdown();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn shutdown_cancels_owned_effects_with_a_bound() {
+        let data_dir = test_dir("bounded-shutdown");
+        let handle = StereodromeRuntimeHandle::start(&data_dir).expect("runtime starts");
+        let _ = handle.dispatch_command(CoreCommand::AddSongsToQueue {
+            items: vec![queue_item(1), queue_item(2)],
+        });
+        let _ = handle.dispatch_command(CoreCommand::PlayQueueItem { index: 0 });
+        let _ = handle.dispatch_command(CoreCommand::StartQueuePrefetch {
+            reserve_first: false,
+        });
+
+        let started = Instant::now();
+        handle.shutdown();
+        assert!(started.elapsed() < Duration::from_secs(3));
         let _ = std::fs::remove_dir_all(data_dir);
     }
 }

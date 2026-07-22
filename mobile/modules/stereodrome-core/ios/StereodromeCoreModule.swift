@@ -19,6 +19,12 @@ private func stereodromeCoreCall(
 @_silgen_name("stereodrome_core_free_string")
 private func stereodromeCoreFreeString(_ value: UnsafeMutablePointer<CChar>?)
 
+@_silgen_name("stereodrome_runtime_dispatch")
+private func stereodromeRuntimeDispatch(
+  _ core: OpaquePointer?,
+  _ commandJson: UnsafePointer<CChar>
+) -> UnsafeMutablePointer<CChar>?
+
 private typealias StereodromeRustLogCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
 private typealias StereodromePlaybackCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
 private typealias StereodromeEventCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
@@ -412,6 +418,22 @@ public class StereodromeCoreModule: Module {
         self.releaseAudioSession()
       }
       return result
+    }
+
+    AsyncFunction("dispatch") { (_ commandJson: String) -> String in
+      return self.coreQueue.sync {
+        guard let core = self.core else {
+          return #"{"protocol_version":1,"command_id":0,"accepted_revision":0,"operation_id":null,"status":"failed","error":{"code":"runtime_unavailable","message":"Stereodrome Rust core is not initialized","retryable":true}}"#
+        }
+        return commandJson.withCString { commandPointer in
+          guard let resultPointer = stereodromeRuntimeDispatch(core, commandPointer) else {
+            return #"{"protocol_version":1,"command_id":0,"accepted_revision":0,"operation_id":null,"status":"failed","error":{"code":"internal","message":"Rust returned null","retryable":false}}"#
+          }
+          let result = String(cString: resultPointer)
+          stereodromeCoreFreeString(resultPointer)
+          return result
+        }
+      }
     }
 
     AsyncFunction("getConnectionStatus") { () -> String in

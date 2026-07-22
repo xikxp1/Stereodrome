@@ -18,6 +18,10 @@ Phase 1 also exports the versioned `stereodrome_runtime_*` C ABI documented in
 `docs/MOBILE_RUNTIME_PROTOCOL.md`. Existing native calls remain compatible while
 the TypeScript/native clients migrate to typed commands in later phases.
 
+Phase 2 exposes `dispatch(commandJson)` through the Swift and Kotlin Expo
+adapters for lifecycle/network inputs. Runtime snapshots are projected back onto
+the existing sync and saved-playlist events during the compatibility period.
+
 Before creating a dev build, generate the Rust native artifacts:
 
 ```sh

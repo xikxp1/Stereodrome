@@ -7,6 +7,7 @@ void stereodrome_core_free_string(char *value);
 void *stereodrome_core_new(const char *data_dir);
 void stereodrome_core_destroy(void *core);
 char *stereodrome_core_call(void *core, const char *method, const char *payload);
+char *stereodrome_runtime_dispatch(void *core, const char *command_json);
 void stereodrome_core_set_log_callback(void (*callback)(const char *message));
 void stereodrome_core_set_playback_callback(void (*callback)(const char *snapshot));
 void stereodrome_core_set_event_callback(void (*callback)(const char *event));
@@ -161,5 +162,15 @@ Java_expo_modules_stereodromecore_StereodromeCoreJni_nativeCall(
       reinterpret_cast<void *>(handle), method_chars, payload_chars);
   env->ReleaseStringUTFChars(method, method_chars);
   env->ReleaseStringUTFChars(payload, payload_chars);
+  return take_rust_string(env, result);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_expo_modules_stereodromecore_StereodromeCoreJni_nativeDispatch(
+    JNIEnv *env, jobject, jlong handle, jstring command_json) {
+  const char *command_chars = env->GetStringUTFChars(command_json, nullptr);
+  char *result = stereodrome_runtime_dispatch(
+      reinterpret_cast<void *>(handle), command_chars);
+  env->ReleaseStringUTFChars(command_json, command_chars);
   return take_rust_string(env, result);
 }

@@ -7,6 +7,7 @@ export type NativeEnvelope<T> =
 export type StereodromeCoreNativeModule = {
   initialize?(dataDir: string): Promise<boolean>;
   call?(method: string, payload: string): Promise<string>;
+  dispatch?(commandJson: string): Promise<string>;
   getConnectionStatus(): Promise<string>;
   getStreamUri(songId: string): Promise<string>;
   addListener?(

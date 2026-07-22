@@ -45,6 +45,18 @@ published to the runtime event stream before the result is returned.
 connectivity, persisted playback, queue, sync, download IDs, domain revisions,
 and the last mutating-operation failure.
 
+Phase 2 adds authoritative `operations`, `saved_playlist_offline`,
+`platform_lifecycle`, and `network_available` fields. Sync `active_job` and
+running flags are derived from the runtime operation registry rather than an
+adapter overlay. Download, saved-playlist, sync, background-tick, and queue
+prefetch effects all receive operation IDs and remain visible until completion
+or cancellation.
+
+Platform adapters can now send `report-network`, `report-lifecycle`, and
+`run-background-tick`. Background ticks own session restoration, offline policy,
+due-job selection, and execution; Expo only registers the OS task and reports
+the tick.
+
 All runtime events carry:
 
 - `protocol_version`

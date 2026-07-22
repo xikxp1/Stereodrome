@@ -94,6 +94,13 @@ object StereodromeCoreBridge {
     jni.call(handle, method, payload)
   }
 
+  fun dispatch(commandJson: String): String = synchronized(lock) {
+    if (handle == 0L) {
+      return """{"protocol_version":1,"command_id":0,"accepted_revision":0,"operation_id":null,"status":"failed","error":{"code":"runtime_unavailable","message":"Stereodrome Rust core is not initialized","retryable":true}}"""
+    }
+    jni.dispatch(handle, commandJson)
+  }
+
   fun callWithAudioFocus(
     context: Context,
     method: String,

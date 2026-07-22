@@ -54,6 +54,7 @@ let nativePlaybackSubscription: { remove(): void } | null = null;
 let nativeCoreEventSubscription: { remove(): void } | null = null;
 let activeEventStreamId: number | null = null;
 let lastCoreEventSeq = 0;
+let nextRuntimeCommandId = Math.floor(Date.now() * 1000);
 const listeners: CoreEventListeners = {
   "playback-snapshot": new Set(),
   "file-state-changed": new Set(),
@@ -579,6 +580,40 @@ async function invokeJson<T>(
   );
 }
 
+async function dispatchRuntimeCommand(command: Record<string, unknown>) {
+  await ensureInitialized();
+  if (NativeStereodromeCore.dispatch === undefined) {
+    throw new Error(unavailable);
+  }
+  const commandId = nextRuntimeCommandId++;
+  const parsed: unknown = JSON.parse(
+    await NativeStereodromeCore.dispatch(
+      JSON.stringify({
+        protocol_version: 1,
+        command_id: commandId,
+        command,
+      })
+    )
+  );
+  if (
+    !isRecord(parsed) ||
+    parsed["protocol_version"] !== 1 ||
+    parsed["command_id"] !== commandId ||
+    (parsed["status"] !== "succeeded" && parsed["status"] !== "failed")
+  ) {
+    throw new Error("Native core returned an invalid runtime result");
+  }
+  if (parsed["status"] === "failed") {
+    const error = parsed["error"];
+    throw new Error(
+      isRecord(error) && typeof error["message"] === "string"
+        ? error["message"]
+        : "Runtime command failed"
+    );
+  }
+  return parsed["value"];
+}
+
 function emitCoreEvent<Name extends CoreEventName>(
   name: Name,
   payload: CoreEventPayloadMap[Name]
@@ -804,6 +839,17 @@ export const stereodromeCore = {
       isConnectivitySettings,
       settings
     );
+  },
+  reportNetwork(available: boolean): Promise<void> {
+    return dispatchRuntimeCommand({ type: "report-network", available }).then(
+      () => undefined
+    );
+  },
+  reportLifecycle(lifecycle: "foreground" | "background"): Promise<void> {
+    return dispatchRuntimeCommand({
+      type: "report-lifecycle",
+      lifecycle,
+    }).then(() => undefined);
   },
   runDueLibrarySync(): Promise<string | null> {
     return invokeJson("runDueLibrarySync", isNullable(isString));

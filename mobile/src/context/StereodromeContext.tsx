@@ -136,48 +136,55 @@ export function StereodromeProvider({
     await stereodromeCore.startSavedPlaylistsOfflineReconcile();
   }, []);
 
-  const refreshStatus = useCallback(async () => {
-    const generation = ++statusRefreshGeneration.current;
-    try {
-      const connectivitySettings =
-        await stereodromeCore.getConnectivitySettings();
-      if (generation !== statusRefreshGeneration.current) {
-        return;
-      }
-      setManualOfflineEnabledState(connectivitySettings.manual_offline_enabled);
-      const next = await stereodromeCore.restoreSession();
-      if (generation !== statusRefreshGeneration.current) {
-        return;
-      }
-      setStatus(next);
-      setError(null);
-      if (next.server_url !== null && next.server_url.length > 0) {
-        await refreshOfflineSongIds();
-        if (next.connected && !connectivitySettings.manual_offline_enabled) {
-          reconcileSavedPlaylistsOfflineInBackground().catch(
-            (reconcileError: unknown) => {
-              setError(
-                reconcileError instanceof Error
-                  ? reconcileError.message
-                  : String(reconcileError)
-              );
-            }
-          );
+  const refreshStatus = useCallback(
+    async (restore = true) => {
+      const generation = ++statusRefreshGeneration.current;
+      try {
+        const connectivitySettings =
+          await stereodromeCore.getConnectivitySettings();
+        if (generation !== statusRefreshGeneration.current) {
+          return;
         }
-      } else {
+        setManualOfflineEnabledState(
+          connectivitySettings.manual_offline_enabled
+        );
+        const next = restore
+          ? await stereodromeCore.restoreSession()
+          : await stereodromeCore.getConnectionStatus();
+        if (generation !== statusRefreshGeneration.current) {
+          return;
+        }
+        setStatus(next);
+        setError(null);
+        if (next.server_url !== null && next.server_url.length > 0) {
+          await refreshOfflineSongIds();
+          if (next.connected && !connectivitySettings.manual_offline_enabled) {
+            reconcileSavedPlaylistsOfflineInBackground().catch(
+              (reconcileError: unknown) => {
+                setError(
+                  reconcileError instanceof Error
+                    ? reconcileError.message
+                    : String(reconcileError)
+                );
+              }
+            );
+          }
+        } else {
+          setOfflineSongIds(new Set());
+          setDownloadingSongIds(new Set());
+        }
+      } catch (e) {
+        if (generation !== statusRefreshGeneration.current) {
+          return;
+        }
+        setStatus(disconnected);
         setOfflineSongIds(new Set());
         setDownloadingSongIds(new Set());
+        setError(e instanceof Error ? e.message : String(e));
       }
-    } catch (e) {
-      if (generation !== statusRefreshGeneration.current) {
-        return;
-      }
-      setStatus(disconnected);
-      setOfflineSongIds(new Set());
-      setDownloadingSongIds(new Set());
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [reconcileSavedPlaylistsOfflineInBackground, refreshOfflineSongIds]);
+    },
+    [reconcileSavedPlaylistsOfflineInBackground, refreshOfflineSongIds]
+  );
 
   const refreshStatusForNetworkState = useCallback(
     async (networkState: Network.NetworkState) => {
@@ -193,8 +200,8 @@ export function StereodromeProvider({
           server_version: null,
         }));
       }
-
-      await refreshStatus();
+      await stereodromeCore.reportNetwork(!unavailable);
+      await refreshStatus(false);
     },
     [refreshStatus]
   );
@@ -416,6 +423,15 @@ export function StereodromeProvider({
   useEffect(() => {
     function handleAppStateChange(nextState: AppStateStatus) {
       appState.current = nextState;
+      stereodromeCore
+        .reportLifecycle(nextState === "active" ? "foreground" : "background")
+        .catch((lifecycleError: unknown) => {
+          setError(
+            lifecycleError instanceof Error
+              ? lifecycleError.message
+              : String(lifecycleError)
+          );
+        });
       if (nextState === "active") {
         Network.getNetworkStateAsync()
           .then(refreshStatusForNetworkState)

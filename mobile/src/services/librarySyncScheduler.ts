@@ -10,17 +10,6 @@ const MIN_OS_BACKGROUND_INTERVAL_MINUTES = 15;
 TaskManager.defineTask(TASK_NAME, async () => {
   try {
     await stereodromeCore.initialize();
-    const connectivitySettings =
-      await stereodromeCore.getConnectivitySettings();
-    if (connectivitySettings.manual_offline_enabled) {
-      return BackgroundTask.BackgroundTaskResult.Success;
-    }
-
-    const status = await stereodromeCore.restoreSession();
-    if (!status.connected) {
-      return BackgroundTask.BackgroundTaskResult.Success;
-    }
-
     await stereodromeCore.runDueLibrarySync();
     return BackgroundTask.BackgroundTaskResult.Success;
   } catch {
@@ -29,12 +18,6 @@ TaskManager.defineTask(TASK_NAME, async () => {
 });
 
 export async function syncLibraryBackgroundRegistration(): Promise<void> {
-  const connectivitySettings = await stereodromeCore.getConnectivitySettings();
-  if (connectivitySettings.manual_offline_enabled) {
-    await configureLibrarySyncBackgroundTask(null);
-    return;
-  }
-
   const settings = await stereodromeCore.getSyncSettings();
   await configureLibrarySyncBackgroundTask(settings);
 }

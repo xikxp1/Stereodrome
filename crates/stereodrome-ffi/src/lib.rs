@@ -29,9 +29,9 @@ use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
     AudioProcessingSettings, CORE_PROTOCOL_VERSION, CacheStateEvent, CommandId, CommandStatus,
     ConnectParams, ConnectivitySettings, CoreCommand, CoreCommandRequest, CoreCommandResult,
-    DueSyncJob, LibrarySyncStatus, PlaybackProgress, PrefetchCancellationToken, ProtocolError,
-    ProtocolErrorCode, QueuePrefetchPlan, ServerSettingsUpdate, StereodromeCore,
-    StereodromeRuntimeHandle, SyncSettings,
+    CoreEventKind, LibrarySyncStatus, PlaybackProgress, ProtocolError, ProtocolErrorCode,
+    SavedPlaylistOfflineStatus, ServerSettingsUpdate, StereodromeCore, StereodromeRuntimeHandle,
+    SyncKind, SyncSettings,
 };
 use url::Url;
 
@@ -139,14 +139,10 @@ pub struct MobileCore {
     announcer: PlaybackAnnouncer,
     event_emitter: MobileEventEmitter,
     runtime: tokio::runtime::Runtime,
-    data_dir: PathBuf,
-    sync_state: Arc<Mutex<MobileSyncState>>,
-    saved_playlist_offline_state: Arc<Mutex<SavedPlaylistOfflineState>>,
-    prefetch_state: Arc<Mutex<BackgroundPrefetchState>>,
-    cache_event_sender: Sender<CacheStateEvent>,
     monitor_running: Arc<AtomicBool>,
     monitor_event_sender: Sender<MobileMonitorEvent>,
     monitor_thread: Option<thread::JoinHandle<()>>,
+    runtime_event_thread: Option<thread::JoinHandle<()>>,
 }
 
 enum MobileMonitorEvent {
@@ -607,69 +603,6 @@ fn next_queue_item_exists(queue: &QueueState) -> bool {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MobileSyncJob {
-    Full,
-    Incremental,
-}
-
-impl MobileSyncJob {
-    fn active_job(self) -> &'static str {
-        match self {
-            Self::Full => "full_reconcile",
-            Self::Incremental => "incremental",
-        }
-    }
-
-    fn display_name(self) -> &'static str {
-        match self {
-            Self::Full => "full library sync",
-            Self::Incremental => "incremental library sync",
-        }
-    }
-}
-
-impl From<DueSyncJob> for MobileSyncJob {
-    fn from(job: DueSyncJob) -> Self {
-        match job {
-            DueSyncJob::FullReconcile => Self::Full,
-            DueSyncJob::Incremental => Self::Incremental,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct MobileSyncState {
-    active_job: Option<MobileSyncJob>,
-}
-
-#[derive(Clone, Debug)]
-enum SavedPlaylistOfflineTarget {
-    All,
-    Playlist(String),
-}
-
-impl SavedPlaylistOfflineTarget {
-    fn display_name(&self) -> String {
-        match self {
-            Self::All => "saved playlist offline reconcile".to_string(),
-            Self::Playlist(playlist_id) => format!("saved playlist offline download {playlist_id}"),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct SavedPlaylistOfflineState {
-    running: bool,
-    last_error: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct SavedPlaylistOfflineStatus {
-    running: bool,
-    last_error: Option<String>,
-}
-
 #[unsafe(no_mangle)]
 /// # Safety
 ///
@@ -715,8 +648,12 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
                 let event_emitter = MobileEventEmitter::new();
                 let (announcer, file_state_initialized) =
                     PlaybackAnnouncer::new(&core, event_emitter.clone());
-                let prefetch_state = Arc::new(Mutex::new(BackgroundPrefetchState::default()));
                 let monitor_running = Arc::new(AtomicBool::new(true));
+                let runtime_event_thread = start_runtime_event_bridge(
+                    core_runtime.subscribe(),
+                    event_emitter.clone(),
+                    Arc::clone(&monitor_running),
+                );
                 start_mobile_monitor_adapter(
                     cache_event_receiver,
                     monitor_event_sender.clone(),
@@ -731,7 +668,7 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
                     Arc::clone(&core),
                     Arc::clone(&audio),
                     announcer.clone(),
-                    Arc::clone(&prefetch_state),
+                    core_runtime.clone(),
                     Arc::clone(&monitor_running),
                     monitor_event_receiver,
                     !file_state_initialized,
@@ -744,16 +681,10 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
                     announcer,
                     event_emitter,
                     runtime,
-                    data_dir,
-                    sync_state: Arc::new(Mutex::new(MobileSyncState::default())),
-                    saved_playlist_offline_state: Arc::new(Mutex::new(
-                        SavedPlaylistOfflineState::default(),
-                    )),
-                    prefetch_state,
-                    cache_event_sender,
                     monitor_running,
                     monitor_event_sender,
                     monitor_thread: Some(monitor_thread),
+                    runtime_event_thread: Some(runtime_event_thread),
                 }))
             }
             _ => ptr::null_mut(),
@@ -788,7 +719,6 @@ pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
             let _ = mobile
                 .monitor_event_sender
                 .send(MobileMonitorEvent::Shutdown);
-            shutdown_queue_prefetch(&mobile);
             if let Err(error) = mobile.audio.stop() {
                 log::warn!(
                     target: "stereodrome_ffi",
@@ -801,6 +731,14 @@ pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
                 log::warn!(
                     target: "stereodrome_ffi",
                     "Mobile playback monitor panicked during shutdown"
+                );
+            }
+            if let Some(runtime_event_thread) = mobile.runtime_event_thread.take()
+                && runtime_event_thread.join().is_err()
+            {
+                log::warn!(
+                    target: "stereodrome_ffi",
+                    "Mobile runtime event bridge panicked during shutdown"
                 );
             }
             if let Err(error) = mobile.audio.stop() {
@@ -993,9 +931,8 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
     let core = &mobile.core;
 
     if should_cancel_queue_prefetch(method) {
-        cancel_queue_prefetch(
-            core,
-            &mobile.prefetch_state,
+        cancel_runtime_prefetch(
+            &mobile.core_runtime,
             matches!(method, "clearAudioCache" | "removeCachedSong"),
         )?;
     }
@@ -1016,15 +953,22 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         }
         "restoreSession" => json_result(runtime.block_on(async { core.restore_session().await })),
         "exportPortableBackup" => {
-            ensure_backup_jobs_idle(mobile)?;
             let path = parse_payload::<String>(payload)?;
-            json_result(core.export_portable_backup(path))
+            legacy_runtime_result(
+                mobile
+                    .core_runtime
+                    .dispatch_command(CoreCommand::ExportPortableBackup { path }),
+            )
         }
         "importPortableBackup" => {
-            ensure_backup_jobs_idle(mobile)?;
             let path = parse_payload::<String>(payload)?;
+            ensure_runtime_backup_available(mobile)?;
             mobile.audio.stop().map_err(|error| error.to_string())?;
-            let result = core.import_portable_backup(path);
+            let result = runtime_command_value(
+                mobile
+                    .core_runtime
+                    .dispatch_command(CoreCommand::ImportPortableBackup { path }),
+            );
             if result.is_ok()
                 && let Ok(playback) = core.get_playback_state()
             {
@@ -1032,14 +976,12 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
                 let volume = playback.app_volume as f32;
                 let _ = mobile.audio.set_volume(volume);
             }
-            json_result(result)
+            result.map(json_ok_string)
         }
         "disconnectServer" => {
             json_result(runtime.block_on(async { core.disconnect_server().await }))
         }
         "getConnectionStatus" => json_result(core.get_connection_status()),
-        "syncLibrary" => json_result(start_sync_job(mobile, MobileSyncJob::Full)),
-        "syncLibraryIncremental" => json_result(start_sync_job(mobile, MobileSyncJob::Incremental)),
         "getSyncSettings" => json_result(core.get_sync_settings()),
         "setSyncSettings" => {
             let settings = parse_payload::<SyncSettings>(payload)?;
@@ -1050,10 +992,8 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             let settings = parse_payload::<ConnectivitySettings>(payload)?;
             json_result(core.set_connectivity_settings(settings))
         }
-        "runDueLibrarySync" => json_result(run_due_sync_job(mobile)),
         "getScanStatus" => json_result(runtime.block_on(async { core.get_scan_status().await })),
         "startScan" => json_result(runtime.block_on(async { core.start_scan().await })),
-        "getLibrarySyncStatus" => json_result(get_mobile_library_sync_status(mobile)),
         "getArtists" => json_result(core.get_artists()),
         "getAlbums" => {
             let artist_id = parse_optional_string(payload)?;
@@ -1151,36 +1091,6 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         "downloadPlaylist" => {
             let playlist_id = parse_payload::<String>(payload)?;
             json_result(runtime.block_on(async { core.download_playlist(playlist_id).await }))
-        }
-        "setPlaylistSavedOffline" => {
-            let args = parse_payload::<SetPlaylistSavedOfflinePayload>(payload)?;
-            let result =
-                core.mark_playlist_saved_offline(args.playlist_id.clone(), args.saved_offline);
-            if result.is_ok() && args.saved_offline {
-                start_saved_playlist_offline_job(
-                    mobile,
-                    SavedPlaylistOfflineTarget::Playlist(args.playlist_id),
-                )?;
-            }
-            json_result(result)
-        }
-        "reconcileSavedPlaylistsOffline" => {
-            json_result(runtime.block_on(async { core.reconcile_saved_playlists_offline().await }))
-        }
-        "startSavedPlaylistsOfflineReconcile" => json_result(start_saved_playlist_offline_job(
-            mobile,
-            SavedPlaylistOfflineTarget::All,
-        )),
-        "getSavedPlaylistsOfflineReconcileStatus" => {
-            json_result(get_saved_playlist_offline_status(mobile))
-        }
-        "prefetchNext" => {
-            let args = if payload.is_null() {
-                PrefetchPayload::default()
-            } else {
-                parse_payload::<PrefetchPayload>(payload)?
-            };
-            json_result(start_queue_prefetch(mobile, args.reserve_first))
         }
         "getPlaybackState" => json_result(core.get_playback_state()),
         "getPlaybackSnapshot" => json_result(mobile.announcer.snapshot(core, &mobile.audio)),
@@ -1392,13 +1302,31 @@ fn finish_dispatch(
 }
 
 fn legacy_runtime_result(result: CoreCommandResult) -> Result<String, String> {
+    runtime_command_value(result).map(json_ok_string)
+}
+
+fn runtime_command_value(result: CoreCommandResult) -> Result<Value, String> {
     match result.status {
-        CommandStatus::Succeeded => Ok(json_ok_string(result.value.unwrap_or(Value::Null))),
+        CommandStatus::Succeeded => Ok(result.value.unwrap_or(Value::Null)),
         CommandStatus::Failed => Err(result.error.map_or_else(
             || "runtime command failed".to_string(),
             |error| error.message,
         )),
     }
+}
+
+fn ensure_runtime_backup_available(mobile: &MobileCore) -> Result<(), String> {
+    let snapshot = runtime_command_value(mobile.core_runtime.snapshot())?;
+    if snapshot["operations"]
+        .as_array()
+        .is_some_and(|operations| !operations.is_empty())
+    {
+        return Err(
+            "wait for background library or download jobs to finish before using backups"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1411,6 +1339,12 @@ fn legacy_runtime_command(method: &str, payload: Value) -> Result<Option<CoreCom
             update: parse_payload(payload)?,
         },
         "restoreSession" => CoreCommand::RestoreSession,
+        "syncLibrary" => CoreCommand::StartSync {
+            kind: SyncKind::FullReconcile,
+        },
+        "syncLibraryIncremental" => CoreCommand::StartSync {
+            kind: SyncKind::Incremental,
+        },
         "disconnectServer" => CoreCommand::Disconnect,
         "getConnectionStatus" => CoreCommand::GetConnectionStatus,
         "getSyncSettings" => CoreCommand::GetSyncSettings,
@@ -1421,8 +1355,10 @@ fn legacy_runtime_command(method: &str, payload: Value) -> Result<Option<CoreCom
         "setConnectivitySettings" => CoreCommand::SetConnectivity {
             settings: parse_payload(payload)?,
         },
+        "runDueLibrarySync" => CoreCommand::RunBackgroundTick,
         "getScanStatus" => CoreCommand::GetScanStatus,
         "startScan" => CoreCommand::StartScan,
+        "getLibrarySyncStatus" => CoreCommand::GetLibrarySyncStatus,
         "getArtists" => CoreCommand::GetArtists,
         "getAlbums" => CoreCommand::GetAlbums {
             artist_id: parse_optional_string(payload)?,
@@ -1522,7 +1458,26 @@ fn legacy_runtime_command(method: &str, payload: Value) -> Result<Option<CoreCom
         "downloadPlaylist" => CoreCommand::DownloadPlaylist {
             playlist_id: parse_payload(payload)?,
         },
+        "setPlaylistSavedOffline" => {
+            let args = parse_payload::<SetPlaylistSavedOfflinePayload>(payload)?;
+            CoreCommand::SetPlaylistSavedOffline {
+                playlist_id: args.playlist_id,
+                saved_offline: args.saved_offline,
+            }
+        }
         "reconcileSavedPlaylistsOffline" => CoreCommand::ReconcileSavedPlaylistsOffline,
+        "startSavedPlaylistsOfflineReconcile" => CoreCommand::StartSavedPlaylistsOfflineReconcile,
+        "getSavedPlaylistsOfflineReconcileStatus" => CoreCommand::GetSavedPlaylistsOfflineStatus,
+        "prefetchNext" => {
+            let args = if payload.is_null() {
+                PrefetchPayload::default()
+            } else {
+                parse_payload::<PrefetchPayload>(payload)?
+            };
+            CoreCommand::StartQueuePrefetch {
+                reserve_first: args.reserve_first,
+            }
+        }
         "getPlaybackState" => CoreCommand::GetPlaybackState,
         "savePlaybackPosition" => CoreCommand::SavePlaybackPosition {
             progress: parse_payload(payload)?,
@@ -1741,529 +1696,28 @@ fn json_result<T: serde::Serialize, E: ToString>(result: Result<T, E>) -> Result
     result.map(json_ok_string).map_err(|e| e.to_string())
 }
 
-fn start_sync_job(mobile: &MobileCore, job: MobileSyncJob) -> Result<(), String> {
-    {
-        let mut state = mobile
-            .sync_state
-            .lock()
-            .map_err(|_| "sync state lock is poisoned".to_string())?;
-        if let Some(active_job) = state.active_job {
-            return Err(format!("{} is already running", active_job.display_name()));
-        }
-        state.active_job = Some(job);
-    }
-    emit_mobile_sync_status(&mobile.event_emitter, &mobile.core, &mobile.sync_state);
-
-    let data_dir = mobile.data_dir.clone();
-    let core = Arc::clone(&mobile.core);
-    let event_emitter = mobile.event_emitter.clone();
-    let sync_state = Arc::clone(&mobile.sync_state);
-    let cache_event_sender = mobile.cache_event_sender.clone();
-    thread::spawn(move || {
-        let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            run_sync_job(data_dir, job, cache_event_sender)
-        }));
-        match result {
-            Ok(Ok(())) => {
-                log::info!(
-                    target: "stereodrome_ffi",
-                    "Mobile {} finished",
-                    job.display_name()
-                );
-            }
-            Ok(Err(error)) => {
-                log::warn!(
-                    target: "stereodrome_ffi",
-                    "Mobile {} failed: {error}",
-                    job.display_name()
-                );
-            }
-            Err(payload) => {
-                log::error!(
-                    target: "stereodrome_ffi",
-                    "Mobile {} panicked: {}",
-                    job.display_name(),
-                    panic_payload_message(payload.as_ref())
-                );
-            }
-        }
-
-        if let Ok(mut state) = sync_state.lock()
-            && state.active_job == Some(job)
-        {
-            state.active_job = None;
-        }
-        emit_mobile_sync_status(&event_emitter, &core, &sync_state);
-    });
-
-    Ok(())
-}
-
-fn ensure_backup_jobs_idle(mobile: &MobileCore) -> Result<(), String> {
-    let sync_running = mobile
-        .sync_state
-        .lock()
-        .map_err(|_| "sync state lock is poisoned".to_string())?
-        .active_job
-        .is_some();
-    let playlist_job_running = mobile
-        .saved_playlist_offline_state
-        .lock()
-        .map_err(|_| "saved playlist state lock is poisoned".to_string())?
-        .running;
-    let prefetch_running = {
-        let prefetch = mobile
-            .prefetch_state
-            .lock()
-            .map_err(|_| "background prefetch state lock is poisoned".to_string())?;
-        prefetch.running || prefetch.requested_plan.is_some()
-    };
-    let downloads_running = !mobile.core.get_downloading_song_ids().is_empty();
-    if sync_running || playlist_job_running || prefetch_running || downloads_running {
-        return Err(
-            "wait for background library or download jobs to finish before using backups"
-                .to_string(),
-        );
-    }
-    Ok(())
-}
-
-fn run_sync_job(
-    data_dir: PathBuf,
-    job: MobileSyncJob,
-    cache_event_sender: Sender<CacheStateEvent>,
-) -> Result<(), String> {
-    log::info!(
-        target: "stereodrome_ffi",
-        "Starting mobile {} in background",
-        job.display_name()
-    );
-    let core = StereodromeCore::new_with_cache_events(data_dir, cache_event_sender)
-        .map_err(|error| error.to_string())?;
-    let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
-    runtime
-        .block_on(async { core.restore_session().await })
-        .map_err(|error| error.to_string())?;
-
-    match job {
-        MobileSyncJob::Full => runtime
-            .block_on(async { core.reconcile_library().await })
-            .map(|_| ())
-            .map_err(|error| error.to_string()),
-        MobileSyncJob::Incremental => runtime
-            .block_on(async { core.sync_library_incremental().await })
-            .map(|_| ())
-            .map_err(|error| error.to_string()),
-    }
-}
-
-#[derive(Default)]
-struct BackgroundPrefetchState {
-    closed: bool,
-    running: bool,
-    cancellation_generation: u64,
-    worker_generation: u64,
-    worker_handle: Option<tokio::task::JoinHandle<()>>,
-    active_plan: Option<QueuePrefetchPlan>,
-    requested_plan: Option<QueuePrefetchPlan>,
-    cancellation: Option<PrefetchCancellationToken>,
-    last_completed_plan: Option<QueuePrefetchPlan>,
-}
-
-struct BackgroundPrefetchGuard {
-    state: Arc<Mutex<BackgroundPrefetchState>>,
-    worker_generation: u64,
-}
-
-impl Drop for BackgroundPrefetchGuard {
-    fn drop(&mut self) {
-        if let Ok(mut state) = self.state.lock()
-            && state.worker_generation == self.worker_generation
-        {
-            state.running = false;
-            state.active_plan = None;
-            state.requested_plan = None;
-            state.cancellation = None;
-        }
-    }
-}
-
-fn cancel_queue_prefetch(
-    core: &StereodromeCore,
-    state: &Arc<Mutex<BackgroundPrefetchState>>,
-    invalidate_completed: bool,
-) -> Result<(), String> {
-    signal_queue_prefetch_cancellation(state, invalidate_completed)?;
-    core.cache_mutation_barrier()
-        .map_err(|error| error.to_string())
-}
-
-fn signal_queue_prefetch_cancellation(
-    state: &Arc<Mutex<BackgroundPrefetchState>>,
-    invalidate_completed: bool,
-) -> Result<(), String> {
-    let mut state = state
-        .lock()
-        .map_err(|_| "background prefetch state lock is poisoned".to_string())?;
-    if let Some(cancellation) = state.cancellation.take() {
-        cancellation.cancel();
-    }
-    state.cancellation_generation = state.cancellation_generation.wrapping_add(1);
-    state.active_plan = None;
-    state.requested_plan = None;
-    if invalidate_completed {
-        state.last_completed_plan = None;
-    }
-    Ok(())
-}
-
-fn shutdown_queue_prefetch(mobile: &MobileCore) {
-    let worker_handle = mobile.prefetch_state.lock().ok().and_then(|mut state| {
-        state.closed = true;
-        state.cancellation_generation = state.cancellation_generation.wrapping_add(1);
-        if let Some(cancellation) = state.cancellation.take() {
-            cancellation.cancel();
-        }
-        state.active_plan = None;
-        state.requested_plan = None;
-        state.worker_handle.take()
-    });
-    let _ = mobile.core.cache_mutation_barrier();
-    let Some(mut worker_handle) = worker_handle else {
-        return;
-    };
-
-    mobile.runtime.block_on(async {
-        tokio::select! {
-            _ = &mut worker_handle => {}
-            () = tokio::time::sleep(Duration::from_secs(2)) => {
-                worker_handle.abort();
-                let _ = worker_handle.await;
-            }
-        }
-    });
-}
-
 fn start_queue_prefetch(mobile: &MobileCore, reserve_first: bool) -> Result<(), String> {
-    spawn_queue_prefetch(
-        &mobile.runtime,
-        Arc::clone(&mobile.core),
-        &mobile.prefetch_state,
-        reserve_first,
+    start_runtime_prefetch(&mobile.core_runtime, reserve_first)
+}
+
+fn start_runtime_prefetch(
+    runtime: &StereodromeRuntimeHandle,
+    reserve_first: bool,
+) -> Result<(), String> {
+    runtime_command_value(
+        runtime.dispatch_command(CoreCommand::StartQueuePrefetch { reserve_first }),
     )
+    .map(|_| ())
 }
 
-fn spawn_queue_prefetch(
-    runtime: &tokio::runtime::Runtime,
-    core: Arc<StereodromeCore>,
-    state: &Arc<Mutex<BackgroundPrefetchState>>,
-    _reserve_first: bool,
+fn cancel_runtime_prefetch(
+    runtime: &StereodromeRuntimeHandle,
+    invalidate_completed: bool,
 ) -> Result<(), String> {
-    let request_generation = {
-        let state = state
-            .lock()
-            .map_err(|_| "background prefetch state lock is poisoned".to_string())?;
-        if state.closed {
-            return Ok(());
-        }
-        state.cancellation_generation
-    };
-    let settings = core
-        .get_audio_processing_settings()
-        .map_err(|error| error.to_string())?;
-    let prefetch_count = settings.prefetch_count as usize;
-    let requested_plan = core
-        .queue_prefetch_plan(prefetch_count)
-        .map_err(|error| error.to_string())?;
-    let requested_plan_is_satisfied = core
-        .queue_prefetch_plan_is_satisfied(&requested_plan)
-        .map_err(|error| error.to_string())?;
-
-    let mut state_guard = state
-        .lock()
-        .map_err(|_| "background prefetch state lock is poisoned".to_string())?;
-    if state_guard.closed || state_guard.cancellation_generation != request_generation {
-        return Ok(());
-    }
-    if state_guard.active_plan.as_ref() == Some(&requested_plan)
-        || state_guard.requested_plan.as_ref() == Some(&requested_plan)
-        || (!state_guard.running
-            && requested_plan_is_satisfied
-            && state_guard.last_completed_plan.as_ref() == Some(&requested_plan))
-    {
-        return Ok(());
-    }
-    if state_guard.last_completed_plan.as_ref() == Some(&requested_plan)
-        && !requested_plan_is_satisfied
-    {
-        state_guard.last_completed_plan = None;
-    }
-    if let Some(cancellation) = state_guard.cancellation.take() {
-        cancellation.cancel();
-    }
-    state_guard.requested_plan = Some(requested_plan);
-    if state_guard.running {
-        return Ok(());
-    }
-    state_guard.running = true;
-    state_guard.worker_generation = state_guard.worker_generation.wrapping_add(1);
-    let worker_generation = state_guard.worker_generation;
-
-    let worker_state = Arc::clone(state);
-    let worker_handle = runtime.spawn(async move {
-        let state = worker_state;
-        let _guard = BackgroundPrefetchGuard {
-            state: Arc::clone(&state),
-            worker_generation,
-        };
-        loop {
-            let Some((plan, cancellation)) = ({
-                let Ok(mut state) = state.lock() else {
-                    return;
-                };
-                if let Some(plan) = state.requested_plan.take() {
-                    let cancellation = PrefetchCancellationToken::new();
-                    state.active_plan = Some(plan.clone());
-                    state.cancellation = Some(cancellation.clone());
-                    Some((plan, cancellation))
-                } else {
-                    if state.worker_generation == worker_generation {
-                        state.running = false;
-                    }
-                    None
-                }
-            }) else {
-                break;
-            };
-
-            let outcome = core.run_queue_prefetch_plan(&plan, &cancellation).await;
-            let Ok(mut state) = state.lock() else {
-                return;
-            };
-            if state.active_plan.as_ref() == Some(&plan) {
-                if outcome
-                    .as_ref()
-                    .is_ok_and(|outcome| outcome.completed && !cancellation.is_cancelled())
-                {
-                    state.last_completed_plan = Some(plan.clone());
-                }
-                state.active_plan = None;
-                state.cancellation = None;
-            }
-            drop(state);
-
-            if let Err(error) = outcome {
-                log::warn!(
-                    target: "stereodrome_ffi",
-                    "Failed to prefetch upcoming queue tracks: {error}"
-                );
-            }
-        }
-    });
-    state_guard.worker_handle = Some(worker_handle);
-    drop(state_guard);
-    Ok(())
-}
-
-fn start_saved_playlist_offline_job(
-    mobile: &MobileCore,
-    target: SavedPlaylistOfflineTarget,
-) -> Result<(), String> {
-    {
-        let mut state = mobile
-            .saved_playlist_offline_state
-            .lock()
-            .map_err(|_| "saved playlist offline state lock is poisoned".to_string())?;
-        if state.running {
-            return Ok(());
-        }
-        state.running = true;
-        state.last_error = None;
-    }
-    emit_saved_playlist_offline_status(&mobile.event_emitter, &mobile.saved_playlist_offline_state);
-
-    let data_dir = mobile.data_dir.clone();
-    let saved_playlist_offline_state = Arc::clone(&mobile.saved_playlist_offline_state);
-    let event_emitter = mobile.event_emitter.clone();
-    let cache_event_sender = mobile.cache_event_sender.clone();
-    thread::spawn(move || {
-        let job_name = target.display_name();
-        let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            run_saved_playlist_offline_job(data_dir, target, cache_event_sender)
-        }));
-        let last_error = match result {
-            Ok(Ok(())) => {
-                log::info!(
-                    target: "stereodrome_ffi",
-                    "Mobile {job_name} finished"
-                );
-                None
-            }
-            Ok(Err(error)) => {
-                log::warn!(
-                    target: "stereodrome_ffi",
-                    "Mobile {job_name} failed: {error}"
-                );
-                Some(error)
-            }
-            Err(payload) => {
-                let error = format!(
-                    "Mobile {job_name} panicked: {}",
-                    panic_payload_message(payload.as_ref())
-                );
-                log::error!(target: "stereodrome_ffi", "{error}");
-                Some(error)
-            }
-        };
-
-        if let Ok(mut state) = saved_playlist_offline_state.lock() {
-            state.running = false;
-            state.last_error = last_error;
-        }
-        emit_saved_playlist_offline_status(&event_emitter, &saved_playlist_offline_state);
-    });
-
-    Ok(())
-}
-
-fn run_saved_playlist_offline_job(
-    data_dir: PathBuf,
-    target: SavedPlaylistOfflineTarget,
-    cache_event_sender: Sender<CacheStateEvent>,
-) -> Result<(), String> {
-    log::info!(
-        target: "stereodrome_ffi",
-        "Starting mobile {} in background",
-        target.display_name()
-    );
-    let core = StereodromeCore::new_with_cache_events(data_dir, cache_event_sender)
-        .map_err(|error| error.to_string())?;
-    let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
-    runtime
-        .block_on(async { core.restore_session().await })
-        .map_err(|error| error.to_string())?;
-
-    match target {
-        SavedPlaylistOfflineTarget::All => runtime
-            .block_on(async { core.reconcile_saved_playlists_offline().await })
-            .map(|_| ())
-            .map_err(|error| error.to_string()),
-        SavedPlaylistOfflineTarget::Playlist(playlist_id) => runtime
-            .block_on(async { core.download_playlist(playlist_id).await })
-            .map(|_| ())
-            .map_err(|error| error.to_string()),
-    }
-}
-
-fn get_saved_playlist_offline_status(
-    mobile: &MobileCore,
-) -> Result<SavedPlaylistOfflineStatus, String> {
-    let state = mobile
-        .saved_playlist_offline_state
-        .lock()
-        .map_err(|_| "saved playlist offline state lock is poisoned".to_string())?;
-    Ok(SavedPlaylistOfflineStatus {
-        running: state.running,
-        last_error: state.last_error.clone(),
-    })
-}
-
-fn run_due_sync_job(mobile: &MobileCore) -> Result<Option<String>, String> {
-    mobile
-        .runtime
-        .block_on(async { mobile.core.restore_session().await })
-        .map_err(|error| error.to_string())?;
-
-    let Some(due_job) = mobile
-        .core
-        .next_due_library_sync_job()
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(None);
-    };
-    let mobile_job = MobileSyncJob::from(due_job);
-
-    {
-        let mut state = mobile
-            .sync_state
-            .lock()
-            .map_err(|_| "sync state lock is poisoned".to_string())?;
-        if let Some(active_job) = state.active_job {
-            return Err(format!("{} is already running", active_job.display_name()));
-        }
-        state.active_job = Some(mobile_job);
-    }
-    emit_mobile_sync_status(&mobile.event_emitter, &mobile.core, &mobile.sync_state);
-
-    let result = mobile
-        .runtime
-        .block_on(async { mobile.core.run_due_library_sync().await })
-        .map_err(|error| error.to_string());
-
-    if let Ok(mut state) = mobile.sync_state.lock()
-        && state.active_job == Some(mobile_job)
-    {
-        state.active_job = None;
-    }
-    emit_mobile_sync_status(&mobile.event_emitter, &mobile.core, &mobile.sync_state);
-
-    result
-}
-
-fn get_mobile_library_sync_status(mobile: &MobileCore) -> Result<LibrarySyncStatus, String> {
-    mobile_library_sync_status(&mobile.core, &mobile.sync_state)
-}
-
-fn mobile_library_sync_status(
-    core: &StereodromeCore,
-    sync_state: &Mutex<MobileSyncState>,
-) -> Result<LibrarySyncStatus, String> {
-    let mut status = core
-        .get_library_sync_status()
-        .map_err(|error| error.to_string())?;
-    let active_job = sync_state
-        .lock()
-        .map_err(|_| "sync state lock is poisoned".to_string())?
-        .active_job;
-
-    if let Some(job) = active_job {
-        status.active_job = Some(job.active_job().to_string());
-        match job {
-            MobileSyncJob::Full => status.full_reconcile.running = true,
-            MobileSyncJob::Incremental => status.incremental.running = true,
-        }
-    }
-
-    Ok(status)
-}
-
-fn emit_mobile_sync_status(
-    event_emitter: &MobileEventEmitter,
-    core: &StereodromeCore,
-    sync_state: &Mutex<MobileSyncState>,
-) {
-    event_emitter.emit(|| {
-        mobile_library_sync_status(core, sync_state)
-            .map(Box::new)
-            .map(MobileCoreEvent::SyncStatus)
-    });
-}
-
-fn emit_saved_playlist_offline_status(
-    event_emitter: &MobileEventEmitter,
-    state: &Mutex<SavedPlaylistOfflineState>,
-) {
-    event_emitter.emit(|| {
-        state
-            .lock()
-            .map_err(|_| "saved playlist offline state lock is poisoned".to_string())
-            .map(|state| {
-                MobileCoreEvent::SavedPlaylistOfflineStatus(SavedPlaylistOfflineStatus {
-                    running: state.running,
-                    last_error: state.last_error.clone(),
-                })
-            })
-    });
+    runtime_command_value(runtime.dispatch_command(CoreCommand::CancelQueuePrefetch {
+        invalidate_completed,
+    }))
+    .map(|_| ())
 }
 
 fn catch_json_response(operation: impl FnOnce() -> *mut c_char) -> *mut c_char {
@@ -2305,12 +1759,42 @@ fn start_mobile_monitor_adapter<T: Send + 'static>(
     });
 }
 
+fn start_runtime_event_bridge(
+    mut events: tokio::sync::broadcast::Receiver<stereodrome_core::CoreEvent>,
+    event_emitter: MobileEventEmitter,
+    running: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        while running.load(Ordering::SeqCst) {
+            match events.try_recv() {
+                Ok(event) => {
+                    if let CoreEventKind::SnapshotChanged { snapshot } = event.kind {
+                        let sync = snapshot.sync.clone();
+                        event_emitter.emit(|| Ok(MobileCoreEvent::SyncStatus(Box::new(sync))));
+                        let saved_playlist_offline = snapshot.saved_playlist_offline.clone();
+                        event_emitter.emit(|| {
+                            Ok(MobileCoreEvent::SavedPlaylistOfflineStatus(
+                                saved_playlist_offline,
+                            ))
+                        });
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+            }
+        }
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 fn start_mobile_playback_monitor(
     core: Arc<StereodromeCore>,
     audio: Arc<AudioPlayer>,
     announcer: PlaybackAnnouncer,
-    prefetch_state: Arc<Mutex<BackgroundPrefetchState>>,
+    core_runtime: StereodromeRuntimeHandle,
     running: Arc<AtomicBool>,
     events: Receiver<MobileMonitorEvent>,
     mut cache_reconcile_pending: bool,
@@ -2427,7 +1911,7 @@ fn start_mobile_playback_monitor(
                     .as_ref()
                     .is_some_and(|previous| previous.song_id.is_some() && marker.song_id.is_none())
                 {
-                    let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
+                    let _ = cancel_runtime_prefetch(&core_runtime, false);
                 }
                 announcer.emit(&core, &audio);
                 last_snapshot_marker = Some(marker);
@@ -2444,7 +1928,7 @@ fn start_mobile_playback_monitor(
 
             if segment_idx > last_segment_idx {
                 last_segment_idx = segment_idx;
-                let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
+                let _ = cancel_runtime_prefetch(&core_runtime, false);
                 match core.play_next(Some(false)) {
                     Ok(Some(next)) => {
                         let progress = PlaybackProgress {
@@ -2470,12 +1954,7 @@ fn start_mobile_playback_monitor(
                             break;
                         };
                         let prepared = prepared.unwrap_or(false);
-                        let _ = spawn_queue_prefetch(
-                            &runtime,
-                            Arc::clone(&core),
-                            &prefetch_state,
-                            prepared,
-                        );
+                        let _ = start_runtime_prefetch(&core_runtime, prepared);
                         announcer.emit(&core, &audio);
                     }
                     Ok(None) => {}
@@ -2511,7 +1990,7 @@ fn start_mobile_playback_monitor(
                         if remaining <= crossfade_window_seconds && remaining > 0.5 {
                             crossfade_attempted = audio.current_playback_identity();
                             state_handle.set_crossfade_initiated(true);
-                            let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
+                            let _ = cancel_runtime_prefetch(&core_runtime, false);
                             let Some(crossfade_result) = block_on_monitor_future(
                                 &runtime,
                                 &running,
@@ -2529,12 +2008,7 @@ fn start_mobile_playback_monitor(
                                         break;
                                     };
                                     let prepared = prepared.unwrap_or(false);
-                                    let _ = spawn_queue_prefetch(
-                                        &runtime,
-                                        Arc::clone(&core),
-                                        &prefetch_state,
-                                        prepared,
-                                    );
+                                    let _ = start_runtime_prefetch(&core_runtime, prepared);
                                     announcer.emit(&core, &audio);
                                 }
                                 Ok(None) => state_handle.set_crossfade_initiated(false),
@@ -2567,7 +2041,7 @@ fn start_mobile_playback_monitor(
             if playback_finished {
                 last_segment_idx = 0;
                 last_report = None;
-                let _ = cancel_queue_prefetch(&core, &prefetch_state, false);
+                let _ = cancel_runtime_prefetch(&core_runtime, false);
 
                 let Some(navigation_result) = block_on_monitor_future(
                     &runtime,
@@ -2591,12 +2065,7 @@ fn start_mobile_playback_monitor(
                             break;
                         };
                         let prepared = prepared.unwrap_or(false);
-                        let _ = spawn_queue_prefetch(
-                            &runtime,
-                            Arc::clone(&core),
-                            &prefetch_state,
-                            prepared,
-                        );
+                        let _ = start_runtime_prefetch(&core_runtime, prepared);
                         announcer.emit(&core, &audio);
                     }
                     Ok(_) => {
@@ -3540,6 +3009,7 @@ mod tests {
         .expect("legacy command fixtures parse");
         let legacy = TestMobileCore::new("legacy-equivalence");
         let typed = TestMobileCore::new("typed-equivalence");
+        let mut last_revision = 0_u64;
 
         for (index, fixture) in fixtures.into_iter().enumerate() {
             let legacy_response = legacy.call(&fixture.method, &fixture.payload);
@@ -3581,13 +3051,17 @@ mod tests {
                 fixture.name
             );
             assert_eq!(typed_response["protocol_version"], CORE_PROTOCOL_VERSION);
-            assert_eq!(typed_response["accepted_revision"], index + 1);
+            let revision = typed_response["accepted_revision"]
+                .as_u64()
+                .expect("typed result has a revision");
+            assert!(revision > last_revision);
+            last_revision = revision;
         }
 
         let snapshot = typed.mobile().core_runtime.snapshot();
         assert_eq!(snapshot.status, CommandStatus::Succeeded);
-        assert_eq!(snapshot.accepted_revision, 5);
-        assert_eq!(snapshot.value.unwrap()["revision"], 5);
+        assert_eq!(snapshot.accepted_revision, last_revision);
+        assert_eq!(snapshot.value.unwrap()["revision"], last_revision);
     }
 
     #[test]
@@ -3630,58 +3104,6 @@ mod tests {
                 "{capability} remains a boolean"
             );
         }
-    }
-
-    #[test]
-    fn concurrent_mobile_jobs_and_backup_exclusion_are_characterized() {
-        let core = TestMobileCore::new("job-exclusion-characterization");
-        let mobile = core.mobile();
-
-        mobile
-            .sync_state
-            .lock()
-            .expect("sync state lock")
-            .active_job = Some(MobileSyncJob::Incremental);
-        assert_eq!(
-            start_sync_job(mobile, MobileSyncJob::Full),
-            Err("incremental library sync is already running".to_string())
-        );
-        assert!(ensure_backup_jobs_idle(mobile).is_err());
-
-        mobile
-            .sync_state
-            .lock()
-            .expect("sync state lock")
-            .active_job = None;
-        mobile
-            .saved_playlist_offline_state
-            .lock()
-            .expect("saved playlist state lock")
-            .running = true;
-        assert!(ensure_backup_jobs_idle(mobile).is_err());
-
-        mobile
-            .saved_playlist_offline_state
-            .lock()
-            .expect("saved playlist state lock")
-            .running = false;
-        mobile
-            .prefetch_state
-            .lock()
-            .expect("prefetch state lock")
-            .requested_plan = Some(QueuePrefetchPlan {
-            queue_revision: 1,
-            current_index: None,
-            song_ids: vec!["song".to_string()],
-        });
-        assert!(ensure_backup_jobs_idle(mobile).is_err());
-
-        mobile
-            .prefetch_state
-            .lock()
-            .expect("prefetch state lock")
-            .requested_plan = None;
-        assert!(ensure_backup_jobs_idle(mobile).is_ok());
     }
 
     #[test]
@@ -3891,89 +3313,6 @@ mod tests {
         }
         assert!(!should_cancel_queue_prefetch("prefetchNext"));
         assert!(!should_cancel_queue_prefetch("getPlaybackSnapshot"));
-    }
-
-    #[test]
-    fn cancelling_prefetch_clears_bounded_pending_work() {
-        let plan = QueuePrefetchPlan {
-            queue_revision: 3,
-            current_index: Some(1),
-            song_ids: vec!["next".to_string()],
-        };
-        let cancellation = PrefetchCancellationToken::new();
-        let state = Arc::new(Mutex::new(BackgroundPrefetchState {
-            closed: false,
-            running: true,
-            cancellation_generation: 0,
-            worker_generation: 1,
-            worker_handle: None,
-            active_plan: Some(plan.clone()),
-            requested_plan: Some(plan.clone()),
-            cancellation: Some(cancellation.clone()),
-            last_completed_plan: Some(plan.clone()),
-        }));
-
-        signal_queue_prefetch_cancellation(&state, false).expect("prefetch cancellation");
-
-        let state_guard = state.lock().expect("prefetch state lock");
-        assert!(cancellation.is_cancelled());
-        assert!(state_guard.active_plan.is_none());
-        assert!(state_guard.requested_plan.is_none());
-        assert_eq!(state_guard.last_completed_plan.as_ref(), Some(&plan));
-        drop(state_guard);
-
-        signal_queue_prefetch_cancellation(&state, true).expect("prefetch invalidation");
-        assert!(
-            state
-                .lock()
-                .expect("prefetch state lock")
-                .last_completed_plan
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn old_prefetch_worker_cannot_clear_replacement_state() {
-        let state = Arc::new(Mutex::new(BackgroundPrefetchState {
-            running: true,
-            worker_generation: 2,
-            ..BackgroundPrefetchState::default()
-        }));
-
-        drop(BackgroundPrefetchGuard {
-            state: Arc::clone(&state),
-            worker_generation: 1,
-        });
-
-        assert!(state.lock().expect("prefetch state lock").running);
-    }
-
-    #[test]
-    fn closed_prefetch_state_rejects_late_monitor_start() {
-        static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
-
-        let test_id = NEXT_TEST_ID.fetch_add(1, AtomicOrdering::Relaxed);
-        let data_dir = std::env::temp_dir().join(format!(
-            "stereodrome-ffi-prefetch-close-{}-{test_id}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&data_dir);
-        let core = Arc::new(StereodromeCore::new(&data_dir).expect("core initializes"));
-        let runtime = tokio::runtime::Runtime::new().expect("runtime initializes");
-        let state = Arc::new(Mutex::new(BackgroundPrefetchState {
-            closed: true,
-            ..BackgroundPrefetchState::default()
-        }));
-
-        spawn_queue_prefetch(&runtime, core, &state, false)
-            .expect("closed prefetch start is ignored");
-
-        let state = state.lock().expect("prefetch state lock");
-        assert!(!state.running);
-        assert!(state.worker_handle.is_none());
-        assert!(state.requested_plan.is_none());
-        drop(state);
-        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[test]

@@ -55,13 +55,45 @@ pub(crate) fn build_snapshot(
         connectivity: state.connectivity.clone(),
         playback: core.get_playback_state()?,
         queue: core.get_queue()?,
-        sync: core.get_library_sync_status()?,
+        sync: sync_snapshot(core, state)?,
         downloads: DownloadSnapshot {
             downloading_song_ids,
             offline_song_ids,
         },
+        operations: state.operations.values().cloned().collect(),
+        saved_playlist_offline: state.saved_playlist_offline.clone(),
+        platform_lifecycle: state.platform_lifecycle,
+        network_available: state.network_available,
         settings_revision: state.settings_revision,
         library_revision: state.library_revision,
         last_failure: state.last_failure.clone(),
     })
+}
+
+fn sync_snapshot(
+    core: &StereodromeCore,
+    state: &CoreState,
+) -> CoreResult<crate::LibrarySyncStatus> {
+    let mut status = core.get_library_sync_status()?;
+    for operation in state.operations.values() {
+        let crate::JobKind::Sync { kind } = operation.kind else {
+            continue;
+        };
+        match kind {
+            crate::SyncKind::Full => {
+                status.active_job = Some("full".to_string());
+                status.full.running = true;
+            }
+            crate::SyncKind::Incremental => {
+                status.active_job = Some("incremental".to_string());
+                status.incremental.running = true;
+            }
+            crate::SyncKind::FullReconcile => {
+                status.active_job = Some("full_reconcile".to_string());
+                status.full_reconcile.running = true;
+            }
+        }
+        break;
+    }
+    Ok(status)
 }

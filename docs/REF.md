@@ -544,6 +544,21 @@ Exit criteria:
 
 ### Phase 2 — Move jobs and connectivity into the runtime
 
+Implementation artifacts:
+
+- runtime-owned connectivity, lifecycle/network inputs, operation registry,
+  effect completion, cancellation, and bounded shutdown in
+  `crates/stereodrome-core/src/runtime/`;
+- authoritative sync/offline/download/prefetch projections in `CoreSnapshot`
+  and versioned job protocol types in `crates/stereodrome-core/src/protocol.rs`;
+- removal of FFI sync, saved-playlist, and prefetch state plus all secondary
+  background `StereodromeCore` instances and per-job Tokio runtimes;
+- compatibility projection of runtime snapshots onto existing mobile events;
+- typed runtime dispatch exposed through Swift, JNI/Kotlin, and the local Expo
+  module;
+- background scheduling reduced to one runtime tick and network/lifecycle
+  reporting in the mobile TypeScript adapters.
+
 Move first because these domains do not require the highest-risk audio transition work:
 
 1. Connection/session/offline state.
