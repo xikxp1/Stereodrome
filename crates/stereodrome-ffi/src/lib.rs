@@ -27,9 +27,11 @@ use stereodrome_audio::{
 };
 use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
-    AudioProcessingSettings, CacheStateEvent, ConnectParams, ConnectivitySettings, DueSyncJob,
-    LibrarySyncStatus, PlaybackProgress, PrefetchCancellationToken, QueuePrefetchPlan,
-    ServerSettingsUpdate, StereodromeCore, SyncSettings,
+    AudioProcessingSettings, CORE_PROTOCOL_VERSION, CacheStateEvent, CommandId, CommandStatus,
+    ConnectParams, ConnectivitySettings, CoreCommand, CoreCommandRequest, CoreCommandResult,
+    DueSyncJob, LibrarySyncStatus, PlaybackProgress, PrefetchCancellationToken, ProtocolError,
+    ProtocolErrorCode, QueuePrefetchPlan, ServerSettingsUpdate, StereodromeCore,
+    StereodromeRuntimeHandle, SyncSettings,
 };
 use url::Url;
 
@@ -132,6 +134,7 @@ pub extern "C" fn stereodrome_core_set_event_callback(callback: Option<MobileEve
 
 pub struct MobileCore {
     core: Arc<StereodromeCore>,
+    core_runtime: StereodromeRuntimeHandle,
     audio: Arc<AudioPlayer>,
     announcer: PlaybackAnnouncer,
     event_emitter: MobileEventEmitter,
@@ -703,6 +706,11 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
         ) {
             (Ok(core), Ok((audio, audio_notifications)), Ok(runtime)) => {
                 let core = Arc::new(core);
+                let Ok(core_runtime) =
+                    StereodromeRuntimeHandle::start_with_core(&data_dir, Arc::clone(&core))
+                else {
+                    return ptr::null_mut();
+                };
                 let audio = Arc::new(audio);
                 let event_emitter = MobileEventEmitter::new();
                 let (announcer, file_state_initialized) =
@@ -731,6 +739,7 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
 
                 Box::into_raw(Box::new(MobileCore {
                     core,
+                    core_runtime,
                     audio,
                     announcer,
                     event_emitter,
@@ -800,6 +809,7 @@ pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
                     "Failed to finalize mobile audio shutdown during core destruction: {error}"
                 );
             }
+            mobile.core_runtime.shutdown();
         }
     }));
 }
@@ -854,6 +864,106 @@ pub extern "C" fn stereodrome_core_call(
     catch_json_response(|| stereodrome_core_call_inner(core, method, payload))
 }
 
+/// Creates the phase-one runtime boundary. This is an ABI-compatible alias for
+/// the existing mobile constructor while adapters migrate to typed dispatch.
+#[unsafe(no_mangle)]
+pub extern "C" fn stereodrome_runtime_new(data_dir: *const c_char) -> *mut MobileCore {
+    stereodrome_core_new(data_dir)
+}
+
+/// # Safety
+///
+/// `runtime` must be a pointer returned by `stereodrome_runtime_new` and must
+/// not be used after this function returns.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stereodrome_runtime_destroy(runtime: *mut MobileCore) {
+    unsafe { stereodrome_core_destroy(runtime) };
+}
+
+/// Dispatches one versioned [`CoreCommandRequest`] through the runtime mailbox.
+#[unsafe(no_mangle)]
+pub extern "C" fn stereodrome_runtime_dispatch(
+    runtime: *mut MobileCore,
+    command_json: *const c_char,
+) -> *mut c_char {
+    catch_json_response(|| stereodrome_runtime_dispatch_inner(runtime, command_json))
+}
+
+fn stereodrome_runtime_dispatch_inner(
+    runtime: *mut MobileCore,
+    command_json: *const c_char,
+) -> *mut c_char {
+    let Some(mobile) = mobile_ref(runtime) else {
+        return into_c_string(serialize_protocol_result(&protocol_input_error(
+            "runtime is not initialized",
+        )));
+    };
+    let Some(command_json) = read_c_string(command_json) else {
+        return into_c_string(serialize_protocol_result(&protocol_input_error(
+            "command JSON is required",
+        )));
+    };
+    let request = match serde_json::from_str::<CoreCommandRequest>(&command_json) {
+        Ok(request) => request,
+        Err(error) => {
+            return into_c_string(serialize_protocol_result(&protocol_input_error(&format!(
+                "invalid command JSON: {error}"
+            ))));
+        }
+    };
+    into_c_string(serialize_protocol_result(
+        &mobile.core_runtime.dispatch(request),
+    ))
+}
+
+/// Reads an authoritative snapshot through the runtime mailbox.
+#[unsafe(no_mangle)]
+pub extern "C" fn stereodrome_runtime_snapshot(runtime: *mut MobileCore) -> *mut c_char {
+    catch_json_response(|| {
+        let Some(mobile) = mobile_ref(runtime) else {
+            return into_c_string(serialize_protocol_result(&protocol_input_error(
+                "runtime is not initialized",
+            )));
+        };
+        into_c_string(serialize_protocol_result(&mobile.core_runtime.snapshot()))
+    })
+}
+
+/// # Safety
+///
+/// `value` must have been returned by this library and not already freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stereodrome_runtime_string_free(value: *mut c_char) {
+    unsafe { stereodrome_core_free_string(value) };
+}
+
+fn serialize_protocol_result(result: &CoreCommandResult) -> String {
+    serde_json::to_string(result).unwrap_or_else(|error| {
+        serde_json::json!({
+            "protocol_version": CORE_PROTOCOL_VERSION,
+            "command_id": 0,
+            "accepted_revision": 0,
+            "operation_id": null,
+            "status": "failed",
+            "error": {
+                "code": "internal",
+                "message": format!("failed to serialize command result: {error}"),
+                "retryable": false
+            }
+        })
+        .to_string()
+    })
+}
+
+fn protocol_input_error(message: &str) -> CoreCommandResult {
+    CoreCommandResult::failed(
+        CommandId(0),
+        0,
+        None,
+        ProtocolError::new(ProtocolErrorCode::InvalidInput, message, false),
+    )
+}
+
 fn stereodrome_core_call_inner(
     core: *mut MobileCore,
     method: *const c_char,
@@ -888,6 +998,11 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             &mobile.prefetch_state,
             matches!(method, "clearAudioCache" | "removeCachedSong"),
         )?;
+    }
+
+    if let Some(command) = legacy_runtime_command(method, payload.clone())? {
+        let response = legacy_runtime_result(mobile.core_runtime.dispatch_command(command));
+        return finish_dispatch(mobile, method, response);
     }
 
     let response = match method {
@@ -1258,14 +1373,213 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         other => Err(format!("unknown method: {other}")),
     };
 
+    finish_dispatch(mobile, method, response)
+}
+
+fn finish_dispatch(
+    mobile: &MobileCore,
+    method: &str,
+    response: Result<String, String>,
+) -> Result<String, String> {
     if response.is_ok() && should_emit_playback_snapshot(method) {
-        mobile.announcer.emit(core, &mobile.audio);
+        mobile.announcer.emit(&mobile.core, &mobile.audio);
         let _ = mobile
             .monitor_event_sender
             .send(MobileMonitorEvent::RecalculateDeadlines);
     }
 
     response
+}
+
+fn legacy_runtime_result(result: CoreCommandResult) -> Result<String, String> {
+    match result.status {
+        CommandStatus::Succeeded => Ok(json_ok_string(result.value.unwrap_or(Value::Null))),
+        CommandStatus::Failed => Err(result.error.map_or_else(
+            || "runtime command failed".to_string(),
+            |error| error.message,
+        )),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn legacy_runtime_command(method: &str, payload: Value) -> Result<Option<CoreCommand>, String> {
+    let command = match method {
+        "connectServer" => CoreCommand::Connect {
+            params: parse_payload(payload)?,
+        },
+        "updateServerSettings" => CoreCommand::UpdateServerSettings {
+            update: parse_payload(payload)?,
+        },
+        "restoreSession" => CoreCommand::RestoreSession,
+        "disconnectServer" => CoreCommand::Disconnect,
+        "getConnectionStatus" => CoreCommand::GetConnectionStatus,
+        "getSyncSettings" => CoreCommand::GetSyncSettings,
+        "setSyncSettings" => CoreCommand::SetSyncSettings {
+            settings: parse_payload(payload)?,
+        },
+        "getConnectivitySettings" => CoreCommand::GetConnectivitySettings,
+        "setConnectivitySettings" => CoreCommand::SetConnectivity {
+            settings: parse_payload(payload)?,
+        },
+        "getScanStatus" => CoreCommand::GetScanStatus,
+        "startScan" => CoreCommand::StartScan,
+        "getArtists" => CoreCommand::GetArtists,
+        "getAlbums" => CoreCommand::GetAlbums {
+            artist_id: parse_optional_string(payload)?,
+        },
+        "getSongs" => {
+            let args = parse_payload::<TwoOptionalStrings>(payload)?;
+            CoreCommand::GetSongs {
+                album_id: args.first,
+                artist_id: args.second,
+            }
+        }
+        "getAlbumList" => {
+            let args = parse_payload::<AlbumListPayload>(payload)?;
+            CoreCommand::GetAlbumList {
+                list_type: args.list_type,
+                size: args.size,
+                offset: args.offset,
+            }
+        }
+        "searchLibrary" => {
+            let args = parse_payload::<SearchPayload>(payload)?;
+            CoreCommand::SearchLibrary {
+                query: args.query,
+                limit: args.limit,
+            }
+        }
+        "getPlaylists" => CoreCommand::GetPlaylists,
+        "getPlaylistSongs" => CoreCommand::GetPlaylistSongs {
+            playlist_id: parse_payload(payload)?,
+        },
+        "createPlaylist" => {
+            let args = parse_payload::<CreatePlaylistPayload>(payload)?;
+            CoreCommand::CreatePlaylist {
+                name: args.name,
+                song_ids: args.song_ids,
+            }
+        }
+        "renamePlaylist" => {
+            let args = parse_payload::<RenamePlaylistPayload>(payload)?;
+            CoreCommand::RenamePlaylist {
+                playlist_id: args.playlist_id,
+                name: args.name,
+            }
+        }
+        "deletePlaylist" => CoreCommand::DeletePlaylist {
+            playlist_id: parse_payload(payload)?,
+        },
+        "addSongsToPlaylist" => {
+            let args = parse_payload::<PlaylistSongIdsPayload>(payload)?;
+            CoreCommand::AddSongsToPlaylist {
+                playlist_id: args.playlist_id,
+                song_ids: args.song_ids,
+            }
+        }
+        "removeSongsFromPlaylist" => {
+            let args = parse_payload::<PlaylistSongIndexesPayload>(payload)?;
+            CoreCommand::RemoveSongsFromPlaylist {
+                playlist_id: args.playlist_id,
+                song_indexes: args.song_indexes,
+            }
+        }
+        "getCoverArtUri" => {
+            let args = parse_payload::<IdSizePayload>(payload)?;
+            CoreCommand::GetCoverArtUri {
+                id: args.id,
+                size: args.size,
+            }
+        }
+        "getSongCoverArtUri" => {
+            let args = parse_payload::<IdSizePayload>(payload)?;
+            CoreCommand::GetSongCoverArtUri {
+                id: args.id,
+                size: args.size,
+            }
+        }
+        "getStreamUri" => CoreCommand::GetStreamUri {
+            song_id: parse_payload(payload)?,
+        },
+        "getAudioCacheStats" => CoreCommand::GetAudioCacheStats,
+        "getOfflineSongIds" => CoreCommand::GetOfflineSongIds,
+        "setMaxCacheSize" => CoreCommand::SetMaxCacheSize {
+            max_size: parse_payload(payload)?,
+        },
+        "clearAudioCache" => CoreCommand::ClearAudioCache,
+        "isSongCached" => CoreCommand::IsSongCached {
+            song_id: parse_payload(payload)?,
+        },
+        "downloadSong" => CoreCommand::DownloadSong {
+            song_id: parse_payload(payload)?,
+        },
+        "removeCachedSong" => CoreCommand::RemoveCachedSong {
+            song_id: parse_payload(payload)?,
+        },
+        "downloadAlbum" => CoreCommand::DownloadAlbum {
+            album_id: parse_payload(payload)?,
+        },
+        "downloadPlaylist" => CoreCommand::DownloadPlaylist {
+            playlist_id: parse_payload(payload)?,
+        },
+        "reconcileSavedPlaylistsOffline" => CoreCommand::ReconcileSavedPlaylistsOffline,
+        "getPlaybackState" => CoreCommand::GetPlaybackState,
+        "savePlaybackPosition" => CoreCommand::SavePlaybackPosition {
+            progress: parse_payload(payload)?,
+        },
+        "getLastfmStatus" => CoreCommand::GetLastfmStatus,
+        "beginLastfmAuth" => CoreCommand::BeginLastfmAuth,
+        "completeLastfmAuth" => CoreCommand::CompleteLastfmAuth,
+        "disconnectLastfm" => CoreCommand::DisconnectLastfm,
+        "getLastfmQueue" => CoreCommand::GetLastfmQueue,
+        "retryLastfmQueue" => CoreCommand::RetryLastfmQueue,
+        "getAudioProcessingSettings" => CoreCommand::GetAudioProcessingSettings,
+        "playSongWithQueue" => {
+            let args = parse_payload::<PlaySongWithQueuePayload>(payload)?;
+            CoreCommand::PlaySelection {
+                song_id: args.song_id,
+                song_ids: args.song_ids,
+            }
+        }
+        "addToQueue" => CoreCommand::AddToQueue {
+            item: parse_payload(payload)?,
+        },
+        "addSongsToQueue" => CoreCommand::AddSongsToQueue {
+            items: parse_payload(payload)?,
+        },
+        "insertNext" => CoreCommand::InsertNext {
+            item: parse_payload(payload)?,
+        },
+        "insertNextSongs" => CoreCommand::InsertNextSongs {
+            items: parse_payload(payload)?,
+        },
+        "removeFromQueue" => CoreCommand::RemoveFromQueue {
+            index: parse_payload(payload)?,
+        },
+        "clearQueue" => CoreCommand::ClearQueue,
+        "moveQueueItem" => {
+            let args = parse_payload::<MoveQueueItemPayload>(payload)?;
+            CoreCommand::MoveQueueItem {
+                from: args.from,
+                to: args.to,
+            }
+        }
+        "playQueueItem" => CoreCommand::PlayQueueItem {
+            index: parse_payload(payload)?,
+        },
+        "playNext" => CoreCommand::PlayNext {
+            force: parse_payload(payload)?,
+        },
+        "playPrevious" => CoreCommand::PlayPrevious,
+        "toggleShuffle" => CoreCommand::ToggleShuffle,
+        "setRepeatMode" => CoreCommand::SetRepeatMode {
+            mode: parse_payload(payload)?,
+        },
+        "cycleRepeatMode" => CoreCommand::CycleRepeatMode,
+        "rerollNext" => CoreCommand::RerollNext,
+        _ => return Ok(None),
+    };
+    Ok(Some(command))
 }
 
 fn should_emit_playback_snapshot(method: &str) -> bool {
@@ -3155,6 +3469,20 @@ mod tests {
             serde_json::from_str(&response_json).expect("FFI response is JSON")
         }
 
+        fn dispatch_runtime(&self, request: &CoreCommandRequest) -> Value {
+            let request =
+                CString::new(serde_json::to_string(request).expect("runtime request serializes"))
+                    .expect("runtime request has no null bytes");
+            let response = stereodrome_runtime_dispatch(self.pointer, request.as_ptr());
+            assert!(!response.is_null(), "runtime FFI returns a response");
+            let response_json = unsafe { CStr::from_ptr(response) }
+                .to_str()
+                .expect("runtime response is UTF-8")
+                .to_string();
+            unsafe { stereodrome_runtime_string_free(response) };
+            serde_json::from_str(&response_json).expect("runtime response is JSON")
+        }
+
         fn mobile(&self) -> &MobileCore {
             unsafe { &*self.pointer }
         }
@@ -3202,6 +3530,79 @@ mod tests {
         let unknown = core.call("notARealMethod", &Value::Null);
         assert_eq!(unknown["ok"], false);
         assert_eq!(unknown["error"], "unknown method: notARealMethod");
+    }
+
+    #[test]
+    fn typed_and_legacy_fixture_paths_produce_equivalent_values() {
+        let fixtures: Vec<LegacyCommandFixture> = serde_json::from_str(include_str!(
+            "../tests/fixtures/legacy-command-contract.json"
+        ))
+        .expect("legacy command fixtures parse");
+        let legacy = TestMobileCore::new("legacy-equivalence");
+        let typed = TestMobileCore::new("typed-equivalence");
+
+        for (index, fixture) in fixtures.into_iter().enumerate() {
+            let legacy_response = legacy.call(&fixture.method, &fixture.payload);
+            let command = match fixture.method.as_str() {
+                "setConnectivitySettings" => CoreCommand::SetConnectivity {
+                    settings: serde_json::from_value(fixture.payload.clone())
+                        .expect("connectivity fixture parses"),
+                },
+                "setSyncSettings" => CoreCommand::SetSyncSettings {
+                    settings: serde_json::from_value(fixture.payload.clone())
+                        .expect("sync fixture parses"),
+                },
+                "addToQueue" => CoreCommand::AddToQueue {
+                    item: serde_json::from_value(fixture.payload.clone())
+                        .expect("queue fixture parses"),
+                },
+                "setAudioProcessingSettings" => CoreCommand::SetAudioProcessing {
+                    settings: serde_json::from_value(fixture.payload.clone())
+                        .expect("audio settings fixture parses"),
+                },
+                "clearQueue" => CoreCommand::ClearQueue,
+                method => panic!("fixture {method} needs a typed compatibility mapping"),
+            };
+            let typed_response = typed.dispatch_runtime(&CoreCommandRequest {
+                protocol_version: CORE_PROTOCOL_VERSION,
+                command_id: CommandId(u64::try_from(index).expect("index fits u64") + 1),
+                command,
+            });
+
+            assert_eq!(legacy_response["ok"], true, "{} legacy", fixture.name);
+            assert_eq!(
+                typed_response["status"], "succeeded",
+                "{} typed",
+                fixture.name
+            );
+            assert_eq!(
+                typed_response["value"], legacy_response["value"],
+                "{} differs between compatibility paths",
+                fixture.name
+            );
+            assert_eq!(typed_response["protocol_version"], CORE_PROTOCOL_VERSION);
+            assert_eq!(typed_response["accepted_revision"], index + 1);
+        }
+
+        let snapshot = typed.mobile().core_runtime.snapshot();
+        assert_eq!(snapshot.status, CommandStatus::Succeeded);
+        assert_eq!(snapshot.accepted_revision, 5);
+        assert_eq!(snapshot.value.unwrap()["revision"], 5);
+    }
+
+    #[test]
+    fn typed_ffi_rejects_protocol_mismatches_with_structured_errors() {
+        let core = TestMobileCore::new("typed-protocol-error");
+        let response = core.dispatch_runtime(&CoreCommandRequest {
+            protocol_version: CORE_PROTOCOL_VERSION + 1,
+            command_id: CommandId(9),
+            command: CoreCommand::GetSnapshot,
+        });
+
+        assert_eq!(response["status"], "failed");
+        assert_eq!(response["command_id"], 9);
+        assert_eq!(response["error"]["code"], "unsupported_protocol_version");
+        assert_eq!(response["error"]["retryable"], false);
     }
 
     #[test]

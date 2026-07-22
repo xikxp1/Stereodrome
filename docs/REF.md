@@ -517,6 +517,19 @@ Exit criteria:
 
 ### Phase 1 — Introduce the runtime shell without changing behavior
 
+Implementation artifacts:
+
+- versioned commands, results, events, snapshots, IDs, and structured errors:
+  `crates/stereodrome-core/src/protocol.rs`;
+- bounded single-mailbox actor, one-runtime-per-directory lease, ordered event
+  stream, idempotent command results, and shutdown:
+  `crates/stereodrome-core/src/runtime/`;
+- typed C ABI plus existing method compatibility aliases:
+  `crates/stereodrome-ffi/src/lib.rs`;
+- wire format and migration boundary: `docs/MOBILE_RUNTIME_PROTOCOL.md`;
+- concurrency, ownership, protocol-version, idempotency, and legacy/new-path
+  equivalence tests in `stereodrome-core` and `stereodrome-ffi`.
+
 1. Split `stereodrome-core/src/lib.rs` into domain modules while preserving its public API.
 2. Add `CoreCommand`, `CoreEvent`, `CoreSnapshot`, structured errors, command IDs, operation IDs, and protocol version.
 3. Add `StereodromeRuntimeHandle` and one mailbox.

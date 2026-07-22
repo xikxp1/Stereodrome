@@ -3,7 +3,9 @@ mod db;
 mod error;
 mod lastfm;
 mod models;
+pub mod protocol;
 pub mod queue;
+pub mod runtime;
 mod subsonic;
 #[cfg(test)]
 pub mod test_support;
@@ -28,7 +30,9 @@ pub use tokio_util::sync::CancellationToken as PrefetchCancellationToken;
 pub use error::{CoreError, CoreResult};
 pub use lastfm::{LastfmAuthStart, LastfmQueueItem, LastfmStatus};
 pub use models::*;
+pub use protocol::*;
 pub use queue::{QueueItem as SharedQueueItem, QueueState as SharedQueueState};
+pub use runtime::StereodromeRuntimeHandle;
 
 const API_VERSION: &str = "1.16.1";
 const CLIENT_NAME: &str = "StereodromeMobile";

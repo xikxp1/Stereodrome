@@ -14,6 +14,10 @@ The Swift/Kotlin module files are intentionally thin. They keep one native
 `StereodromeCore` handle alive after `initialize(dataDir)` and forward every
 `call` invocation to `stereodrome_core_call`.
 
+Phase 1 also exports the versioned `stereodrome_runtime_*` C ABI documented in
+`docs/MOBILE_RUNTIME_PROTOCOL.md`. Existing native calls remain compatible while
+the TypeScript/native clients migrate to typed commands in later phases.
+
 Before creating a dev build, generate the Rust native artifacts:
 
 ```sh
