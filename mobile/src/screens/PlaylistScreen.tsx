@@ -7,9 +7,12 @@ import {
   type SelectableOption,
 } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
-import { usePlaybackActions } from "@/context/PlaybackContext";
+import {
+  useFileState,
+  usePlaybackActions,
+  useStereodrome,
+} from "@/core/selectors";
 import { useSongActions } from "@/context/SongActionContext";
-import { useFileState, useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { songFileState, visibleSongs } from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
@@ -87,11 +90,6 @@ export function PlaylistScreen({
         nextSavedOffline
       );
       await queryClient.invalidateQueries({ queryKey: ["playlists"] });
-      if (nextSavedOffline) {
-        await fileState.reconcileSavedPlaylistsOffline();
-      } else {
-        await fileState.refreshOfflineSongIds();
-      }
     } catch (saveError) {
       Alert.alert(
         "Offline save failed",

@@ -3,7 +3,7 @@ import { Image, StyleSheet, Text, View } from "react-native";
 
 import { SyncedMarqueeText } from "@/components/SyncedMarqueeText";
 import { colors } from "@/components/theme";
-import { usePlayback } from "@/context/PlaybackContext";
+import { usePlayback } from "@/core/selectors";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
 type CoverArtState = {

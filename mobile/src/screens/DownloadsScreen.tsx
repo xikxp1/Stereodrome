@@ -3,7 +3,7 @@ import { useEffect } from "react";
 
 import { SelectableList } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
-import { useFileState, useStereodrome } from "@/context/StereodromeContext";
+import { useFileState, useStereodrome } from "@/core/selectors";
 import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function DownloadsScreen() {
@@ -28,7 +28,6 @@ export function DownloadsScreen() {
 
   async function refreshCache() {
     await queryClient.invalidateQueries({ queryKey: ["audio-cache-stats"] });
-    await fileState.refreshOfflineSongIds();
   }
 
   const options = cacheStats.isLoading
@@ -49,7 +48,6 @@ export function DownloadsScreen() {
                 sublabel: "Download upcoming uncached queue items",
                 onSelect: async () => {
                   await stereodromeCore.prefetchNext();
-                  await refreshCache();
                 },
               },
             ]),
@@ -63,7 +61,6 @@ export function DownloadsScreen() {
           cancelSublabel: "Keep cached audio",
           onConfirm: async () => {
             await stereodromeCore.clearAudioCache();
-            await refreshCache();
           },
         }),
       ];

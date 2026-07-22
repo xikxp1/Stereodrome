@@ -6,7 +6,7 @@ import * as Haptics from "expo-haptics";
 
 import { colors } from "@/components/theme";
 import { useInputBus } from "@/context/InputContext";
-import { usePlaybackMetadata } from "@/context/PlaybackContext";
+import { usePlaybackMetadata } from "@/core/selectors";
 
 const hapticTickIntervalMs = 45;
 let lastHapticTick = 0;

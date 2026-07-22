@@ -2,7 +2,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
 import { SelectableList } from "@/components/SelectableList";
-import { usePlaybackActions } from "@/context/PlaybackContext";
+import { usePlaybackActions } from "@/core/selectors";
 import { useViewStack } from "@/context/ViewContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
 import type { AlbumListEntry } from "@/types/music";

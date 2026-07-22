@@ -5,9 +5,8 @@ import {
   SelectableList,
   type SelectableOption,
 } from "@/components/SelectableList";
-import { usePlaybackMetadata } from "@/context/PlaybackContext";
+import { usePlaybackMetadata, useStereodrome } from "@/core/selectors";
 import { useSongActions } from "@/context/SongActionContext";
-import { useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
 import type { Song } from "@/types/music";

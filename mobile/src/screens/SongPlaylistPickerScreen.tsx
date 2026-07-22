@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
 import { useSongActions } from "@/context/SongActionContext";
-import { useStereodrome } from "@/context/StereodromeContext";
+import { useStereodrome } from "@/core/selectors";
 import { useViewStack } from "@/context/ViewContext";
 import { stereodromeCore } from "@/services/stereodromeCore";
 

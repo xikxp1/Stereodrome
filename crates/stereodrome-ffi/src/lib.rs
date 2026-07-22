@@ -22,10 +22,11 @@ use serde_json::Value;
 use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
     CORE_PROTOCOL_VERSION, CacheStateEvent, CommandId, CommandStatus, ConnectParams,
-    ConnectivitySettings, CoreCommand, CoreCommandRequest, CoreCommandResult, CoreEventKind,
-    CoreSnapshot, LibrarySyncStatus, PlaybackOutputState, PlaybackPhase, PlaybackProgress,
-    PlaybackProjection, ProtocolError, ProtocolErrorCode, SavedPlaylistOfflineStatus,
-    ServerSettingsUpdate, StereodromeCore, StereodromeRuntimeHandle, SyncKind, SyncSettings,
+    ConnectivitySettings, CoreCommand, CoreCommandRequest, CoreCommandResult, CoreEvent,
+    CoreEventKind, CoreSnapshot, LibrarySyncStatus, PlaybackOutputState, PlaybackPhase,
+    PlaybackProgress, PlaybackProjection, ProtocolError, ProtocolErrorCode,
+    SavedPlaylistOfflineStatus, ServerSettingsUpdate, StereodromeCore, StereodromeRuntimeHandle,
+    SyncKind, SyncSettings,
 };
 
 static MOBILE_LOGGER: MobileLogger = MobileLogger;
@@ -152,6 +153,7 @@ struct MobileFileStateSnapshot {
 #[derive(Serialize)]
 #[serde(tag = "type", content = "payload", rename_all = "kebab-case")]
 enum MobileCoreEvent {
+    Runtime(Box<CoreEvent>),
     FileState(MobileFileStateSnapshot),
     SyncStatus(Box<LibrarySyncStatus>),
     SavedPlaylistOfflineStatus(SavedPlaylistOfflineStatus),
@@ -1492,6 +1494,7 @@ fn start_runtime_event_bridge(
         while running.load(Ordering::SeqCst) {
             match events.try_recv() {
                 Ok(event) => {
+                    event_emitter.emit(|| Ok(MobileCoreEvent::Runtime(Box::new(event.clone()))));
                     if let CoreEventKind::SnapshotChanged { snapshot } = event.kind {
                         announcer.emit(event.revision, snapshot.playback.clone());
                         let sync = snapshot.sync.clone();
@@ -1810,6 +1813,33 @@ mod tests {
         assert_eq!(event["payload"]["seq"], 7);
         assert_eq!(event["payload"]["downloaded_song_ids"][0], "cached");
         assert_eq!(event["payload"]["downloading_song_ids"][0], "active");
+    }
+
+    #[test]
+    fn runtime_event_serialization_preserves_the_versioned_envelope() {
+        let event = serde_json::to_value(MobileCoreEventEnvelope {
+            stream_id: 3,
+            seq: 12,
+            event: MobileCoreEvent::Runtime(Box::new(CoreEvent {
+                protocol_version: CORE_PROTOCOL_VERSION,
+                stream_id: 8,
+                event_id: 21,
+                revision: 13,
+                cause_command_id: CommandId(5),
+                operation_id: None,
+                kind: CoreEventKind::RuntimeShuttingDown,
+            })),
+        })
+        .expect("runtime event serializes");
+
+        assert_eq!(event["stream_id"], 3);
+        assert_eq!(event["seq"], 12);
+        assert_eq!(event["type"], "runtime");
+        assert_eq!(event["payload"]["protocol_version"], CORE_PROTOCOL_VERSION);
+        assert_eq!(event["payload"]["stream_id"], 8);
+        assert_eq!(event["payload"]["event_id"], 21);
+        assert_eq!(event["payload"]["revision"], 13);
+        assert_eq!(event["payload"]["kind"]["type"], "runtime-shutting-down");
     }
 
     #[test]

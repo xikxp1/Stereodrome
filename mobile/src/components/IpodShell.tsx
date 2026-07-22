@@ -14,9 +14,8 @@ import { Header } from "@/components/Header";
 import { colors } from "@/components/theme";
 import { useInputBus } from "@/context/InputContext";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
-import { usePlayback } from "@/context/PlaybackContext";
+import { usePlayback, useStereodrome } from "@/core/selectors";
 import { useSongActions } from "@/context/SongActionContext";
-import { useStereodrome } from "@/context/StereodromeContext";
 import {
   connectView,
   homeView,
@@ -30,6 +29,10 @@ function formatPlaybackTime(seconds: number) {
   const minutes = Math.floor(safeSeconds / 60);
   const remainingSeconds = safeSeconds % 60;
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
+function ignorePlaybackFailure(promise: Promise<void>): void {
+  void promise.catch(() => undefined);
 }
 
 export function IpodShell() {
@@ -145,19 +148,19 @@ export function IpodShell() {
           }
         }
         if (input === "play_pause") {
-          void playback.toggle();
+          ignorePlaybackFailure(playback.toggle());
         }
         if (input === "next") {
-          void playback.next();
+          ignorePlaybackFailure(playback.next());
         }
         if (input === "previous") {
-          void playback.previous();
+          ignorePlaybackFailure(playback.previous());
         }
         if (current.name === "nowPlaying" && input === "scroll_forward") {
-          void playback.seekBy(5);
+          ignorePlaybackFailure(playback.seekBy(5));
         }
         if (current.name === "nowPlaying" && input === "scroll_backward") {
-          void playback.seekBy(-5);
+          ignorePlaybackFailure(playback.seekBy(-5));
         }
       }),
     [
@@ -196,7 +199,7 @@ export function IpodShell() {
             accessibilityRole="button"
             accessibilityState={{ selected: playback.repeatEnabled }}
             onPress={() => {
-              void playback.toggleRepeat();
+              ignorePlaybackFailure(playback.toggleRepeat());
             }}
             style={[
               styles.queueButton,
@@ -240,7 +243,7 @@ export function IpodShell() {
               accessibilityRole="button"
               accessibilityState={{ selected: playback.shuffleEnabled }}
               onPress={() => {
-                void playback.toggleShuffle();
+                ignorePlaybackFailure(playback.toggleShuffle());
               }}
               style={[
                 styles.queueButton,
@@ -260,7 +263,7 @@ export function IpodShell() {
               accessibilityLabel="Reroll next track"
               accessibilityRole="button"
               onPress={() => {
-                void playback.rerollNext();
+                ignorePlaybackFailure(playback.rerollNext());
               }}
               style={styles.queueButton}
             >

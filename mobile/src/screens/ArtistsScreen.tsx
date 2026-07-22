@@ -1,8 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
-import { usePlaybackActions } from "@/context/PlaybackContext";
-import { useFileState, useStereodrome } from "@/context/StereodromeContext";
+import {
+  useFileState,
+  usePlaybackActions,
+  useStereodrome,
+} from "@/core/selectors";
 import { stereodromeCore } from "@/services/stereodromeCore";
 import { useViewStack } from "@/context/ViewContext";
 import { visibleArtists, visibleSongs } from "@/services/offlineLibrary";

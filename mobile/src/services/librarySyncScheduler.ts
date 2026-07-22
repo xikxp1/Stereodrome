@@ -1,6 +1,7 @@
 import * as BackgroundTask from "expo-background-task";
 import * as TaskManager from "expo-task-manager";
 
+import { coreActions, coreStore } from "@/core/store";
 import { stereodromeCore } from "@/services/stereodromeCore";
 import type { SyncSettings } from "@/types/music";
 
@@ -9,8 +10,8 @@ const MIN_OS_BACKGROUND_INTERVAL_MINUTES = 15;
 
 TaskManager.defineTask(TASK_NAME, async () => {
   try {
-    await stereodromeCore.initialize();
-    await stereodromeCore.runDueLibrarySync();
+    await coreStore.initialize();
+    await coreActions.runBackgroundTick();
     return BackgroundTask.BackgroundTaskResult.Success;
   } catch {
     return BackgroundTask.BackgroundTaskResult.Failed;

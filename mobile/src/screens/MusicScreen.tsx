@@ -1,5 +1,5 @@
 import { SelectableList } from "@/components/SelectableList";
-import { useStereodrome } from "@/context/StereodromeContext";
+import { useStereodrome } from "@/core/selectors";
 import { useViewStack } from "@/context/ViewContext";
 
 export function MusicScreen() {

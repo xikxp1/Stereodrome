@@ -2,9 +2,12 @@ import { useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
-import { usePlaybackActions } from "@/context/PlaybackContext";
+import {
+  useFileState,
+  usePlaybackActions,
+  useStereodrome,
+} from "@/core/selectors";
 import { useSongActions } from "@/context/SongActionContext";
-import { useFileState, useStereodrome } from "@/context/StereodromeContext";
 import { useViewStack } from "@/context/ViewContext";
 import { songFileState, visibleSongs } from "@/services/offlineLibrary";
 import { stereodromeCore } from "@/services/stereodromeCore";
@@ -77,7 +80,6 @@ export function AlbumScreen({ albumId }: { albumId: string; title: string }) {
           : {
               onLongSelect: async () => {
                 await stereodromeCore.downloadAlbum(albumId);
-                await fileState.refreshOfflineSongIds();
               },
             }),
       }))}

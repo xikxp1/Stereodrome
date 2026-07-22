@@ -1,10 +1,10 @@
 import { SelectableList } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
 import {
+  useFileState,
   usePlaybackActions,
   usePlaybackMetadata,
-} from "@/context/PlaybackContext";
-import { useFileState } from "@/context/StereodromeContext";
+} from "@/core/selectors";
 import { useViewStack } from "@/context/ViewContext";
 import { songFileState } from "@/services/offlineLibrary";
 

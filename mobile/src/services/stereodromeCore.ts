@@ -33,35 +33,12 @@ import type {
 
 type Envelope<T> = { ok: true; value: T } | { ok: false; error: string };
 type PayloadValidator<T> = (value: unknown) => value is T;
-type CoreEventPayloadMap = {
-  "playback-snapshot": PlaybackSnapshot;
-  "file-state-changed": FileStateSnapshot;
-  "sync-status-changed": LibrarySyncStatus;
-  "saved-playlist-offline-status-changed": SavedPlaylistOfflineStatus;
-  error: unknown;
-};
-type CoreEventName = keyof CoreEventPayloadMap;
-type CoreEventHandler<T = unknown> = (payload: T) => void;
-type CoreEventListeners = {
-  [Name in CoreEventName]: Set<CoreEventHandler<CoreEventPayloadMap[Name]>>;
-};
 
 const unavailable =
   "Stereodrome native core is not available in this development build";
 
 let initializePromise: Promise<boolean> | null = null;
-let nativePlaybackSubscription: { remove(): void } | null = null;
-let nativeCoreEventSubscription: { remove(): void } | null = null;
-let activeEventStreamId: number | null = null;
-let lastCoreEventSeq = 0;
 let nextRuntimeCommandId = Math.floor(Date.now() * 1000);
-const listeners: CoreEventListeners = {
-  "playback-snapshot": new Set(),
-  "file-state-changed": new Set(),
-  "sync-status-changed": new Set(),
-  "saved-playlist-offline-status-changed": new Set(),
-  error: new Set(),
-};
 
 function fileUriToPath(uri: string): string {
   if (!uri.startsWith("file://")) {
@@ -614,99 +591,6 @@ async function dispatchRuntimeCommand(command: Record<string, unknown>) {
   return parsed["value"];
 }
 
-function emitCoreEvent<Name extends CoreEventName>(
-  name: Name,
-  payload: CoreEventPayloadMap[Name]
-) {
-  listeners[name].forEach((listener) => {
-    try {
-      listener(payload);
-    } catch (error) {
-      if (name !== "error") {
-        emitCoreEvent("error", error);
-      }
-    }
-  });
-}
-
-function startNativePlaybackSubscription() {
-  if (nativePlaybackSubscription || !NativeStereodromeCore.addListener) {
-    return;
-  }
-  nativePlaybackSubscription = NativeStereodromeCore.addListener(
-    "playback-snapshot",
-    ({ snapshot }) => {
-      try {
-        const payload: unknown = JSON.parse(snapshot);
-        if (!isPlaybackSnapshot(payload)) {
-          throw new Error("Native core emitted an invalid playback snapshot");
-        }
-        emitCoreEvent("playback-snapshot", payload);
-      } catch (error) {
-        emitCoreEvent("error", error);
-      }
-    }
-  );
-}
-
-function startNativeCoreEventSubscription() {
-  if (nativeCoreEventSubscription || !NativeStereodromeCore.addListener) {
-    return;
-  }
-  nativeCoreEventSubscription = NativeStereodromeCore.addListener(
-    "core-event",
-    ({ event }) => {
-      try {
-        const parsed: unknown = JSON.parse(event);
-        if (
-          !isRecord(parsed) ||
-          typeof parsed["stream_id"] !== "number" ||
-          typeof parsed["seq"] !== "number" ||
-          typeof parsed["type"] !== "string"
-        ) {
-          throw new Error("Native core emitted an invalid event");
-        }
-        if (
-          parsed["stream_id"] !== activeEventStreamId ||
-          parsed["seq"] <= lastCoreEventSeq
-        ) {
-          return;
-        }
-        const payload = parsed["payload"];
-        switch (parsed["type"]) {
-          case "file-state":
-            if (!isFileStateSnapshot(payload)) {
-              throw new Error("Native core emitted invalid file state");
-            }
-            emitCoreEvent("file-state-changed", payload);
-            break;
-          case "sync-status":
-            if (!isLibrarySyncStatus(payload)) {
-              throw new Error("Native core emitted invalid sync status");
-            }
-            emitCoreEvent("sync-status-changed", payload);
-            break;
-          case "saved-playlist-offline-status":
-            if (!isSavedPlaylistOfflineStatus(payload)) {
-              throw new Error(
-                "Native core emitted invalid saved playlist offline status"
-              );
-            }
-            emitCoreEvent("saved-playlist-offline-status-changed", payload);
-            break;
-          default:
-            throw new Error(
-              `Native core emitted unknown event ${parsed["type"]}`
-            );
-        }
-        lastCoreEventSeq = parsed["seq"];
-      } catch (error) {
-        emitCoreEvent("error", error);
-      }
-    }
-  );
-}
-
 function queueItemFromSong(song: {
   id: string;
   title: string;
@@ -727,12 +611,7 @@ async function queueMutation(
   name: string,
   payload: unknown = null
 ): Promise<QueueState> {
-  try {
-    return await invokeJson(name, isQueueState, payload);
-  } catch (error) {
-    emitCoreEvent("error", error);
-    throw error;
-  }
+  return invokeJson(name, isQueueState, payload);
 }
 
 async function ensureInitialized(): Promise<boolean> {
@@ -754,17 +633,6 @@ async function ensureInitialized(): Promise<boolean> {
     if (!initialized) {
       throw new Error("Stereodrome Rust core failed to initialize");
     }
-    if (NativeStereodromeCore.call === undefined) {
-      throw new Error(unavailable);
-    }
-    activeEventStreamId = parseEnvelope(
-      await NativeStereodromeCore.call("getEventStreamId", "null"),
-      isNumber
-    );
-    lastCoreEventSeq = 0;
-    startNativePlaybackSubscription();
-    startNativeCoreEventSubscription();
-
     return true;
   })();
 
@@ -778,16 +646,6 @@ async function ensureInitialized(): Promise<boolean> {
 
 export const stereodromeCore = {
   initialize: ensureInitialized,
-  addEventListener<Name extends CoreEventName>(
-    name: Name,
-    listener: CoreEventHandler<CoreEventPayloadMap[Name]>
-  ): () => void {
-    const current = listeners[name];
-    current.add(listener);
-    return () => {
-      current.delete(listener);
-    };
-  },
   getConnectionStatus(): Promise<ConnectionStatus> {
     return invokeJson("getConnectionStatus", isConnectionStatus);
   },

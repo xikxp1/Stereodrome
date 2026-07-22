@@ -16,7 +16,7 @@ import {
 } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
-import { useFileState, useStereodrome } from "@/context/StereodromeContext";
+import { useStereodrome, useSyncStatus } from "@/core/selectors";
 import { useViewStack } from "@/context/ViewContext";
 import { configureLibrarySyncBackgroundTask } from "@/services/librarySyncScheduler";
 import { stereodromeCore } from "@/services/stereodromeCore";
@@ -25,7 +25,6 @@ import { backupSettingsOptions } from "@/screens/backupSettingsOptions";
 import type {
   AudioProcessingSettings,
   LastfmQueueItem,
-  LibrarySyncStatus,
   ScanStatus,
   SyncSettings,
 } from "@/types/music";
@@ -36,7 +35,6 @@ const prefetchCountPresets = [1, 2, 3, 5, 10];
 const cacheSizePresetsGb = [0.5, 1, 2, 5, 10, 20, 50];
 const incrementalSyncIntervals = [5, 15, 30, 60, 120, 360, 720];
 const fullReconcileIntervals = [1, 6, 12, 24, 48, 72, 168];
-const librarySyncStatusQueryKey = ["library-sync-status"] as const;
 const syncSettingsQueryKey = ["sync-settings"] as const;
 const scanStatusQueryKey = ["scan-status"] as const;
 const lastfmStatusQueryKey = ["lastfm-status"] as const;
@@ -160,7 +158,6 @@ const eqPresets: EqPreset[] = [
 
 export function SettingsScreen({ category }: { category?: string }) {
   const stereodrome = useStereodrome();
-  const fileState = useFileState();
   const mobileSettings = useMobileSettings();
   const view = useViewStack();
   const queryClient = useQueryClient();
@@ -173,11 +170,7 @@ export function SettingsScreen({ category }: { category?: string }) {
   const [textEditSaving, setTextEditSaving] = useState(false);
   const [textEditValue, setTextEditValue] = useState("");
   const selectedCategory = parseSettingsCategory(category);
-  const syncStatus = useQuery({
-    queryKey: librarySyncStatusQueryKey,
-    queryFn: stereodromeCore.getLibrarySyncStatus,
-    enabled: selectedCategory === "sync",
-  });
+  const syncStatus = { data: useSyncStatus() };
   const syncSettings = useQuery({
     queryKey: syncSettingsQueryKey,
     queryFn: stereodromeCore.getSyncSettings,
@@ -285,8 +278,6 @@ export function SettingsScreen({ category }: { category?: string }) {
           setMessage,
           onImported: async (summary) => {
             queryClient.clear();
-            await stereodrome.refreshStatus();
-            await fileState.refreshOfflineSongIds();
             const importedSyncSettings =
               await stereodromeCore.getSyncSettings();
             await configureLibrarySyncBackgroundTask(importedSyncSettings);
@@ -386,8 +377,7 @@ export function SettingsScreen({ category }: { category?: string }) {
             cancelSublabel: "Keep server connection",
             onConfirm: async () => {
               await runBusy("disconnect", async () => {
-                await stereodromeCore.disconnectServer();
-                await stereodrome.refreshStatus();
+                await stereodrome.disconnect();
                 setMessage("Disconnected");
               });
             },
@@ -463,10 +453,7 @@ export function SettingsScreen({ category }: { category?: string }) {
               ? "Running incremental sync"
               : "Running full sync"
             : "Idle",
-        onSelect: () =>
-          queryClient.invalidateQueries({
-            queryKey: librarySyncStatusQueryKey,
-          }),
+        onSelect: () => stereodrome.refreshStatus(),
       },
       ...syncScheduleOptions(
         syncSettings.data,
@@ -480,10 +467,7 @@ export function SettingsScreen({ category }: { category?: string }) {
               kind: "info" as const,
               label: "Incremental Error",
               sublabel: syncStatus.data.incremental.last_error,
-              onSelect: () =>
-                queryClient.invalidateQueries({
-                  queryKey: librarySyncStatusQueryKey,
-                }),
+              onSelect: () => stereodrome.refreshStatus(),
             },
           ]
         : []),
@@ -493,10 +477,7 @@ export function SettingsScreen({ category }: { category?: string }) {
               kind: "info" as const,
               label: "Full Sync Error",
               sublabel: syncStatus.data.full_reconcile.last_error,
-              onSelect: () =>
-                queryClient.invalidateQueries({
-                  queryKey: librarySyncStatusQueryKey,
-                }),
+              onSelect: () => stereodrome.refreshStatus(),
             },
           ]
         : []),
@@ -692,7 +673,6 @@ export function SettingsScreen({ category }: { category?: string }) {
             await queryClient.invalidateQueries({
               queryKey: ["audio-cache-stats"],
             });
-            await fileState.refreshOfflineSongIds();
             setMessage("Cache cleared");
           });
         },
@@ -735,9 +715,6 @@ export function SettingsScreen({ category }: { category?: string }) {
     });
     queryClient.setQueryData(syncSettingsQueryKey, next);
     await configureLibrarySyncBackgroundTask(next);
-    await queryClient.invalidateQueries({
-      queryKey: librarySyncStatusQueryKey,
-    });
   }
 
   async function runBusy(label: string, action: () => Promise<void>) {
@@ -768,10 +745,6 @@ export function SettingsScreen({ category }: { category?: string }) {
 
   async function runSync(mode: "incremental" | "full") {
     await runBusy(mode, async () => {
-      queryClient.setQueryData<LibrarySyncStatus>(
-        librarySyncStatusQueryKey,
-        (status) => markSyncStatusRunning(status, mode)
-      );
       if (mode === "incremental") {
         await stereodrome.syncIncremental();
         setMessage("Incremental sync started");
@@ -1403,31 +1376,6 @@ function parseSettingsCategory(value: string | undefined) {
     settingsCategories.find((settingsCategory) => settingsCategory.id === value)
       ?.id ?? null
   );
-}
-
-function markSyncStatusRunning(
-  status: LibrarySyncStatus | undefined,
-  mode: "incremental" | "full"
-) {
-  if (!status) {
-    return status;
-  }
-
-  const key = syncJobKey(mode);
-  return {
-    ...status,
-    active_job: key,
-    [key]: {
-      ...status[key],
-      running: true,
-      last_attempt_at: new Date().toISOString(),
-      last_error: null,
-    },
-  };
-}
-
-function syncJobKey(mode: "incremental" | "full") {
-  return mode === "full" ? "full_reconcile" : mode;
 }
 
 function formatScanStatus(status: ScanStatus) {

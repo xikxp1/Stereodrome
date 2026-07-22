@@ -9,7 +9,7 @@ import {
 } from "react-native";
 
 import { colors } from "@/components/theme";
-import { useStereodrome } from "@/context/StereodromeContext";
+import { useStereodrome } from "@/core/selectors";
 
 export function ConnectScreen() {
   const stereodrome = useStereodrome();

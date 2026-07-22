@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 
-import { usePlaybackMetadata } from "@/context/PlaybackContext";
+import { usePlaybackMetadata } from "@/core/selectors";
 import { useViewStack, type ViewName } from "@/context/ViewContext";
 import type { PlayableSong, Song } from "@/types/music";
 

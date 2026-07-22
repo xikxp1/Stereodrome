@@ -1,5 +1,5 @@
 import { SelectableList } from "@/components/SelectableList";
-import { usePlaybackMetadata } from "@/context/PlaybackContext";
+import { usePlaybackMetadata } from "@/core/selectors";
 import { useViewStack } from "@/context/ViewContext";
 
 export function HomeScreen() {
