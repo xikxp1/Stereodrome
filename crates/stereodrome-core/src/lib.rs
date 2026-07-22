@@ -5,6 +5,8 @@ mod lastfm;
 mod models;
 pub mod queue;
 mod subsonic;
+#[cfg(test)]
+pub mod test_support;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -4506,14 +4508,14 @@ pub(crate) fn clamp_audio_processing_settings(settings: &mut AudioProcessingSett
 #[cfg(test)]
 mod tests {
     use super::{
-        CacheStateEvent, ConnectivitySettings, CoreError, DownloadInProgressGuard, DownloadRecord,
-        DownloadRecordFinalizer, DueSyncJob, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT,
-        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, ServerConfig, Song,
-        StereodromeCore, SyncSettings, build_client, compute_next_run_at,
-        cover_art_filename_matches, cover_cache_filename, distinct_nonempty_cover_art_ids,
-        ensure_incremental_albums_complete, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
-        prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
-        write_sync_value,
+        AudioProcessingSettings, CacheStateEvent, ConnectivitySettings, CoreError,
+        DownloadInProgressGuard, DownloadRecord, DownloadRecordFinalizer, DueSyncJob,
+        LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate, NewestAlbumPageEntry,
+        NewestPageScanResult, PlaybackProgress, ServerConfig, Song, StereodromeCore, SyncSettings,
+        build_client, compute_next_run_at, cover_art_filename_matches, cover_cache_filename,
+        distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete, is_job_due,
+        path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
+        scan_newest_album_page, should_prefetch_large_cover_art, write_sync_value,
     };
     use crate::queue::{PlayQueue, QueueItem, RepeatMode};
     use chrono::{Duration as ChronoDuration, Utc};
@@ -4704,6 +4706,129 @@ mod tests {
             album: "Album".to_string(),
             duration: 180,
         }
+    }
+
+    #[test]
+    fn cold_restore_preserves_queue_selection_and_playback_position() {
+        let data_dir = unique_temp_dir("cold-restore-characterization");
+        {
+            let core = StereodromeCore::new(&data_dir).expect("core initializes");
+            core.add_songs_to_queue(vec![
+                prefetch_queue_item("song-a"),
+                prefetch_queue_item("song-b"),
+            ])
+            .expect("queue is populated");
+            core.play_queue_item(1).expect("second song is selected");
+            core.save_playback_position(PlaybackProgress {
+                song_id: "song-b".to_string(),
+                position_seconds: 42.5,
+                duration_seconds: 180.0,
+                is_playing: true,
+            })
+            .expect("playback position is saved");
+        }
+
+        let restored = StereodromeCore::new(&data_dir).expect("core restores");
+        let queue = restored.get_queue().expect("queue restores");
+        let playback = restored.get_playback_state().expect("playback restores");
+
+        assert_eq!(queue.items.len(), 2);
+        assert_eq!(queue.current_index, Some(1));
+        assert_eq!(queue.items[1].song_id, "song-b");
+        assert_eq!(playback.current_song_id.as_deref(), Some("song-b"));
+        assert!((playback.position_seconds - 42.5).abs() < f64::EPSILON);
+        assert!(playback.was_playing);
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn rapid_queue_navigation_remains_ordered_and_durable() {
+        let data_dir = unique_temp_dir("rapid-navigation-characterization");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        core.add_songs_to_queue(vec![
+            prefetch_queue_item("song-a"),
+            prefetch_queue_item("song-b"),
+            prefetch_queue_item("song-c"),
+        ])
+        .expect("queue is populated");
+        core.play_queue_item(0).expect("first song is selected");
+
+        for _ in 0..20 {
+            assert_eq!(
+                core.play_next(Some(true))
+                    .expect("next succeeds")
+                    .as_ref()
+                    .map(|item| item.song_id.as_str()),
+                Some("song-b")
+            );
+            assert_eq!(
+                core.play_previous()
+                    .expect("previous succeeds")
+                    .as_ref()
+                    .map(|item| item.song_id.as_str()),
+                Some("song-a")
+            );
+        }
+
+        drop(core);
+        let restored = StereodromeCore::new(&data_dir).expect("core restores");
+        assert_eq!(
+            restored.get_queue().expect("queue restores").current_index,
+            Some(0)
+        );
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn clear_queue_and_audio_settings_are_persisted_across_restart() {
+        let data_dir = unique_temp_dir("clear-settings-characterization");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        core.add_to_queue(prefetch_queue_item("song-a"))
+            .expect("queue item is added");
+        core.play_queue_item(0).expect("song is selected");
+        core.clear_queue().expect("queue clears");
+
+        let settings = core
+            .set_audio_processing_settings(AudioProcessingSettings {
+                normalization_enabled: true,
+                normalization_mode: "invalid".to_string(),
+                target_lufs: -100.0,
+                preamp_db: 100.0,
+                prevent_clipping: true,
+                dynamics_enabled: true,
+                dynamics_preset: "invalid".to_string(),
+                binaural_enabled: true,
+                binaural_preset: "invalid".to_string(),
+                equalizer_enabled: true,
+                equalizer_bands_db: vec![24.0],
+                gapless_enabled: true,
+                crossfade_enabled: true,
+                crossfade_duration_ms: 100,
+                prefetch_count: 100,
+            })
+            .expect("audio settings persist");
+        assert_eq!(settings.normalization_mode, "track");
+        assert!((settings.target_lufs + 24.0).abs() < f64::EPSILON);
+        assert!((settings.preamp_db - 12.0).abs() < f64::EPSILON);
+        assert_eq!(settings.equalizer_bands_db.len(), 12);
+
+        drop(core);
+        let restored = StereodromeCore::new(&data_dir).expect("core restores");
+        assert!(
+            restored
+                .get_queue()
+                .expect("queue restores")
+                .items
+                .is_empty()
+        );
+        assert_eq!(
+            restored
+                .get_audio_processing_settings()
+                .expect("settings restore")
+                .prefetch_count,
+            10
+        );
+        std::fs::remove_dir_all(data_dir).ok();
     }
 
     #[test]
@@ -5183,6 +5308,59 @@ mod tests {
         assert!(playlists[0].saved_offline);
         assert_eq!(playlists[0].offline_saved_at.as_deref(), Some("now"));
 
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn saved_playlist_reconcile_uses_cached_library_without_a_connection() {
+        let data_dir = unique_temp_dir("saved-playlist-reconcile-characterization");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let conn = Connection::open(&core.db_path).expect("open test db");
+
+        conn.execute(
+            "INSERT INTO artists (id, name, synced_at) VALUES ('artist', 'Artist', 'now')",
+            [],
+        )
+        .expect("insert artist");
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, synced_at)
+             VALUES ('album', 'artist', 'Album', 'now')",
+            [],
+        )
+        .expect("insert album");
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, synced_at)
+             VALUES ('cached-song', 'album', 'artist', 'Cached Song', 'now')",
+            [],
+        )
+        .expect("insert song");
+        conn.execute(
+            "INSERT INTO playlists
+             (id, name, song_count, duration, created_at, changed_at, offline_saved_at, synced_at)
+             VALUES ('saved-playlist', 'Saved Playlist', 1, 0, 'now', 'now', 'now', 'now')",
+            [],
+        )
+        .expect("insert playlist");
+        conn.execute(
+            "INSERT INTO playlist_songs (playlist_id, song_id, position)
+             VALUES ('saved-playlist', 'cached-song', 0)",
+            [],
+        )
+        .expect("insert playlist song");
+        let cache_path = core
+            .audio_cache_path("cached-song", MOBILE_PLAYBACK_FORMAT)
+            .expect("cache path");
+        std::fs::write(cache_path, b"cached audio").expect("write cached song");
+
+        let results = core
+            .reconcile_saved_playlists_offline()
+            .await
+            .expect("saved playlist reconciliation succeeds");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].playlist_id, "saved-playlist");
+        assert_eq!(results[0].downloaded_count, 1);
+        assert!(results[0].saved_offline);
         std::fs::remove_dir_all(data_dir).ok();
     }
 

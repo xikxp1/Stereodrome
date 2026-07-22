@@ -3107,9 +3107,65 @@ fn into_c_string(value: String) -> *mut c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
     use std::sync::Barrier;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
     use std::sync::mpsc::{self, RecvTimeoutError};
+
+    #[derive(Deserialize)]
+    struct LegacyCommandFixture {
+        name: String,
+        method: String,
+        payload: Value,
+        expected_value: Value,
+    }
+
+    struct TestMobileCore {
+        pointer: *mut MobileCore,
+        data_dir: PathBuf,
+    }
+
+    impl TestMobileCore {
+        fn new(name: &str) -> Self {
+            static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+            let test_id = NEXT_TEST_ID.fetch_add(1, AtomicOrdering::Relaxed);
+            let data_dir = std::env::temp_dir().join(format!(
+                "stereodrome-ffi-{name}-{}-{test_id}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&data_dir);
+            let data_dir_string = CString::new(data_dir.to_string_lossy().as_bytes())
+                .expect("test data directory has no null bytes");
+            let pointer = stereodrome_core_new(data_dir_string.as_ptr());
+            assert!(!pointer.is_null(), "mobile core initializes");
+            Self { pointer, data_dir }
+        }
+
+        fn call(&self, method: &str, payload: &Value) -> Value {
+            let method = CString::new(method).expect("fixture method has no null bytes");
+            let payload = CString::new(payload.to_string()).expect("payload has no null bytes");
+            let response = stereodrome_core_call(self.pointer, method.as_ptr(), payload.as_ptr());
+            assert!(!response.is_null(), "FFI returns a response");
+            let response_json = unsafe { CStr::from_ptr(response) }
+                .to_str()
+                .expect("FFI response is UTF-8")
+                .to_string();
+            unsafe { stereodrome_core_free_string(response) };
+            serde_json::from_str(&response_json).expect("FFI response is JSON")
+        }
+
+        fn mobile(&self) -> &MobileCore {
+            unsafe { &*self.pointer }
+        }
+    }
+
+    impl Drop for TestMobileCore {
+        fn drop(&mut self) {
+            unsafe { stereodrome_core_destroy(self.pointer) };
+            let _ = std::fs::remove_dir_all(&self.data_dir);
+        }
+    }
 
     fn test_queue_item(id: &str) -> QueueItem {
         QueueItem {
@@ -3119,6 +3175,129 @@ mod tests {
             album: "Album".to_string(),
             duration: 180,
         }
+    }
+
+    #[test]
+    fn legacy_command_fixtures_round_trip_through_the_c_abi() {
+        let fixtures: Vec<LegacyCommandFixture> = serde_json::from_str(include_str!(
+            "../tests/fixtures/legacy-command-contract.json"
+        ))
+        .expect("legacy command fixtures parse");
+        let core = TestMobileCore::new("legacy-command-contract");
+
+        for fixture in fixtures {
+            let response = core.call(&fixture.method, &fixture.payload);
+            assert_eq!(
+                response["ok"], true,
+                "fixture failed: {} ({response})",
+                fixture.name
+            );
+            assert_eq!(
+                response["value"], fixture.expected_value,
+                "fixture changed: {}",
+                fixture.name
+            );
+        }
+
+        let unknown = core.call("notARealMethod", &Value::Null);
+        assert_eq!(unknown["ok"], false);
+        assert_eq!(unknown["error"], "unknown method: notARealMethod");
+    }
+
+    #[test]
+    fn shared_playback_snapshot_fixture_matches_the_rust_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../mobile/modules/stereodrome-core/fixtures/playback-snapshot.json"
+        ))
+        .expect("playback snapshot fixture parses");
+        let queue: QueueState = serde_json::from_value(fixture["queue"].clone())
+            .expect("fixture queue matches shared queue contract");
+
+        assert_eq!(fixture["seq"], 42);
+        assert_eq!(fixture["state"], "playing");
+        assert_eq!(fixture["output_state"], "ready");
+        assert_eq!(fixture["song"]["id"], "song-b");
+        assert_eq!(fixture["queue_index"], 1);
+        assert_eq!(fixture["queue_length"], 2);
+        assert_eq!(queue.current_index, Some(1));
+        assert_eq!(queue.items[1].song_id, "song-b");
+        assert_eq!(queue.repeat_mode, RepeatMode::All);
+
+        for capability in ["can_play", "can_next", "can_previous", "can_seek"] {
+            assert!(
+                fixture[capability].is_boolean(),
+                "{capability} remains a boolean"
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_mobile_jobs_and_backup_exclusion_are_characterized() {
+        let core = TestMobileCore::new("job-exclusion-characterization");
+        let mobile = core.mobile();
+
+        mobile
+            .sync_state
+            .lock()
+            .expect("sync state lock")
+            .active_job = Some(MobileSyncJob::Incremental);
+        assert_eq!(
+            start_sync_job(mobile, MobileSyncJob::Full),
+            Err("incremental library sync is already running".to_string())
+        );
+        assert!(ensure_backup_jobs_idle(mobile).is_err());
+
+        mobile
+            .sync_state
+            .lock()
+            .expect("sync state lock")
+            .active_job = None;
+        mobile
+            .saved_playlist_offline_state
+            .lock()
+            .expect("saved playlist state lock")
+            .running = true;
+        assert!(ensure_backup_jobs_idle(mobile).is_err());
+
+        mobile
+            .saved_playlist_offline_state
+            .lock()
+            .expect("saved playlist state lock")
+            .running = false;
+        mobile
+            .prefetch_state
+            .lock()
+            .expect("prefetch state lock")
+            .requested_plan = Some(QueuePrefetchPlan {
+            queue_revision: 1,
+            current_index: None,
+            song_ids: vec!["song".to_string()],
+        });
+        assert!(ensure_backup_jobs_idle(mobile).is_err());
+
+        mobile
+            .prefetch_state
+            .lock()
+            .expect("prefetch state lock")
+            .requested_plan = None;
+        assert!(ensure_backup_jobs_idle(mobile).is_ok());
+    }
+
+    #[test]
+    fn mobile_core_shutdown_cancels_an_active_prefetch_worker() {
+        let core = TestMobileCore::new("shutdown-prefetch-characterization");
+        core.mobile()
+            .core
+            .add_songs_to_queue(vec![test_queue_item("current"), test_queue_item("next")])
+            .expect("queue is populated");
+        core.mobile()
+            .core
+            .play_queue_item(0)
+            .expect("current song is selected");
+
+        start_queue_prefetch(core.mobile(), false).expect("prefetch starts");
+
+        drop(core);
     }
 
     #[test]
