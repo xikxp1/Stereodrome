@@ -18,7 +18,7 @@ protocol version is currently `1`.
 ```
 
 Caller command IDs must be in `1..2^63`; the high range is reserved for
-compatibility aliases generated inside the Rust handle. Repeating a recently
+commands generated inside the Rust handle. Repeating a recently
 used ID with the same command returns the result from the bounded replay window
 without applying the mutation again. Reusing a retained ID for a different
 command returns a structured `conflict` error.
@@ -77,9 +77,10 @@ All runtime events carry:
 - a tagged event payload
 
 The in-process Rust handle exposes the ordered event stream through
-`StereodromeRuntimeHandle::subscribe`. The compatibility mobile adapter projects
-the runtime playback snapshot directly to the existing native playback callback
-and rejects delayed projections by runtime revision.
+`StereodromeRuntimeHandle::subscribe`. The C ABI forwards that same `CoreEvent`
+JSON without an adapter envelope. Swift, Kotlin, and React Native consume the
+`snapshot-changed` event; native projects `snapshot.playback` directly to the OS
+media session.
 
 ## C ABI
 
@@ -90,10 +91,13 @@ void *stereodrome_runtime_new(const char *data_dir);
 void stereodrome_runtime_destroy(void *runtime);
 char *stereodrome_runtime_dispatch(void *runtime, const char *command_json);
 char *stereodrome_runtime_snapshot(void *runtime);
-void stereodrome_runtime_string_free(char *value);
+void stereodrome_runtime_set_event_callback(
+    void *runtime,
+    void (*callback)(const char *event, void *context),
+    void *context);
+void stereodrome_string_free(char *value);
 ```
 
-The existing `stereodrome_core_*` ABI remains available. Existing method names
-are compatibility aliases into the typed mailbox; playback aliases no longer
-own an `AudioPlayer` or playback monitor in FFI. New operations must be added
-only to `CoreCommand`, not to the legacy method-string dispatch.
+This is the only mobile command ABI. Operations are added to `CoreCommand` and
+sent through `stereodrome_runtime_dispatch`; there is no method-string dispatch
+or command-specific policy in `stereodrome-ffi`.

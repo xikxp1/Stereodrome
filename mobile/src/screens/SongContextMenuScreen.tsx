@@ -5,10 +5,11 @@ import {
   SelectableList,
   type SelectableOption,
 } from "@/components/SelectableList";
+import { coreClient } from "@/core/client";
+import { queueItemFromSong } from "@/core/queue";
 import { usePlaybackMetadata, useStereodrome } from "@/core/selectors";
 import { useSongActions } from "@/context/SongActionContext";
 import { useViewStack } from "@/context/ViewContext";
-import { stereodromeCore } from "@/services/stereodromeCore";
 import type { Song } from "@/types/music";
 
 function songSubtitle(song: { artist?: string | null; album?: string | null }) {
@@ -23,12 +24,17 @@ export function SongContextMenuScreen() {
   const target = songActions.menuTarget;
   const playlists = useQuery({
     queryKey: ["playlists", stereodrome.offlineMode ? "offline" : "online"],
-    queryFn: stereodromeCore.getPlaylists,
+    queryFn: () => coreClient.dispatchTyped({ type: "get-playlists" }),
     enabled: !stereodrome.offlineMode,
   });
   const songs = useQuery({
     queryKey: ["songs"],
-    queryFn: () => stereodromeCore.getSongs(),
+    queryFn: () =>
+      coreClient.dispatchTyped({
+        type: "get-songs",
+        album_id: null,
+        artist_id: null,
+      }),
     enabled: target !== null && target.fullSong == null,
   });
 
@@ -62,7 +68,10 @@ export function SongContextMenuScreen() {
       sublabel: songSubtitle(song),
       disabled: isCurrentSong || isNextSong,
       onSelect: async () => {
-        await stereodromeCore.insertNext(song);
+        await coreClient.dispatch({
+          type: "insert-next",
+          item: queueItemFromSong(song),
+        });
         view.pop();
       },
     },
@@ -71,7 +80,10 @@ export function SongContextMenuScreen() {
       sublabel: isAlreadyQueued ? "Already in queue" : songSubtitle(song),
       disabled: isAlreadyQueued,
       onSelect: async () => {
-        await stereodromeCore.addToQueue(song);
+        await coreClient.dispatch({
+          type: "add-to-queue",
+          item: queueItemFromSong(song),
+        });
         view.pop();
       },
     },

@@ -1,12 +1,10 @@
 package expo.modules.stereodromecore
 
 import android.content.Context
-import android.util.Log
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicLong
 
 object StereodromeCoreBridge {
-  private const val TAG = "StereodromeCoreBridge"
   private val jni = StereodromeCoreJni()
   private val lock = Any()
   private val nextCallbackToken = AtomicLong(1)
@@ -53,24 +51,10 @@ object StereodromeCoreBridge {
     if (callbackToken != activeCallbackToken) {
       return
     }
-    try {
-      val envelope = JSONObject(event)
-      if (envelope.optString("type") == "platform-projection") {
-        applicationContext?.let { context ->
-          StereodromeMediaSessionState.applyPlatformEvent(context, event)
-        }
-      }
-    } catch (error: Throwable) {
-      Log.e(TAG, "Failed to apply platform projection", error)
+    applicationContext?.let { context ->
+      StereodromeMediaSessionState.applyRuntimeEvent(context, event)
     }
     coreEventListener?.invoke(event)
-  }
-
-  fun call(method: String, payload: String): String = synchronized(lock) {
-    if (handle == 0L) {
-      return """{"ok":false,"error":"Stereodrome Rust core is not initialized"}"""
-    }
-    jni.call(handle, method, payload)
   }
 
   fun dispatch(commandJson: String): String = synchronized(lock) {

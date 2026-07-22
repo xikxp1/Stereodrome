@@ -9,15 +9,8 @@ private func stereodromeRuntimeNew(_ dataDir: UnsafePointer<CChar>) -> OpaquePoi
 @_silgen_name("stereodrome_runtime_destroy")
 private func stereodromeRuntimeDestroy(_ core: OpaquePointer?)
 
-@_silgen_name("stereodrome_core_call")
-private func stereodromeCoreCall(
-  _ core: OpaquePointer?,
-  _ method: UnsafePointer<CChar>,
-  _ payload: UnsafePointer<CChar>
-) -> UnsafeMutablePointer<CChar>?
-
-@_silgen_name("stereodrome_core_free_string")
-private func stereodromeCoreFreeString(_ value: UnsafeMutablePointer<CChar>?)
+@_silgen_name("stereodrome_string_free")
+private func stereodromeStringFree(_ value: UnsafeMutablePointer<CChar>?)
 
 @_silgen_name("stereodrome_runtime_dispatch")
 private func stereodromeRuntimeDispatch(
@@ -135,10 +128,11 @@ fileprivate struct PlaybackProjection {
     guard
       let data = eventJson.data(using: .utf8),
       let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      Self.stringValue(event["type"]) == "platform-projection",
-      let payload = event["payload"] as? [String: Any],
-      Self.intValue(payload["protocol_version"]) == 1,
-      let snapshot = payload["projection"] as? [String: Any]
+      Self.intValue(event["protocol_version"]) == 1,
+      let kind = event["kind"] as? [String: Any],
+      Self.stringValue(kind["type"]) == "snapshot-changed",
+      let runtimeSnapshot = kind["snapshot"] as? [String: Any],
+      let snapshot = runtimeSnapshot["playback"] as? [String: Any]
     else {
       return nil
     }
@@ -217,8 +211,8 @@ fileprivate struct PlaybackProjection {
   )
 }
 
-@_silgen_name("stereodrome_core_set_log_callback")
-private func stereodromeCoreSetLogCallback(_ callback: StereodromeRustLogCallback?)
+@_silgen_name("stereodrome_runtime_set_log_callback")
+private func stereodromeRuntimeSetLogCallback(_ callback: StereodromeRustLogCallback?)
 
 @_silgen_name("stereodrome_runtime_set_event_callback")
 private func stereodromeRuntimeSetEventCallback(
@@ -368,7 +362,7 @@ public class StereodromeCoreModule: Module {
 
     AsyncFunction("initialize") { (_ dataDir: String) -> Bool in
       setActiveStereodromeCoreModule(self)
-      stereodromeCoreSetLogCallback(stereodromeRustLogCallback)
+      stereodromeRuntimeSetLogCallback(stereodromeRustLogCallback)
       self.configureAudioSession()
       if self.core == nil {
         self.core = self.coreQueue.sync {
@@ -390,10 +384,6 @@ public class StereodromeCoreModule: Module {
       return self.core != nil
     }
 
-    AsyncFunction("call") { (_ method: String, _ payload: String) -> String in
-      return self.callSync(method: method, payload: payload)
-    }
-
     AsyncFunction("dispatch") { (_ commandJson: String) -> String in
       return self.coreQueue.sync {
         guard let core = self.core else {
@@ -404,21 +394,10 @@ public class StereodromeCoreModule: Module {
             return #"{"protocol_version":1,"command_id":0,"accepted_revision":0,"operation_id":null,"status":"failed","error":{"code":"internal","message":"Rust returned null","retryable":false}}"#
           }
           let result = String(cString: resultPointer)
-          stereodromeCoreFreeString(resultPointer)
+          stereodromeStringFree(resultPointer)
           return result
         }
       }
-    }
-
-    AsyncFunction("getConnectionStatus") { () -> String in
-      return self.callSync(method: "getConnectionStatus", payload: "null")
-    }
-
-    AsyncFunction("getStreamUri") { (_ songId: String) -> String in
-      let escapedSongId = songId
-        .replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "\"", with: "\\\"")
-      return self.callSync(method: "getStreamUri", payload: "\"\(escapedSongId)\"")
     }
 
     Events("core-event")
@@ -480,30 +459,6 @@ public class StereodromeCoreModule: Module {
       return nil
     }
     return artworkUri
-  }
-
-  private func callSync(method: String, payload: String) -> String {
-    return coreQueue.sync {
-      callCore(method: method, payload: payload)
-    }
-  }
-
-  private func callCore(method: String, payload: String) -> String {
-    guard let core else {
-      return #"{"ok":false,"error":"Stereodrome Rust core is not initialized"}"#
-    }
-
-    return method.withCString { methodPointer in
-      payload.withCString { payloadPointer in
-        guard let resultPointer = stereodromeCoreCall(core, methodPointer, payloadPointer) else {
-          return #"{"ok":false,"error":"Rust returned null"}"#
-        }
-
-        let result = String(cString: resultPointer)
-        stereodromeCoreFreeString(resultPointer)
-        return result
-      }
-    }
   }
 
   private func configureAudioSession() {
@@ -617,7 +572,7 @@ public class StereodromeCoreModule: Module {
         return runtimeError("Rust returned null")
       }
       let result = String(cString: resultPointer)
-      stereodromeCoreFreeString(resultPointer)
+      stereodromeStringFree(resultPointer)
       return result
     }
   }

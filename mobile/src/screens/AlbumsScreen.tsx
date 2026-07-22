@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
+import { coreClient } from "@/core/client";
 import {
   useFileState,
   usePlaybackActions,
@@ -8,7 +9,6 @@ import {
 } from "@/core/selectors";
 import { useViewStack } from "@/context/ViewContext";
 import { visibleAlbums, visibleSongs } from "@/services/offlineLibrary";
-import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function AlbumsScreen() {
   const view = useViewStack();
@@ -17,11 +17,17 @@ export function AlbumsScreen() {
   const fileState = useFileState();
   const albums = useQuery({
     queryKey: ["albums"],
-    queryFn: () => stereodromeCore.getAlbums(),
+    queryFn: () =>
+      coreClient.dispatchTyped({ type: "get-albums", artist_id: null }),
   });
   const songs = useQuery({
     queryKey: ["songs"],
-    queryFn: () => stereodromeCore.getSongs(),
+    queryFn: () =>
+      coreClient.dispatchTyped({
+        type: "get-songs",
+        album_id: null,
+        artist_id: null,
+      }),
     enabled: stereodrome.offlineMode,
   });
   const shownAlbums = visibleAlbums(
@@ -35,7 +41,11 @@ export function AlbumsScreen() {
 
   async function playAlbum(albumId: string) {
     const albumSongs = visibleSongs(
-      await stereodromeCore.getSongs(albumId),
+      await coreClient.dispatchTyped({
+        type: "get-songs",
+        album_id: albumId,
+        artist_id: null,
+      }),
       stereodrome.offlineMode,
       fileState.offlineSongIds
     );

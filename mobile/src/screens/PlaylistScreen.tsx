@@ -7,6 +7,7 @@ import {
   type SelectableOption,
 } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
+import { coreClient } from "@/core/client";
 import {
   useFileState,
   usePlaybackActions,
@@ -15,7 +16,6 @@ import {
 import { useSongActions } from "@/context/SongActionContext";
 import { useViewStack } from "@/context/ViewContext";
 import { songFileState, visibleSongs } from "@/services/offlineLibrary";
-import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function PlaylistScreen({
   playlistId,
@@ -31,12 +31,16 @@ export function PlaylistScreen({
   const queryClient = useQueryClient();
   const songs = useQuery({
     queryKey: ["playlist-songs", playlistId],
-    queryFn: () => stereodromeCore.getPlaylistSongs(playlistId),
+    queryFn: () =>
+      coreClient.dispatchTyped({
+        type: "get-playlist-songs",
+        playlist_id: playlistId,
+      }),
     enabled: Boolean(playlistId),
   });
   const playlists = useQuery({
     queryKey: ["playlists", stereodrome.offlineMode ? "offline" : "online"],
-    queryFn: stereodromeCore.getPlaylists,
+    queryFn: () => coreClient.dispatchTyped({ type: "get-playlists" }),
   });
   const playlist = (playlists.data ?? []).find(
     (item) => item.id === playlistId
@@ -85,10 +89,11 @@ export function PlaylistScreen({
       return;
     }
     try {
-      await stereodromeCore.setPlaylistSavedOffline(
-        playlistId,
-        nextSavedOffline
-      );
+      await coreClient.dispatchTyped({
+        type: "set-playlist-saved-offline",
+        playlist_id: playlistId,
+        saved_offline: nextSavedOffline,
+      });
       await queryClient.invalidateQueries({ queryKey: ["playlists"] });
     } catch (saveError) {
       Alert.alert(

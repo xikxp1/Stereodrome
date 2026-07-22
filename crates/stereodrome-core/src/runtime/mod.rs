@@ -2408,13 +2408,36 @@ fn process_request(
         request.command,
         CoreCommand::Initialize | CoreCommand::GetSnapshot
     ) {
-        return match build_snapshot(core, audio, state).and_then(to_value) {
-            Ok(value) => CoreCommandResult::succeeded(
-                request.command_id,
-                state.revision,
-                operation_id,
-                value,
-            ),
+        return match build_snapshot(core, audio, state) {
+            Ok(snapshot) => {
+                if matches!(request.command, CoreCommand::Initialize) {
+                    emit_event(
+                        events,
+                        stream_id,
+                        next_event_id,
+                        state.revision,
+                        request.command_id,
+                        None,
+                        CoreEventKind::SnapshotChanged {
+                            snapshot: Box::new(snapshot.clone()),
+                        },
+                    );
+                }
+                match to_value(snapshot) {
+                    Ok(value) => CoreCommandResult::succeeded(
+                        request.command_id,
+                        state.revision,
+                        operation_id,
+                        value,
+                    ),
+                    Err(error) => CoreCommandResult::failed(
+                        request.command_id,
+                        state.revision,
+                        operation_id,
+                        ProtocolError::from(&error),
+                    ),
+                }
+            }
             Err(error) => CoreCommandResult::failed(
                 request.command_id,
                 state.revision,
@@ -2867,7 +2890,7 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_and_caller_command_ids_use_separate_ranges() {
+    fn generated_and_caller_command_ids_use_separate_ranges() {
         let data_dir = test_dir("command-id-ranges");
         let handle = StereodromeRuntimeHandle::start(&data_dir).expect("runtime starts");
         let generated = handle.dispatch_command(CoreCommand::AddToQueue {

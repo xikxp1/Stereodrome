@@ -3,8 +3,8 @@ import { useEffect } from "react";
 
 import { SelectableList } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
+import { coreClient } from "@/core/client";
 import { useFileState, useStereodrome } from "@/core/selectors";
-import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function DownloadsScreen() {
   const fileState = useFileState();
@@ -12,7 +12,7 @@ export function DownloadsScreen() {
   const queryClient = useQueryClient();
   const cacheStats = useQuery({
     queryKey: ["audio-cache-stats"],
-    queryFn: stereodromeCore.getAudioCacheStats,
+    queryFn: () => coreClient.dispatchTyped({ type: "get-audio-cache-stats" }),
   });
   const { protectedActionRows } = useProtectedSelectableAction(
     `downloads:${cacheStats.data?.file_count ?? 0}:${cacheStats.data?.total_size ?? 0}`
@@ -47,7 +47,7 @@ export function DownloadsScreen() {
                 label: "Prefetch Queue",
                 sublabel: "Download upcoming uncached queue items",
                 onSelect: async () => {
-                  await stereodromeCore.prefetchNext();
+                  await coreClient.dispatch({ type: "start-queue-prefetch" });
                 },
               },
             ]),
@@ -60,7 +60,7 @@ export function DownloadsScreen() {
           cancelLabel: "Cancel Clear",
           cancelSublabel: "Keep cached audio",
           onConfirm: async () => {
-            await stereodromeCore.clearAudioCache();
+            await coreClient.dispatchTyped({ type: "clear-audio-cache" });
           },
         }),
       ];

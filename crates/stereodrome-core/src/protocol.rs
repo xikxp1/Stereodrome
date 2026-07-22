@@ -325,44 +325,6 @@ pub enum CoreCommand {
 }
 
 impl CoreCommand {
-    /// Returns whether successful handling changes queue or playback projection.
-    #[must_use]
-    pub fn changes_playback_projection(&self) -> bool {
-        matches!(
-            self,
-            Self::PlaySelection { .. }
-                | Self::ClearPlayback
-                | Self::NavigatePlayback { .. }
-                | Self::TogglePlayback
-                | Self::PausePlayback
-                | Self::ResumePlayback
-                | Self::StopPlayback
-                | Self::SeekTo { .. }
-                | Self::SeekBy { .. }
-                | Self::SetPlaybackVolume { .. }
-                | Self::RebuildAudioOutput
-                | Self::ApplyAudioSettings
-                | Self::PrepareNextTransition
-                | Self::ReportPlatformPlayback { .. }
-                | Self::SetAudioProcessing { .. }
-                | Self::AddToQueue { .. }
-                | Self::AddSongsToQueue { .. }
-                | Self::InsertNext { .. }
-                | Self::InsertNextSongs { .. }
-                | Self::RemoveFromQueue { .. }
-                | Self::ClearQueue
-                | Self::MoveQueueItem { .. }
-                | Self::PlayQueueItem { .. }
-                | Self::PlayNext { .. }
-                | Self::PlayPrevious
-                | Self::ToggleShuffle
-                | Self::SetRepeatMode { .. }
-                | Self::CycleRepeatMode
-                | Self::RerollNext
-                | Self::ImportPortableBackup { .. }
-        )
-    }
-
     #[must_use]
     pub(crate) fn invalidates_queue_prefetch(&self) -> bool {
         matches!(

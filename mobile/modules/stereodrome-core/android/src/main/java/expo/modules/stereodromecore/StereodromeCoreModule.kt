@@ -31,27 +31,8 @@ class StereodromeCoreModule : Module() {
       }
     }
 
-    AsyncFunction("getConnectionStatus") {
-      callCore("getConnectionStatus", "null")
-    }
-
-    AsyncFunction("getStreamUri") { songId: String ->
-      callCore("getStreamUri", "\"${escapeJson(songId)}\"")
-    }
-
-    AsyncFunction("call") { method: String, payload: String ->
-      callCore(method, payload)
-    }
-
     AsyncFunction("dispatch") { commandJson: String ->
       StereodromeCoreBridge.dispatch(commandJson)
     }
   }
-
-  private fun callCore(method: String, payload: String): String {
-    return StereodromeCoreBridge.call(method, payload)
-  }
-
-  private fun escapeJson(value: String): String =
-    value.replace("\\", "\\\\").replace("\"", "\\\"")
 }

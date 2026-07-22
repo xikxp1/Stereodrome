@@ -2,6 +2,8 @@ import { useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
+import { coreClient } from "@/core/client";
+import { queueItemFromSong } from "@/core/queue";
 import {
   useFileState,
   usePlaybackActions,
@@ -10,7 +12,6 @@ import {
 import { useSongActions } from "@/context/SongActionContext";
 import { useViewStack } from "@/context/ViewContext";
 import { songFileState, visibleSongs } from "@/services/offlineLibrary";
-import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function SongsScreen({ artistId }: { artistId?: string }) {
   const playback = usePlaybackActions();
@@ -20,7 +21,12 @@ export function SongsScreen({ artistId }: { artistId?: string }) {
   const view = useViewStack();
   const songs = useQuery({
     queryKey: artistId === undefined ? ["songs"] : ["artist-songs", artistId],
-    queryFn: () => stereodromeCore.getSongs(undefined, artistId),
+    queryFn: () =>
+      coreClient.dispatchTyped({
+        type: "get-songs",
+        album_id: null,
+        artist_id: artistId ?? null,
+      }),
   });
   const shownSongs = visibleSongs(
     songs.data ?? [],
@@ -75,7 +81,10 @@ export function SongsScreen({ artistId }: { artistId?: string }) {
           view.showNowPlaying();
         },
         onLongSelect: async () => {
-          await stereodromeCore.insertNext(song);
+          await coreClient.dispatch({
+            type: "insert-next",
+            item: queueItemFromSong(song),
+          });
         },
       }))}
       onActiveIndexChange={handleActiveIndexChange}

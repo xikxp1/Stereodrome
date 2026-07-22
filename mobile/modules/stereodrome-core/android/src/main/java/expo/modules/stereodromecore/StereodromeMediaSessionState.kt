@@ -62,8 +62,8 @@ object StereodromeMediaSessionState {
     }
   }
 
-  fun applyPlatformEvent(context: Context, event: String) {
-    val info = when (val projection = NowPlayingInfo.fromPlatformEventJson(event)) {
+  fun applyRuntimeEvent(context: Context, event: String) {
+    val info = when (val projection = NowPlayingInfo.fromRuntimeEventJson(event)) {
       NowPlayingProjection.Invalid -> return
       NowPlayingProjection.Stopped -> {
         StereodromeAudioFocus.abandon(context.applicationContext)

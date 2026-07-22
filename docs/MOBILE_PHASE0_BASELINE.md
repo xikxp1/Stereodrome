@@ -1,6 +1,8 @@
 # Mobile Phase 0 Behavior Baseline
 
-Status: automated/code-observed baseline captured at commit `12436c9`. Physical-device runs remain required before a playback ownership cutover.
+Status: historical baseline captured at commit `12436c9`. The runtime cutover
+is complete; Phase 7 removed the legacy fixtures and adapters named by the
+original baseline.
 
 This document records the behavior that the Rust runtime refactor must preserve or intentionally change. It is a verification artifact, not a claim that every platform scenario has already passed on hardware.
 
@@ -8,15 +10,15 @@ This document records the behavior that the Rust runtime refactor must preserve 
 
 Phase 0 adds the following executable contracts:
 
-| Contract                                                  | Location                                                             | Evidence                                                                                                                                     |
-| --------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Queue and playback persistence across a cold core restart | `crates/stereodrome-core/src/lib.rs` tests                           | Queue items/current index and persisted playback position/intent restore together.                                                           |
-| Repeated next/previous ordering and durability            | `crates/stereodrome-core/src/lib.rs` tests                           | Repeated navigation returns to the expected item and the final index survives restart.                                                       |
-| Queue clear and audio-setting clamping/persistence        | `crates/stereodrome-core/src/lib.rs` tests                           | Clear resets queue policy; clamped settings survive restart.                                                                                 |
-| Legacy C ABI command envelopes                            | `crates/stereodrome-ffi/tests/fixtures/legacy-command-contract.json` | Connectivity, sync-setting clamping, queue mutation, queue clear, and unknown-method behavior round-trip through exported C functions.       |
-| Concurrent job rejection and backup exclusion             | `crates/stereodrome-ffi/src/lib.rs` tests                            | A second sync is rejected and backup remains unavailable while sync, saved-playlist, or prefetch work is represented as active.              |
-| Playback projection shape                                 | `mobile/modules/stereodrome-core/fixtures/playback-snapshot.json`    | The same fixture is checked by Rust, TypeScript, and Android projection tests.                                                               |
-| Deterministic future-runtime boundaries                   | `crates/stereodrome-core/src/test_support.rs`                        | Manual clock, fake audio/server/repository, and recording event sink support ordered calls and injected failures without external resources. |
+| Contract                                                  | Location                                                               | Evidence                                                                                                                                     |
+| --------------------------------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Queue and playback persistence across a cold core restart | `crates/stereodrome-core/src/lib.rs` tests                             | Queue items/current index and persisted playback position/intent restore together.                                                           |
+| Repeated next/previous ordering and durability            | `crates/stereodrome-core/src/lib.rs` tests                             | Repeated navigation returns to the expected item and the final index survives restart.                                                       |
+| Queue clear and audio-setting clamping/persistence        | `crates/stereodrome-core/src/lib.rs` tests                             | Clear resets queue policy; clamped settings survive restart.                                                                                 |
+| Typed runtime command/result envelopes                    | `crates/stereodrome-ffi/src/lib.rs` tests                              | Versioned typed dispatch and structured protocol mismatch errors cross the C ABI.                                                            |
+| Concurrent job rejection and backup exclusion             | `crates/stereodrome-core/src/runtime` tests                            | A second sync is rejected and backup remains unavailable while runtime-owned work is active.                                                 |
+| Runtime playback projection shape                         | `mobile/modules/stereodrome-core/fixtures/runtime-snapshot-event.json` | Android consumes the same `snapshot-changed` event shape emitted by the runtime.                                                             |
+| Deterministic future-runtime boundaries                   | `crates/stereodrome-core/src/test_support.rs`                          | Manual clock, fake audio/server/repository, and recording event sink support ordered calls and injected failures without external resources. |
 
 Existing tests continue to characterize queue semantics, cache events, prefetch cancellation/generations, failed navigation preparation, event sequencing, backup transactions, offline behavior, sync due-time calculation, and interrupted download finalization.
 
@@ -24,10 +26,10 @@ Existing tests continue to characterize queue semantics, cache events, prefetch 
 
 ### Shared behavior
 
-- Rust owns decoded audio output, live queue mutation, playback monitoring, cache-backed preparation, DSP settings, scrobble progress, gapless/crossfade transitions, and sequenced playback snapshots.
-- Native applies playback snapshots to the OS media session before forwarding them to React Native.
-- React Native accepts only monotonically increasing playback snapshot sequence numbers.
-- React Native reconciles playback on initialization, foregrounding, and a slow safety poll.
+- Rust owns decoded audio output, live queue mutation, playback monitoring, cache-backed preparation, DSP settings, scrobble progress, gapless/crossfade transitions, and revisioned runtime snapshots.
+- Native applies playback from `snapshot-changed` events to the OS media session before forwarding the same event to React Native.
+- React Native accepts only monotonically increasing runtime revisions.
+- React Native reconciles operational state with one runtime snapshot.
 - Persisted playback restores paused; explicit user action is required to resume after process recreation.
 
 ### iOS

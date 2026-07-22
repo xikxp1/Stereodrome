@@ -1,6 +1,8 @@
 # Lean Mobile / Rust Runtime Refactor Proposal
 
-Status: proposal, investigated against commit `12436c9`.
+Status: implemented through Phase 7. The investigation and migration plan were
+written against commit `12436c9`; compatibility aliases and transitional event
+projections have now been removed.
 
 This document proposes replacing the mobile client's distributed orchestration with one Rust-owned operational runtime. The goal is not merely fewer React components or a smaller bridge. The goal is to make every Stereodrome operation pass through one serialized, observable, recoverable state machine so queue, playback, connectivity, sync, downloads, persistence, and background work cannot independently disagree.
 

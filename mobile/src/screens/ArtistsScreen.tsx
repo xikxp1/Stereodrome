@@ -1,12 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
+import { coreClient } from "@/core/client";
 import {
   useFileState,
   usePlaybackActions,
   useStereodrome,
 } from "@/core/selectors";
-import { stereodromeCore } from "@/services/stereodromeCore";
 import { useViewStack } from "@/context/ViewContext";
 import { visibleArtists, visibleSongs } from "@/services/offlineLibrary";
 
@@ -17,11 +17,16 @@ export function ArtistsScreen() {
   const fileState = useFileState();
   const artists = useQuery({
     queryKey: ["artists"],
-    queryFn: stereodromeCore.getArtists,
+    queryFn: () => coreClient.dispatchTyped({ type: "get-artists" }),
   });
   const songs = useQuery({
     queryKey: ["songs"],
-    queryFn: () => stereodromeCore.getSongs(),
+    queryFn: () =>
+      coreClient.dispatchTyped({
+        type: "get-songs",
+        album_id: null,
+        artist_id: null,
+      }),
     enabled: stereodrome.offlineMode,
   });
   const shownArtists = visibleArtists(
@@ -35,7 +40,11 @@ export function ArtistsScreen() {
 
   async function playArtist(artistId: string) {
     const artistSongs = visibleSongs(
-      await stereodromeCore.getSongs(undefined, artistId),
+      await coreClient.dispatchTyped({
+        type: "get-songs",
+        album_id: null,
+        artist_id: artistId,
+      }),
       stereodrome.offlineMode,
       fileState.offlineSongIds
     );

@@ -4,6 +4,7 @@ import NativeStereodromeCore from "../../modules/stereodrome-core/src";
 import {
   CORE_PROTOCOL_VERSION,
   type CoreCommand,
+  type CoreCommandValue,
   type CoreCommandRequest,
   type CoreEvent,
   type OperationFailure,
@@ -65,18 +66,10 @@ function isCoreSnapshot(value: unknown): value is CoreSnapshot {
   );
 }
 
-function parseRuntimeEvent(raw: string): CoreEvent | null {
-  const envelope: unknown = JSON.parse(raw);
+function parseRuntimeEvent(raw: string): CoreEvent {
+  const event: unknown = JSON.parse(raw);
   if (
-    !isRecord(envelope) ||
-    envelope["type"] !== "runtime" ||
-    !isRecord(envelope["payload"])
-  ) {
-    return null;
-  }
-
-  const event = envelope["payload"];
-  if (
+    !isRecord(event) ||
     event["protocol_version"] !== CORE_PROTOCOL_VERSION ||
     typeof event["stream_id"] !== "number" ||
     typeof event["event_id"] !== "number" ||
@@ -138,11 +131,9 @@ function startEventSubscription(): void {
     ({ event }) => {
       try {
         const parsed = parseRuntimeEvent(event);
-        if (parsed !== null) {
-          eventListeners.forEach((listener) => {
-            listener(parsed);
-          });
-        }
+        eventListeners.forEach((listener) => {
+          listener(parsed);
+        });
       } catch (error) {
         errorListeners.forEach((listener) => {
           listener(error);
@@ -212,6 +203,16 @@ async function dispatch(command: CoreCommand): Promise<unknown> {
   return parsed["value"];
 }
 
+type CommandType = keyof CoreCommandValue;
+
+function dispatchTyped<T extends CommandType>(
+  command: Extract<CoreCommand, { type: T }>
+): Promise<CoreCommandValue[T]>;
+function dispatchTyped(command: CoreCommand): Promise<unknown>;
+function dispatchTyped(command: CoreCommand): Promise<unknown> {
+  return dispatch(command);
+}
+
 async function dispatchSnapshot(
   command: Extract<CoreCommand, { type: "initialize" | "get-snapshot" }>
 ): Promise<CoreSnapshot> {
@@ -225,6 +226,7 @@ async function dispatchSnapshot(
 export const coreClient = {
   initialize,
   dispatch,
+  dispatchTyped,
   initializeSnapshot(): Promise<CoreSnapshot> {
     return dispatchSnapshot({ type: "initialize" });
   },

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
+import { coreClient } from "@/core/client";
 import {
   useFileState,
   usePlaybackActions,
@@ -8,7 +9,6 @@ import {
 } from "@/core/selectors";
 import { useViewStack } from "@/context/ViewContext";
 import { visibleSongs } from "@/services/offlineLibrary";
-import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function PlaylistsScreen() {
   const view = useViewStack();
@@ -17,11 +17,14 @@ export function PlaylistsScreen() {
   const fileState = useFileState();
   const playlists = useQuery({
     queryKey: ["playlists", stereodrome.offlineMode ? "offline" : "online"],
-    queryFn: stereodromeCore.getPlaylists,
+    queryFn: () => coreClient.dispatchTyped({ type: "get-playlists" }),
   });
 
   async function playPlaylist(playlistId: string) {
-    const songs = await stereodromeCore.getPlaylistSongs(playlistId);
+    const songs = await coreClient.dispatchTyped({
+      type: "get-playlist-songs",
+      playlist_id: playlistId,
+    });
     const playableSongs = visibleSongs(
       songs,
       stereodrome.offlineMode,

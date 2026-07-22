@@ -15,11 +15,11 @@ import {
   type SelectableOption,
 } from "@/components/SelectableList";
 import { useProtectedSelectableAction } from "@/components/protectedSelectableAction";
+import { coreClient } from "@/core/client";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { useStereodrome, useSyncStatus } from "@/core/selectors";
 import { useViewStack } from "@/context/ViewContext";
 import { configureLibrarySyncBackgroundTask } from "@/services/librarySyncScheduler";
-import { stereodromeCore } from "@/services/stereodromeCore";
 import { settingsScreenStyles as styles } from "@/screens/SettingsScreen.styles";
 import { backupSettingsOptions } from "@/screens/backupSettingsOptions";
 import type {
@@ -173,12 +173,12 @@ export function SettingsScreen({ category }: { category?: string }) {
   const syncStatus = { data: useSyncStatus() };
   const syncSettings = useQuery({
     queryKey: syncSettingsQueryKey,
-    queryFn: stereodromeCore.getSyncSettings,
+    queryFn: () => coreClient.dispatchTyped({ type: "get-sync-settings" }),
     enabled: selectedCategory === "sync",
   });
   const scanStatus = useQuery({
     queryKey: scanStatusQueryKey,
-    queryFn: stereodromeCore.getScanStatus,
+    queryFn: () => coreClient.dispatchTyped({ type: "get-scan-status" }),
     enabled:
       selectedCategory === "sync" &&
       stereodrome.status.connected &&
@@ -186,22 +186,23 @@ export function SettingsScreen({ category }: { category?: string }) {
   });
   const cacheStats = useQuery({
     queryKey: ["audio-cache-stats"],
-    queryFn: stereodromeCore.getAudioCacheStats,
+    queryFn: () => coreClient.dispatchTyped({ type: "get-audio-cache-stats" }),
     enabled: selectedCategory === "cache",
   });
   const lastfmStatus = useQuery({
     queryKey: lastfmStatusQueryKey,
-    queryFn: stereodromeCore.getLastfmStatus,
+    queryFn: () => coreClient.dispatchTyped({ type: "get-lastfm-status" }),
     enabled: selectedCategory === "lastfm",
   });
   const lastfmQueue = useQuery({
     queryKey: lastfmQueueQueryKey,
-    queryFn: stereodromeCore.getLastfmQueue,
+    queryFn: () => coreClient.dispatchTyped({ type: "get-lastfm-queue" }),
     enabled: selectedCategory === "lastfm",
   });
   const audioSettings = useQuery({
     queryKey: ["audio-processing-settings"],
-    queryFn: stereodromeCore.getAudioProcessingSettings,
+    queryFn: () =>
+      coreClient.dispatchTyped({ type: "get-audio-processing-settings" }),
     enabled:
       selectedCategory === "playback" || selectedCategory === "normalization",
   });
@@ -278,8 +279,9 @@ export function SettingsScreen({ category }: { category?: string }) {
           setMessage,
           onImported: async (summary) => {
             queryClient.clear();
-            const importedSyncSettings =
-              await stereodromeCore.getSyncSettings();
+            const importedSyncSettings = await coreClient.dispatchTyped({
+              type: "get-sync-settings",
+            });
             await configureLibrarySyncBackgroundTask(importedSyncSettings);
             setMessage(`Imported ${summary.songs.toLocaleString()} songs`);
           },
@@ -648,7 +650,10 @@ export function SettingsScreen({ category }: { category?: string }) {
               if (gb <= 0) {
                 throw new Error("Maximum cache size must be greater than 0");
               }
-              await stereodromeCore.setMaxCacheSize(Math.round(gb * 1024 ** 3));
+              await coreClient.dispatchTyped({
+                type: "set-max-cache-size",
+                max_size: Math.round(gb * 1024 ** 3),
+              });
               await queryClient.invalidateQueries({
                 queryKey: ["audio-cache-stats"],
               });
@@ -669,7 +674,7 @@ export function SettingsScreen({ category }: { category?: string }) {
         cancelSublabel: "Keep cached audio",
         onConfirm: async () => {
           await runBusy("clear-cache", async () => {
-            await stereodromeCore.clearAudioCache();
+            await coreClient.dispatchTyped({ type: "clear-audio-cache" });
             await queryClient.invalidateQueries({
               queryKey: ["audio-cache-stats"],
             });
@@ -699,19 +704,26 @@ export function SettingsScreen({ category }: { category?: string }) {
     if (!audioSettings.data) {
       return;
     }
-    const next = await stereodromeCore.setAudioProcessingSettings({
-      ...audioSettings.data,
-      ...patch,
+    const next = await coreClient.dispatchTyped({
+      type: "set-audio-processing",
+      settings: {
+        ...audioSettings.data,
+        ...patch,
+      },
     });
     queryClient.setQueryData(["audio-processing-settings"], next);
   }
 
   async function updateSyncSettings(patch: Partial<SyncSettings>) {
     const current =
-      syncSettings.data ?? (await stereodromeCore.getSyncSettings());
-    const next = await stereodromeCore.setSyncSettings({
-      ...current,
-      ...patch,
+      syncSettings.data ??
+      (await coreClient.dispatchTyped({ type: "get-sync-settings" }));
+    const next = await coreClient.dispatchTyped({
+      type: "set-sync-settings",
+      settings: {
+        ...current,
+        ...patch,
+      },
     });
     queryClient.setQueryData(syncSettingsQueryKey, next);
     await configureLibrarySyncBackgroundTask(next);
@@ -737,7 +749,7 @@ export function SettingsScreen({ category }: { category?: string }) {
 
   async function runStartScan() {
     await runBusy("scan", async () => {
-      const status = await stereodromeCore.startScan();
+      const status = await coreClient.dispatchTyped({ type: "start-scan" });
       queryClient.setQueryData<ScanStatus>(scanStatusQueryKey, status);
       setMessage(status.scanning ? "Scan started" : "Scan requested");
     });
@@ -764,7 +776,9 @@ export function SettingsScreen({ category }: { category?: string }) {
 
   async function runBeginLastfmAuth() {
     await runBusy("lastfm-connect", async () => {
-      const auth = await stereodromeCore.beginLastfmAuth();
+      const auth = await coreClient.dispatchTyped({
+        type: "begin-lastfm-auth",
+      });
       await Linking.openURL(auth.auth_url);
       await refreshLastfm();
       setMessage("Approve Last.fm, then choose Complete Authorization");
@@ -773,7 +787,7 @@ export function SettingsScreen({ category }: { category?: string }) {
 
   async function runCompleteLastfmAuth() {
     await runBusy("lastfm-complete", async () => {
-      await stereodromeCore.completeLastfmAuth();
+      await coreClient.dispatchTyped({ type: "complete-lastfm-auth" });
       await refreshLastfm();
       setMessage("Last.fm connected");
     });
@@ -781,7 +795,9 @@ export function SettingsScreen({ category }: { category?: string }) {
 
   async function runRetryLastfmQueue() {
     await runBusy("lastfm-retry", async () => {
-      const submitted = await stereodromeCore.retryLastfmQueue();
+      const submitted = await coreClient.dispatchTyped({
+        type: "retry-lastfm-queue",
+      });
       await refreshLastfm();
       setMessage(`Submitted ${submitted.toLocaleString()} scrobbles`);
     });
@@ -789,7 +805,7 @@ export function SettingsScreen({ category }: { category?: string }) {
 
   async function runDisconnectLastfm() {
     await runBusy("lastfm-disconnect", async () => {
-      await stereodromeCore.disconnectLastfm();
+      await coreClient.dispatchTyped({ type: "disconnect-lastfm" });
       await refreshLastfm();
       setMessage("Last.fm disconnected");
     });
@@ -799,7 +815,10 @@ export function SettingsScreen({ category }: { category?: string }) {
     const currentGb = (cacheStats.data?.max_size ?? 0) / 1024 ** 3;
     const nextGb = cycleNumber(cacheSizePresetsGb, currentGb, direction);
     await runBusy("cache-size", async () => {
-      await stereodromeCore.setMaxCacheSize(Math.round(nextGb * 1024 ** 3));
+      await coreClient.dispatchTyped({
+        type: "set-max-cache-size",
+        max_size: Math.round(nextGb * 1024 ** 3),
+      });
       await queryClient.invalidateQueries({
         queryKey: ["audio-cache-stats"],
       });

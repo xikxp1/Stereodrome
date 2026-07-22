@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
 import { colors } from "@/components/theme";
+import { coreClient } from "@/core/client";
 import {
   useFileState,
   usePlaybackActions,
@@ -16,7 +17,6 @@ import {
   visibleSearchResults,
   visibleSongs,
 } from "@/services/offlineLibrary";
-import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function SearchScreen() {
   const inputRef = useRef<TextInput>(null);
@@ -29,12 +29,22 @@ export function SearchScreen() {
   const view = useViewStack();
   const results = useQuery({
     queryKey: ["search", debouncedQuery],
-    queryFn: () => stereodromeCore.searchLibrary(debouncedQuery, 20),
+    queryFn: () =>
+      coreClient.dispatchTyped({
+        type: "search-library",
+        query: debouncedQuery,
+        limit: 20,
+      }),
     enabled: debouncedQuery.trim().length > 1,
   });
   const songs = useQuery({
     queryKey: ["songs"],
-    queryFn: () => stereodromeCore.getSongs(),
+    queryFn: () =>
+      coreClient.dispatchTyped({
+        type: "get-songs",
+        album_id: null,
+        artist_id: null,
+      }),
     enabled: stereodrome.offlineMode,
   });
 
@@ -56,7 +66,11 @@ export function SearchScreen() {
 
   async function playAlbum(albumId: string) {
     const albumSongs = visibleSongs(
-      await stereodromeCore.getSongs(albumId),
+      await coreClient.dispatchTyped({
+        type: "get-songs",
+        album_id: albumId,
+        artist_id: null,
+      }),
       stereodrome.offlineMode,
       fileState.offlineSongIds
     );
@@ -69,7 +83,11 @@ export function SearchScreen() {
 
   async function playArtist(artistId: string) {
     const artistSongs = visibleSongs(
-      await stereodromeCore.getSongs(undefined, artistId),
+      await coreClient.dispatchTyped({
+        type: "get-songs",
+        album_id: null,
+        artist_id: artistId,
+      }),
       stereodrome.offlineMode,
       fileState.offlineSongIds
     );

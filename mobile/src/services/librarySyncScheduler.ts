@@ -1,8 +1,8 @@
 import * as BackgroundTask from "expo-background-task";
 import * as TaskManager from "expo-task-manager";
 
+import { coreClient } from "@/core/client";
 import { coreActions, coreStore } from "@/core/store";
-import { stereodromeCore } from "@/services/stereodromeCore";
 import type { SyncSettings } from "@/types/music";
 
 const TASK_NAME = "stereodrome-library-sync";
@@ -19,7 +19,9 @@ TaskManager.defineTask(TASK_NAME, async () => {
 });
 
 export async function syncLibraryBackgroundRegistration(): Promise<void> {
-  const settings = await stereodromeCore.getSyncSettings();
+  const settings = await coreClient.dispatchTyped({
+    type: "get-sync-settings",
+  });
   await configureLibrarySyncBackgroundTask(settings);
 }
 

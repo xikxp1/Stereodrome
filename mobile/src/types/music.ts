@@ -207,40 +207,6 @@ export type PlaybackStateSnapshot = {
   updated_at: string;
 };
 
-export type PlaybackSnapshotSong = {
-  id: string;
-  title: string;
-  artist: string;
-  album: string;
-  duration_seconds: number;
-  artwork_uri: string | null;
-};
-
-export type PlaybackSnapshot = {
-  seq: number;
-  state: "playing" | "paused" | "stopped" | "stalled";
-  is_playing: boolean;
-  audio_loaded: boolean;
-  output_state: "closed" | "ready" | "failed" | "unavailable";
-  song: PlaybackSnapshotSong | null;
-  position_seconds: number;
-  duration_seconds: number;
-  volume: number;
-  queue: QueueState;
-  queue_index: number | null;
-  queue_length: number;
-  can_play: boolean;
-  can_next: boolean;
-  can_previous: boolean;
-  can_seek: boolean;
-};
-
-export type FileStateSnapshot = {
-  seq: number;
-  downloaded_song_ids: string[];
-  downloading_song_ids: string[];
-};
-
 export type PlaybackProgress = {
   song_id: string;
   position_seconds: number;
@@ -275,15 +241,6 @@ export type LastfmQueueItem = {
   last_error: string | null;
   created_at: string;
   updated_at: string;
-};
-
-export type AudioPlaybackStatus = {
-  state: "playing" | "paused" | "stopped" | "stalled";
-  is_playing: boolean;
-  current_song_id: string | null;
-  position: number;
-  duration: number;
-  volume: number;
 };
 
 export type AudioProcessingSettings = {

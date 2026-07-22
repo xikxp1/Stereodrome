@@ -51,20 +51,21 @@ data class NowPlayingInfo(
   }
 
   companion object {
-    fun fromPlatformEventJson(raw: String): NowPlayingProjection {
+    fun fromRuntimeEventJson(raw: String): NowPlayingProjection {
       val event = try {
         JSONObject(raw)
       } catch (_: Exception) {
         return NowPlayingProjection.Invalid
       }
-      if (event.optString("type") != "platform-projection") {
+      if (event.optInt("protocol_version", -1) != 1) {
         return NowPlayingProjection.Invalid
       }
-      val payload = event.optJSONObject("payload") ?: return NowPlayingProjection.Invalid
-      if (payload.optInt("protocol_version", -1) != 1) {
+      val kind = event.optJSONObject("kind") ?: return NowPlayingProjection.Invalid
+      if (kind.optString("type") != "snapshot-changed") {
         return NowPlayingProjection.Invalid
       }
-      val snapshot = payload.optJSONObject("projection") ?: return NowPlayingProjection.Invalid
+      val snapshot = kind.optJSONObject("snapshot")
+        ?.optJSONObject("playback") ?: return NowPlayingProjection.Invalid
       if (snapshot.optString("state") == "stopped" || snapshot.isNull("song")) {
         return NowPlayingProjection.Stopped
       }

@@ -2,6 +2,7 @@ import { useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
+import { coreClient } from "@/core/client";
 import {
   useFileState,
   usePlaybackActions,
@@ -10,7 +11,6 @@ import {
 import { useSongActions } from "@/context/SongActionContext";
 import { useViewStack } from "@/context/ViewContext";
 import { songFileState, visibleSongs } from "@/services/offlineLibrary";
-import { stereodromeCore } from "@/services/stereodromeCore";
 
 export function AlbumScreen({ albumId }: { albumId: string; title: string }) {
   const playback = usePlaybackActions();
@@ -20,7 +20,12 @@ export function AlbumScreen({ albumId }: { albumId: string; title: string }) {
   const view = useViewStack();
   const songs = useQuery({
     queryKey: ["album-songs", albumId],
-    queryFn: () => stereodromeCore.getSongs(albumId),
+    queryFn: () =>
+      coreClient.dispatchTyped({
+        type: "get-songs",
+        album_id: albumId,
+        artist_id: null,
+      }),
     enabled: Boolean(albumId),
   });
   const shownSongs = visibleSongs(
@@ -79,7 +84,10 @@ export function AlbumScreen({ albumId }: { albumId: string; title: string }) {
           ? {}
           : {
               onLongSelect: async () => {
-                await stereodromeCore.downloadAlbum(albumId);
+                await coreClient.dispatchTyped({
+                  type: "download-album",
+                  album_id: albumId,
+                });
               },
             }),
       }))}

@@ -1,5 +1,13 @@
 # Mobile Client Feature Parity Plan
 
+> **Status: retired historical plan.** The mobile parity work and the runtime
+> refactor in `docs/REF.md` supersede the architecture and limitation sections
+> below. The current mobile client uses `mobile/src/core/client.ts` and a
+> versioned `CoreCommand` protocol; Rust owns playback, queue, connectivity,
+> sync, downloads, persistence, and background work. There is no legacy
+> method-string bridge or React-owned playback provider. See
+> `docs/MOBILE_RUNTIME_PROTOCOL.md` for the active boundary.
+
 This document describes a plan to bring the React Native mobile client to feature parity with the mature desktop Svelte/Tauri client without copying the desktop UX directly. The goal is capability parity: the mobile app should provide the same music, playback, sync, cache, server, and settings behavior through mobile-native interaction patterns.
 
 ## Current State
