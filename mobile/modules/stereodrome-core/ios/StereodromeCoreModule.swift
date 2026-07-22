@@ -870,7 +870,10 @@ public class StereodromeCoreModule: Module {
         let wasPlaying = self.isCorePlaying()
         self.shouldResumeAfterInterruption = wasPlaying
         if wasPlaying {
-          _ = self.callSync(method: "audioPause", payload: "null")
+          _ = self.callSync(
+            method: "reportPlatformPlayback",
+            payload: #"{"type":"interruption-began"}"#
+          )
         }
       }
     case .ended:
@@ -881,8 +884,13 @@ public class StereodromeCoreModule: Module {
         let shouldResume =
           self.shouldResumeAfterInterruption && options.contains(.shouldResume)
         self.shouldResumeAfterInterruption = false
+        let payload = shouldResume
+          ? #"{"type":"interruption-ended","should_resume":true}"#
+          : #"{"type":"interruption-ended","should_resume":false}"#
         if shouldResume {
-          _ = self.callWithAudioSession(method: "audioResume", payload: "null")
+          _ = self.callWithAudioSession(method: "reportPlatformPlayback", payload: payload)
+        } else {
+          _ = self.callSync(method: "reportPlatformPlayback", payload: payload)
         }
       }
     @unknown default:
@@ -907,7 +915,10 @@ public class StereodromeCoreModule: Module {
     remoteCommandQueue.async {
       self.shouldResumeAfterInterruption = false
       if self.isCorePlaying() {
-        _ = self.callSync(method: "audioPause", payload: "null")
+        _ = self.callSync(
+          method: "reportPlatformPlayback",
+          payload: #"{"type":"route-lost"}"#
+        )
       }
     }
   }
@@ -923,7 +934,10 @@ public class StereodromeCoreModule: Module {
       {
         self.replayPlaybackProjectionIfCurrent(projectionToRestore)
       }
-      _ = self.callWithAudioSession(method: "audioRebuildOutput", payload: "null")
+      _ = self.callWithAudioSession(
+        method: "reportPlatformPlayback",
+        payload: #"{"type":"media-services-reset"}"#
+      )
     }
   }
 

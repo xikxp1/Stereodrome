@@ -6,34 +6,27 @@
 //! Tauri adapter.
 
 use std::ffi::{CStr, CString, c_char};
-use std::future::Future;
 use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use log::{Level, LevelFilter, Metadata, Record};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use stereodrome_audio::{
-    AudioError, AudioNotification, AudioOutputState, AudioPlayer, AudioStateHandle, BinauralPreset,
-    CrossfadePlayRequest, DynamicsPreset, EqualizerSettings, PlaybackIdentity,
-    PlaybackLifecycleState, SongMetadata,
-};
 use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
-    AudioProcessingSettings, CORE_PROTOCOL_VERSION, CacheStateEvent, CommandId, CommandStatus,
-    ConnectParams, ConnectivitySettings, CoreCommand, CoreCommandRequest, CoreCommandResult,
-    CoreEventKind, LibrarySyncStatus, PlaybackProgress, ProtocolError, ProtocolErrorCode,
-    SavedPlaylistOfflineStatus, ServerSettingsUpdate, StereodromeCore, StereodromeRuntimeHandle,
-    SyncKind, SyncSettings,
+    CORE_PROTOCOL_VERSION, CacheStateEvent, CommandId, CommandStatus, ConnectParams,
+    ConnectivitySettings, CoreCommand, CoreCommandRequest, CoreCommandResult, CoreEventKind,
+    CoreSnapshot, LibrarySyncStatus, PlaybackOutputState, PlaybackPhase, PlaybackProgress,
+    PlaybackProjection, ProtocolError, ProtocolErrorCode, SavedPlaylistOfflineStatus,
+    ServerSettingsUpdate, StereodromeCore, StereodromeRuntimeHandle, SyncKind, SyncSettings,
 };
-use url::Url;
 
 static MOBILE_LOGGER: MobileLogger = MobileLogger;
 static INIT_LOGGER: Once = Once::new();
@@ -48,7 +41,6 @@ type MobilePlaybackCallback = extern "C" fn(*const c_char);
 type MobileEventCallback = extern "C" fn(*const c_char);
 
 const MOBILE_CACHE_RECONCILE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-const MOBILE_PROGRESS_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 struct MobileLogger;
 
@@ -135,21 +127,12 @@ pub extern "C" fn stereodrome_core_set_event_callback(callback: Option<MobileEve
 pub struct MobileCore {
     core: Arc<StereodromeCore>,
     core_runtime: StereodromeRuntimeHandle,
-    audio: Arc<AudioPlayer>,
     announcer: PlaybackAnnouncer,
     event_emitter: MobileEventEmitter,
     runtime: tokio::runtime::Runtime,
     monitor_running: Arc<AtomicBool>,
-    monitor_event_sender: Sender<MobileMonitorEvent>,
     monitor_thread: Option<thread::JoinHandle<()>>,
     runtime_event_thread: Option<thread::JoinHandle<()>>,
-}
-
-enum MobileMonitorEvent {
-    Audio(AudioNotification),
-    Cache(CacheStateEvent),
-    RecalculateDeadlines,
-    Shutdown,
 }
 
 #[derive(Clone)]
@@ -233,11 +216,15 @@ impl MobileEventEmitter {
 
 struct PlaybackSnapshotSequencer {
     next_seq: u64,
+    last_emitted_revision: u64,
 }
 
 impl PlaybackSnapshotSequencer {
     fn new() -> Self {
-        Self { next_seq: 1 }
+        Self {
+            next_seq: 1,
+            last_emitted_revision: 0,
+        }
     }
 
     fn sequence<T>(&mut self, build: impl FnOnce(u64) -> T) -> T {
@@ -343,17 +330,29 @@ impl PlaybackAnnouncer {
             .unwrap_or_default()
     }
 
-    fn snapshot(
-        &self,
-        core: &StereodromeCore,
-        audio: &AudioPlayer,
-    ) -> Result<PlaybackSnapshot, String> {
-        self.sequence_snapshot(|seq| build_playback_snapshot(seq, core, audio))
+    fn snapshot(&self, runtime: &StereodromeRuntimeHandle) -> Result<PlaybackSnapshot, String> {
+        let value = runtime_command_value(runtime.snapshot())?;
+        let snapshot = serde_json::from_value::<CoreSnapshot>(value).map_err(|e| e.to_string())?;
+        let mut sequencer = self
+            .sequencer
+            .lock()
+            .map_err(|_| "playback snapshot sequencer lock poisoned".to_string())?;
+        sequencer.last_emitted_revision = sequencer.last_emitted_revision.max(snapshot.revision);
+        Ok(sequencer.sequence(|seq| PlaybackSnapshot::from_projection(seq, snapshot.playback)))
     }
 
-    fn emit(&self, core: &StereodromeCore, audio: &AudioPlayer) -> bool {
-        let result = self.sequence_snapshot(|seq| {
-            let snapshot = build_playback_snapshot(seq, core, audio)?;
+    fn emit(&self, revision: u64, projection: PlaybackProjection) -> bool {
+        let result: Result<bool, String> = (|| {
+            let mut sequencer = self
+                .sequencer
+                .lock()
+                .map_err(|_| "playback snapshot sequencer lock poisoned".to_string())?;
+            if revision <= sequencer.last_emitted_revision {
+                return Ok(false);
+            }
+            sequencer.last_emitted_revision = revision;
+            let snapshot =
+                sequencer.sequence(|seq| PlaybackSnapshot::from_projection(seq, projection));
             let json = serde_json::to_string(&snapshot)
                 .map_err(|_| "Failed to serialize playback snapshot".to_string())?;
 
@@ -364,52 +363,40 @@ impl PlaybackAnnouncer {
                 callback(message.as_ptr());
             }
 
-            Ok(())
-        });
+            Ok(true)
+        })();
 
-        if let Err(error) = result {
-            match error.as_str() {
-                "Failed to serialize playback snapshot" => {
-                    log::warn!(
-                        target: "stereodrome_ffi",
-                        "Failed to serialize playback snapshot"
-                    );
+        match result {
+            Ok(emitted) => emitted,
+            Err(error) => {
+                match error.as_str() {
+                    "Failed to serialize playback snapshot" => {
+                        log::warn!(
+                            target: "stereodrome_ffi",
+                            "Failed to serialize playback snapshot"
+                        );
+                    }
+                    "Failed to build playback snapshot callback payload" => {
+                        log::warn!(
+                            target: "stereodrome_ffi",
+                            "Failed to build playback snapshot callback payload"
+                        );
+                    }
+                    _ => {
+                        log::warn!(
+                            target: "stereodrome_ffi",
+                            "Failed to build playback snapshot: {error}"
+                        );
+                    }
                 }
-                "Failed to build playback snapshot callback payload" => {
-                    log::warn!(
-                        target: "stereodrome_ffi",
-                        "Failed to build playback snapshot callback payload"
-                    );
-                }
-                _ => {
-                    log::warn!(
-                        target: "stereodrome_ffi",
-                        "Failed to build playback snapshot: {error}"
-                    );
-                }
+                false
             }
-            false
-        } else {
-            true
         }
     }
 
     fn emit_file_state(&self) -> bool {
         self.event_emitter
             .emit(|| Ok(MobileCoreEvent::FileState(self.file_state_snapshot())))
-    }
-
-    fn sequence_snapshot<T>(
-        &self,
-        build: impl FnOnce(u64) -> Result<T, String>,
-    ) -> Result<T, String> {
-        // Keep seq assignment, snapshot capture, and emitted callback delivery in one
-        // critical section so higher seq values cannot describe older captured state.
-        let mut sequencer = self
-            .sequencer
-            .lock()
-            .map_err(|_| "playback snapshot sequencer lock poisoned".to_string())?;
-        sequencer.sequence(build)
     }
 }
 
@@ -434,7 +421,7 @@ struct PlaybackSnapshot {
     state: &'static str,
     is_playing: bool,
     audio_loaded: bool,
-    output_state: AudioOutputState,
+    output_state: String,
     song: Option<PlaybackSnapshotSong>,
     position_seconds: f64,
     duration_seconds: f64,
@@ -458,148 +445,44 @@ struct PlaybackSnapshotSong {
     artwork_uri: Option<String>,
 }
 
-fn build_playback_snapshot(
-    seq: u64,
-    core: &StereodromeCore,
-    audio: &AudioPlayer,
-) -> Result<PlaybackSnapshot, String> {
-    let queue = core.get_queue().map_err(|e| e.to_string())?;
-    let audio_state = audio.get_playback_state();
-    let audio_loaded = audio_state.song.is_some();
-    let persisted = core.get_playback_state().map_err(|e| e.to_string())?;
-
-    let (song, position_seconds, duration_seconds) = if let Some(song) = audio_state.song {
-        let duration = if audio_state.duration > 0.0 {
-            audio_state.duration
-        } else {
-            queue
-                .items
-                .iter()
-                .find(|item| item.song_id == song.id)
-                .map_or(0.0, |item| duration_seconds(item.duration))
-        };
-        (
-            Some(snapshot_song_from_audio(core, song, duration)),
-            audio_state.position,
-            duration,
-        )
-    } else {
-        let persisted_song_id = persisted.current_song_id.as_deref();
-        let queue_item = persisted_song_id
-            .and_then(|song_id| queue.items.iter().find(|item| item.song_id == song_id))
-            .or_else(|| queue.current_index.and_then(|index| queue.items.get(index)));
-
-        if let Some(item) = queue_item {
-            let duration = if persisted.current_song_id.as_deref() == Some(item.song_id.as_str())
-                && persisted.duration_seconds > 0.0
-            {
-                persisted.duration_seconds
-            } else {
-                duration_seconds(item.duration)
-            };
-            let position = if persisted.current_song_id.as_deref() == Some(item.song_id.as_str()) {
-                persisted.position_seconds.max(0.0)
-            } else {
-                0.0
-            };
-            (
-                Some(snapshot_song_from_queue_item(core, item, duration)),
-                position,
-                duration,
-            )
-        } else {
-            (None, 0.0, 0.0)
+impl PlaybackSnapshot {
+    fn from_projection(seq: u64, projection: PlaybackProjection) -> Self {
+        Self {
+            seq,
+            state: match projection.state {
+                PlaybackPhase::Playing => "playing",
+                PlaybackPhase::Paused => "paused",
+                PlaybackPhase::Stalled => "stalled",
+                PlaybackPhase::Stopped => "stopped",
+            },
+            is_playing: projection.is_playing,
+            audio_loaded: projection.audio_loaded,
+            output_state: match projection.output_state {
+                PlaybackOutputState::Closed => "closed",
+                PlaybackOutputState::Ready => "ready",
+                PlaybackOutputState::Failed => "failed",
+                PlaybackOutputState::Unavailable => "unavailable",
+            }
+            .to_string(),
+            song: projection.song.map(|song| PlaybackSnapshotSong {
+                id: song.id,
+                title: song.title,
+                artist: song.artist,
+                album: song.album,
+                duration_seconds: song.duration_seconds,
+                artwork_uri: song.artwork_uri,
+            }),
+            position_seconds: projection.position_seconds,
+            duration_seconds: projection.duration_seconds,
+            volume: projection.volume,
+            queue: projection.queue,
+            queue_index: projection.queue_index,
+            queue_length: projection.queue_length,
+            can_play: projection.can_play,
+            can_next: projection.can_next,
+            can_previous: projection.can_previous,
+            can_seek: projection.can_seek,
         }
-    };
-
-    let state = match audio_state.state {
-        PlaybackLifecycleState::Playing => "playing",
-        PlaybackLifecycleState::Paused => "paused",
-        PlaybackLifecycleState::Stopped => "stopped",
-        PlaybackLifecycleState::Stalled => "stalled",
-    };
-    let queue_index = queue.current_index;
-    let queue_length = queue.items.len();
-    let can_play = song.is_some();
-    let can_next = next_queue_item_exists(&queue);
-    let can_previous = queue_length > 1 && queue_index.is_some();
-    let can_seek = duration_seconds > 0.0;
-
-    Ok(PlaybackSnapshot {
-        seq,
-        state,
-        is_playing: audio_state.is_playing,
-        audio_loaded,
-        output_state: audio_state.output_state,
-        song,
-        position_seconds,
-        duration_seconds,
-        volume: audio_state.volume,
-        queue,
-        queue_index,
-        queue_length,
-        can_play,
-        can_next,
-        can_previous,
-        can_seek,
-    })
-}
-
-fn snapshot_song_from_audio(
-    core: &StereodromeCore,
-    song: SongMetadata,
-    duration_seconds: f64,
-) -> PlaybackSnapshotSong {
-    let artwork_uri = cached_artwork_uri(core, &song.id);
-    PlaybackSnapshotSong {
-        id: song.id,
-        title: song.title,
-        artist: song.artist,
-        album: song.album,
-        duration_seconds,
-        artwork_uri,
-    }
-}
-
-fn snapshot_song_from_queue_item(
-    core: &StereodromeCore,
-    item: &QueueItem,
-    duration_seconds: f64,
-) -> PlaybackSnapshotSong {
-    PlaybackSnapshotSong {
-        id: item.song_id.clone(),
-        title: item.title.clone(),
-        artist: item.artist.clone(),
-        album: item.album.clone(),
-        duration_seconds,
-        artwork_uri: cached_artwork_uri(core, &item.song_id),
-    }
-}
-
-fn cached_artwork_uri(core: &StereodromeCore, song_id: &str) -> Option<String> {
-    match core.cached_song_cover_art_uri(song_id, Some(512)) {
-        Ok(uri) => uri,
-        Err(error) => {
-            log::debug!(
-                target: "stereodrome_ffi",
-                "Failed to read cached artwork for {song_id}: {error}"
-            );
-            None
-        }
-    }
-}
-
-fn next_queue_item_exists(queue: &QueueState) -> bool {
-    if queue.items.is_empty() || queue.prepared_next_item.is_some() {
-        return queue.prepared_next_item.is_some();
-    }
-    if queue.repeat_mode == RepeatMode::One && queue.current_index.is_some() {
-        return true;
-    }
-    match queue.current_index {
-        None => true,
-        Some(index) if index + 1 < queue.items.len() => true,
-        Some(_) => queue.repeat_mode == RepeatMode::All,
     }
 }
 
@@ -631,20 +514,17 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
 
         let data_dir = PathBuf::from(data_dir);
         let (cache_event_sender, cache_event_receiver) = std::sync::mpsc::channel();
-        let (monitor_event_sender, monitor_event_receiver) = std::sync::mpsc::channel();
         match (
             StereodromeCore::new_with_cache_events(&data_dir, cache_event_sender.clone()),
-            AudioPlayer::new_with_spectrum_and_notifications(false),
             tokio::runtime::Runtime::new(),
         ) {
-            (Ok(core), Ok((audio, audio_notifications)), Ok(runtime)) => {
+            (Ok(core), Ok(runtime)) => {
                 let core = Arc::new(core);
                 let Ok(core_runtime) =
                     StereodromeRuntimeHandle::start_with_core(&data_dir, Arc::clone(&core))
                 else {
                     return ptr::null_mut();
                 };
-                let audio = Arc::new(audio);
                 let event_emitter = MobileEventEmitter::new();
                 let (announcer, file_state_initialized) =
                     PlaybackAnnouncer::new(&core, event_emitter.clone());
@@ -652,37 +532,24 @@ pub extern "C" fn stereodrome_core_new(data_dir: *const c_char) -> *mut MobileCo
                 let runtime_event_thread = start_runtime_event_bridge(
                     core_runtime.subscribe(),
                     event_emitter.clone(),
-                    Arc::clone(&monitor_running),
-                );
-                start_mobile_monitor_adapter(
-                    cache_event_receiver,
-                    monitor_event_sender.clone(),
-                    MobileMonitorEvent::Cache,
-                );
-                start_mobile_monitor_adapter(
-                    audio_notifications,
-                    monitor_event_sender.clone(),
-                    MobileMonitorEvent::Audio,
-                );
-                let monitor_thread = start_mobile_playback_monitor(
-                    Arc::clone(&core),
-                    Arc::clone(&audio),
                     announcer.clone(),
-                    core_runtime.clone(),
                     Arc::clone(&monitor_running),
-                    monitor_event_receiver,
+                );
+                let monitor_thread = start_mobile_cache_monitor(
+                    Arc::clone(&core),
+                    cache_event_receiver,
+                    announcer.clone(),
+                    Arc::clone(&monitor_running),
                     !file_state_initialized,
                 );
 
                 Box::into_raw(Box::new(MobileCore {
                     core,
                     core_runtime,
-                    audio,
                     announcer,
                     event_emitter,
                     runtime,
                     monitor_running,
-                    monitor_event_sender,
                     monitor_thread: Some(monitor_thread),
                     runtime_event_thread: Some(runtime_event_thread),
                 }))
@@ -716,15 +583,6 @@ pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
         unsafe {
             let mut mobile = Box::from_raw(core);
             mobile.monitor_running.store(false, Ordering::SeqCst);
-            let _ = mobile
-                .monitor_event_sender
-                .send(MobileMonitorEvent::Shutdown);
-            if let Err(error) = mobile.audio.stop() {
-                log::warn!(
-                    target: "stereodrome_ffi",
-                    "Failed to stop mobile audio before monitor shutdown: {error}"
-                );
-            }
             if let Some(monitor_thread) = mobile.monitor_thread.take()
                 && monitor_thread.join().is_err()
             {
@@ -739,12 +597,6 @@ pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
                 log::warn!(
                     target: "stereodrome_ffi",
                     "Mobile runtime event bridge panicked during shutdown"
-                );
-            }
-            if let Err(error) = mobile.audio.stop() {
-                log::warn!(
-                    target: "stereodrome_ffi",
-                    "Failed to finalize mobile audio shutdown during core destruction: {error}"
                 );
             }
             mobile.core_runtime.shutdown();
@@ -930,16 +782,14 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
     let runtime = &mobile.runtime;
     let core = &mobile.core;
 
-    if should_cancel_queue_prefetch(method) {
-        cancel_runtime_prefetch(
-            &mobile.core_runtime,
-            matches!(method, "clearAudioCache" | "removeCachedSong"),
-        )?;
-    }
-
     if let Some(command) = legacy_runtime_command(method, payload.clone())? {
-        let response = legacy_runtime_result(mobile.core_runtime.dispatch_command(command));
-        return finish_dispatch(mobile, method, response);
+        let changes_playback = command.changes_playback_projection();
+        let response = legacy_runtime_result_for_method(
+            method,
+            mobile.core_runtime.dispatch_command(command),
+            &mobile.core_runtime,
+        );
+        return finish_dispatch(mobile, changes_playback, response);
     }
 
     let response = match method {
@@ -952,32 +802,6 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(runtime.block_on(async { core.update_server_settings(update).await }))
         }
         "restoreSession" => json_result(runtime.block_on(async { core.restore_session().await })),
-        "exportPortableBackup" => {
-            let path = parse_payload::<String>(payload)?;
-            legacy_runtime_result(
-                mobile
-                    .core_runtime
-                    .dispatch_command(CoreCommand::ExportPortableBackup { path }),
-            )
-        }
-        "importPortableBackup" => {
-            let path = parse_payload::<String>(payload)?;
-            ensure_runtime_backup_available(mobile)?;
-            mobile.audio.stop().map_err(|error| error.to_string())?;
-            let result = runtime_command_value(
-                mobile
-                    .core_runtime
-                    .dispatch_command(CoreCommand::ImportPortableBackup { path }),
-            );
-            if result.is_ok()
-                && let Ok(playback) = core.get_playback_state()
-            {
-                #[allow(clippy::cast_possible_truncation)]
-                let volume = playback.app_volume as f32;
-                let _ = mobile.audio.set_volume(volume);
-            }
-            result.map(json_ok_string)
-        }
         "disconnectServer" => {
             json_result(runtime.block_on(async { core.disconnect_server().await }))
         }
@@ -1093,7 +917,7 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(runtime.block_on(async { core.download_playlist(playlist_id).await }))
         }
         "getPlaybackState" => json_result(core.get_playback_state()),
-        "getPlaybackSnapshot" => json_result(mobile.announcer.snapshot(core, &mobile.audio)),
+        "getPlaybackSnapshot" => json_result(mobile.announcer.snapshot(&mobile.core_runtime)),
         "getEventStreamId" => json_result(Ok::<_, String>(mobile.event_emitter.stream_id)),
         "getFileStateSnapshot" => {
             json_result(Ok::<_, String>(mobile.announcer.file_state_snapshot()))
@@ -1115,101 +939,6 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
             json_result(runtime.block_on(async { core.retry_lastfm_queue().await }))
         }
         "getAudioProcessingSettings" => json_result(core.get_audio_processing_settings()),
-        "setAudioProcessingSettings" => {
-            let settings = parse_payload::<AudioProcessingSettings>(payload)?;
-            let result = core
-                .set_audio_processing_settings(settings)
-                .map_err(|e| e.to_string())
-                .and_then(|next_settings| {
-                    runtime
-                        .block_on(async {
-                            apply_audio_settings(mobile).await?;
-                            match prepare_next_transition(mobile).await {
-                                Ok(prepared) => Ok(prepared),
-                                Err(error) => {
-                                    log::warn!(
-                                        target: "stereodrome_ffi",
-                                        "Failed to prepare next transition after audio settings change: {error}"
-                                    );
-                                    Ok(false)
-                                }
-                            }
-                        })
-                        .and_then(|prepared| start_queue_prefetch(mobile, prepared))
-                        .map(|()| next_settings)
-                });
-            json_result(result)
-        }
-        "audioPlayCurrent" => {
-            let result = runtime.block_on(async { play_current_queue_item(mobile, None).await });
-            json_result(result)
-        }
-        "audioPlayQueueItem" => {
-            let index = parse_payload::<usize>(payload)?;
-            let result = runtime.block_on(async {
-                play_queue_navigation(mobile, QueueNavigation::Index(index)).await
-            });
-            json_result(result)
-        }
-        "audioPlayNext" => {
-            let force = parse_payload::<Option<bool>>(payload)?.unwrap_or(false);
-            let result = runtime.block_on(async {
-                play_queue_navigation(mobile, QueueNavigation::Next(force)).await
-            });
-            json_result(result)
-        }
-        "audioPlayPrevious" => {
-            let result = runtime
-                .block_on(async { play_queue_navigation(mobile, QueueNavigation::Previous).await });
-            json_result(result)
-        }
-        "audioApplySettings" => {
-            let result = runtime.block_on(async { apply_audio_settings(mobile).await });
-            json_result(result)
-        }
-        "audioPrepareNextTransition" => {
-            let result = runtime
-                .block_on(async { prepare_next_transition(mobile).await })
-                .and_then(|prepared| start_queue_prefetch(mobile, prepared));
-            json_result(result)
-        }
-        "audioPause" => {
-            let result = mobile.audio.pause();
-            json_result(result)
-        }
-        "audioResume" => {
-            let result = runtime
-                .block_on(async { resume_current_playback(mobile).await })
-                .map(|_| ());
-            json_result(result)
-        }
-        "audioRebuildOutput" => {
-            let result = mobile.audio.rebuild_output().map(|()| {
-                if let Err(error) =
-                    runtime.block_on(async { prepare_next_transition(mobile).await })
-                {
-                    log::warn!(
-                        target: "stereodrome_ffi",
-                        "Failed to prepare next transition after rebuilding output: {error}"
-                    );
-                }
-            });
-            json_result(result)
-        }
-        "audioStop" => {
-            let result = mobile.audio.stop();
-            json_result(result)
-        }
-        "audioSeek" => {
-            let position = parse_payload::<f64>(payload)?;
-            let result = mobile.audio.seek(position);
-            json_result(result)
-        }
-        "audioSetVolume" => {
-            let volume = parse_payload::<f32>(payload)?;
-            let result = mobile.audio.set_volume(volume);
-            json_result(result)
-        }
         "playSongWithQueue" => {
             let args = parse_payload::<PlaySongWithQueuePayload>(payload)?;
             let result = core.play_song_with_queue(args.song_id, args.song_ids);
@@ -1283,26 +1012,62 @@ fn dispatch(mobile: &MobileCore, method: &str, payload: Value) -> Result<String,
         other => Err(format!("unknown method: {other}")),
     };
 
-    finish_dispatch(mobile, method, response)
+    finish_dispatch(mobile, false, response)
 }
 
 fn finish_dispatch(
     mobile: &MobileCore,
-    method: &str,
+    changes_playback: bool,
     response: Result<String, String>,
 ) -> Result<String, String> {
-    if response.is_ok() && should_emit_playback_snapshot(method) {
-        mobile.announcer.emit(&mobile.core, &mobile.audio);
-        let _ = mobile
-            .monitor_event_sender
-            .send(MobileMonitorEvent::RecalculateDeadlines);
+    if response.is_ok()
+        && changes_playback
+        && let Ok(snapshot) =
+            runtime_command_value(mobile.core_runtime.snapshot()).and_then(|value| {
+                serde_json::from_value::<CoreSnapshot>(value).map_err(|e| e.to_string())
+            })
+    {
+        mobile.announcer.emit(snapshot.revision, snapshot.playback);
     }
 
     response
 }
 
-fn legacy_runtime_result(result: CoreCommandResult) -> Result<String, String> {
-    runtime_command_value(result).map(json_ok_string)
+fn legacy_runtime_result_for_method(
+    method: &str,
+    result: CoreCommandResult,
+    runtime: &StereodromeRuntimeHandle,
+) -> Result<String, String> {
+    let value = runtime_command_value(result)?;
+    if matches!(
+        method,
+        "audioPlayCurrent"
+            | "audioPlayQueueItem"
+            | "audioPlayNext"
+            | "audioPlayPrevious"
+            | "audioApplySettings"
+    ) {
+        let snapshot = runtime_snapshot(runtime)?;
+        let playback = snapshot.playback;
+        return Ok(json_ok_string(serde_json::json!({
+            "state": playback.state,
+            "is_playing": playback.is_playing,
+            "current_song_id": playback.song.map(|song| song.id),
+            "position": playback.position_seconds,
+            "duration": playback.duration_seconds,
+            "volume": playback.volume,
+            "output_state": playback.output_state,
+        })));
+    }
+    if method == "clearQueue" {
+        return Ok(json_ok_string(runtime_snapshot(runtime)?.queue));
+    }
+    Ok(json_ok_string(value))
+}
+
+fn runtime_snapshot(runtime: &StereodromeRuntimeHandle) -> Result<CoreSnapshot, String> {
+    let value = runtime_command_value(runtime.snapshot())?;
+    serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
 fn runtime_command_value(result: CoreCommandResult) -> Result<Value, String> {
@@ -1315,20 +1080,6 @@ fn runtime_command_value(result: CoreCommandResult) -> Result<Value, String> {
     }
 }
 
-fn ensure_runtime_backup_available(mobile: &MobileCore) -> Result<(), String> {
-    let snapshot = runtime_command_value(mobile.core_runtime.snapshot())?;
-    if snapshot["operations"]
-        .as_array()
-        .is_some_and(|operations| !operations.is_empty())
-    {
-        return Err(
-            "wait for background library or download jobs to finish before using backups"
-                .to_string(),
-        );
-    }
-    Ok(())
-}
-
 #[allow(clippy::too_many_lines)]
 fn legacy_runtime_command(method: &str, payload: Value) -> Result<Option<CoreCommand>, String> {
     let command = match method {
@@ -1339,6 +1090,12 @@ fn legacy_runtime_command(method: &str, payload: Value) -> Result<Option<CoreCom
             update: parse_payload(payload)?,
         },
         "restoreSession" => CoreCommand::RestoreSession,
+        "exportPortableBackup" => CoreCommand::ExportPortableBackup {
+            path: parse_payload(payload)?,
+        },
+        "importPortableBackup" => CoreCommand::ImportPortableBackup {
+            path: parse_payload(payload)?,
+        },
         "syncLibrary" => CoreCommand::StartSync {
             kind: SyncKind::FullReconcile,
         },
@@ -1489,6 +1246,37 @@ fn legacy_runtime_command(method: &str, payload: Value) -> Result<Option<CoreCom
         "getLastfmQueue" => CoreCommand::GetLastfmQueue,
         "retryLastfmQueue" => CoreCommand::RetryLastfmQueue,
         "getAudioProcessingSettings" => CoreCommand::GetAudioProcessingSettings,
+        "setAudioProcessingSettings" => CoreCommand::SetAudioProcessing {
+            settings: parse_payload(payload)?,
+        },
+        "audioPlayCurrent" | "audioResume" => CoreCommand::ResumePlayback,
+        "audioPlayQueueItem" => CoreCommand::NavigatePlayback {
+            navigation: stereodrome_core::PlaybackNavigation::Index {
+                index: parse_payload(payload)?,
+            },
+        },
+        "audioPlayNext" => CoreCommand::NavigatePlayback {
+            navigation: stereodrome_core::PlaybackNavigation::Next {
+                force: parse_payload::<Option<bool>>(payload)?.unwrap_or(false),
+            },
+        },
+        "audioPlayPrevious" => CoreCommand::NavigatePlayback {
+            navigation: stereodrome_core::PlaybackNavigation::Previous,
+        },
+        "audioApplySettings" => CoreCommand::ApplyAudioSettings,
+        "audioPrepareNextTransition" => CoreCommand::PrepareNextTransition,
+        "audioPause" => CoreCommand::PausePlayback,
+        "audioRebuildOutput" => CoreCommand::RebuildAudioOutput,
+        "audioStop" => CoreCommand::StopPlayback,
+        "audioSeek" => CoreCommand::SeekTo {
+            seconds: parse_payload(payload)?,
+        },
+        "audioSetVolume" => CoreCommand::SetPlaybackVolume {
+            volume: parse_payload(payload)?,
+        },
+        "reportPlatformPlayback" => CoreCommand::ReportPlatformPlayback {
+            event: parse_payload(payload)?,
+        },
         "playSongWithQueue" => {
             let args = parse_payload::<PlaySongWithQueuePayload>(payload)?;
             CoreCommand::PlaySelection {
@@ -1511,7 +1299,7 @@ fn legacy_runtime_command(method: &str, payload: Value) -> Result<Option<CoreCom
         "removeFromQueue" => CoreCommand::RemoveFromQueue {
             index: parse_payload(payload)?,
         },
-        "clearQueue" => CoreCommand::ClearQueue,
+        "clearQueue" => CoreCommand::ClearPlayback,
         "moveQueueItem" => {
             let args = parse_payload::<MoveQueueItemPayload>(payload)?;
             CoreCommand::MoveQueueItem {
@@ -1535,76 +1323,6 @@ fn legacy_runtime_command(method: &str, payload: Value) -> Result<Option<CoreCom
         _ => return Ok(None),
     };
     Ok(Some(command))
-}
-
-fn should_emit_playback_snapshot(method: &str) -> bool {
-    matches!(
-        method,
-        "importPortableBackup"
-            | "setAudioProcessingSettings"
-            | "audioPlayCurrent"
-            | "audioPlayQueueItem"
-            | "audioPlayNext"
-            | "audioPlayPrevious"
-            | "audioApplySettings"
-            | "audioPause"
-            | "audioResume"
-            | "audioRebuildOutput"
-            | "audioStop"
-            | "audioSeek"
-            | "audioSetVolume"
-            | "playSongWithQueue"
-            | "addToQueue"
-            | "addSongsToQueue"
-            | "insertNext"
-            | "insertNextSongs"
-            | "removeFromQueue"
-            | "clearQueue"
-            | "moveQueueItem"
-            | "playQueueItem"
-            | "playNext"
-            | "playPrevious"
-            | "toggleShuffle"
-            | "setRepeatMode"
-            | "cycleRepeatMode"
-            | "rerollNext"
-    )
-}
-
-fn should_cancel_queue_prefetch(method: &str) -> bool {
-    matches!(
-        method,
-        "importPortableBackup"
-            | "disconnectServer"
-            | "setConnectivitySettings"
-            | "clearAudioCache"
-            | "removeCachedSong"
-            | "setAudioProcessingSettings"
-            | "audioPlayCurrent"
-            | "audioPlayQueueItem"
-            | "audioPlayNext"
-            | "audioPlayPrevious"
-            | "audioApplySettings"
-            | "audioPrepareNextTransition"
-            | "audioResume"
-            | "audioRebuildOutput"
-            | "audioStop"
-            | "playSongWithQueue"
-            | "addToQueue"
-            | "addSongsToQueue"
-            | "insertNext"
-            | "insertNextSongs"
-            | "removeFromQueue"
-            | "clearQueue"
-            | "moveQueueItem"
-            | "playQueueItem"
-            | "playNext"
-            | "playPrevious"
-            | "toggleShuffle"
-            | "setRepeatMode"
-            | "cycleRepeatMode"
-            | "rerollNext"
-    )
 }
 
 #[derive(Default, Deserialize)]
@@ -1696,30 +1414,6 @@ fn json_result<T: serde::Serialize, E: ToString>(result: Result<T, E>) -> Result
     result.map(json_ok_string).map_err(|e| e.to_string())
 }
 
-fn start_queue_prefetch(mobile: &MobileCore, reserve_first: bool) -> Result<(), String> {
-    start_runtime_prefetch(&mobile.core_runtime, reserve_first)
-}
-
-fn start_runtime_prefetch(
-    runtime: &StereodromeRuntimeHandle,
-    reserve_first: bool,
-) -> Result<(), String> {
-    runtime_command_value(
-        runtime.dispatch_command(CoreCommand::StartQueuePrefetch { reserve_first }),
-    )
-    .map(|_| ())
-}
-
-fn cancel_runtime_prefetch(
-    runtime: &StereodromeRuntimeHandle,
-    invalidate_completed: bool,
-) -> Result<(), String> {
-    runtime_command_value(runtime.dispatch_command(CoreCommand::CancelQueuePrefetch {
-        invalidate_completed,
-    }))
-    .map(|_| ())
-}
-
 fn catch_json_response(operation: impl FnOnce() -> *mut c_char) -> *mut c_char {
     match panic::catch_unwind(AssertUnwindSafe(operation)) {
         Ok(response) => response,
@@ -1744,24 +1438,54 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     "non-string panic payload".to_string()
 }
 
-#[allow(clippy::too_many_lines)]
-fn start_mobile_monitor_adapter<T: Send + 'static>(
-    receiver: Receiver<T>,
-    sender: Sender<MobileMonitorEvent>,
-    wrap: fn(T) -> MobileMonitorEvent,
-) {
+fn start_mobile_cache_monitor(
+    core: Arc<StereodromeCore>,
+    receiver: Receiver<CacheStateEvent>,
+    announcer: PlaybackAnnouncer,
+    running: Arc<AtomicBool>,
+    mut reconcile_pending: bool,
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        while let Ok(event) = receiver.recv() {
-            if sender.send(wrap(event)).is_err() {
-                break;
+        while running.load(Ordering::SeqCst) {
+            let event = receiver.recv_timeout(MOBILE_CACHE_RECONCILE_RETRY_INTERVAL);
+            let changed = match event {
+                Ok(event) => match announcer.apply_cache_state_event(&core, event) {
+                    Ok(changed) => {
+                        reconcile_pending = false;
+                        changed
+                    }
+                    Err(error) => {
+                        reconcile_pending = true;
+                        log::warn!(target: "stereodrome_ffi", "Failed to apply cache event: {error}");
+                        false
+                    }
+                },
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if reconcile_pending => {
+                    match announcer.refresh_file_state(&core) {
+                        Ok(changed) => {
+                            reconcile_pending = false;
+                            changed
+                        }
+                        Err(error) => {
+                            log::warn!(target: "stereodrome_ffi", "Failed to reconcile cache state: {error}");
+                            false
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            if changed {
+                announcer.emit_file_state();
             }
         }
-    });
+    })
 }
 
 fn start_runtime_event_bridge(
     mut events: tokio::sync::broadcast::Receiver<stereodrome_core::CoreEvent>,
     event_emitter: MobileEventEmitter,
+    announcer: PlaybackAnnouncer,
     running: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -1769,6 +1493,7 @@ fn start_runtime_event_bridge(
             match events.try_recv() {
                 Ok(event) => {
                     if let CoreEventKind::SnapshotChanged { snapshot } = event.kind {
+                        announcer.emit(event.revision, snapshot.playback.clone());
                         let sync = snapshot.sync.clone();
                         event_emitter.emit(|| Ok(MobileCoreEvent::SyncStatus(Box::new(sync))));
                         let saved_playlist_offline = snapshot.saved_playlist_offline.clone();
@@ -1787,1064 +1512,6 @@ fn start_runtime_event_bridge(
             }
         }
     })
-}
-
-#[allow(clippy::too_many_lines)]
-fn start_mobile_playback_monitor(
-    core: Arc<StereodromeCore>,
-    audio: Arc<AudioPlayer>,
-    announcer: PlaybackAnnouncer,
-    core_runtime: StereodromeRuntimeHandle,
-    running: Arc<AtomicBool>,
-    events: Receiver<MobileMonitorEvent>,
-    mut cache_reconcile_pending: bool,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let runtime = match tokio::runtime::Runtime::new() {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                log::warn!(
-                    target: "stereodrome_ffi",
-                    "Failed to start mobile playback monitor runtime: {error}"
-                );
-                return;
-            }
-        };
-
-        let state_handle = audio.state_handle();
-        let mut last_segment_idx = 0usize;
-        let mut last_report: Option<MobileProgressReport> = None;
-        let mut last_snapshot_marker: Option<MobilePlaybackMarker> = None;
-        let mut cache_snapshot_pending = false;
-        let mut last_cache_reconcile_attempt: Option<Instant> = None;
-        let mut crossfade_attempted: Option<PlaybackIdentity> = None;
-
-        while running.load(Ordering::SeqCst) {
-            let current_identity = audio.current_playback_identity();
-            if crossfade_attempted.is_some() && crossfade_attempted != current_identity {
-                crossfade_attempted = None;
-            }
-            let wait = mobile_monitor_wait_duration(
-                &core,
-                &audio,
-                &state_handle,
-                last_report.as_ref(),
-                cache_reconcile_pending,
-                last_cache_reconcile_attempt,
-                crossfade_attempted.as_ref(),
-            );
-            let event = match wait {
-                Some(duration) if duration.is_zero() => None,
-                Some(duration) => match events.recv_timeout(duration) {
-                    Ok(event) => Some(event),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                },
-                None => match events.recv() {
-                    Ok(event) => Some(event),
-                    Err(_) => break,
-                },
-            };
-
-            let mut terminal_identity = None;
-            match event {
-                Some(MobileMonitorEvent::Shutdown) => break,
-                Some(MobileMonitorEvent::Cache(cache_event)) => {
-                    let reconciles = matches!(&cache_event, CacheStateEvent::Reconcile);
-                    match announcer.apply_cache_state_event(&core, cache_event) {
-                        Ok(changed) => {
-                            cache_snapshot_pending |= changed;
-                            if reconciles {
-                                cache_reconcile_pending = false;
-                            }
-                        }
-                        Err(error) => {
-                            log::warn!(
-                                target: "stereodrome_ffi",
-                                "Failed to apply mobile cache event: {error}"
-                            );
-                            cache_reconcile_pending = true;
-                        }
-                    }
-                }
-                Some(MobileMonitorEvent::Audio(notification)) => {
-                    if !audio_notification_is_current(&audio, &notification) {
-                        continue;
-                    }
-                    if let AudioNotification::EndOfTrack { identity } = notification {
-                        terminal_identity = Some(identity);
-                    }
-                }
-                Some(MobileMonitorEvent::RecalculateDeadlines) | None => {}
-            }
-
-            let cache_retry_due = cache_reconcile_pending
-                && last_cache_reconcile_attempt.is_none_or(|last_attempt| {
-                    last_attempt.elapsed() >= MOBILE_CACHE_RECONCILE_RETRY_INTERVAL
-                });
-            if cache_retry_due {
-                last_cache_reconcile_attempt = Some(Instant::now());
-                match announcer.refresh_file_state(&core) {
-                    Ok(changed) => {
-                        cache_snapshot_pending |= changed;
-                        cache_reconcile_pending = false;
-                    }
-                    Err(error) => {
-                        log::warn!(
-                            target: "stereodrome_ffi",
-                            "Failed to reconcile mobile cache state: {error}"
-                        );
-                    }
-                }
-            }
-            if !running.load(Ordering::SeqCst) {
-                break;
-            }
-            if cache_snapshot_pending && announcer.emit_file_state() {
-                cache_snapshot_pending = false;
-            }
-
-            let (state, segment_idx) = state_handle.get_gapless_state();
-            let marker = MobilePlaybackMarker::from_state(&state, segment_idx);
-            if last_snapshot_marker.as_ref() != Some(&marker) {
-                if last_snapshot_marker
-                    .as_ref()
-                    .is_some_and(|previous| previous.song_id.is_some() && marker.song_id.is_none())
-                {
-                    let _ = cancel_runtime_prefetch(&core_runtime, false);
-                }
-                announcer.emit(&core, &audio);
-                last_snapshot_marker = Some(marker);
-            }
-            let Some(song) = state.song.clone() else {
-                last_segment_idx = 0;
-                last_report = None;
-                continue;
-            };
-
-            if segment_idx < last_segment_idx {
-                last_segment_idx = 0;
-            }
-
-            if segment_idx > last_segment_idx {
-                last_segment_idx = segment_idx;
-                let _ = cancel_runtime_prefetch(&core_runtime, false);
-                match core.play_next(Some(false)) {
-                    Ok(Some(next)) => {
-                        let progress = PlaybackProgress {
-                            song_id: next.song_id.clone(),
-                            position_seconds: 0.0,
-                            duration_seconds: duration_seconds(next.duration),
-                            is_playing: true,
-                        };
-                        if block_on_monitor_future(
-                            &runtime,
-                            &running,
-                            core.report_playback_progress(progress),
-                        )
-                        .is_none()
-                        {
-                            break;
-                        }
-                        let Some(prepared) = block_on_monitor_future(
-                            &runtime,
-                            &running,
-                            prepare_next_transition_from(&core, &audio),
-                        ) else {
-                            break;
-                        };
-                        let prepared = prepared.unwrap_or(false);
-                        let _ = start_runtime_prefetch(&core_runtime, prepared);
-                        announcer.emit(&core, &audio);
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        log::warn!(
-                            target: "stereodrome_ffi",
-                            "Failed to advance queue after gapless transition: {error}"
-                        );
-                    }
-                }
-            }
-
-            if !report_mobile_progress(
-                &runtime,
-                &core,
-                &running,
-                &mut last_report,
-                &song.id,
-                &state,
-            ) {
-                break;
-            }
-
-            if state.is_playing
-                && state_handle.is_last_gapless_segment(segment_idx)
-                && !state_handle.is_crossfade_initiated()
-            {
-                match core.get_audio_processing_settings() {
-                    Ok(settings) if settings.crossfade_enabled => {
-                        let crossfade_window_seconds =
-                            f64::from(settings.crossfade_duration_ms) / 1000.0;
-                        let remaining = state.duration - state.position;
-                        if remaining <= crossfade_window_seconds && remaining > 0.5 {
-                            crossfade_attempted = audio.current_playback_identity();
-                            state_handle.set_crossfade_initiated(true);
-                            let _ = cancel_runtime_prefetch(&core_runtime, false);
-                            let Some(crossfade_result) = block_on_monitor_future(
-                                &runtime,
-                                &running,
-                                crossfade_next_from(&core, &audio, crossfade_attempted.as_ref()),
-                            ) else {
-                                break;
-                            };
-                            match crossfade_result {
-                                Ok(Some(_)) => {
-                                    let Some(prepared) = block_on_monitor_future(
-                                        &runtime,
-                                        &running,
-                                        prepare_next_transition_from(&core, &audio),
-                                    ) else {
-                                        break;
-                                    };
-                                    let prepared = prepared.unwrap_or(false);
-                                    let _ = start_runtime_prefetch(&core_runtime, prepared);
-                                    announcer.emit(&core, &audio);
-                                }
-                                Ok(None) => state_handle.set_crossfade_initiated(false),
-                                Err(error) => {
-                                    state_handle.set_crossfade_initiated(false);
-                                    log::warn!(
-                                        target: "stereodrome_ffi",
-                                        "Failed to start mobile crossfade: {error}"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        log::warn!(
-                            target: "stereodrome_ffi",
-                            "Failed to read mobile crossfade settings: {error}"
-                        );
-                    }
-                }
-            }
-
-            let playback_finished = terminal_identity.is_some()
-                && state.duration > 0.0
-                && state.position >= state.duration - 0.2
-                && !state.is_playing
-                && !state_handle.is_crossfade_initiated();
-
-            if playback_finished {
-                last_segment_idx = 0;
-                last_report = None;
-                let _ = cancel_runtime_prefetch(&core_runtime, false);
-
-                let Some(navigation_result) = block_on_monitor_future(
-                    &runtime,
-                    &running,
-                    play_queue_navigation_from(
-                        &core,
-                        &audio,
-                        QueueNavigation::Next(false),
-                        terminal_identity.clone(),
-                    ),
-                ) else {
-                    break;
-                };
-                match navigation_result {
-                    Ok(status) if status.current_song_id.is_some() => {
-                        let Some(prepared) = block_on_monitor_future(
-                            &runtime,
-                            &running,
-                            prepare_next_transition_from(&core, &audio),
-                        ) else {
-                            break;
-                        };
-                        let prepared = prepared.unwrap_or(false);
-                        let _ = start_runtime_prefetch(&core_runtime, prepared);
-                        announcer.emit(&core, &audio);
-                    }
-                    Ok(_) => {
-                        let _ = core.save_playback_position(PlaybackProgress {
-                            song_id: song.id,
-                            position_seconds: 0.0,
-                            duration_seconds: state.duration,
-                            is_playing: false,
-                        });
-                        announcer.emit(&core, &audio);
-                    }
-                    Err(error) => {
-                        log::warn!(
-                            target: "stereodrome_ffi",
-                            "Failed to prepare mobile playback after track ended: {error}"
-                        );
-                        if terminal_identity.as_ref() == audio.current_playback_identity().as_ref()
-                            && let Err(stop_error) = audio.stop()
-                        {
-                            log::warn!(
-                                target: "stereodrome_ffi",
-                                "Failed to release mobile audio after terminal transition error: \
-                                 {stop_error}"
-                            );
-                        }
-                        let _ = core.save_playback_position(PlaybackProgress {
-                            song_id: song.id,
-                            position_seconds: 0.0,
-                            duration_seconds: state.duration,
-                            is_playing: false,
-                        });
-                        announcer.emit(&core, &audio);
-                    }
-                }
-            }
-        }
-    })
-}
-
-struct MobileProgressReport {
-    at: Instant,
-    is_playing: bool,
-    position: f64,
-    song_id: String,
-    pending: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct MobilePlaybackMarker {
-    state: stereodrome_audio::PlaybackLifecycleState,
-    output_state: AudioOutputState,
-    is_playing: bool,
-    song_id: Option<String>,
-    segment_idx: usize,
-}
-
-impl MobilePlaybackMarker {
-    fn from_state(state: &stereodrome_audio::PlaybackState, segment_idx: usize) -> Self {
-        Self {
-            state: state.state,
-            output_state: state.output_state,
-            is_playing: state.is_playing,
-            song_id: state.song.as_ref().map(|song| song.id.clone()),
-            segment_idx,
-        }
-    }
-}
-
-fn audio_notification_is_current(audio: &AudioPlayer, notification: &AudioNotification) -> bool {
-    let current = audio.current_playback_identity();
-    match notification {
-        AudioNotification::PlaybackChanged { identity, .. } => identity == &current,
-        AudioNotification::GaplessSegmentChanged { identity, .. }
-        | AudioNotification::EndOfTrack { identity }
-        | AudioNotification::PositionChanged { identity } => current.as_ref() == Some(identity),
-        AudioNotification::OutputStateChanged { .. } => true,
-    }
-}
-
-fn earlier_deadline(current: Option<Instant>, candidate: Instant) -> Instant {
-    current.map_or(candidate, |deadline| deadline.min(candidate))
-}
-
-fn mobile_monitor_wait_duration(
-    core: &StereodromeCore,
-    audio: &AudioPlayer,
-    state_handle: &AudioStateHandle,
-    last_report: Option<&MobileProgressReport>,
-    cache_reconcile_pending: bool,
-    last_cache_reconcile_attempt: Option<Instant>,
-    crossfade_attempted: Option<&PlaybackIdentity>,
-) -> Option<Duration> {
-    let now = Instant::now();
-    let mut deadline = None;
-
-    if cache_reconcile_pending {
-        let retry_at = last_cache_reconcile_attempt.map_or(now, |attempt| {
-            attempt + MOBILE_CACHE_RECONCILE_RETRY_INTERVAL
-        });
-        deadline = Some(earlier_deadline(deadline, retry_at));
-    }
-
-    let (state, segment_idx) = state_handle.get_gapless_state();
-    if state.is_playing {
-        let report_at = last_report.map_or(now, |report| report.at + Duration::from_secs(15));
-        deadline = Some(earlier_deadline(deadline, report_at));
-
-        if !state_handle.is_crossfade_initiated()
-            && state_handle.is_last_gapless_segment(segment_idx)
-            && let Ok(settings) = core.get_audio_processing_settings()
-            && settings.crossfade_enabled
-            && let Some(identity) = audio.current_playback_identity()
-            && crossfade_attempted != Some(&identity)
-        {
-            let remaining = (state.duration - state.position).max(0.0);
-            if remaining > 0.5 {
-                let until_window =
-                    (remaining - f64::from(settings.crossfade_duration_ms) / 1000.0).max(0.0);
-                deadline = Some(earlier_deadline(
-                    deadline,
-                    now + Duration::from_secs_f64(until_window),
-                ));
-            }
-        }
-    }
-    if let Some(report) = last_report
-        && report.pending
-    {
-        deadline = Some(earlier_deadline(
-            deadline,
-            report.at + MOBILE_PROGRESS_RETRY_INTERVAL,
-        ));
-    }
-
-    deadline.map(|deadline| deadline.saturating_duration_since(now))
-}
-
-fn block_on_monitor_future<F>(
-    runtime: &tokio::runtime::Runtime,
-    running: &AtomicBool,
-    future: F,
-) -> Option<F::Output>
-where
-    F: Future,
-{
-    runtime.block_on(async move {
-        tokio::pin!(future);
-        loop {
-            tokio::select! {
-                result = &mut future => return Some(result),
-                () = tokio::time::sleep(Duration::from_millis(50)) => {
-                    if !running.load(Ordering::SeqCst) {
-                        return None;
-                    }
-                }
-            }
-        }
-    })
-}
-
-fn report_mobile_progress(
-    runtime: &tokio::runtime::Runtime,
-    core: &StereodromeCore,
-    running: &AtomicBool,
-    last_report: &mut Option<MobileProgressReport>,
-    song_id: &str,
-    state: &stereodrome_audio::PlaybackState,
-) -> bool {
-    let now = Instant::now();
-    let should_report = should_report_mobile_progress(last_report.as_ref(), song_id, state, now);
-
-    if !should_report {
-        return true;
-    }
-
-    let progress = PlaybackProgress {
-        song_id: song_id.to_string(),
-        position_seconds: state.position,
-        duration_seconds: state.duration,
-        is_playing: state.is_playing,
-    };
-    match block_on_monitor_future(runtime, running, core.report_playback_progress(progress)) {
-        None => false,
-        Some(Ok(_)) => {
-            *last_report = Some(MobileProgressReport {
-                at: now,
-                is_playing: state.is_playing,
-                position: state.position,
-                song_id: song_id.to_string(),
-                pending: false,
-            });
-            true
-        }
-        Some(Err(error)) => {
-            log::warn!(
-                target: "stereodrome_ffi",
-                "Failed to report mobile playback progress: {error}"
-            );
-            *last_report = Some(MobileProgressReport {
-                at: now,
-                is_playing: state.is_playing,
-                position: state.position,
-                song_id: song_id.to_string(),
-                pending: true,
-            });
-            true
-        }
-    }
-}
-
-fn should_report_mobile_progress(
-    last_report: Option<&MobileProgressReport>,
-    song_id: &str,
-    state: &stereodrome_audio::PlaybackState,
-    now: Instant,
-) -> bool {
-    last_report.is_none_or(|previous| {
-        (previous.pending && now.duration_since(previous.at) >= MOBILE_PROGRESS_RETRY_INTERVAL)
-            || previous.song_id != song_id
-            || previous.is_playing != state.is_playing
-            || (previous.position - state.position).abs() >= 15.0
-            || (state.is_playing && now.duration_since(previous.at) >= Duration::from_secs(15))
-    })
-}
-
-async fn play_current_queue_item(
-    mobile: &MobileCore,
-    seek_position: Option<f64>,
-) -> Result<stereodrome_audio::PlaybackStatus, String> {
-    play_current_queue_item_from(&mobile.core, &mobile.audio, seek_position).await
-}
-
-async fn play_current_queue_item_from(
-    core: &StereodromeCore,
-    audio: &AudioPlayer,
-    seek_position: Option<f64>,
-) -> Result<stereodrome_audio::PlaybackStatus, String> {
-    let queue = core.get_queue().map_err(|e| e.to_string())?;
-    let Some(index) = queue.current_index else {
-        audio.stop().map_err(|e| e.to_string())?;
-        return Ok(audio.get_status());
-    };
-    let item = queue
-        .items
-        .get(index)
-        .cloned()
-        .ok_or_else(|| "current queue index is out of range".to_string())?;
-
-    let prepared = prepare_queue_item_audio_from(core, item).await?;
-
-    let status = play_prepared_audio(core, audio, prepared, None)?;
-
-    if let Some(position) = seek_position
-        && let Err(error) = audio.seek(position)
-    {
-        log::warn!(
-            target: "stereodrome_ffi",
-            "Playback started but the restored position could not be applied: {error}"
-        );
-    }
-
-    Ok(if seek_position.is_some() {
-        audio.get_status()
-    } else {
-        status
-    })
-}
-
-#[derive(Clone, Copy)]
-enum QueueNavigation {
-    Index(usize),
-    Next(bool),
-    Previous,
-}
-
-impl QueueNavigation {
-    fn preview(self, core: &StereodromeCore) -> Result<Option<QueueItem>, String> {
-        match self {
-            Self::Index(index) => core
-                .get_queue()
-                .map_err(|error| error.to_string())?
-                .items
-                .get(index)
-                .cloned()
-                .map(Some)
-                .ok_or_else(|| format!("queue index {index} is out of range")),
-            Self::Next(force) => core
-                .preview_next_queue_item(Some(force))
-                .map_err(|error| error.to_string()),
-            Self::Previous => core
-                .preview_previous_queue_item()
-                .map_err(|error| error.to_string()),
-        }
-    }
-
-    fn commit_if_matches(
-        self,
-        core: &StereodromeCore,
-        expected_current_song_id: Option<&str>,
-        expected_target_song_id: &str,
-    ) -> Result<Option<QueueItem>, String> {
-        match self {
-            Self::Index(index) => core.play_queue_item_if_matches(
-                index,
-                expected_current_song_id,
-                expected_target_song_id,
-            ),
-            Self::Next(force) => core.play_next_if_matches(
-                Some(force),
-                expected_current_song_id,
-                expected_target_song_id,
-            ),
-            Self::Previous => {
-                core.play_previous_if_matches(expected_current_song_id, expected_target_song_id)
-            }
-        }
-        .map_err(|error| error.to_string())
-    }
-
-    fn commit(self, core: &StereodromeCore) -> Result<Option<QueueItem>, String> {
-        match self {
-            Self::Index(index) => core.play_queue_item(index),
-            Self::Next(force) => core.play_next(Some(force)),
-            Self::Previous => core.play_previous(),
-        }
-        .map_err(|error| error.to_string())
-    }
-}
-
-async fn play_queue_navigation(
-    mobile: &MobileCore,
-    navigation: QueueNavigation,
-) -> Result<stereodrome_audio::PlaybackStatus, String> {
-    play_queue_navigation_from(&mobile.core, &mobile.audio, navigation, None).await
-}
-
-async fn play_queue_navigation_from(
-    core: &StereodromeCore,
-    audio: &AudioPlayer,
-    navigation: QueueNavigation,
-    expected_playback: Option<PlaybackIdentity>,
-) -> Result<stereodrome_audio::PlaybackStatus, String> {
-    if expected_playback
-        .as_ref()
-        .is_some_and(|expected| audio.current_playback_identity().as_ref() != Some(expected))
-    {
-        return Err("playback changed before queue navigation began".to_string());
-    }
-    let queue_before = core.get_queue().map_err(|error| error.to_string())?;
-    let expected_current_song_id = queue_before
-        .current_index
-        .and_then(|index| queue_before.items.get(index))
-        .map(|item| item.song_id.clone());
-    let preview = navigation.preview(core)?;
-
-    let Some(item) = preview else {
-        audio.stop().map_err(|error| error.to_string())?;
-        let committed = navigation.commit(core)?;
-        if committed.is_some() {
-            return Err("queue navigation changed while playback was being prepared".to_string());
-        }
-        return Ok(audio.get_status());
-    };
-
-    let expected_song_id = item.song_id.clone();
-    let prepared = prepare_queue_item_audio_from(core, item).await?;
-    if expected_playback
-        .as_ref()
-        .is_some_and(|expected| audio.current_playback_identity().as_ref() != Some(expected))
-    {
-        return Err("playback changed while queue navigation was being prepared".to_string());
-    }
-    let status = play_prepared_audio(core, audio, prepared, expected_playback)?;
-    let committed = match navigation.commit_if_matches(
-        core,
-        expected_current_song_id.as_deref(),
-        &expected_song_id,
-    ) {
-        Ok(committed) => committed,
-        Err(error) => {
-            if let Err(stop_error) = audio.stop() {
-                log::warn!(
-                    target: "stereodrome_ffi",
-                    "Queue commit failed after playback started and stop was not acknowledged: \
-                     {stop_error}"
-                );
-                return Ok(status);
-            }
-            return Err(error);
-        }
-    };
-
-    if committed.as_ref().map(|item| item.song_id.as_str()) != Some(expected_song_id.as_str()) {
-        if let Err(stop_error) = audio.stop() {
-            log::warn!(
-                target: "stereodrome_ffi",
-                "Queue changed after playback started and stop was not acknowledged: {stop_error}"
-            );
-            return Ok(status);
-        }
-        return Err("queue navigation changed while playback was being prepared".to_string());
-    }
-
-    Ok(status)
-}
-
-async fn resume_current_playback(
-    mobile: &MobileCore,
-) -> Result<stereodrome_audio::PlaybackStatus, String> {
-    if mobile.audio.get_status().current_song_id.is_some() {
-        mobile.audio.resume().map_err(|e| e.to_string())?;
-        return Ok(mobile.audio.get_status());
-    }
-
-    let persisted = mobile
-        .core
-        .get_playback_state()
-        .map_err(|e| e.to_string())?;
-    let mut queue = mobile.core.get_queue().map_err(|e| e.to_string())?;
-    if queue.current_index.is_none()
-        && let Some(saved_song_id) = persisted.current_song_id.as_deref()
-        && let Some(index) = queue
-            .items
-            .iter()
-            .position(|item| item.song_id == saved_song_id)
-    {
-        mobile
-            .core
-            .play_queue_item(index)
-            .map_err(|e| e.to_string())?;
-        queue = mobile.core.get_queue().map_err(|e| e.to_string())?;
-    }
-
-    let current_song_id = queue
-        .current_index
-        .and_then(|index| queue.items.get(index))
-        .map(|item| item.song_id.as_str());
-
-    let seek_position = match (persisted.current_song_id.as_deref(), current_song_id) {
-        (Some(saved_song_id), Some(queue_song_id))
-            if saved_song_id == queue_song_id && persisted.position_seconds > 0.5 =>
-        {
-            let duration = if persisted.duration_seconds > 0.0 {
-                persisted.duration_seconds
-            } else {
-                queue
-                    .current_index
-                    .and_then(|index| queue.items.get(index))
-                    .map_or(0.0, |item| duration_seconds(item.duration))
-            };
-            Some(if duration > 1.0 {
-                persisted.position_seconds.clamp(0.0, duration - 1.0)
-            } else {
-                0.0
-            })
-        }
-        _ => None,
-    };
-
-    let status = play_current_queue_item(mobile, seek_position).await?;
-    if let Err(error) = prepare_next_transition(mobile).await {
-        log::warn!(
-            target: "stereodrome_ffi",
-            "Failed to prepare next transition after resuming playback: {error}"
-        );
-    }
-    Ok(status)
-}
-
-async fn prepare_next_transition(mobile: &MobileCore) -> Result<bool, String> {
-    prepare_next_transition_from(&mobile.core, &mobile.audio).await
-}
-
-async fn prepare_next_transition_from(
-    core: &StereodromeCore,
-    audio: &AudioPlayer,
-) -> Result<bool, String> {
-    let settings = core
-        .get_audio_processing_settings()
-        .map_err(|e| e.to_string())?;
-    if !settings.gapless_enabled {
-        return Ok(false);
-    }
-    if audio.get_status().current_song_id.is_none() {
-        return Ok(false);
-    }
-
-    let queue = core.get_queue().map_err(|e| e.to_string())?;
-    if queue.repeat_mode == RepeatMode::One {
-        return Ok(false);
-    }
-    let Some(current_index) = queue.current_index else {
-        return Ok(false);
-    };
-    let Some(current) = queue.items.get(current_index) else {
-        return Ok(false);
-    };
-    let Some(next) = core.peek_next_queue_item().map_err(|e| e.to_string())? else {
-        return Ok(false);
-    };
-    if current.song_id == next.song_id
-        || !core
-            .songs_are_gapless_eligible(&current.song_id, &next.song_id)
-            .map_err(|e| e.to_string())?
-    {
-        return Ok(false);
-    }
-    let Some(expected_playback) = audio.current_playback_identity() else {
-        return Ok(false);
-    };
-    if expected_playback.song_id() != current.song_id {
-        return Ok(false);
-    }
-
-    let next_song_id = next.song_id.clone();
-    let prepared = prepare_queue_item_audio_from(core, next).await?;
-    audio
-        .append_gapless(
-            expected_playback,
-            prepared.audio_data,
-            prepared.metadata,
-            prepared.duration_secs,
-            prepared.processing.normalization_gain,
-            prepared.processing.dynamics_preset,
-            prepared.processing.binaural_preset,
-            prepared.processing.equalizer_settings,
-        )
-        .map(|()| true)
-        .map_err(|error| {
-            invalidate_cache_after_decode_error(core, &next_song_id, &error);
-            error.to_string()
-        })
-}
-
-async fn crossfade_next_from(
-    core: &StereodromeCore,
-    audio: &AudioPlayer,
-    expected_playback: Option<&PlaybackIdentity>,
-) -> Result<Option<QueueState>, String> {
-    if expected_playback
-        .is_some_and(|expected| audio.current_playback_identity().as_ref() != Some(expected))
-    {
-        return Ok(None);
-    }
-    let settings = core
-        .get_audio_processing_settings()
-        .map_err(|e| e.to_string())?;
-    if !settings.crossfade_enabled || !audio.get_status().is_playing {
-        return Ok(None);
-    }
-
-    let queue = core.get_queue().map_err(|e| e.to_string())?;
-    if queue.repeat_mode == RepeatMode::One {
-        return Ok(None);
-    }
-    let Some(current_index) = queue.current_index else {
-        return Ok(None);
-    };
-    let Some(current) = queue.items.get(current_index) else {
-        return Ok(None);
-    };
-    let current_song_id = current.song_id.clone();
-    let Some(next) = core.peek_next_queue_item().map_err(|e| e.to_string())? else {
-        return Ok(None);
-    };
-
-    if settings.gapless_enabled
-        && core
-            .songs_are_gapless_eligible(&current.song_id, &next.song_id)
-            .map_err(|e| e.to_string())?
-    {
-        return Ok(None);
-    }
-
-    let next_song_id = next.song_id.clone();
-    let prepared = prepare_queue_item_audio_from(core, next).await?;
-    if expected_playback
-        .is_some_and(|expected| audio.current_playback_identity().as_ref() != Some(expected))
-    {
-        return Ok(None);
-    }
-    audio
-        .crossfade_play(CrossfadePlayRequest {
-            expected_playback: expected_playback.cloned(),
-            audio_data: prepared.audio_data,
-            metadata: prepared.metadata,
-            duration_secs: prepared.duration_secs,
-            normalization_gain: prepared.processing.normalization_gain,
-            dynamics_preset: prepared.processing.dynamics_preset,
-            binaural_preset: prepared.processing.binaural_preset,
-            equalizer_settings: prepared.processing.equalizer_settings,
-            crossfade_duration_ms: settings.crossfade_duration_ms,
-        })
-        .map_err(|error| {
-            invalidate_cache_after_decode_error(core, &next_song_id, &error);
-            error.to_string()
-        })?;
-
-    if let Err(error) =
-        core.play_next_if_matches(Some(false), Some(&current_song_id), &next_song_id)
-    {
-        let _ = audio.stop();
-        return Err(error.to_string());
-    }
-    Ok(Some(core.get_queue().map_err(|e| e.to_string())?))
-}
-
-async fn apply_audio_settings(
-    mobile: &MobileCore,
-) -> Result<stereodrome_audio::PlaybackStatus, String> {
-    let status = mobile.audio.get_status();
-    let Some(_) = status.current_song_id else {
-        return Ok(status);
-    };
-    let was_playing = status.is_playing;
-    let position = status.position;
-    play_current_queue_item_from(&mobile.core, &mobile.audio, Some(position)).await?;
-    if !was_playing {
-        mobile.audio.pause().map_err(|e| e.to_string())?;
-    }
-    Ok(mobile.audio.get_status())
-}
-
-struct AudioProcessing {
-    normalization_gain: Option<f32>,
-    dynamics_preset: Option<DynamicsPreset>,
-    binaural_preset: Option<BinauralPreset>,
-    equalizer_settings: Option<EqualizerSettings>,
-}
-
-struct PreparedAudioItem {
-    audio_data: Arc<[u8]>,
-    metadata: SongMetadata,
-    duration_secs: f64,
-    processing: AudioProcessing,
-}
-
-fn play_prepared_audio(
-    core: &StereodromeCore,
-    audio: &AudioPlayer,
-    prepared: PreparedAudioItem,
-    expected_playback: Option<PlaybackIdentity>,
-) -> Result<stereodrome_audio::PlaybackStatus, String> {
-    let song_id = prepared.metadata.id.clone();
-    if let Err(error) = audio.play_with_expected(
-        expected_playback,
-        prepared.audio_data,
-        prepared.metadata,
-        prepared.duration_secs,
-        prepared.processing.normalization_gain,
-        prepared.processing.dynamics_preset,
-        prepared.processing.binaural_preset,
-        prepared.processing.equalizer_settings,
-    ) {
-        invalidate_cache_after_decode_error(core, &song_id, &error);
-        return Err(error.to_string());
-    }
-    Ok(audio.get_status())
-}
-
-fn invalidate_cache_after_decode_error(core: &StereodromeCore, song_id: &str, error: &AudioError) {
-    if !matches!(error, AudioError::Decode(_)) {
-        return;
-    }
-    if let Err(invalidation_error) = core.invalidate_cached_song(song_id) {
-        log::warn!(
-            target: "stereodrome_ffi",
-            "Failed to invalidate undecodable cached song {song_id}: {invalidation_error}"
-        );
-    }
-}
-
-async fn prepare_queue_item_audio_from(
-    core: &StereodromeCore,
-    item: QueueItem,
-) -> Result<PreparedAudioItem, String> {
-    let status = core
-        .download_song(item.song_id.clone())
-        .await
-        .map_err(|e| e.to_string())?;
-    let path = status
-        .path
-        .as_deref()
-        .ok_or_else(|| format!("song {} did not produce a cached audio path", item.song_id))?;
-    let audio_path = file_uri_to_path(path)?;
-    let audio_data = std::fs::read(&audio_path).map_err(|e| e.to_string())?;
-    let settings = core
-        .get_audio_processing_settings()
-        .map_err(|e| e.to_string())?;
-    let processing = audio_processing_from_settings(&settings)?;
-
-    Ok(PreparedAudioItem {
-        audio_data: Arc::<[u8]>::from(audio_data),
-        metadata: SongMetadata {
-            id: item.song_id,
-            title: item.title,
-            artist: item.artist,
-            album: item.album,
-            cover_art_id: None,
-        },
-        duration_secs: duration_seconds(item.duration),
-        processing,
-    })
-}
-
-fn audio_processing_from_settings(
-    settings: &AudioProcessingSettings,
-) -> Result<AudioProcessing, String> {
-    let normalization_gain = if settings.normalization_enabled || settings.preamp_db.abs() > 0.01 {
-        Some(10.0_f32.powf(narrow_f64_to_f32(settings.preamp_db, "preamp_db")? / 20.0))
-    } else {
-        None
-    };
-    let dynamics_preset = if settings.dynamics_enabled {
-        Some(match settings.dynamics_preset.as_str() {
-            "light" => DynamicsPreset::Light,
-            "medium" => DynamicsPreset::Medium,
-            "heavy" => DynamicsPreset::Heavy,
-            other => return Err(format!("unknown dynamics preset: {other}")),
-        })
-    } else {
-        None
-    };
-    let binaural_preset = if settings.binaural_enabled {
-        Some(match settings.binaural_preset.as_str() {
-            "light" => BinauralPreset::Default,
-            "medium" => BinauralPreset::Jmeier,
-            "strong" => BinauralPreset::Aggressive,
-            other => return Err(format!("unknown binaural preset: {other}")),
-        })
-    } else {
-        None
-    };
-    let equalizer_settings = if settings.equalizer_enabled {
-        Some(EqualizerSettings::new(
-            settings
-                .equalizer_bands_db
-                .iter()
-                .map(|value| narrow_f64_to_f32(*value, "equalizer band"))
-                .collect::<Result<Vec<_>, _>>()?,
-        ))
-    } else {
-        None
-    };
-
-    Ok(AudioProcessing {
-        normalization_gain,
-        dynamics_preset,
-        binaural_preset,
-        equalizer_settings,
-    })
-}
-
-fn duration_seconds(duration: i64) -> f64 {
-    let duration = duration.clamp(0, i64::from(u32::MAX));
-    f64::from(u32::try_from(duration).expect("clamped duration fits in u32"))
-}
-
-fn narrow_f64_to_f32(value: f64, name: &str) -> Result<f32, String> {
-    if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
-        return Err(format!("{name} is outside the supported f32 range"));
-    }
-
-    // The finite range check above makes this the only intentionally narrowing step.
-    #[allow(clippy::cast_possible_truncation)]
-    {
-        Ok(value as f32)
-    }
-}
-
-fn file_uri_to_path(value: &str) -> Result<PathBuf, String> {
-    if value.starts_with("file://") {
-        Url::parse(value)
-            .map_err(|e| e.to_string())?
-            .to_file_path()
-            .map_err(|()| format!("invalid file URI: {value}"))
-    } else {
-        Ok(PathBuf::from(value))
-    }
 }
 
 fn mobile_ref<'a>(core: *mut MobileCore) -> Option<&'a MobileCore> {
@@ -2964,16 +1631,6 @@ mod tests {
         }
     }
 
-    fn test_queue_item(id: &str) -> QueueItem {
-        QueueItem {
-            song_id: id.to_string(),
-            title: format!("Song {id}"),
-            artist: "Artist".to_string(),
-            album: "Album".to_string(),
-            duration: 180,
-        }
-    }
-
     #[test]
     fn legacy_command_fixtures_round_trip_through_the_c_abi() {
         let fixtures: Vec<LegacyCommandFixture> = serde_json::from_str(include_str!(
@@ -3030,7 +1687,7 @@ mod tests {
                     settings: serde_json::from_value(fixture.payload.clone())
                         .expect("audio settings fixture parses"),
                 },
-                "clearQueue" => CoreCommand::ClearQueue,
+                "clearQueue" => CoreCommand::ClearPlayback,
                 method => panic!("fixture {method} needs a typed compatibility mapping"),
             };
             let typed_response = typed.dispatch_runtime(&CoreCommandRequest {
@@ -3104,247 +1761,6 @@ mod tests {
                 "{capability} remains a boolean"
             );
         }
-    }
-
-    #[test]
-    fn mobile_core_shutdown_cancels_an_active_prefetch_worker() {
-        let core = TestMobileCore::new("shutdown-prefetch-characterization");
-        core.mobile()
-            .core
-            .add_songs_to_queue(vec![test_queue_item("current"), test_queue_item("next")])
-            .expect("queue is populated");
-        core.mobile()
-            .core
-            .play_queue_item(0)
-            .expect("current song is selected");
-
-        start_queue_prefetch(core.mobile(), false).expect("prefetch starts");
-
-        drop(core);
-    }
-
-    #[test]
-    fn failed_navigation_preparation_does_not_advance_queue() {
-        static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
-
-        let test_id = NEXT_TEST_ID.fetch_add(1, AtomicOrdering::Relaxed);
-        let data_dir = std::env::temp_dir().join(format!(
-            "stereodrome-ffi-navigation-{}-{test_id}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&data_dir);
-        let core = StereodromeCore::new(&data_dir).expect("core initializes");
-        core.add_to_queue(test_queue_item("a"))
-            .expect("first queue item is added");
-        core.add_to_queue(test_queue_item("b"))
-            .expect("second queue item is added");
-        core.play_queue_item(0)
-            .expect("initial queue item is selected");
-        let audio = AudioPlayer::new_with_spectrum(false).expect("audio player initializes");
-        let runtime = tokio::runtime::Runtime::new().expect("runtime initializes");
-
-        let result = runtime.block_on(async {
-            play_queue_navigation_from(&core, &audio, QueueNavigation::Next(true), None).await
-        });
-
-        assert!(
-            result.is_err(),
-            "uncached playback without a server must fail"
-        );
-        assert_eq!(
-            core.get_queue()
-                .expect("queue remains readable")
-                .current_index,
-            Some(0)
-        );
-
-        drop(audio);
-        drop(core);
-        let _ = std::fs::remove_dir_all(data_dir);
-    }
-
-    #[test]
-    fn mobile_monitor_future_stops_when_shutdown_is_requested() {
-        let runtime = tokio::runtime::Runtime::new().expect("runtime initializes");
-        let running = AtomicBool::new(false);
-
-        let result = block_on_monitor_future(&runtime, &running, std::future::pending::<()>());
-
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn stopped_mobile_monitor_has_no_playback_deadline() {
-        let data_dir = std::env::temp_dir().join(format!(
-            "stereodrome-ffi-idle-monitor-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&data_dir);
-        let core = StereodromeCore::new(&data_dir).expect("core initializes");
-        let audio = AudioPlayer::new_with_spectrum(false).expect("audio initializes");
-        let state_handle = audio.state_handle();
-
-        let wait =
-            mobile_monitor_wait_duration(&core, &audio, &state_handle, None, false, None, None);
-
-        assert!(wait.is_none());
-        drop(audio);
-        drop(core);
-        let _ = std::fs::remove_dir_all(data_dir);
-    }
-
-    #[test]
-    fn paused_progress_is_not_reported_again_on_elapsed_time() {
-        let now = Instant::now();
-        let previous = MobileProgressReport {
-            at: now
-                .checked_sub(Duration::from_secs(30))
-                .expect("test instant supports a 30-second offset"),
-            is_playing: false,
-            position: 10.0,
-            song_id: "song".to_string(),
-            pending: false,
-        };
-        let state = stereodrome_audio::PlaybackState {
-            state: PlaybackLifecycleState::Paused,
-            is_playing: false,
-            position: 10.0,
-            duration: 180.0,
-            volume: 0.8,
-            song: Some(SongMetadata {
-                id: "song".to_string(),
-                title: "Song".to_string(),
-                artist: "Artist".to_string(),
-                album: "Album".to_string(),
-                cover_art_id: None,
-            }),
-            output_state: AudioOutputState::Ready,
-        };
-
-        assert!(!should_report_mobile_progress(
-            Some(&previous),
-            "song",
-            &state,
-            now
-        ));
-    }
-
-    #[test]
-    fn playback_snapshot_policy_includes_dispatch_mutations_that_emit() {
-        let emitting_methods = [
-            "importPortableBackup",
-            "setAudioProcessingSettings",
-            "audioPlayCurrent",
-            "audioPlayQueueItem",
-            "audioPlayNext",
-            "audioPlayPrevious",
-            "audioApplySettings",
-            "audioPause",
-            "audioResume",
-            "audioRebuildOutput",
-            "audioStop",
-            "audioSeek",
-            "audioSetVolume",
-            "playSongWithQueue",
-            "addToQueue",
-            "addSongsToQueue",
-            "insertNext",
-            "insertNextSongs",
-            "removeFromQueue",
-            "clearQueue",
-            "moveQueueItem",
-            "playQueueItem",
-            "playNext",
-            "playPrevious",
-            "toggleShuffle",
-            "setRepeatMode",
-            "cycleRepeatMode",
-            "rerollNext",
-        ];
-
-        for method in emitting_methods {
-            assert!(
-                should_emit_playback_snapshot(method),
-                "{method} should emit a playback snapshot after successful dispatch"
-            );
-        }
-    }
-
-    #[test]
-    fn playback_snapshot_policy_excludes_non_emitting_dispatch_methods() {
-        let non_emitting_methods = [
-            "getPlaybackSnapshot",
-            "getPlaybackState",
-            "audioPrepareNextTransition",
-            "getArtists",
-            "unknownMethod",
-        ];
-
-        for method in non_emitting_methods {
-            assert!(
-                !should_emit_playback_snapshot(method),
-                "{method} should not emit a playback snapshot from dispatch"
-            );
-        }
-    }
-
-    #[test]
-    fn stale_prefetch_is_cancelled_for_queue_stop_and_offline_mutations() {
-        let cancelling_methods = [
-            "disconnectServer",
-            "setConnectivitySettings",
-            "audioPlayNext",
-            "audioPrepareNextTransition",
-            "audioStop",
-            "playSongWithQueue",
-            "insertNext",
-            "removeFromQueue",
-            "clearQueue",
-            "moveQueueItem",
-            "toggleShuffle",
-            "setRepeatMode",
-        ];
-
-        for method in cancelling_methods {
-            assert!(
-                should_cancel_queue_prefetch(method),
-                "{method} should cancel stale queue prefetch"
-            );
-        }
-        assert!(!should_cancel_queue_prefetch("prefetchNext"));
-        assert!(!should_cancel_queue_prefetch("getPlaybackSnapshot"));
-    }
-
-    #[test]
-    fn decode_failure_invalidates_cached_audio_but_output_failure_does_not() {
-        static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
-
-        let test_id = NEXT_TEST_ID.fetch_add(1, AtomicOrdering::Relaxed);
-        let data_dir = std::env::temp_dir().join(format!(
-            "stereodrome-ffi-decode-cache-{}-{test_id}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&data_dir);
-        let core = StereodromeCore::new(&data_dir).expect("core initializes");
-        let cache_path = data_dir.join("audio_cache").join("song.mp3");
-        std::fs::create_dir_all(cache_path.parent().expect("cache parent"))
-            .expect("create cache directory");
-        std::fs::write(&cache_path, b"invalid audio").expect("write invalid cache");
-
-        invalidate_cache_after_decode_error(
-            &core,
-            "song",
-            &AudioError::Playback("output unavailable".to_string()),
-        );
-        assert!(cache_path.exists());
-
-        invalidate_cache_after_decode_error(
-            &core,
-            "song",
-            &AudioError::Decode("invalid media".to_string()),
-        );
-        assert!(!cache_path.exists());
-        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[test]

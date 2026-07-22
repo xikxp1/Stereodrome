@@ -16,6 +16,8 @@ pub(crate) struct CoreState {
     pub saved_playlist_offline: SavedPlaylistOfflineStatus,
     pub platform_lifecycle: PlatformLifecycle,
     pub network_available: bool,
+    pub playback_operation_id: Option<OperationId>,
+    pub paused_by_platform: bool,
 }
 
 impl CoreState {
@@ -31,6 +33,8 @@ impl CoreState {
             saved_playlist_offline: SavedPlaylistOfflineStatus::default(),
             platform_lifecycle: PlatformLifecycle::Foreground,
             network_available: true,
+            playback_operation_id: None,
+            paused_by_platform: false,
         }
     }
 }

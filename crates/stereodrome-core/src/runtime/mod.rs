@@ -1,6 +1,7 @@
 //! Serialized runtime shell around the existing core services.
 
 mod effect;
+mod playback;
 mod snapshot;
 mod state;
 
@@ -13,6 +14,7 @@ use std::thread;
 use std::time::Duration;
 
 use serde_json::Value;
+use stereodrome_audio::AudioNotification;
 use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
@@ -24,6 +26,7 @@ use crate::protocol::{
 };
 use crate::{ConnectionStatus, CoreError, CoreResult, StereodromeCore};
 
+pub use self::playback::{AudioPort, PlaybackClock, PreparedAudio, StereodromeAudioPort};
 use self::snapshot::{build_snapshot, connected_state, initial_connectivity};
 use self::state::CoreState;
 
@@ -45,6 +48,12 @@ enum MailboxMessage {
         operation_id: OperationId,
         result: CoreResult<Value>,
     },
+    PlaybackPrepared {
+        operation_id: OperationId,
+        result: CoreResult<playback::PreparedPlayback>,
+    },
+    PlaybackNotification(AudioNotification),
+    PlaybackTick,
     Stop,
 }
 
@@ -56,11 +65,21 @@ struct PendingEffect {
     abort_handle: AbortHandle,
 }
 
+struct PendingPlayback {
+    command_id: CommandId,
+    command: CoreCommand,
+    response: Option<mpsc::Sender<CoreCommandResult>>,
+    cancellation: CancellationToken,
+    abort_handle: AbortHandle,
+    success_value: Option<Value>,
+}
+
 struct RuntimeInner {
     mailbox: SyncSender<MailboxMessage>,
     events: broadcast::Sender<CoreEvent>,
     next_command_id: AtomicU64,
     stopped: AtomicBool,
+    monitor_running: Arc<AtomicBool>,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
@@ -69,6 +88,7 @@ impl Drop for RuntimeInner {
         if !self.stopped.swap(true, Ordering::SeqCst) {
             let _ = self.mailbox.send(MailboxMessage::Stop);
         }
+        self.monitor_running.store(false, Ordering::SeqCst);
         if let Ok(thread) = self.thread.get_mut()
             && let Some(thread) = thread.take()
         {
@@ -104,6 +124,39 @@ impl StereodromeRuntimeHandle {
         data_dir: impl AsRef<Path>,
         core: Arc<StereodromeCore>,
     ) -> CoreResult<Self> {
+        let audio: Arc<dyn AudioPort> = Arc::new(StereodromeAudioPort::new()?);
+        Self::start_with_core_and_audio(data_dir, core, audio)
+    }
+
+    /// Starts a runtime with an injected audio port for deterministic tests.
+    ///
+    /// # Errors
+    /// Returns an error if a runtime already owns the directory or the actor
+    /// thread/runtime cannot start.
+    pub fn start_with_core_and_audio(
+        data_dir: impl AsRef<Path>,
+        core: Arc<StereodromeCore>,
+        audio: Arc<dyn AudioPort>,
+    ) -> CoreResult<Self> {
+        Self::start_with_core_audio_and_clock(
+            data_dir,
+            core,
+            audio,
+            Arc::new(playback::SystemPlaybackClock),
+        )
+    }
+
+    /// Starts a runtime with injected audio and clock boundaries.
+    ///
+    /// # Errors
+    /// Returns an error if a runtime already owns the directory or the actor
+    /// thread/runtime cannot start.
+    pub fn start_with_core_audio_and_clock(
+        data_dir: impl AsRef<Path>,
+        core: Arc<StereodromeCore>,
+        audio: Arc<dyn AudioPort>,
+        clock: Arc<dyn PlaybackClock>,
+    ) -> CoreResult<Self> {
         let lease = RuntimeLease::acquire(data_dir.as_ref())?;
         let connectivity = initial_connectivity(&core)?;
         let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -116,6 +169,8 @@ impl StereodromeRuntimeHandle {
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let actor_events = events.clone();
         let stream_id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
+        let monitor_running = Arc::new(AtomicBool::new(true));
+        start_playback_inputs(&audio, mailbox.clone(), Arc::clone(&monitor_running));
         let actor_thread = thread::Builder::new()
             .name("stereodrome-runtime".to_string())
             .spawn(move || {
@@ -125,6 +180,8 @@ impl StereodromeRuntimeHandle {
                     actor_events,
                     stream_id,
                     core,
+                    audio,
+                    clock,
                     connectivity,
                     tokio_runtime,
                     lease,
@@ -136,6 +193,7 @@ impl StereodromeRuntimeHandle {
                 events,
                 next_command_id: AtomicU64::new(GENERATED_COMMAND_ID_START),
                 stopped: AtomicBool::new(false),
+                monitor_running,
                 thread: Mutex::new(Some(actor_thread)),
             }),
         })
@@ -210,6 +268,7 @@ impl StereodromeRuntimeHandle {
         if self.inner.stopped.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.inner.monitor_running.store(false, Ordering::SeqCst);
         let command_id = CommandId(self.inner.next_command_id.fetch_add(1, Ordering::Relaxed));
         let (response_sender, response_receiver) = mpsc::channel();
         let _ = self.inner.mailbox.send(MailboxMessage::Dispatch {
@@ -318,6 +377,42 @@ fn command_fingerprint(command: &CoreCommand) -> String {
     serde_json::to_string(command).unwrap_or_else(|_| format!("{command:?}"))
 }
 
+fn start_playback_inputs(
+    audio: &Arc<dyn AudioPort>,
+    mailbox: SyncSender<MailboxMessage>,
+    running: Arc<AtomicBool>,
+) {
+    if let Some(notifications) = audio.take_notifications() {
+        let notification_mailbox = mailbox.clone();
+        let notification_running = Arc::clone(&running);
+        thread::spawn(move || {
+            while notification_running.load(Ordering::SeqCst) {
+                let notification = match notifications.recv_timeout(Duration::from_millis(250)) {
+                    Ok(notification) => notification,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                if notification_mailbox
+                    .send(MailboxMessage::PlaybackNotification(notification))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
+    thread::spawn(move || {
+        while running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(250));
+            if !running.load(Ordering::SeqCst)
+                || mailbox.send(MailboxMessage::PlaybackTick).is_err()
+            {
+                break;
+            }
+        }
+    });
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     clippy::too_many_arguments,
@@ -329,6 +424,8 @@ fn run_actor(
     events: broadcast::Sender<CoreEvent>,
     stream_id: u64,
     core: Arc<StereodromeCore>,
+    audio: Arc<dyn AudioPort>,
+    clock: Arc<dyn PlaybackClock>,
     connectivity: ConnectivityState,
     tokio_runtime: tokio::runtime::Runtime,
     _lease: RuntimeLease,
@@ -337,8 +434,13 @@ fn run_actor(
     state.lifecycle = RuntimeLifecycle::Ready;
     let mut next_operation_id = 1_u64;
     let mut next_event_id = 1_u64;
+    let mut next_internal_command_id = GENERATED_COMMAND_ID_START + (1 << 62);
     let mut result_cache = ResultCache::new();
     let mut pending_effects = HashMap::<OperationId, PendingEffect>::new();
+    let mut pending_playback = HashMap::<OperationId, PendingPlayback>::new();
+    let mut last_playback_projection = playback::projection(&core, audio.as_ref(), None).ok();
+    let mut last_progress_at = clock.now();
+    let mut last_segment_index = 0_usize;
 
     while let Ok(message) = receiver.recv() {
         let MailboxMessage::Dispatch { request, response } = message else {
@@ -350,6 +452,7 @@ fn run_actor(
                     operation_id,
                     result,
                     &core,
+                    audio.as_ref(),
                     &events,
                     stream_id,
                     &mut state,
@@ -357,11 +460,83 @@ fn run_actor(
                     &mut pending_effects,
                     &mut result_cache,
                 ),
+                MailboxMessage::PlaybackPrepared {
+                    operation_id,
+                    result,
+                } => complete_playback(
+                    operation_id,
+                    result,
+                    &core,
+                    audio.as_ref(),
+                    &events,
+                    stream_id,
+                    &mut state,
+                    &mut next_event_id,
+                    &completion_mailbox,
+                    &mut next_internal_command_id,
+                    &mut pending_playback,
+                    &mut result_cache,
+                ),
+                MailboxMessage::PlaybackNotification(notification) => handle_playback_input(
+                    Some(notification),
+                    &core,
+                    audio.as_ref(),
+                    &tokio_runtime,
+                    &completion_mailbox,
+                    &events,
+                    stream_id,
+                    &mut state,
+                    &mut next_operation_id,
+                    &mut next_event_id,
+                    &mut pending_playback,
+                    &mut last_playback_projection,
+                    clock.as_ref(),
+                    &mut last_progress_at,
+                    &mut last_segment_index,
+                ),
+                MailboxMessage::PlaybackTick => handle_playback_input(
+                    None,
+                    &core,
+                    audio.as_ref(),
+                    &tokio_runtime,
+                    &completion_mailbox,
+                    &events,
+                    stream_id,
+                    &mut state,
+                    &mut next_operation_id,
+                    &mut next_event_id,
+                    &mut pending_playback,
+                    &mut last_playback_projection,
+                    clock.as_ref(),
+                    &mut last_progress_at,
+                    &mut last_segment_index,
+                ),
                 MailboxMessage::Stop => break,
                 MailboxMessage::Dispatch { .. } => unreachable!(),
             }
             continue;
         };
+        if request.protocol_version != CORE_PROTOCOL_VERSION || request.command_id.0 == 0 {
+            let error = if request.protocol_version == CORE_PROTOCOL_VERSION {
+                ProtocolError::new(
+                    ProtocolErrorCode::InvalidCommandId,
+                    "command_id must be greater than zero",
+                    false,
+                )
+            } else {
+                ProtocolError::new(
+                    ProtocolErrorCode::UnsupportedProtocolVersion,
+                    format!(
+                        "unsupported protocol version {}; expected {CORE_PROTOCOL_VERSION}",
+                        request.protocol_version
+                    ),
+                    false,
+                )
+            };
+            let result = CoreCommandResult::failed(request.command_id, state.revision, None, error);
+            let _ = response.send(result);
+            continue;
+        }
         match result_cache.get(request.command_id, &request.command) {
             CacheLookup::Match(cached) => {
                 let _ = response.send(cached);
@@ -384,11 +559,50 @@ fn run_actor(
         }
 
         let should_stop = matches!(request.command, CoreCommand::Shutdown);
+        if request.command.invalidates_queue_prefetch()
+            && let Some(operation_id) = pending_effects.iter().find_map(|(id, pending)| {
+                matches!(pending.command, CoreCommand::StartQueuePrefetch { .. }).then_some(*id)
+            })
+        {
+            let _ = cancel_pending_effect(
+                operation_id,
+                &core,
+                audio.as_ref(),
+                &events,
+                stream_id,
+                &mut state,
+                &mut next_event_id,
+                &mut pending_effects,
+                &mut result_cache,
+            );
+        }
         if let CoreCommand::CancelOperation { operation_id } = &request.command {
+            if cancel_pending_playback(
+                *operation_id,
+                &core,
+                audio.as_ref(),
+                &events,
+                stream_id,
+                &mut state,
+                &mut next_event_id,
+                &mut pending_playback,
+                &mut result_cache,
+            ) {
+                let result = CoreCommandResult::succeeded(
+                    request.command_id,
+                    state.revision,
+                    None,
+                    Value::Null,
+                );
+                result_cache.insert(&request.command, result.clone());
+                let _ = response.send(result);
+                continue;
+            }
             let result = cancel_operation(
                 request.command_id,
                 *operation_id,
                 &core,
+                audio.as_ref(),
                 &events,
                 stream_id,
                 &mut state,
@@ -398,6 +612,27 @@ fn run_actor(
             );
             result_cache.insert(&request.command, result.clone());
             let _ = response.send(result);
+            continue;
+        }
+        if is_playback_command(&request.command)
+            && request.protocol_version == CORE_PROTOCOL_VERSION
+            && request.command_id.0 != 0
+        {
+            process_playback_request(
+                request,
+                response,
+                &core,
+                audio.as_ref(),
+                &tokio_runtime,
+                &completion_mailbox,
+                &events,
+                stream_id,
+                &mut state,
+                &mut next_operation_id,
+                &mut next_event_id,
+                &mut pending_playback,
+                &mut result_cache,
+            );
             continue;
         }
         if let CoreCommand::CancelQueuePrefetch {
@@ -412,6 +647,7 @@ fn run_actor(
                     request.command_id,
                     operation_id,
                     &core,
+                    audio.as_ref(),
                     &events,
                     stream_id,
                     &mut state,
@@ -425,6 +661,7 @@ fn run_actor(
                 CoreCommandResult::succeeded(request.command_id, state.revision, None, Value::Null);
             emit_snapshot_event(
                 &core,
+                audio.as_ref(),
                 &events,
                 stream_id,
                 &mut next_event_id,
@@ -441,6 +678,7 @@ fn run_actor(
                 request,
                 response,
                 &core,
+                audio.as_ref(),
                 &tokio_runtime,
                 &completion_mailbox,
                 &events,
@@ -457,6 +695,7 @@ fn run_actor(
         let result = process_request(
             request,
             &core,
+            audio.as_ref(),
             &tokio_runtime,
             &events,
             stream_id,
@@ -472,7 +711,1069 @@ fn run_actor(
     }
 
     cancel_all_effects(&mut pending_effects, state.revision);
+    cancel_all_playback(&mut pending_playback, state.revision);
+    let _ = audio.stop();
     tokio_runtime.shutdown_timeout(Duration::from_secs(2));
+}
+
+fn is_playback_command(command: &CoreCommand) -> bool {
+    matches!(
+        command,
+        CoreCommand::PlaySelection { .. }
+            | CoreCommand::ClearPlayback
+            | CoreCommand::NavigatePlayback { .. }
+            | CoreCommand::TogglePlayback
+            | CoreCommand::PausePlayback
+            | CoreCommand::ResumePlayback
+            | CoreCommand::StopPlayback
+            | CoreCommand::SeekTo { .. }
+            | CoreCommand::SeekBy { .. }
+            | CoreCommand::SetPlaybackVolume { .. }
+            | CoreCommand::RebuildAudioOutput
+            | CoreCommand::ApplyAudioSettings
+            | CoreCommand::PrepareNextTransition
+            | CoreCommand::ReportPlatformPlayback { .. }
+            | CoreCommand::SetAudioProcessing { .. }
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn process_playback_request(
+    request: CoreCommandRequest,
+    response: mpsc::Sender<CoreCommandResult>,
+    core: &Arc<StereodromeCore>,
+    audio: &dyn AudioPort,
+    tokio_runtime: &tokio::runtime::Runtime,
+    completion_mailbox: &SyncSender<MailboxMessage>,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_operation_id: &mut u64,
+    next_event_id: &mut u64,
+    pending_playback: &mut HashMap<OperationId, PendingPlayback>,
+    result_cache: &mut ResultCache,
+) {
+    let command = request.command.clone();
+    let mut prepare_request = None;
+    let mut success_value = None;
+    let result = match &request.command {
+        CoreCommand::PlaySelection { song_id, song_ids } => audio
+            .stop()
+            .and_then(|()| core.play_song_with_queue(song_id.clone(), song_ids.clone()))
+            .and_then(|queue| {
+                let item = queue
+                    .current_index
+                    .and_then(|index| queue.items.get(index))
+                    .cloned()
+                    .ok_or_else(|| {
+                        CoreError::InvalidInput("play selection is empty".to_string())
+                    })?;
+                prepare_request = Some((
+                    item,
+                    playback::PlaybackCommit::Current {
+                        seek_seconds: None,
+                        pause_after_start: false,
+                    },
+                ));
+                Ok(())
+            }),
+        CoreCommand::NavigatePlayback { navigation } => {
+            let queue = core.get_queue();
+            queue.and_then(|queue| {
+                let expected_current_song_id = queue
+                    .current_index
+                    .and_then(|index| queue.items.get(index))
+                    .map(|item| item.song_id.clone());
+                if let Some(item) = playback::preview_navigation(core, *navigation)? {
+                    prepare_request = Some((
+                        item,
+                        playback::PlaybackCommit::Navigation {
+                            navigation: *navigation,
+                            expected_current_song_id,
+                            expected_playback: audio.current_identity(),
+                        },
+                    ));
+                    Ok(())
+                } else {
+                    audio.stop()?;
+                    commit_empty_navigation(core, *navigation)?;
+                    Ok(())
+                }
+            })
+        }
+        CoreCommand::ResumePlayback => prepare_resume(core, audio, &mut prepare_request),
+        CoreCommand::TogglePlayback => {
+            if audio.status().is_playing {
+                audio.pause()
+            } else {
+                prepare_resume(core, audio, &mut prepare_request)
+            }
+        }
+        CoreCommand::PausePlayback => audio.pause(),
+        CoreCommand::StopPlayback => stop_playback(core, audio),
+        CoreCommand::ClearPlayback => audio.stop().and_then(|()| core.clear_queue().map(drop)),
+        CoreCommand::SeekTo { seconds } => seek_playback(core, audio, *seconds),
+        CoreCommand::SeekBy { seconds } => {
+            playback::projection(core, audio, state.playback_operation_id).and_then(|projection| {
+                seek_playback(core, audio, projection.position_seconds + *seconds)
+            })
+        }
+        CoreCommand::SetPlaybackVolume { volume } => audio.set_volume(*volume),
+        CoreCommand::RebuildAudioOutput => audio.rebuild_output(),
+        CoreCommand::ApplyAudioSettings => {
+            prepare_reapply_settings(core, audio, &mut prepare_request)
+        }
+        CoreCommand::SetAudioProcessing { settings } => core
+            .set_audio_processing_settings(settings.clone())
+            .and_then(|settings| {
+                success_value = Some(serde_json::to_value(settings)?);
+                prepare_reapply_settings(core, audio, &mut prepare_request)
+            }),
+        CoreCommand::PrepareNextTransition => match playback::gapless_target(core, audio) {
+            Ok(Some((item, expected_playback))) => {
+                prepare_request = Some((
+                    item,
+                    playback::PlaybackCommit::Gapless { expected_playback },
+                ));
+                Ok(())
+            }
+            Ok(None) => {
+                success_value = Some(Value::Null);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        },
+        CoreCommand::ReportPlatformPlayback { event } => {
+            handle_platform_playback(*event, audio, state)
+        }
+        _ => unreachable!("checked by is_playback_command"),
+    };
+
+    if result.is_ok()
+        && matches!(
+            command,
+            CoreCommand::PlaySelection { .. }
+                | CoreCommand::NavigatePlayback { .. }
+                | CoreCommand::TogglePlayback
+                | CoreCommand::ResumePlayback
+                | CoreCommand::StopPlayback
+                | CoreCommand::ClearPlayback
+        )
+    {
+        state.paused_by_platform = false;
+    }
+
+    if let Err(error) = result {
+        finish_playback_error(
+            &request,
+            &response,
+            &error,
+            core,
+            audio,
+            events,
+            stream_id,
+            state,
+            next_event_id,
+            result_cache,
+        );
+        return;
+    }
+
+    if let Some((item, commit)) = prepare_request {
+        if matches!(command, CoreCommand::SetAudioProcessing { .. }) {
+            state.settings_revision = state.settings_revision.wrapping_add(1);
+        }
+        cancel_current_playback(
+            core,
+            audio,
+            events,
+            stream_id,
+            state,
+            next_event_id,
+            pending_playback,
+            result_cache,
+        );
+        start_playback_prepare(
+            request,
+            Some(response),
+            item,
+            commit,
+            success_value,
+            core,
+            audio,
+            tokio_runtime,
+            completion_mailbox,
+            events,
+            stream_id,
+            state,
+            next_operation_id,
+            next_event_id,
+            pending_playback,
+        );
+        return;
+    }
+
+    if matches!(
+        command,
+        CoreCommand::PausePlayback
+            | CoreCommand::StopPlayback
+            | CoreCommand::ClearPlayback
+            | CoreCommand::SeekTo { .. }
+            | CoreCommand::SeekBy { .. }
+            | CoreCommand::ReportPlatformPlayback { .. }
+    ) {
+        cancel_current_playback(
+            core,
+            audio,
+            events,
+            stream_id,
+            state,
+            next_event_id,
+            pending_playback,
+            result_cache,
+        );
+    }
+    let _ = playback::persist_live_progress(core, audio);
+    state.revision = state.revision.wrapping_add(1);
+    state.last_failure = None;
+    if matches!(command, CoreCommand::SetAudioProcessing { .. }) {
+        state.settings_revision = state.settings_revision.wrapping_add(1);
+    }
+    emit_snapshot_event(
+        core,
+        audio,
+        events,
+        stream_id,
+        next_event_id,
+        state,
+        request.command_id,
+        None,
+    );
+    let value = success_value.unwrap_or_else(|| {
+        if matches!(
+            command,
+            CoreCommand::NavigatePlayback { .. } | CoreCommand::ClearPlayback
+        ) {
+            serde_json::to_value(core.get_queue().ok()).unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        }
+    });
+    let result = CoreCommandResult::succeeded(request.command_id, state.revision, None, value);
+    result_cache.insert(&command, result.clone());
+    let _ = response.send(result);
+}
+
+fn prepare_resume(
+    core: &StereodromeCore,
+    audio: &dyn AudioPort,
+    prepare_request: &mut Option<(crate::QueueItem, playback::PlaybackCommit)>,
+) -> CoreResult<()> {
+    if audio.status().current_song_id.is_some() {
+        return audio.resume();
+    }
+    let persisted = core.get_playback_state()?;
+    let mut queue = core.get_queue()?;
+    if queue.current_index.is_none()
+        && let Some(saved_song_id) = persisted.current_song_id.as_deref()
+        && let Some(index) = queue
+            .items
+            .iter()
+            .position(|item| item.song_id == saved_song_id)
+    {
+        core.play_queue_item(index)?;
+        queue = core.get_queue()?;
+    }
+    let Some(item) = queue
+        .current_index
+        .and_then(|index| queue.items.get(index))
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let seek_seconds = (persisted.current_song_id.as_deref() == Some(item.song_id.as_str()))
+        .then_some(persisted.position_seconds.max(0.0));
+    *prepare_request = Some((
+        item,
+        playback::PlaybackCommit::Current {
+            seek_seconds,
+            pause_after_start: false,
+        },
+    ));
+    Ok(())
+}
+
+fn prepare_reapply_settings(
+    core: &StereodromeCore,
+    audio: &dyn AudioPort,
+    prepare_request: &mut Option<(crate::QueueItem, playback::PlaybackCommit)>,
+) -> CoreResult<()> {
+    let status = audio.status();
+    if status.current_song_id.is_none() {
+        return Ok(());
+    }
+    let queue = core.get_queue()?;
+    let item = queue
+        .current_index
+        .and_then(|index| queue.items.get(index))
+        .cloned()
+        .ok_or_else(|| CoreError::InvalidInput("active audio is not in the queue".to_string()))?;
+    *prepare_request = Some((
+        item,
+        playback::PlaybackCommit::Current {
+            seek_seconds: Some(status.position),
+            pause_after_start: !status.is_playing,
+        },
+    ));
+    Ok(())
+}
+
+fn seek_playback(core: &StereodromeCore, audio: &dyn AudioPort, seconds: f64) -> CoreResult<()> {
+    if !seconds.is_finite() {
+        return Err(CoreError::InvalidInput(
+            "seek position must be finite".to_string(),
+        ));
+    }
+    let position = seconds.max(0.0);
+    if audio.status().current_song_id.is_some() {
+        audio.seek(position)?;
+        return playback::persist_live_progress(core, audio);
+    }
+    let persisted = core.get_playback_state()?;
+    if let Some(song_id) = persisted.current_song_id {
+        core.save_playback_position(crate::PlaybackProgress {
+            song_id,
+            position_seconds: position,
+            duration_seconds: persisted.duration_seconds,
+            is_playing: false,
+        })?;
+    }
+    Ok(())
+}
+
+fn stop_playback(core: &StereodromeCore, audio: &dyn AudioPort) -> CoreResult<()> {
+    let state = audio.playback_state();
+    if let Some(song) = state.song {
+        core.save_playback_position(crate::PlaybackProgress {
+            song_id: song.id,
+            position_seconds: state.position,
+            duration_seconds: state.duration,
+            is_playing: false,
+        })?;
+    }
+    audio.stop()
+}
+
+fn handle_platform_playback(
+    event: crate::PlatformPlaybackEvent,
+    audio: &dyn AudioPort,
+    state: &mut CoreState,
+) -> CoreResult<()> {
+    use crate::PlatformPlaybackEvent;
+    match event {
+        PlatformPlaybackEvent::InterruptionBegan
+        | PlatformPlaybackEvent::AudioFocusLost { .. }
+        | PlatformPlaybackEvent::RouteLost => {
+            state.paused_by_platform = audio.status().is_playing;
+            if state.paused_by_platform {
+                audio.pause()?;
+            }
+        }
+        PlatformPlaybackEvent::InterruptionEnded { should_resume } => {
+            if should_resume && state.paused_by_platform {
+                audio.resume()?;
+            }
+            state.paused_by_platform = false;
+        }
+        PlatformPlaybackEvent::AudioFocusGained => {
+            if state.paused_by_platform {
+                audio.resume()?;
+                state.paused_by_platform = false;
+            }
+        }
+        PlatformPlaybackEvent::MediaServicesReset => {
+            if audio.status().current_song_id.is_some() {
+                audio.rebuild_output()?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn commit_empty_navigation(
+    core: &StereodromeCore,
+    navigation: crate::PlaybackNavigation,
+) -> CoreResult<()> {
+    match navigation {
+        crate::PlaybackNavigation::Index { index } => {
+            core.play_queue_item(index)?;
+        }
+        crate::PlaybackNavigation::Next { force } => {
+            core.play_next(Some(force))?;
+        }
+        crate::PlaybackNavigation::Previous => {
+            core.play_previous()?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_playback_prepare(
+    request: CoreCommandRequest,
+    response: Option<mpsc::Sender<CoreCommandResult>>,
+    item: crate::QueueItem,
+    commit: playback::PlaybackCommit,
+    success_value: Option<Value>,
+    core: &Arc<StereodromeCore>,
+    audio: &dyn AudioPort,
+    tokio_runtime: &tokio::runtime::Runtime,
+    completion_mailbox: &SyncSender<MailboxMessage>,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_operation_id: &mut u64,
+    next_event_id: &mut u64,
+    pending_playback: &mut HashMap<OperationId, PendingPlayback>,
+) {
+    let operation_id = OperationId(*next_operation_id);
+    *next_operation_id = next_operation_id.wrapping_add(1);
+    state.last_failure = None;
+    state.playback_operation_id = Some(operation_id);
+    state.operations.insert(
+        operation_id,
+        OperationSnapshot {
+            operation_id,
+            cause_command_id: request.command_id,
+            kind: JobKind::PlaybackPrepare {
+                song_id: item.song_id.clone(),
+            },
+            phase: OperationPhase::Running,
+        },
+    );
+    state.revision = state.revision.wrapping_add(1);
+    emit_snapshot_event(
+        core,
+        audio,
+        events,
+        stream_id,
+        next_event_id,
+        state,
+        request.command_id,
+        Some(operation_id),
+    );
+    let cancellation = CancellationToken::new();
+    let effect_core = Arc::clone(core);
+    let sender = completion_mailbox.clone();
+    let task = tokio_runtime.spawn(async move {
+        let result = playback::prepare(&effect_core, item, commit).await;
+        let _ = sender.send(MailboxMessage::PlaybackPrepared {
+            operation_id,
+            result,
+        });
+    });
+    pending_playback.insert(
+        operation_id,
+        PendingPlayback {
+            command_id: request.command_id,
+            command: request.command,
+            response,
+            cancellation,
+            abort_handle: task.abort_handle(),
+            success_value,
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn complete_playback(
+    operation_id: OperationId,
+    result: CoreResult<playback::PreparedPlayback>,
+    core: &StereodromeCore,
+    audio: &dyn AudioPort,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_event_id: &mut u64,
+    completion_mailbox: &SyncSender<MailboxMessage>,
+    next_internal_command_id: &mut u64,
+    pending_playback: &mut HashMap<OperationId, PendingPlayback>,
+    result_cache: &mut ResultCache,
+) {
+    let Some(pending) = pending_playback.remove(&operation_id) else {
+        return;
+    };
+    if state.playback_operation_id != Some(operation_id) {
+        return;
+    }
+    state.playback_operation_id = None;
+    state.operations.remove(&operation_id);
+    state.revision = state.revision.wrapping_add(1);
+    let mut reserve_prefetch_first = false;
+    let committed = result.and_then(|prepared| {
+        reserve_prefetch_first =
+            matches!(&prepared.commit, playback::PlaybackCommit::Gapless { .. });
+        playback::commit(core, audio, prepared)
+    });
+    let command_result = match committed {
+        Ok(value) => {
+            let _ = playback::persist_live_progress(core, audio);
+            state.last_failure = None;
+            emit_snapshot_event(
+                core,
+                audio,
+                events,
+                stream_id,
+                next_event_id,
+                state,
+                pending.command_id,
+                Some(operation_id),
+            );
+            let gapless_will_prepare = !reserve_prefetch_first
+                && playback::gapless_target(core, audio)
+                    .ok()
+                    .flatten()
+                    .is_some();
+            if !gapless_will_prepare {
+                let (response, _) = mpsc::channel();
+                let _ = completion_mailbox.try_send(MailboxMessage::Dispatch {
+                    request: CoreCommandRequest {
+                        protocol_version: CORE_PROTOCOL_VERSION,
+                        command_id: CommandId(*next_internal_command_id),
+                        command: CoreCommand::StartQueuePrefetch {
+                            reserve_first: reserve_prefetch_first,
+                        },
+                    },
+                    response,
+                });
+                *next_internal_command_id = next_internal_command_id.wrapping_add(1);
+            }
+            CoreCommandResult::succeeded(
+                pending.command_id,
+                state.revision,
+                Some(operation_id),
+                pending.success_value.unwrap_or(value),
+            )
+        }
+        Err(error) => {
+            audio.set_crossfade_initiated(false);
+            let protocol_error = ProtocolError::from(&error);
+            let failure = OperationFailure {
+                command_id: pending.command_id,
+                operation_id: Some(operation_id),
+                error: protocol_error.clone(),
+            };
+            state.last_failure = Some(failure.clone());
+            emit_event(
+                events,
+                stream_id,
+                next_event_id,
+                state.revision,
+                pending.command_id,
+                Some(operation_id),
+                CoreEventKind::OperationFailed { failure },
+            );
+            emit_snapshot_event(
+                core,
+                audio,
+                events,
+                stream_id,
+                next_event_id,
+                state,
+                pending.command_id,
+                Some(operation_id),
+            );
+            CoreCommandResult::failed(
+                pending.command_id,
+                state.revision,
+                Some(operation_id),
+                protocol_error,
+            )
+        }
+    };
+    if let Some(response) = pending.response {
+        result_cache.insert(&pending.command, command_result.clone());
+        let _ = response.send(command_result);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_playback_error(
+    request: &CoreCommandRequest,
+    response: &mpsc::Sender<CoreCommandResult>,
+    error: &CoreError,
+    core: &StereodromeCore,
+    audio: &dyn AudioPort,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_event_id: &mut u64,
+    result_cache: &mut ResultCache,
+) {
+    state.revision = state.revision.wrapping_add(1);
+    let protocol_error = ProtocolError::from(error);
+    let failure = OperationFailure {
+        command_id: request.command_id,
+        operation_id: None,
+        error: protocol_error.clone(),
+    };
+    state.last_failure = Some(failure.clone());
+    emit_event(
+        events,
+        stream_id,
+        next_event_id,
+        state.revision,
+        request.command_id,
+        None,
+        CoreEventKind::OperationFailed { failure },
+    );
+    emit_snapshot_event(
+        core,
+        audio,
+        events,
+        stream_id,
+        next_event_id,
+        state,
+        request.command_id,
+        None,
+    );
+    let result =
+        CoreCommandResult::failed(request.command_id, state.revision, None, protocol_error);
+    result_cache.insert(&request.command, result.clone());
+    let _ = response.send(result);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cancel_pending_playback(
+    operation_id: OperationId,
+    core: &StereodromeCore,
+    audio: &dyn AudioPort,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_event_id: &mut u64,
+    pending_playback: &mut HashMap<OperationId, PendingPlayback>,
+    result_cache: &mut ResultCache,
+) -> bool {
+    let Some(pending) = pending_playback.remove(&operation_id) else {
+        return false;
+    };
+    pending.cancellation.cancel();
+    pending.abort_handle.abort();
+    audio.set_crossfade_initiated(false);
+    state.operations.remove(&operation_id);
+    if state.playback_operation_id == Some(operation_id) {
+        state.playback_operation_id = None;
+    }
+    state.revision = state.revision.wrapping_add(1);
+    let error = ProtocolError::new(ProtocolErrorCode::Cancelled, "operation cancelled", false);
+    let failure = OperationFailure {
+        command_id: pending.command_id,
+        operation_id: Some(operation_id),
+        error: error.clone(),
+    };
+    state.last_failure = Some(failure.clone());
+    emit_event(
+        events,
+        stream_id,
+        next_event_id,
+        state.revision,
+        pending.command_id,
+        Some(operation_id),
+        CoreEventKind::OperationFailed { failure },
+    );
+    emit_snapshot_event(
+        core,
+        audio,
+        events,
+        stream_id,
+        next_event_id,
+        state,
+        pending.command_id,
+        Some(operation_id),
+    );
+    if let Some(response) = pending.response {
+        let result = CoreCommandResult::failed(
+            pending.command_id,
+            state.revision,
+            Some(operation_id),
+            error,
+        );
+        result_cache.insert(&pending.command, result.clone());
+        let _ = response.send(result);
+    }
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cancel_current_playback(
+    core: &StereodromeCore,
+    audio: &dyn AudioPort,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_event_id: &mut u64,
+    pending_playback: &mut HashMap<OperationId, PendingPlayback>,
+    result_cache: &mut ResultCache,
+) {
+    let operation_ids = pending_playback.keys().copied().collect::<Vec<_>>();
+    for operation_id in operation_ids {
+        let _ = cancel_pending_playback(
+            operation_id,
+            core,
+            audio,
+            events,
+            stream_id,
+            state,
+            next_event_id,
+            pending_playback,
+            result_cache,
+        );
+    }
+}
+
+fn cancel_all_playback(
+    pending_playback: &mut HashMap<OperationId, PendingPlayback>,
+    revision: u64,
+) {
+    for (operation_id, pending) in pending_playback.drain() {
+        pending.cancellation.cancel();
+        pending.abort_handle.abort();
+        if let Some(response) = pending.response {
+            let _ = response.send(CoreCommandResult::failed(
+                pending.command_id,
+                revision,
+                Some(operation_id),
+                ProtocolError::new(
+                    ProtocolErrorCode::Cancelled,
+                    "runtime is shutting down",
+                    false,
+                ),
+            ));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn handle_playback_input(
+    notification: Option<AudioNotification>,
+    core: &Arc<StereodromeCore>,
+    audio: &dyn AudioPort,
+    tokio_runtime: &tokio::runtime::Runtime,
+    completion_mailbox: &SyncSender<MailboxMessage>,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_operation_id: &mut u64,
+    next_event_id: &mut u64,
+    pending_playback: &mut HashMap<OperationId, PendingPlayback>,
+    last_projection: &mut Option<crate::PlaybackProjection>,
+    clock: &dyn PlaybackClock,
+    last_progress_at: &mut std::time::Instant,
+    last_segment_index: &mut usize,
+) {
+    if notification
+        .as_ref()
+        .is_some_and(|notification| !audio_notification_is_current(audio, notification))
+    {
+        return;
+    }
+
+    let (audio_state, segment_index) = audio.gapless_state();
+    if segment_index < *last_segment_index {
+        *last_segment_index = 0;
+    }
+    if segment_index > *last_segment_index {
+        *last_segment_index = segment_index;
+        if let Ok(Some(item)) = core.play_next(Some(false)) {
+            let progress = crate::PlaybackProgress {
+                song_id: item.song_id,
+                position_seconds: audio_state.position,
+                duration_seconds: audio_state.duration,
+                is_playing: audio_state.is_playing,
+            };
+            let effect_core = Arc::clone(core);
+            tokio_runtime.spawn(async move {
+                if let Err(error) = effect_core.report_playback_progress(progress).await {
+                    log::warn!(target: "stereodrome_core", "Failed to report playback progress: {error}");
+                }
+            });
+        }
+    }
+
+    let terminal_identity = match notification {
+        Some(AudioNotification::EndOfTrack { identity }) => Some(identity),
+        _ => None,
+    };
+    if let Some(identity) = terminal_identity
+        && pending_playback.is_empty()
+        && audio.current_identity().as_ref() == Some(&identity)
+    {
+        if let Some(song) = audio_state.song.as_ref() {
+            let _ = core.save_playback_position(crate::PlaybackProgress {
+                song_id: song.id.clone(),
+                position_seconds: 0.0,
+                duration_seconds: audio_state.duration,
+                is_playing: false,
+            });
+        }
+        start_automatic_navigation(
+            core,
+            audio,
+            tokio_runtime,
+            completion_mailbox,
+            events,
+            stream_id,
+            state,
+            next_operation_id,
+            next_event_id,
+            pending_playback,
+            identity,
+        );
+    }
+
+    let now = clock.now();
+    if audio_state.is_playing
+        && now.saturating_duration_since(*last_progress_at) >= Duration::from_secs(15)
+    {
+        *last_progress_at = now;
+        let progress = audio_state
+            .song
+            .as_ref()
+            .map(|song| crate::PlaybackProgress {
+                song_id: song.id.clone(),
+                position_seconds: audio_state.position,
+                duration_seconds: audio_state.duration,
+                is_playing: true,
+            });
+        if let Some(progress) = progress {
+            let effect_core = Arc::clone(core);
+            tokio_runtime.spawn(async move {
+                if let Err(error) = effect_core.report_playback_progress(progress).await {
+                    log::warn!(target: "stereodrome_core", "Failed to report playback progress: {error}");
+                }
+            });
+        }
+    }
+
+    if pending_playback.is_empty() && audio_state.is_playing {
+        if let Some((item, commit)) = crossfade_prepare(core, audio, &audio_state, segment_index) {
+            start_internal_prepare(
+                CoreCommand::NavigatePlayback {
+                    navigation: crate::PlaybackNavigation::Next { force: false },
+                },
+                item,
+                commit,
+                core,
+                audio,
+                tokio_runtime,
+                completion_mailbox,
+                events,
+                stream_id,
+                state,
+                next_operation_id,
+                next_event_id,
+                pending_playback,
+            );
+        } else if audio.is_last_gapless_segment(segment_index)
+            && let Ok(Some((item, expected_playback))) = playback::gapless_target(core, audio)
+        {
+            start_internal_prepare(
+                CoreCommand::PrepareNextTransition,
+                item,
+                playback::PlaybackCommit::Gapless { expected_playback },
+                core,
+                audio,
+                tokio_runtime,
+                completion_mailbox,
+                events,
+                stream_id,
+                state,
+                next_operation_id,
+                next_event_id,
+                pending_playback,
+            );
+        }
+    }
+
+    if let Ok(projection) = playback::projection(core, audio, state.playback_operation_id)
+        && playback_projection_changed(last_projection.as_ref(), &projection)
+    {
+        *last_projection = Some(projection);
+        state.revision = state.revision.wrapping_add(1);
+        emit_snapshot_event(
+            core,
+            audio,
+            events,
+            stream_id,
+            next_event_id,
+            state,
+            CommandId(0),
+            state.playback_operation_id,
+        );
+    }
+}
+
+fn audio_notification_is_current(audio: &dyn AudioPort, notification: &AudioNotification) -> bool {
+    let current = audio.current_identity();
+    match notification {
+        AudioNotification::PlaybackChanged { identity, .. } => identity == &current,
+        AudioNotification::GaplessSegmentChanged { identity, .. }
+        | AudioNotification::EndOfTrack { identity }
+        | AudioNotification::PositionChanged { identity } => current.as_ref() == Some(identity),
+        AudioNotification::OutputStateChanged { .. } => true,
+    }
+}
+
+fn playback_projection_changed(
+    previous: Option<&crate::PlaybackProjection>,
+    next: &crate::PlaybackProjection,
+) -> bool {
+    previous.is_none_or(|previous| {
+        previous.state != next.state
+            || previous.is_playing != next.is_playing
+            || previous.audio_loaded != next.audio_loaded
+            || previous.output_state != next.output_state
+            || previous.song.as_ref().map(|song| song.id.as_str())
+                != next.song.as_ref().map(|song| song.id.as_str())
+            || previous.queue_index != next.queue_index
+            || previous.queue_length != next.queue_length
+            || previous.preparing_operation_id != next.preparing_operation_id
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_internal_prepare(
+    command: CoreCommand,
+    item: crate::QueueItem,
+    commit: playback::PlaybackCommit,
+    core: &Arc<StereodromeCore>,
+    audio: &dyn AudioPort,
+    tokio_runtime: &tokio::runtime::Runtime,
+    completion_mailbox: &SyncSender<MailboxMessage>,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_operation_id: &mut u64,
+    next_event_id: &mut u64,
+    pending_playback: &mut HashMap<OperationId, PendingPlayback>,
+) {
+    start_playback_prepare(
+        CoreCommandRequest {
+            protocol_version: CORE_PROTOCOL_VERSION,
+            command_id: CommandId(0),
+            command,
+        },
+        None,
+        item,
+        commit,
+        None,
+        core,
+        audio,
+        tokio_runtime,
+        completion_mailbox,
+        events,
+        stream_id,
+        state,
+        next_operation_id,
+        next_event_id,
+        pending_playback,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_automatic_navigation(
+    core: &Arc<StereodromeCore>,
+    audio: &dyn AudioPort,
+    tokio_runtime: &tokio::runtime::Runtime,
+    completion_mailbox: &SyncSender<MailboxMessage>,
+    events: &broadcast::Sender<CoreEvent>,
+    stream_id: u64,
+    state: &mut CoreState,
+    next_operation_id: &mut u64,
+    next_event_id: &mut u64,
+    pending_playback: &mut HashMap<OperationId, PendingPlayback>,
+    expected_playback: stereodrome_audio::PlaybackIdentity,
+) {
+    let navigation = crate::PlaybackNavigation::Next { force: false };
+    let Ok(queue) = core.get_queue() else {
+        return;
+    };
+    let expected_current_song_id = queue
+        .current_index
+        .and_then(|index| queue.items.get(index))
+        .map(|item| item.song_id.clone());
+    match playback::preview_navigation(core, navigation) {
+        Ok(Some(item)) => start_internal_prepare(
+            CoreCommand::NavigatePlayback { navigation },
+            item,
+            playback::PlaybackCommit::Navigation {
+                navigation,
+                expected_current_song_id,
+                expected_playback: Some(expected_playback),
+            },
+            core,
+            audio,
+            tokio_runtime,
+            completion_mailbox,
+            events,
+            stream_id,
+            state,
+            next_operation_id,
+            next_event_id,
+            pending_playback,
+        ),
+        Ok(None) => {
+            let _ = audio.stop();
+            let _ = core.play_next(Some(false));
+            let _ = playback::persist_live_progress(core, audio);
+        }
+        Err(error) => log::warn!(target: "stereodrome_core", "Failed to advance playback: {error}"),
+    }
+}
+
+fn crossfade_prepare(
+    core: &StereodromeCore,
+    audio: &dyn AudioPort,
+    state: &stereodrome_audio::PlaybackState,
+    segment_index: usize,
+) -> Option<(crate::QueueItem, playback::PlaybackCommit)> {
+    if audio.is_crossfade_initiated() || !audio.is_last_gapless_segment(segment_index) {
+        return None;
+    }
+    let settings = core.get_audio_processing_settings().ok()?;
+    if !settings.crossfade_enabled {
+        return None;
+    }
+    let remaining = state.duration - state.position;
+    if remaining <= 0.5 || remaining > f64::from(settings.crossfade_duration_ms) / 1000.0 {
+        return None;
+    }
+    let queue = core.get_queue().ok()?;
+    if queue.repeat_mode == crate::RepeatMode::One {
+        return None;
+    }
+    let current = queue
+        .current_index
+        .and_then(|index| queue.items.get(index))?;
+    let next = core.peek_next_queue_item().ok()??;
+    if settings.gapless_enabled
+        && core
+            .songs_are_gapless_eligible(&current.song_id, &next.song_id)
+            .ok()?
+    {
+        return None;
+    }
+    let expected_playback = audio.current_identity()?;
+    audio.set_crossfade_initiated(true);
+    Some((
+        next,
+        playback::PlaybackCommit::Crossfade {
+            expected_playback,
+            current_song_id: current.song_id.clone(),
+            duration_ms: settings.crossfade_duration_ms,
+        },
+    ))
 }
 
 #[allow(
@@ -484,6 +1785,7 @@ fn start_effect(
     request: CoreCommandRequest,
     response: mpsc::Sender<CoreCommandResult>,
     core: &Arc<StereodromeCore>,
+    audio: &dyn AudioPort,
     tokio_runtime: &tokio::runtime::Runtime,
     completion_mailbox: &SyncSender<MailboxMessage>,
     events: &broadcast::Sender<CoreEvent>,
@@ -541,6 +1843,7 @@ fn start_effect(
             );
             emit_snapshot_event(
                 core,
+                audio,
                 events,
                 stream_id,
                 next_event_id,
@@ -635,6 +1938,7 @@ fn start_effect(
     state.revision = state.revision.wrapping_add(1);
     emit_snapshot_event(
         core,
+        audio,
         events,
         stream_id,
         next_event_id,
@@ -714,6 +2018,7 @@ fn complete_effect(
     operation_id: OperationId,
     result: CoreResult<Value>,
     core: &StereodromeCore,
+    audio: &dyn AudioPort,
     events: &broadcast::Sender<CoreEvent>,
     stream_id: u64,
     state: &mut CoreState,
@@ -749,6 +2054,7 @@ fn complete_effect(
             }
             emit_snapshot_event(
                 core,
+                audio,
                 events,
                 stream_id,
                 next_event_id,
@@ -787,6 +2093,7 @@ fn complete_effect(
             );
             emit_snapshot_event(
                 core,
+                audio,
                 events,
                 stream_id,
                 next_event_id,
@@ -814,6 +2121,7 @@ fn cancel_operation(
     cancel_command_id: CommandId,
     operation_id: OperationId,
     core: &StereodromeCore,
+    audio: &dyn AudioPort,
     events: &broadcast::Sender<CoreEvent>,
     stream_id: u64,
     state: &mut CoreState,
@@ -824,6 +2132,7 @@ fn cancel_operation(
     let cancelled = cancel_pending_effect(
         operation_id,
         core,
+        audio,
         events,
         stream_id,
         state,
@@ -851,6 +2160,7 @@ fn cancel_operation(
 fn cancel_pending_effect(
     operation_id: OperationId,
     core: &StereodromeCore,
+    audio: &dyn AudioPort,
     events: &broadcast::Sender<CoreEvent>,
     stream_id: u64,
     state: &mut CoreState,
@@ -888,6 +2198,7 @@ fn cancel_pending_effect(
     );
     emit_snapshot_event(
         core,
+        audio,
         events,
         stream_id,
         next_event_id,
@@ -930,6 +2241,7 @@ fn cancel_all_effects(pending_effects: &mut HashMap<OperationId, PendingEffect>,
 #[allow(clippy::too_many_arguments)]
 fn emit_snapshot_event(
     core: &StereodromeCore,
+    audio: &dyn AudioPort,
     events: &broadcast::Sender<CoreEvent>,
     stream_id: u64,
     next_event_id: &mut u64,
@@ -937,7 +2249,7 @@ fn emit_snapshot_event(
     command_id: CommandId,
     operation_id: Option<OperationId>,
 ) {
-    if let Ok(snapshot) = build_snapshot(core, state) {
+    if let Ok(snapshot) = build_snapshot(core, audio, state) {
         emit_event(
             events,
             stream_id,
@@ -956,6 +2268,7 @@ fn emit_snapshot_event(
 fn process_request(
     request: CoreCommandRequest,
     core: &StereodromeCore,
+    audio: &dyn AudioPort,
     tokio_runtime: &tokio::runtime::Runtime,
     events: &broadcast::Sender<CoreEvent>,
     stream_id: u64,
@@ -1004,6 +2317,7 @@ fn process_request(
                 | JobKind::DownloadPlaylist { .. }
                 | JobKind::SavedPlaylistReconcile
                 | JobKind::QueuePrefetch
+                | JobKind::PlaybackPrepare { .. }
         )
     }) {
         return CoreCommandResult::failed(
@@ -1023,6 +2337,7 @@ fn process_request(
         state.revision = state.revision.wrapping_add(1);
         emit_snapshot_event(
             core,
+            audio,
             events,
             stream_id,
             next_event_id,
@@ -1049,6 +2364,7 @@ fn process_request(
         state.revision = state.revision.wrapping_add(1);
         emit_snapshot_event(
             core,
+            audio,
             events,
             stream_id,
             next_event_id,
@@ -1092,7 +2408,7 @@ fn process_request(
         request.command,
         CoreCommand::Initialize | CoreCommand::GetSnapshot
     ) {
-        return match build_snapshot(core, state).and_then(to_value) {
+        return match build_snapshot(core, audio, state).and_then(to_value) {
             Ok(value) => CoreCommandResult::succeeded(
                 request.command_id,
                 state.revision,
@@ -1114,7 +2430,7 @@ fn process_request(
             | CoreCommand::GetLibrarySyncStatus
             | CoreCommand::GetSavedPlaylistsOfflineStatus
     ) {
-        return match build_snapshot(core, state) {
+        return match build_snapshot(core, audio, state) {
             Ok(snapshot) => {
                 let value = match &request.command {
                     CoreCommand::GetConnectionStatus => connectivity_status(&snapshot.connectivity),
@@ -1151,6 +2467,9 @@ fn process_request(
         };
     }
 
+    if matches!(request.command, CoreCommand::ImportPortableBackup { .. }) {
+        let _ = audio.stop();
+    }
     let command = request.command;
     let command_for_state = command.clone();
     match tokio_runtime.block_on(effect::execute(core, command)) {
@@ -1168,8 +2487,15 @@ fn process_request(
                     state.library_revision = state.library_revision.wrapping_add(1);
                 }
                 update_connectivity(state, core, &command_for_state, &value);
+                if matches!(command_for_state, CoreCommand::ImportPortableBackup { .. })
+                    && let Ok(playback) = core.get_playback_state()
+                {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let volume = playback.app_volume as f32;
+                    let _ = audio.set_volume(volume);
+                }
 
-                if let Ok(snapshot) = build_snapshot(core, state) {
+                if let Ok(snapshot) = build_snapshot(core, audio, state) {
                     emit_event(
                         events,
                         stream_id,
@@ -1342,6 +2668,7 @@ mod tests {
 
     use crate::protocol::{CommandStatus, CoreCommand, CoreCommandRequest};
     use crate::queue::QueueItem;
+    use crate::test_support::{AudioCall, FakeAudio, ManualPlaybackClock};
 
     use super::*;
 
@@ -1375,6 +2702,33 @@ mod tests {
                 Err(error) => panic!("runtime event unavailable: {error}"),
             }
         }
+    }
+
+    fn seed_song(core: &StereodromeCore, song_id: &str) {
+        let conn = rusqlite::Connection::open(&core.db_path).expect("open test database");
+        conn.execute(
+            "INSERT OR IGNORE INTO artists (id, name, synced_at)
+             VALUES ('artist', 'Artist', 'now')",
+            [],
+        )
+        .expect("insert artist");
+        conn.execute(
+            "INSERT OR IGNORE INTO albums (id, artist_id, name, synced_at)
+             VALUES ('album', 'artist', 'Album', 'now')",
+            [],
+        )
+        .expect("insert album");
+        conn.execute(
+            "INSERT INTO songs
+             (id, album_id, artist_id, title, disc_number, duration, synced_at)
+             VALUES (?1, 'album', 'artist', 'Song', 1, 180, 'now')",
+            [song_id],
+        )
+        .expect("insert song");
+        let cache_path = core
+            .audio_cache_path(song_id, crate::MOBILE_PLAYBACK_FORMAT)
+            .expect("audio cache path");
+        std::fs::write(cache_path, b"fake audio").expect("write cached audio");
     }
 
     #[test]
@@ -1651,6 +3005,140 @@ mod tests {
         let started = Instant::now();
         handle.shutdown();
         assert!(started.elapsed() < Duration::from_secs(3));
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn play_selection_and_clear_are_complete_runtime_transitions() {
+        let data_dir = test_dir("play-selection");
+        let core = Arc::new(StereodromeCore::new(&data_dir).expect("core initializes"));
+        seed_song(&core, "song-a");
+        let fake = Arc::new(FakeAudio::default());
+        let audio: Arc<dyn AudioPort> = fake.clone();
+        let clock = Arc::new(ManualPlaybackClock::default());
+        clock.advance(Duration::from_secs(1));
+        let playback_clock: Arc<dyn PlaybackClock> = clock;
+        let handle = StereodromeRuntimeHandle::start_with_core_audio_and_clock(
+            &data_dir,
+            Arc::clone(&core),
+            audio,
+            playback_clock,
+        )
+        .expect("runtime starts");
+
+        let played = handle.dispatch_command(CoreCommand::PlaySelection {
+            song_id: "song-a".to_string(),
+            song_ids: vec!["song-a".to_string()],
+        });
+        assert_eq!(played.status, CommandStatus::Succeeded);
+        assert_eq!(fake.state().song_id.as_deref(), Some("song-a"));
+        let snapshot = handle.snapshot().value.expect("snapshot value");
+        assert_eq!(snapshot["playback"]["song"]["id"], "song-a");
+        assert_eq!(snapshot["queue"]["current_index"], 0);
+
+        let cleared = handle.dispatch_command(CoreCommand::ClearPlayback);
+        assert_eq!(cleared.status, CommandStatus::Succeeded);
+        assert!(fake.state().song_id.is_none());
+        let snapshot = handle.snapshot().value.expect("snapshot value");
+        assert!(snapshot["queue"]["items"].as_array().unwrap().is_empty());
+        assert!(fake.calls().contains(&AudioCall::Stop));
+
+        handle.shutdown();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn platform_focus_inputs_are_serialized_by_the_runtime() {
+        let data_dir = test_dir("platform-focus");
+        let core = Arc::new(StereodromeCore::new(&data_dir).expect("core initializes"));
+        let fake = Arc::new(FakeAudio::default());
+        fake.play("song-a").expect("fake playback starts");
+        let audio: Arc<dyn AudioPort> = fake.clone();
+        let handle = StereodromeRuntimeHandle::start_with_core_and_audio(&data_dir, core, audio)
+            .expect("runtime starts");
+
+        let lost = handle.dispatch_command(CoreCommand::ReportPlatformPlayback {
+            event: crate::PlatformPlaybackEvent::AudioFocusLost { transient: true },
+        });
+        assert_eq!(lost.status, CommandStatus::Succeeded);
+        assert!(!fake.state().is_playing);
+        let gained = handle.dispatch_command(CoreCommand::ReportPlatformPlayback {
+            event: crate::PlatformPlaybackEvent::AudioFocusGained,
+        });
+        assert_eq!(gained.status, CommandStatus::Succeeded);
+        assert!(fake.state().is_playing);
+
+        handle.shutdown();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn stale_playback_preparation_cannot_touch_the_audio_engine() {
+        let data_dir = test_dir("stale-playback");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let fake = FakeAudio::default();
+        let connectivity = initial_connectivity(&core).expect("connectivity initializes");
+        let mut state = CoreState::new(connectivity);
+        let stale_operation = OperationId(1);
+        state.playback_operation_id = Some(OperationId(2));
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let task = runtime.spawn(std::future::pending::<()>());
+        let mut pending = HashMap::from([(
+            stale_operation,
+            PendingPlayback {
+                command_id: CommandId(8),
+                command: CoreCommand::ResumePlayback,
+                response: None,
+                cancellation: CancellationToken::new(),
+                abort_handle: task.abort_handle(),
+                success_value: None,
+            },
+        )]);
+        let prepared = playback::PreparedPlayback {
+            target_song_id: "stale-song".to_string(),
+            prepared: PreparedAudio {
+                audio_data: Arc::from(&b"fake"[..]),
+                metadata: stereodrome_audio::SongMetadata {
+                    id: "stale-song".to_string(),
+                    title: "Stale".to_string(),
+                    artist: "Artist".to_string(),
+                    album: "Album".to_string(),
+                    cover_art_id: None,
+                },
+                duration_seconds: 180.0,
+                normalization_gain: None,
+                dynamics_preset: None,
+                binaural_preset: None,
+                equalizer_settings: None,
+            },
+            commit: playback::PlaybackCommit::Current {
+                seek_seconds: None,
+                pause_after_start: false,
+            },
+        };
+        let (events, _) = broadcast::channel(4);
+        let (mailbox, _receiver) = mpsc::sync_channel(4);
+        let mut next_event_id = 1;
+        let mut next_internal_command_id = 10;
+        let mut result_cache = ResultCache::new();
+        complete_playback(
+            stale_operation,
+            Ok(prepared),
+            &core,
+            &fake,
+            &events,
+            1,
+            &mut state,
+            &mut next_event_id,
+            &mailbox,
+            &mut next_internal_command_id,
+            &mut pending,
+            &mut result_cache,
+        );
+
+        assert!(fake.calls().is_empty());
+        assert_eq!(state.playback_operation_id, Some(OperationId(2)));
+        runtime.shutdown_timeout(Duration::from_millis(50));
         let _ = std::fs::remove_dir_all(data_dir);
     }
 }

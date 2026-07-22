@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::queue::{QueueItem, RepeatMode};
 use crate::{
     AudioProcessingSettings, ConnectParams, ConnectivitySettings, CoreError, LibrarySyncStatus,
-    PlaybackProgress, PlaybackState, QueueState, ServerSettingsUpdate, SyncSettings,
+    PlaybackProgress, QueueState, ServerSettingsUpdate, SyncSettings,
 };
 
 /// Version understood by this runtime protocol implementation.
@@ -60,7 +60,29 @@ pub enum JobKind {
     DownloadPlaylist { playlist_id: String },
     SavedPlaylistReconcile,
     QueuePrefetch,
+    PlaybackPrepare { song_id: String },
     ServerRequest,
+}
+
+/// A queue navigation requested as one complete playback transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum PlaybackNavigation {
+    Index { index: usize },
+    Next { force: bool },
+    Previous,
+}
+
+/// Facts reported by an OS audio-session/focus adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum PlatformPlaybackEvent {
+    InterruptionBegan,
+    InterruptionEnded { should_resume: bool },
+    AudioFocusLost { transient: bool },
+    AudioFocusGained,
+    RouteLost,
+    MediaServicesReset,
 }
 
 /// Lifecycle of one operation in the runtime registry.
@@ -90,8 +112,7 @@ pub struct SavedPlaylistOfflineStatus {
 
 /// Commands currently owned by the runtime shell.
 ///
-/// Audio-output and background-job ownership intentionally remain outside this
-/// enum until their adapters move into the runtime in later migration phases.
+/// Every playback mutation is an intent handled by the serialized runtime.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum CoreCommand {
@@ -243,6 +264,29 @@ pub enum CoreCommand {
         song_id: String,
         song_ids: Vec<String>,
     },
+    ClearPlayback,
+    NavigatePlayback {
+        navigation: PlaybackNavigation,
+    },
+    TogglePlayback,
+    PausePlayback,
+    ResumePlayback,
+    StopPlayback,
+    SeekTo {
+        seconds: f64,
+    },
+    SeekBy {
+        seconds: f64,
+    },
+    SetPlaybackVolume {
+        volume: f32,
+    },
+    RebuildAudioOutput,
+    ApplyAudioSettings,
+    PrepareNextTransition,
+    ReportPlatformPlayback {
+        event: PlatformPlaybackEvent,
+    },
     AddToQueue {
         item: QueueItem,
     },
@@ -280,6 +324,78 @@ pub enum CoreCommand {
 }
 
 impl CoreCommand {
+    /// Returns whether successful handling changes queue or playback projection.
+    #[must_use]
+    pub fn changes_playback_projection(&self) -> bool {
+        matches!(
+            self,
+            Self::PlaySelection { .. }
+                | Self::ClearPlayback
+                | Self::NavigatePlayback { .. }
+                | Self::TogglePlayback
+                | Self::PausePlayback
+                | Self::ResumePlayback
+                | Self::StopPlayback
+                | Self::SeekTo { .. }
+                | Self::SeekBy { .. }
+                | Self::SetPlaybackVolume { .. }
+                | Self::RebuildAudioOutput
+                | Self::ApplyAudioSettings
+                | Self::PrepareNextTransition
+                | Self::ReportPlatformPlayback { .. }
+                | Self::SetAudioProcessing { .. }
+                | Self::AddToQueue { .. }
+                | Self::AddSongsToQueue { .. }
+                | Self::InsertNext { .. }
+                | Self::InsertNextSongs { .. }
+                | Self::RemoveFromQueue { .. }
+                | Self::ClearQueue
+                | Self::MoveQueueItem { .. }
+                | Self::PlayQueueItem { .. }
+                | Self::PlayNext { .. }
+                | Self::PlayPrevious
+                | Self::ToggleShuffle
+                | Self::SetRepeatMode { .. }
+                | Self::CycleRepeatMode
+                | Self::RerollNext
+                | Self::ImportPortableBackup { .. }
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn invalidates_queue_prefetch(&self) -> bool {
+        matches!(
+            self,
+            Self::Disconnect
+                | Self::SetConnectivity { .. }
+                | Self::ClearAudioCache
+                | Self::RemoveCachedSong { .. }
+                | Self::ImportPortableBackup { .. }
+                | Self::PlaySelection { .. }
+                | Self::ClearPlayback
+                | Self::NavigatePlayback { .. }
+                | Self::ResumePlayback
+                | Self::StopPlayback
+                | Self::ApplyAudioSettings
+                | Self::RebuildAudioOutput
+                | Self::SetAudioProcessing { .. }
+                | Self::AddToQueue { .. }
+                | Self::AddSongsToQueue { .. }
+                | Self::InsertNext { .. }
+                | Self::InsertNextSongs { .. }
+                | Self::RemoveFromQueue { .. }
+                | Self::ClearQueue
+                | Self::MoveQueueItem { .. }
+                | Self::PlayQueueItem { .. }
+                | Self::PlayNext { .. }
+                | Self::PlayPrevious
+                | Self::ToggleShuffle
+                | Self::SetRepeatMode { .. }
+                | Self::CycleRepeatMode
+                | Self::RerollNext
+        )
+    }
+
     #[must_use]
     pub(crate) fn is_mutation(&self) -> bool {
         !matches!(
@@ -414,6 +530,9 @@ impl CoreCommand {
             | Self::ReconcileSavedPlaylistsOffline
             | Self::StartSavedPlaylistsOfflineReconcile => JobKind::SavedPlaylistReconcile,
             Self::StartQueuePrefetch { .. } => JobKind::QueuePrefetch,
+            Self::PlaySelection { song_id, .. } => JobKind::PlaybackPrepare {
+                song_id: song_id.clone(),
+            },
             _ => JobKind::ServerRequest,
         }
     }
@@ -456,6 +575,59 @@ pub struct DownloadSnapshot {
     pub offline_song_ids: Vec<String>,
 }
 
+/// Song metadata projected to UI and native media sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackProjectionSong {
+    pub id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_seconds: f64,
+    pub artwork_uri: Option<String>,
+}
+
+/// Stable live transport phase exposed by runtime snapshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaybackPhase {
+    Playing,
+    Paused,
+    Stopped,
+    Stalled,
+}
+
+/// Stable audio-output phase exposed without leaking engine internals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackOutputState {
+    Closed,
+    Ready,
+    Failed,
+    Unavailable,
+}
+
+/// Authoritative live playback/queue projection built inside the runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct PlaybackProjection {
+    pub state: PlaybackPhase,
+    pub is_playing: bool,
+    pub audio_loaded: bool,
+    pub output_state: PlaybackOutputState,
+    pub song: Option<PlaybackProjectionSong>,
+    pub position_seconds: f64,
+    pub duration_seconds: f64,
+    pub volume: f32,
+    pub queue: QueueState,
+    pub queue_index: Option<usize>,
+    pub queue_length: usize,
+    pub can_play: bool,
+    pub can_next: bool,
+    pub can_previous: bool,
+    pub can_seek: bool,
+    pub preparing_operation_id: Option<OperationId>,
+}
+
 /// Complete operational projection available after missed events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreSnapshot {
@@ -463,7 +635,7 @@ pub struct CoreSnapshot {
     pub revision: u64,
     pub lifecycle: RuntimeLifecycle,
     pub connectivity: ConnectivityState,
-    pub playback: PlaybackState,
+    pub playback: PlaybackProjection,
     pub queue: QueueState,
     pub sync: LibrarySyncStatus,
     pub downloads: DownloadSnapshot,
@@ -490,6 +662,7 @@ pub enum ProtocolErrorCode {
     Cancelled,
     Persistence,
     Network,
+    Audio,
     Internal,
 }
 
@@ -524,6 +697,7 @@ impl From<&CoreError> for ProtocolError {
                 (ProtocolErrorCode::Persistence, false)
             }
             CoreError::Subsonic(_) | CoreError::Lastfm(_) => (ProtocolErrorCode::Network, true),
+            CoreError::Audio(_) => (ProtocolErrorCode::Audio, true),
             CoreError::LockPoisoned => (ProtocolErrorCode::Internal, false),
         };
         Self::new(code, error.to_string(), retryable)

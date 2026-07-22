@@ -11,10 +11,43 @@ use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
+use stereodrome_audio::{
+    AudioNotification, AudioOutputState, PlaybackIdentity, PlaybackLifecycleState,
+    PlaybackState as AudioPlaybackState, PlaybackStatus, SongMetadata,
+};
+
+use crate::runtime::{AudioPort, PlaybackClock, PreparedAudio};
+use crate::{CoreError, CoreResult};
 
 #[derive(Debug)]
 pub struct ManualClock {
     now: Mutex<DateTime<Utc>>,
+}
+
+#[derive(Debug)]
+pub struct ManualPlaybackClock {
+    now: Mutex<std::time::Instant>,
+}
+
+impl Default for ManualPlaybackClock {
+    fn default() -> Self {
+        Self {
+            now: Mutex::new(std::time::Instant::now()),
+        }
+    }
+}
+
+impl ManualPlaybackClock {
+    pub fn advance(&self, duration: std::time::Duration) {
+        let mut now = self.now.lock().expect("manual playback clock lock");
+        *now += duration;
+    }
+}
+
+impl PlaybackClock for ManualPlaybackClock {
+    fn now(&self) -> std::time::Instant {
+        *self.now.lock().expect("manual playback clock lock")
+    }
 }
 
 impl ManualClock {
@@ -149,6 +182,118 @@ impl FakeAudio {
         }
         Ok(())
     }
+}
+
+impl AudioPort for FakeAudio {
+    fn take_notifications(&self) -> Option<std::sync::mpsc::Receiver<AudioNotification>> {
+        None
+    }
+
+    fn playback_state(&self) -> AudioPlaybackState {
+        let state = self.state();
+        let has_song = state.song_id.is_some();
+        AudioPlaybackState {
+            state: if state.is_playing {
+                PlaybackLifecycleState::Playing
+            } else if state.song_id.is_some() {
+                PlaybackLifecycleState::Paused
+            } else {
+                PlaybackLifecycleState::Stopped
+            },
+            is_playing: state.is_playing,
+            position: state.position_seconds,
+            duration: 180.0,
+            volume: 1.0,
+            song: state.song_id.map(|id| SongMetadata {
+                id,
+                title: "Fake song".to_string(),
+                artist: "Fake artist".to_string(),
+                album: "Fake album".to_string(),
+                cover_art_id: None,
+            }),
+            output_state: if has_song {
+                AudioOutputState::Ready
+            } else {
+                AudioOutputState::Closed
+            },
+        }
+    }
+
+    fn status(&self) -> PlaybackStatus {
+        let state = self.playback_state();
+        PlaybackStatus {
+            state: state.state,
+            is_playing: state.is_playing,
+            current_song_id: state.song.map(|song| song.id),
+            position: state.position,
+            duration: state.duration,
+            volume: state.volume,
+            output_state: state.output_state,
+        }
+    }
+
+    fn current_identity(&self) -> Option<PlaybackIdentity> {
+        None
+    }
+
+    fn play(&self, prepared: PreparedAudio, _expected: Option<PlaybackIdentity>) -> CoreResult<()> {
+        self.play(prepared.metadata.id).map_err(CoreError::Audio)
+    }
+
+    fn append_gapless(
+        &self,
+        prepared: PreparedAudio,
+        _expected: PlaybackIdentity,
+    ) -> CoreResult<()> {
+        self.play(prepared.metadata.id).map_err(CoreError::Audio)
+    }
+
+    fn crossfade(
+        &self,
+        prepared: PreparedAudio,
+        _expected: Option<PlaybackIdentity>,
+        _duration_ms: u32,
+    ) -> CoreResult<()> {
+        self.play(prepared.metadata.id).map_err(CoreError::Audio)
+    }
+
+    fn pause(&self) -> CoreResult<()> {
+        self.pause().map_err(CoreError::Audio)
+    }
+
+    fn resume(&self) -> CoreResult<()> {
+        self.resume().map_err(CoreError::Audio)
+    }
+
+    fn rebuild_output(&self) -> CoreResult<()> {
+        Ok(())
+    }
+
+    fn stop(&self) -> CoreResult<()> {
+        self.stop().map_err(CoreError::Audio)
+    }
+
+    fn seek(&self, seconds: f64) -> CoreResult<()> {
+        self.seek(seconds).map_err(CoreError::Audio)
+    }
+
+    fn set_volume(&self, _volume: f32) -> CoreResult<()> {
+        Ok(())
+    }
+
+    fn gapless_state(&self) -> (AudioPlaybackState, usize) {
+        (self.playback_state(), 0)
+    }
+
+    fn is_last_gapless_segment(&self, _segment_index: usize) -> bool {
+        true
+    }
+
+    fn is_crossfade_initiated(&self) -> bool {
+        false
+    }
+
+    fn set_crossfade_initiated(&self, _value: bool) {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1060,6 +1060,11 @@ export const stereodromeCore = {
   audioPause(): Promise<void> {
     return invokeJson("audioPause", isNull).then(() => undefined);
   },
+  togglePlayback(): Promise<void> {
+    return dispatchRuntimeCommand({ type: "toggle-playback" }).then(
+      () => undefined
+    );
+  },
   audioResume(): Promise<void> {
     return invokeJson("audioResume", isNull).then(() => undefined);
   },
@@ -1071,6 +1076,11 @@ export const stereodromeCore = {
   },
   audioSeek(positionSeconds: number): Promise<void> {
     return invokeJson("audioSeek", isNull, positionSeconds).then(
+      () => undefined
+    );
+  },
+  seekBy(seconds: number): Promise<void> {
+    return dispatchRuntimeCommand({ type: "seek-by", seconds }).then(
       () => undefined
     );
   },

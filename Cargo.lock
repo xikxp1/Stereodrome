@@ -6073,6 +6073,7 @@ dependencies = [
  "rustls 0.23.41",
  "serde",
  "serde_json",
+ "stereodrome-audio",
  "submarine",
  "thiserror 2.0.19",
  "tokio",
@@ -6089,10 +6090,8 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "stereodrome-audio",
  "stereodrome-core",
  "tokio",
- "url",
 ]
 
 [[package]]

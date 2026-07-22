@@ -130,14 +130,20 @@ object StereodromeCoreBridge {
     if (!isPlaying()) {
       return
     }
-    call("audioPause", "null")
+    call(
+      "reportPlatformPlayback",
+      """{"type":"audio-focus-lost","transient":false}""",
+    )
   }
 
   fun pauseFromTransientAudioFocusLoss(): Boolean {
     if (!hasCore() || !isPlaying()) {
       return false
     }
-    call("audioPause", "null")
+    call(
+      "reportPlatformPlayback",
+      """{"type":"audio-focus-lost","transient":true}""",
+    )
     return true
   }
 
@@ -145,7 +151,7 @@ object StereodromeCoreBridge {
     if (!hasCore()) {
       return
     }
-    val result = call("audioResume", "null")
+    val result = call("reportPlatformPlayback", """{"type":"audio-focus-gained"}""")
     if (!isSuccessfulResponse(result)) {
       applicationContext?.let(StereodromeAudioFocus::abandon)
     }

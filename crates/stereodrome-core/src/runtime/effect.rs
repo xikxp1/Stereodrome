@@ -18,6 +18,19 @@ pub(crate) async fn execute(core: &StereodromeCore, command: CoreCommand) -> Cor
         | CoreCommand::GetSavedPlaylistsOfflineStatus
         | CoreCommand::StartQueuePrefetch { .. }
         | CoreCommand::CancelQueuePrefetch { .. }
+        | CoreCommand::ClearPlayback
+        | CoreCommand::NavigatePlayback { .. }
+        | CoreCommand::TogglePlayback
+        | CoreCommand::PausePlayback
+        | CoreCommand::ResumePlayback
+        | CoreCommand::StopPlayback
+        | CoreCommand::SeekTo { .. }
+        | CoreCommand::SeekBy { .. }
+        | CoreCommand::SetPlaybackVolume { .. }
+        | CoreCommand::RebuildAudioOutput
+        | CoreCommand::ApplyAudioSettings
+        | CoreCommand::PrepareNextTransition
+        | CoreCommand::ReportPlatformPlayback { .. }
         | CoreCommand::Shutdown => Err(CoreError::InvalidInput(
             "runtime control command reached the effect adapter".to_string(),
         )),

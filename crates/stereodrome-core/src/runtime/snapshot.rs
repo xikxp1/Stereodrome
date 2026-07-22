@@ -1,6 +1,7 @@
 use crate::protocol::{CORE_PROTOCOL_VERSION, ConnectivityState, CoreSnapshot, DownloadSnapshot};
 use crate::{ConnectionStatus, CoreResult, StereodromeCore};
 
+use super::playback::{self, AudioPort};
 use super::state::CoreState;
 
 pub(crate) fn initial_connectivity(core: &StereodromeCore) -> CoreResult<ConnectivityState> {
@@ -41,6 +42,7 @@ pub(crate) fn disconnected_state(status: ConnectionStatus) -> ConnectivityState 
 
 pub(crate) fn build_snapshot(
     core: &StereodromeCore,
+    audio: &dyn AudioPort,
     state: &CoreState,
 ) -> CoreResult<CoreSnapshot> {
     let mut downloading_song_ids = core.get_downloading_song_ids();
@@ -53,7 +55,7 @@ pub(crate) fn build_snapshot(
         revision: state.revision,
         lifecycle: state.lifecycle,
         connectivity: state.connectivity.clone(),
-        playback: core.get_playback_state()?,
+        playback: playback::projection(core, audio, state.playback_operation_id)?,
         queue: core.get_queue()?,
         sync: sync_snapshot(core, state)?,
         downloads: DownloadSnapshot {

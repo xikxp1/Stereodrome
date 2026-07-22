@@ -1,7 +1,8 @@
 # Mobile runtime protocol
 
-Phase 1 introduces a versioned Rust command boundary without changing mobile
-ownership or playback behavior. The protocol version is currently `1`.
+Phases 1–3 introduce a versioned Rust command boundary and move connectivity,
+jobs, and complete playback orchestration into one runtime mailbox. The
+protocol version is currently `1`.
 
 ## Request
 
@@ -41,9 +42,9 @@ published to the runtime event stream before the result is returned.
 
 ## Snapshot and events
 
-`get-snapshot` returns the complete Phase 1 operational projection: lifecycle,
-connectivity, persisted playback, queue, sync, download IDs, domain revisions,
-and the last mutating-operation failure.
+`get-snapshot` returns the complete operational projection: lifecycle,
+connectivity, live playback and queue capabilities, sync, download IDs, domain
+revisions, active operations, and the last mutating-operation failure.
 
 Phase 2 adds authoritative `operations`, `saved_playlist_offline`,
 `platform_lifecycle`, and `network_available` fields. Sync `active_job` and
@@ -57,6 +58,14 @@ Platform adapters can now send `report-network`, `report-lifecycle`, and
 due-job selection, and execution; Expo only registers the OS task and reports
 the tick.
 
+Phase 3 adds playback intents including `play-selection`, `clear-playback`,
+`navigate-playback`, `toggle-playback`, `seek-to`, `seek-by`, and
+`report-platform-playback`. Playback preparation is an operation with an ID;
+only the currently reserved operation may commit audio and queue state. The
+runtime owns restore, progress/scrobble reporting, gapless/crossfade preparation,
+prefetch triggers, and audio notifications. Platform focus, interruption,
+route-loss, and media-services-reset facts enter the same mailbox.
+
 All runtime events carry:
 
 - `protocol_version`
@@ -68,8 +77,9 @@ All runtime events carry:
 - a tagged event payload
 
 The in-process Rust handle exposes the ordered event stream through
-`StereodromeRuntimeHandle::subscribe`. Bridging this stream to one instance-bound
-native callback is intentionally deferred until native adapters are thinned.
+`StereodromeRuntimeHandle::subscribe`. The compatibility mobile adapter projects
+the runtime playback snapshot directly to the existing native playback callback
+and rejects delayed projections by runtime revision.
 
 ## C ABI
 
@@ -84,7 +94,6 @@ void stereodrome_runtime_string_free(char *value);
 ```
 
 The existing `stereodrome_core_*` ABI remains available. Existing method names
-that map directly to `StereodromeCore` operations are compatibility aliases into
-the typed mailbox. Audio orchestration and FFI-owned background job methods stay
-on the legacy path until their ownership moves in Phases 2 and 3. New operations
-must be added only to `CoreCommand`, not to the legacy method-string dispatch.
+are compatibility aliases into the typed mailbox; playback aliases no longer
+own an `AudioPlayer` or playback monitor in FFI. New operations must be added
+only to `CoreCommand`, not to the legacy method-string dispatch.

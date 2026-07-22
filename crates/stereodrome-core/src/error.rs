@@ -22,4 +22,6 @@ pub enum CoreError {
     Subsonic(String),
     #[error("Last.fm error: {0}")]
     Lastfm(String),
+    #[error("audio error: {0}")]
+    Audio(String),
 }
