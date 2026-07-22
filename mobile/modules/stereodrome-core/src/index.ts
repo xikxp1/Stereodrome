@@ -11,10 +11,6 @@ export type StereodromeCoreNativeModule = {
   getConnectionStatus(): Promise<string>;
   getStreamUri(songId: string): Promise<string>;
   addListener?(
-    eventName: "playback-snapshot",
-    listener: (payload: { snapshot: string }) => void
-  ): EventSubscription;
-  addListener?(
     eventName: "core-event",
     listener: (payload: { event: string }) => void
   ): EventSubscription;

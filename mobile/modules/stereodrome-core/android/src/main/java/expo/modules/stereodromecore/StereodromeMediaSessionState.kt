@@ -62,8 +62,8 @@ object StereodromeMediaSessionState {
     }
   }
 
-  fun applyPlaybackSnapshot(context: Context, snapshot: String) {
-    val info = when (val projection = NowPlayingInfo.fromSnapshotJson(snapshot)) {
+  fun applyPlatformEvent(context: Context, event: String) {
+    val info = when (val projection = NowPlayingInfo.fromPlatformEventJson(event)) {
       NowPlayingProjection.Invalid -> return
       NowPlayingProjection.Stopped -> {
         StereodromeAudioFocus.abandon(context.applicationContext)
@@ -73,8 +73,13 @@ object StereodromeMediaSessionState {
       is NowPlayingProjection.Active -> projection.info
     }
 
-    if (info.outputState == "unavailable") {
+    if (!info.isPlaying || info.outputState == "unavailable") {
       StereodromeAudioFocus.abandon(context.applicationContext)
+    } else if (StereodromeAudioFocus.request(context.applicationContext) == null) {
+      Log.w(TAG, "Audio focus denied for playing platform projection")
+      StereodromeCoreCommandQueue.enqueue("audio-focus-denied") {
+        StereodromeCoreBridge.reportAudioFocusLost(transient = false)
+      }
     }
 
     val update = synchronized(lock) {

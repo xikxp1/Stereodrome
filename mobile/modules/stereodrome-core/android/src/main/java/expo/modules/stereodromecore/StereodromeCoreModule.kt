@@ -10,10 +10,9 @@ class StereodromeCoreModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("StereodromeCore")
-    Events("playback-snapshot", "core-event")
+    Events("core-event")
 
     OnDestroy {
-      StereodromeCoreBridge.setPlaybackSnapshotListener(null)
       StereodromeCoreBridge.setCoreEventListener(null)
       StereodromeCoreBridge.destroy()
     }
@@ -23,11 +22,6 @@ class StereodromeCoreModule : Module() {
       if (context == null) {
         false
       } else {
-        StereodromeCoreBridge.setPlaybackSnapshotListener { snapshot ->
-          mainHandler.post {
-            sendEvent("playback-snapshot", mapOf("snapshot" to snapshot))
-          }
-        }
         StereodromeCoreBridge.setCoreEventListener { event ->
           mainHandler.post {
             sendEvent("core-event", mapOf("event" to event))
@@ -46,27 +40,7 @@ class StereodromeCoreModule : Module() {
     }
 
     AsyncFunction("call") { method: String, payload: String ->
-      val result = if (
-        method == "audioPlayCurrent" ||
-        method == "audioPlayQueueItem" ||
-        method == "audioPlayNext" ||
-        method == "audioPlayPrevious" ||
-        method == "audioResume" ||
-        method == "audioRebuildOutput"
-      ) {
-        val context = applicationContext()
-        if (context == null) {
-          """{"ok":false,"error":"Android application context is unavailable"}"""
-        } else {
-          StereodromeCoreBridge.callWithAudioFocus(context, method, payload)
-        }
-      } else {
-        callCore(method, payload)
-      }
-      if (method == "audioStop" && StereodromeCoreBridge.isSuccessfulResponse(result)) {
-        abandonAudioFocus()
-      }
-      result
+      callCore(method, payload)
     }
 
     AsyncFunction("dispatch") { commandJson: String ->
@@ -80,10 +54,4 @@ class StereodromeCoreModule : Module() {
 
   private fun escapeJson(value: String): String =
     value.replace("\\", "\\\\").replace("\"", "\\\"")
-
-  private fun abandonAudioFocus() {
-    applicationContext()?.let(StereodromeAudioFocus::abandon)
-  }
-
-  private fun applicationContext() = appContext.reactContext?.applicationContext
 }

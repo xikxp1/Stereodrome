@@ -5,7 +5,7 @@
 //! so a `UniFFI` surface can be generated here without touching the desktop
 //! Tauri adapter.
 
-use std::ffi::{CStr, CString, c_char};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -23,23 +23,19 @@ use stereodrome_core::queue::{QueueItem, QueueState, RepeatMode};
 use stereodrome_core::{
     CORE_PROTOCOL_VERSION, CacheStateEvent, CommandId, CommandStatus, ConnectParams,
     ConnectivitySettings, CoreCommand, CoreCommandRequest, CoreCommandResult, CoreEvent,
-    CoreEventKind, CoreSnapshot, LibrarySyncStatus, PlaybackOutputState, PlaybackPhase,
-    PlaybackProgress, PlaybackProjection, ProtocolError, ProtocolErrorCode,
-    SavedPlaylistOfflineStatus, ServerSettingsUpdate, StereodromeCore, StereodromeRuntimeHandle,
-    SyncKind, SyncSettings,
+    CoreEventKind, CoreSnapshot, PlaybackOutputState, PlaybackPhase, PlaybackProgress,
+    PlaybackProjection, ProtocolError, ProtocolErrorCode, ServerSettingsUpdate, StereodromeCore,
+    StereodromeRuntimeHandle, SyncKind, SyncSettings,
 };
 
 static MOBILE_LOGGER: MobileLogger = MobileLogger;
 static INIT_LOGGER: Once = Once::new();
 static INIT_PANIC_HOOK: Once = Once::new();
 static LOG_CALLBACK: Mutex<Option<MobileLogCallback>> = Mutex::new(None);
-static PLAYBACK_CALLBACK: Mutex<Option<MobilePlaybackCallback>> = Mutex::new(None);
-static EVENT_CALLBACK: Mutex<Option<MobileEventCallback>> = Mutex::new(None);
 static NEXT_EVENT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
 
 type MobileLogCallback = extern "C" fn(*const c_char);
-type MobilePlaybackCallback = extern "C" fn(*const c_char);
-type MobileEventCallback = extern "C" fn(*const c_char);
+type MobileEventCallback = extern "C" fn(*const c_char, *mut c_void);
 
 const MOBILE_CACHE_RECONCILE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -109,20 +105,10 @@ pub extern "C" fn stereodrome_core_set_log_callback(callback: Option<MobileLogCa
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn stereodrome_core_set_playback_callback(callback: Option<MobilePlaybackCallback>) {
-    init_mobile_logging();
-    if let Ok(mut current) = PLAYBACK_CALLBACK.lock() {
-        *current = callback;
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn stereodrome_core_set_event_callback(callback: Option<MobileEventCallback>) {
-    init_mobile_logging();
-    if let Ok(mut current) = EVENT_CALLBACK.lock() {
-        *current = callback;
-    }
+#[derive(Clone, Copy)]
+struct InstanceEventCallback {
+    callback: MobileEventCallback,
+    context: usize,
 }
 
 pub struct MobileCore {
@@ -154,9 +140,7 @@ struct MobileFileStateSnapshot {
 #[serde(tag = "type", content = "payload", rename_all = "kebab-case")]
 enum MobileCoreEvent {
     Runtime(Box<CoreEvent>),
-    FileState(MobileFileStateSnapshot),
-    SyncStatus(Box<LibrarySyncStatus>),
-    SavedPlaylistOfflineStatus(SavedPlaylistOfflineStatus),
+    PlatformProjection(Box<MobilePlatformProjection>),
 }
 
 #[derive(Serialize)]
@@ -167,10 +151,18 @@ struct MobileCoreEventEnvelope {
     event: MobileCoreEvent,
 }
 
+#[derive(Serialize)]
+struct MobilePlatformProjection {
+    protocol_version: u32,
+    revision: u64,
+    projection: PlaybackProjection,
+}
+
 #[derive(Clone)]
 struct MobileEventEmitter {
     stream_id: u64,
     next_seq: Arc<Mutex<u64>>,
+    callback: Arc<Mutex<Option<InstanceEventCallback>>>,
 }
 
 impl MobileEventEmitter {
@@ -178,6 +170,16 @@ impl MobileEventEmitter {
         Self {
             stream_id: NEXT_EVENT_STREAM_ID.fetch_add(1, Ordering::Relaxed),
             next_seq: Arc::new(Mutex::new(1)),
+            callback: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn set_callback(&self, callback: Option<MobileEventCallback>, context: *mut c_void) {
+        if let Ok(mut current) = self.callback.lock() {
+            *current = callback.map(|callback| InstanceEventCallback {
+                callback,
+                context: context as usize,
+            });
         }
     }
 
@@ -209,8 +211,12 @@ impl MobileEventEmitter {
                 return false;
             }
         };
-        if let Some(callback) = EVENT_CALLBACK.lock().ok().and_then(|guard| *guard) {
-            callback(message.as_ptr());
+        // Keep the callback guard through invocation so clearing a callback is a
+        // synchronous lifetime barrier for its context pointer.
+        if let Ok(current) = self.callback.lock()
+            && let Some(callback) = *current
+        {
+            (callback.callback)(message.as_ptr(), callback.context as *mut c_void);
         }
         true
     }
@@ -218,14 +224,14 @@ impl MobileEventEmitter {
 
 struct PlaybackSnapshotSequencer {
     next_seq: u64,
-    last_emitted_revision: u64,
+    last_emitted_revision: Option<u64>,
 }
 
 impl PlaybackSnapshotSequencer {
     fn new() -> Self {
         Self {
             next_seq: 1,
-            last_emitted_revision: 0,
+            last_emitted_revision: None,
         }
     }
 
@@ -339,7 +345,13 @@ impl PlaybackAnnouncer {
             .sequencer
             .lock()
             .map_err(|_| "playback snapshot sequencer lock poisoned".to_string())?;
-        sequencer.last_emitted_revision = sequencer.last_emitted_revision.max(snapshot.revision);
+        sequencer.last_emitted_revision = Some(
+            sequencer
+                .last_emitted_revision
+                .map_or(snapshot.revision, |revision| {
+                    revision.max(snapshot.revision)
+                }),
+        );
         Ok(sequencer.sequence(|seq| PlaybackSnapshot::from_projection(seq, snapshot.playback)))
     }
 
@@ -349,56 +361,62 @@ impl PlaybackAnnouncer {
                 .sequencer
                 .lock()
                 .map_err(|_| "playback snapshot sequencer lock poisoned".to_string())?;
-            if revision <= sequencer.last_emitted_revision {
+            if sequencer
+                .last_emitted_revision
+                .is_some_and(|last_revision| revision <= last_revision)
+            {
                 return Ok(false);
             }
-            sequencer.last_emitted_revision = revision;
-            let snapshot =
-                sequencer.sequence(|seq| PlaybackSnapshot::from_projection(seq, projection));
-            let json = serde_json::to_string(&snapshot)
-                .map_err(|_| "Failed to serialize playback snapshot".to_string())?;
-
-            if let Some(callback) = PLAYBACK_CALLBACK.lock().ok().and_then(|guard| *guard) {
-                let message = CString::new(json).map_err(|_| {
-                    "Failed to build playback snapshot callback payload".to_string()
-                })?;
-                callback(message.as_ptr());
-            }
-
-            Ok(true)
+            sequencer.last_emitted_revision = Some(revision);
+            Ok(self.event_emitter.emit(|| {
+                Ok(MobileCoreEvent::PlatformProjection(Box::new(
+                    MobilePlatformProjection {
+                        protocol_version: CORE_PROTOCOL_VERSION,
+                        revision,
+                        projection,
+                    },
+                )))
+            }))
         })();
 
         match result {
             Ok(emitted) => emitted,
             Err(error) => {
-                match error.as_str() {
-                    "Failed to serialize playback snapshot" => {
-                        log::warn!(
-                            target: "stereodrome_ffi",
-                            "Failed to serialize playback snapshot"
-                        );
-                    }
-                    "Failed to build playback snapshot callback payload" => {
-                        log::warn!(
-                            target: "stereodrome_ffi",
-                            "Failed to build playback snapshot callback payload"
-                        );
-                    }
-                    _ => {
-                        log::warn!(
-                            target: "stereodrome_ffi",
-                            "Failed to build playback snapshot: {error}"
-                        );
-                    }
-                }
+                log::warn!(target: "stereodrome_ffi", "Failed to emit platform projection: {error}");
                 false
             }
         }
     }
 
-    fn emit_file_state(&self) -> bool {
-        self.event_emitter
-            .emit(|| Ok(MobileCoreEvent::FileState(self.file_state_snapshot())))
+    fn emit_current(&self, revision: u64, projection: PlaybackProjection) -> bool {
+        let result: Result<bool, String> = (|| {
+            let mut sequencer = self
+                .sequencer
+                .lock()
+                .map_err(|_| "playback snapshot sequencer lock poisoned".to_string())?;
+            sequencer.last_emitted_revision = Some(
+                sequencer
+                    .last_emitted_revision
+                    .map_or(revision, |last_revision| last_revision.max(revision)),
+            );
+            Ok(self.event_emitter.emit(|| {
+                Ok(MobileCoreEvent::PlatformProjection(Box::new(
+                    MobilePlatformProjection {
+                        protocol_version: CORE_PROTOCOL_VERSION,
+                        revision,
+                        projection,
+                    },
+                )))
+            }))
+        })();
+
+        match result {
+            Ok(emitted) => emitted,
+            Err(error) => {
+                log::warn!(target: "stereodrome_ffi", "Failed to emit current platform projection: {error}");
+                false
+            }
+        }
     }
 }
 
@@ -584,6 +602,7 @@ pub unsafe extern "C" fn stereodrome_core_destroy(core: *mut MobileCore) {
 
         unsafe {
             let mut mobile = Box::from_raw(core);
+            mobile.event_emitter.set_callback(None, ptr::null_mut());
             mobile.monitor_running.store(false, Ordering::SeqCst);
             if let Some(monitor_thread) = mobile.monitor_thread.take()
                 && monitor_thread.join().is_err()
@@ -663,6 +682,24 @@ pub extern "C" fn stereodrome_runtime_new(data_dir: *const c_char) -> *mut Mobil
     stereodrome_core_new(data_dir)
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn stereodrome_runtime_set_event_callback(
+    runtime: *mut MobileCore,
+    callback: Option<MobileEventCallback>,
+    context: *mut c_void,
+) {
+    if let Some(mobile) = mobile_ref(runtime) {
+        mobile.event_emitter.set_callback(callback, context);
+        if callback.is_some()
+            && let Ok(snapshot) = runtime_snapshot(&mobile.core_runtime)
+        {
+            mobile
+                .announcer
+                .emit_current(snapshot.revision, snapshot.playback);
+        }
+    }
+}
+
 /// # Safety
 ///
 /// `runtime` must be a pointer returned by `stereodrome_runtime_new` and must
@@ -703,9 +740,15 @@ fn stereodrome_runtime_dispatch_inner(
             ))));
         }
     };
-    into_c_string(serialize_protocol_result(
-        &mobile.core_runtime.dispatch(request),
-    ))
+    let changes_playback = request.command.changes_playback_projection();
+    let result = mobile.core_runtime.dispatch(request);
+    if result.status == CommandStatus::Succeeded
+        && changes_playback
+        && let Ok(snapshot) = runtime_snapshot(&mobile.core_runtime)
+    {
+        mobile.announcer.emit(snapshot.revision, snapshot.playback);
+    }
+    into_c_string(serialize_protocol_result(&result))
 }
 
 /// Reads an authoritative snapshot through the runtime mailbox.
@@ -1450,7 +1493,7 @@ fn start_mobile_cache_monitor(
     thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
             let event = receiver.recv_timeout(MOBILE_CACHE_RECONCILE_RETRY_INTERVAL);
-            let changed = match event {
+            let _changed = match event {
                 Ok(event) => match announcer.apply_cache_state_event(&core, event) {
                     Ok(changed) => {
                         reconcile_pending = false;
@@ -1477,9 +1520,6 @@ fn start_mobile_cache_monitor(
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             };
-            if changed {
-                announcer.emit_file_state();
-            }
         }
     })
 }
@@ -1497,14 +1537,6 @@ fn start_runtime_event_bridge(
                     event_emitter.emit(|| Ok(MobileCoreEvent::Runtime(Box::new(event.clone()))));
                     if let CoreEventKind::SnapshotChanged { snapshot } = event.kind {
                         announcer.emit(event.revision, snapshot.playback.clone());
-                        let sync = snapshot.sync.clone();
-                        event_emitter.emit(|| Ok(MobileCoreEvent::SyncStatus(Box::new(sync))));
-                        let saved_playlist_offline = snapshot.saved_playlist_offline.clone();
-                        event_emitter.emit(|| {
-                            Ok(MobileCoreEvent::SavedPlaylistOfflineStatus(
-                                saved_playlist_offline,
-                            ))
-                        });
                     }
                 }
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
@@ -1564,6 +1596,33 @@ mod tests {
     use std::sync::Barrier;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
     use std::sync::mpsc::{self, RecvTimeoutError};
+
+    static INSTANCE_CALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
+    static INITIAL_PROJECTION_CALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
+
+    extern "C" fn instance_event_callback(message: *const c_char, context: *mut c_void) {
+        assert!(!message.is_null());
+        assert_eq!(context as usize, 41);
+        let event = unsafe { CStr::from_ptr(message) }
+            .to_str()
+            .expect("callback event is UTF-8");
+        assert!(event.contains("runtime-shutting-down"));
+        INSTANCE_CALLBACK_COUNT.fetch_add(1, AtomicOrdering::SeqCst);
+    }
+
+    extern "C" fn initial_projection_callback(message: *const c_char, context: *mut c_void) {
+        assert!(!message.is_null());
+        assert_eq!(context as usize, 42);
+        let event: Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(message) }
+                .to_str()
+                .expect("callback event is UTF-8"),
+        )
+        .expect("callback event is JSON");
+        assert_eq!(event["type"], "platform-projection");
+        assert_eq!(event["payload"]["revision"], 0);
+        INITIAL_PROJECTION_CALLBACK_COUNT.fetch_add(1, AtomicOrdering::SeqCst);
+    }
 
     #[derive(Deserialize)]
     struct LegacyCommandFixture {
@@ -1767,6 +1826,27 @@ mod tests {
     }
 
     #[test]
+    fn shared_platform_projection_event_matches_the_rust_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../mobile/modules/stereodrome-core/fixtures/platform-projection-event.json"
+        ))
+        .expect("platform projection fixture parses");
+        let projection: PlaybackProjection =
+            serde_json::from_value(fixture["payload"]["projection"].clone())
+                .expect("fixture projection matches the runtime contract");
+
+        assert_eq!(fixture["type"], "platform-projection");
+        assert_eq!(
+            fixture["payload"]["protocol_version"],
+            CORE_PROTOCOL_VERSION
+        );
+        assert_eq!(fixture["payload"]["revision"], 42);
+        assert_eq!(projection.song.expect("fixture has a song").id, "song-b");
+        assert_eq!(projection.queue_index, Some(1));
+        assert!(projection.can_seek);
+    }
+
+    #[test]
     fn cache_events_keep_mobile_song_ids_sorted_and_deduplicated() {
         let mut song_ids = vec!["b".to_string(), "d".to_string()];
 
@@ -1790,29 +1870,6 @@ mod tests {
             false
         ));
         assert_eq!(song_ids, ["a", "c", "d"]);
-    }
-
-    #[test]
-    fn mobile_file_state_event_serialization_is_tagged_and_sequenced() {
-        let snapshot = MobileFileStateSnapshot {
-            seq: 7,
-            downloaded_song_ids: vec!["cached".to_string()],
-            downloading_song_ids: vec!["active".to_string()],
-        };
-
-        let event = serde_json::to_value(MobileCoreEventEnvelope {
-            stream_id: 3,
-            seq: 11,
-            event: MobileCoreEvent::FileState(snapshot),
-        })
-        .expect("file state event serializes");
-
-        assert_eq!(event["stream_id"], 3);
-        assert_eq!(event["seq"], 11);
-        assert_eq!(event["type"], "file-state");
-        assert_eq!(event["payload"]["seq"], 7);
-        assert_eq!(event["payload"]["downloaded_song_ids"][0], "cached");
-        assert_eq!(event["payload"]["downloading_song_ids"][0], "active");
     }
 
     #[test]
@@ -1840,6 +1897,65 @@ mod tests {
         assert_eq!(event["payload"]["event_id"], 21);
         assert_eq!(event["payload"]["revision"], 13);
         assert_eq!(event["payload"]["kind"]["type"], "runtime-shutting-down");
+    }
+
+    #[test]
+    fn event_callbacks_are_instance_bound_and_can_be_cleared() {
+        INSTANCE_CALLBACK_COUNT.store(0, AtomicOrdering::SeqCst);
+        let emitter = MobileEventEmitter::new();
+        emitter.set_callback(Some(instance_event_callback), 41_usize as *mut c_void);
+        assert!(emitter.emit(|| {
+            Ok(MobileCoreEvent::Runtime(Box::new(CoreEvent {
+                protocol_version: CORE_PROTOCOL_VERSION,
+                stream_id: 8,
+                event_id: 21,
+                revision: 13,
+                cause_command_id: CommandId(5),
+                operation_id: None,
+                kind: CoreEventKind::RuntimeShuttingDown,
+            })))
+        }));
+        assert_eq!(INSTANCE_CALLBACK_COUNT.load(AtomicOrdering::SeqCst), 1);
+
+        emitter.set_callback(None, ptr::null_mut());
+        assert!(emitter.emit(|| {
+            Ok(MobileCoreEvent::Runtime(Box::new(CoreEvent {
+                protocol_version: CORE_PROTOCOL_VERSION,
+                stream_id: 8,
+                event_id: 22,
+                revision: 14,
+                cause_command_id: CommandId(5),
+                operation_id: None,
+                kind: CoreEventKind::RuntimeShuttingDown,
+            })))
+        }));
+        assert_eq!(INSTANCE_CALLBACK_COUNT.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn registering_an_event_callback_emits_the_initial_revision_zero_projection() {
+        INITIAL_PROJECTION_CALLBACK_COUNT.store(0, AtomicOrdering::SeqCst);
+        let core = TestMobileCore::new("initial-platform-projection");
+
+        stereodrome_runtime_set_event_callback(
+            core.pointer,
+            Some(initial_projection_callback),
+            42_usize as *mut c_void,
+        );
+        assert_eq!(
+            INITIAL_PROJECTION_CALLBACK_COUNT.load(AtomicOrdering::SeqCst),
+            1
+        );
+        stereodrome_runtime_set_event_callback(
+            core.pointer,
+            Some(initial_projection_callback),
+            42_usize as *mut c_void,
+        );
+        assert_eq!(
+            INITIAL_PROJECTION_CALLBACK_COUNT.load(AtomicOrdering::SeqCst),
+            2
+        );
+        stereodrome_runtime_set_event_callback(core.pointer, None, ptr::null_mut());
     }
 
     #[test]

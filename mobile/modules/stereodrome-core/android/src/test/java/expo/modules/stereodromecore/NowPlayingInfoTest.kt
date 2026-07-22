@@ -7,10 +7,10 @@ import org.junit.Test
 
 class NowPlayingInfoTest {
   @Test
-  fun sharedPlaybackFixtureMatchesNativeProjectionContract() {
-    val fixture = checkNotNull(javaClass.classLoader?.getResource("playback-snapshot.json"))
+  fun sharedPlatformProjectionFixtureMatchesNativeContract() {
+    val fixture = checkNotNull(javaClass.classLoader?.getResource("platform-projection-event.json"))
       .readText()
-    val projection = NowPlayingInfo.fromSnapshotJson(fixture)
+    val projection = NowPlayingInfo.fromPlatformEventJson(fixture)
 
     assertTrue(projection is NowPlayingProjection.Active)
     val info = (projection as NowPlayingProjection.Active).info

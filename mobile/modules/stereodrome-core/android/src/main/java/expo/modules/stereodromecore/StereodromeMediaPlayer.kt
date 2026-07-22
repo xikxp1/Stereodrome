@@ -14,6 +14,7 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import java.util.concurrent.FutureTask
 import kotlin.math.max
+import org.json.JSONObject
 
 class StereodromeMediaPlayer(
   context: Context,
@@ -60,27 +61,17 @@ class StereodromeMediaPlayer(
         invalidateOnPlayerLooper()
         return Futures.immediateFuture(Any())
       }
-      StereodromeCoreCommandQueue.enqueue("audioResume") {
-        val result = StereodromeCoreBridge.callWithAudioFocus(
+      StereodromeCoreCommandQueue.enqueue("resume-playback") {
+        StereodromeCoreBridge.dispatchWithAudioFocus(
           appContext,
-          "audioResume",
-          "null",
+          JSONObject().put("type", "resume-playback"),
         )
-        if (!StereodromeCoreBridge.isSuccessfulResponse(result)) {
-          handler.post {
-            info = info?.copy(isPlaying = false)
-            invalidateState()
-          }
-        }
       }
     } else {
-      StereodromeCoreCommandQueue.enqueue("audioPause") {
-        StereodromeCoreBridge.pause()
+      StereodromeCoreCommandQueue.enqueue("pause-playback") {
+        StereodromeCoreBridge.dispatchCommand(JSONObject().put("type", "pause-playback"))
       }
-      StereodromeAudioFocus.abandon(appContext)
     }
-    info = info?.copy(isPlaying = playWhenReady)
-    invalidateOnPlayerLooper()
     return Futures.immediateFuture(Any())
   }
 
@@ -94,24 +85,34 @@ class StereodromeMediaPlayer(
         if (info?.canPlay != true) {
           return Futures.immediateFuture(Any())
         }
-        StereodromeCoreCommandQueue.enqueue("playNext") {
-          StereodromeCoreBridge.callWithAudioFocus(appContext, "audioPlayNext", "true")
+        StereodromeCoreCommandQueue.enqueue("navigate-next") {
+          StereodromeCoreBridge.dispatchWithAudioFocus(
+            appContext,
+            JSONObject()
+              .put("type", "navigate-playback")
+              .put("navigation", JSONObject().put("type", "next").put("force", true)),
+          )
         }
       }
       Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> {
         if (info?.canPlay != true) {
           return Futures.immediateFuture(Any())
         }
-        StereodromeCoreCommandQueue.enqueue("playPrevious") {
-          StereodromeCoreBridge.callWithAudioFocus(appContext, "audioPlayPrevious", "null")
+        StereodromeCoreCommandQueue.enqueue("navigate-previous") {
+          StereodromeCoreBridge.dispatchWithAudioFocus(
+            appContext,
+            JSONObject()
+              .put("type", "navigate-playback")
+              .put("navigation", JSONObject().put("type", "previous")),
+          )
         }
       }
       Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM -> {
         val nextPositionSeconds = max(0.0, positionMs / 1000.0)
-        info = info?.copy(positionSeconds = nextPositionSeconds)
-        invalidateOnPlayerLooper()
-        StereodromeCoreCommandQueue.enqueue("audioSeek") {
-          StereodromeCoreBridge.seekTo(nextPositionSeconds)
+        StereodromeCoreCommandQueue.enqueue("seek-to") {
+          StereodromeCoreBridge.dispatchCommand(
+            JSONObject().put("type", "seek-to").put("seconds", nextPositionSeconds),
+          )
         }
       }
     }
@@ -119,20 +120,9 @@ class StereodromeMediaPlayer(
   }
 
   override fun handleStop(): ListenableFuture<Any> {
-    val wasPlaying = info?.isPlaying == true
-    StereodromeCoreCommandQueue.enqueue("audioStop") {
-      val result = StereodromeCoreBridge.call("audioStop", "null")
-      if (StereodromeCoreBridge.isSuccessfulResponse(result)) {
-        StereodromeAudioFocus.abandon(appContext)
-      } else if (wasPlaying) {
-        handler.post {
-          info = info?.copy(isPlaying = true)
-          invalidateState()
-        }
-      }
+    StereodromeCoreCommandQueue.enqueue("stop-playback") {
+      StereodromeCoreBridge.dispatchCommand(JSONObject().put("type", "stop-playback"))
     }
-    info = info?.copy(isPlaying = false, positionSeconds = 0.0)
-    invalidateOnPlayerLooper()
     return Futures.immediateFuture(Any())
   }
 
