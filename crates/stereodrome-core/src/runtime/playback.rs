@@ -86,14 +86,44 @@ impl StereodromeAudioPort {
     /// # Errors
     /// Returns an audio error when the playback supervisor cannot be initialized.
     pub fn new() -> CoreResult<Self> {
+        Self::new_with_spectrum(false)
+    }
+
+    /// Creates the audio engine and optionally enables its spectrum tap.
+    ///
+    /// Desktop adapters use the spectrum consumer for visualization while all
+    /// playback transitions remain owned by the runtime.
+    ///
+    /// # Errors
+    /// Returns an audio error when the playback supervisor cannot be initialized.
+    pub fn new_with_spectrum(spectrum_enabled: bool) -> CoreResult<Self> {
         let (player, notifications) =
-            AudioPlayer::new_with_spectrum_and_notifications(false).map_err(audio_error)?;
+            AudioPlayer::new_with_spectrum_and_notifications(spectrum_enabled)
+                .map_err(audio_error)?;
         let state = player.state_handle();
         Ok(Self {
             player,
             state,
             notifications: Mutex::new(Some(notifications)),
         })
+    }
+
+    /// Returns the live audio state used by platform-only projections.
+    #[must_use]
+    pub fn playback_state_snapshot(&self) -> AudioPlaybackState {
+        self.player.get_playback_state()
+    }
+
+    /// Returns the compact live status used by platform command adapters.
+    #[must_use]
+    pub fn status_snapshot(&self) -> PlaybackStatus {
+        self.player.get_status()
+    }
+
+    /// Returns the runtime audio engine's spectrum consumer.
+    #[must_use]
+    pub fn spectrum_consumer(&self) -> Arc<Mutex<ringbuf::HeapCons<f32>>> {
+        self.player.get_spectrum_consumer()
     }
 }
 
@@ -259,6 +289,7 @@ pub(crate) async fn prepare(
     let audio_data = std::fs::read(audio_path)?;
     let settings = core.get_audio_processing_settings()?;
     let processing = audio_processing(&settings)?;
+    let cover_art_id = core.song_cover_art_id(&target_song_id)?;
 
     Ok(PreparedPlayback {
         target_song_id,
@@ -269,7 +300,7 @@ pub(crate) async fn prepare(
                 title: item.title,
                 artist: item.artist,
                 album: item.album,
-                cover_art_id: None,
+                cover_art_id,
             },
             duration_seconds: duration_seconds(item.duration),
             normalization_gain: processing.normalization_gain,

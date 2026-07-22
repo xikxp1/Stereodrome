@@ -1,10 +1,8 @@
 <script lang="ts">
   import {
     Disc3,
-    FolderOpen,
     HardDrive,
     RefreshCw,
-    RotateCcw,
     SlidersHorizontal,
     Trash2,
     Volume2,
@@ -13,7 +11,6 @@
   import type {
     AnalysisProgress,
     CacheLocationInfo,
-    CacheRootUpdateResult,
     NormalizationSettings,
     NormalizationStats,
     PlaybackSettings,
@@ -59,11 +56,7 @@
     loadingStats: boolean;
     cacheStats: CacheStats | null;
     loadingCacheLocations: boolean;
-    movingCacheLocation: boolean;
     cacheLocations: CacheLocationInfo | null;
-    handleChooseCacheRoot: () => void | Promise<void>;
-    handleResetCacheRoot: () => void | Promise<void>;
-    cacheMoveResult: CacheRootUpdateResult | null;
     cacheSizeGB: number;
     savingSize: boolean;
     handleSizeChange: (sizeGB: number) => void | Promise<void>;
@@ -95,11 +88,7 @@
     loadingStats,
     cacheStats,
     loadingCacheLocations,
-    movingCacheLocation,
     cacheLocations,
-    handleChooseCacheRoot,
-    handleResetCacheRoot,
-    cacheMoveResult,
     cacheSizeGB,
     savingSize,
     handleSizeChange,
@@ -114,16 +103,6 @@
     const sizes = ["B", "KB", "MB", "GB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${(bytes / k ** i).toFixed(1)} ${sizes[i]}`;
-  }
-
-  function formatMoveResult(result: CacheRootUpdateResult): string {
-    const moved = result.audio.moved_files + result.cover_art.moved_files;
-    const skipped = result.audio.skipped_files + result.cover_art.skipped_files;
-    const failed = result.audio.failed_files + result.cover_art.failed_files;
-    const parts = [`${moved} moved`];
-    if (skipped > 0) parts.push(`${skipped} skipped`);
-    if (failed > 0) parts.push(`${failed} failed`);
-    return parts.join(", ");
   }
 </script>
 
@@ -625,7 +604,7 @@
       <div class="border-b border-base-300 pb-3">
         <div class="mb-2 flex items-center justify-between text-sm">
           <span class="text-base-content/60">Cache folder</span>
-          {#if loadingCacheLocations || movingCacheLocation}
+          {#if loadingCacheLocations}
             <RefreshCw class="h-3.5 w-3.5 animate-spin" />
           {/if}
         </div>
@@ -636,31 +615,9 @@
           >
             {cacheLocations.cache_root}
           </div>
-          <div class="mt-2 flex flex-wrap gap-2">
-            <button
-              type="button"
-              class="btn btn-xs h-7 min-h-0 gap-1"
-              onclick={handleChooseCacheRoot}
-              disabled={movingCacheLocation}
-            >
-              <FolderOpen class="h-3.5 w-3.5" />
-              Choose Folder
-            </button>
-            <button
-              type="button"
-              class="btn btn-xs btn-ghost h-7 min-h-0 gap-1"
-              onclick={handleResetCacheRoot}
-              disabled={movingCacheLocation || cacheLocations.is_default}
-            >
-              <RotateCcw class="h-3.5 w-3.5" />
-              Reset
-            </button>
-          </div>
-          {#if cacheMoveResult}
-            <p class="mt-2 text-xs text-base-content/50">
-              Cache location updated: {formatMoveResult(cacheMoveResult)}.
-            </p>
-          {/if}
+          <p class="mt-2 text-xs text-base-content/50">
+            Managed by the shared playback runtime.
+          </p>
         {:else}
           <div class="text-sm text-base-content/60">
             Unable to load cache folder

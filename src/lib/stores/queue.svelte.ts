@@ -18,7 +18,6 @@ class QueueStore {
 
   // Event listeners
   private unlistenChanged: UnlistenFn | null = null;
-  private unlistenQueueEnded: UnlistenFn | null = null;
 
   constructor() {
     void this.init();
@@ -35,12 +34,6 @@ class QueueStore {
         this.updateFromState(event.payload);
       }
     );
-
-    // Listen for queue ended
-    this.unlistenQueueEnded = await listen("queue-ended", () => {
-      this.currentIndex = null;
-      this.preparedNextItem = null;
-    });
   }
 
   private updateFromState(state: QueueState) {
@@ -320,9 +313,6 @@ class QueueStore {
   destroy() {
     if (this.unlistenChanged) {
       this.unlistenChanged();
-    }
-    if (this.unlistenQueueEnded) {
-      this.unlistenQueueEnded();
     }
   }
 }

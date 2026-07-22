@@ -6,7 +6,7 @@ use std::time::Duration;
 use log::{debug, error, info};
 use tauri::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 const MENU_ID_APP_INFO: &str = "app_info";
 const MENU_ID_NOW_PLAYING: &str = "now_playing";
@@ -298,18 +298,25 @@ fn handle_menu_event(app: &AppHandle, menu_id: &MenuId) {
     match menu_id.as_ref() {
         MENU_ID_PLAY_PAUSE => {
             debug!("Tray: play_pause clicked");
-            let _ = app.emit(
-                "tray-control",
-                serde_json::json!({ "action": "play_pause" }),
-            );
+            dispatch_runtime_intent(app, stereodrome_core::CoreCommand::TogglePlayback);
         }
         MENU_ID_NEXT => {
             debug!("Tray: next clicked");
-            let _ = app.emit("tray-control", serde_json::json!({ "action": "next" }));
+            dispatch_runtime_intent(
+                app,
+                stereodrome_core::CoreCommand::NavigatePlayback {
+                    navigation: stereodrome_core::PlaybackNavigation::Next { force: true },
+                },
+            );
         }
         MENU_ID_PREVIOUS => {
             debug!("Tray: previous clicked");
-            let _ = app.emit("tray-control", serde_json::json!({ "action": "previous" }));
+            dispatch_runtime_intent(
+                app,
+                stereodrome_core::CoreCommand::NavigatePlayback {
+                    navigation: stereodrome_core::PlaybackNavigation::Previous,
+                },
+            );
         }
         MENU_ID_SHOW => {
             debug!("Tray: show clicked");
@@ -321,6 +328,16 @@ fn handle_menu_event(app: &AppHandle, menu_id: &MenuId) {
         }
         _ => {}
     }
+}
+
+fn dispatch_runtime_intent(app: &AppHandle, command: stereodrome_core::CoreCommand) {
+    let Some(state) = app.try_state::<crate::state::AppState>() else {
+        return;
+    };
+    let runtime = state.runtime.clone();
+    std::thread::spawn(move || {
+        let _ = runtime.dispatch_command(command);
+    });
 }
 
 fn show_main_window(app: &AppHandle) {

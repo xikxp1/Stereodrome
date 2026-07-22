@@ -5,7 +5,6 @@ import type { Song } from "$lib/types";
 import { queue } from "./queue.svelte";
 import { logError } from "$lib/services/logging";
 import { notifications } from "$lib/services/notifications.svelte";
-import { setPersistedVolume } from "$lib/api/commands";
 
 interface PlaybackStatus {
   is_playing: boolean;
@@ -40,8 +39,6 @@ interface CurrentTrack {
 }
 
 class PlaybackStore {
-  private static readonly PERSIST_DEBOUNCE_MS = 250;
-
   // State
   isPlaying = $state(false);
   position = $state(0);
@@ -51,16 +48,9 @@ class PlaybackStore {
   // Current track info from backend (for TransportBar display)
   currentTrack = $state<CurrentTrack | null>(null);
 
-  // Scrobble tracking - prevents duplicate scrobbles within the same playback
-  private scrobbledSongId: string | null = null;
-  private lastPosition: number = 0;
-
   // Event listeners
   private unlistenState: UnlistenFn | null = null;
-  private unlistenEnded: UnlistenFn | null = null;
-  private persistVolumeTimeout: ReturnType<typeof setTimeout> | null = null;
   private volumeUpdateQueue: Promise<void> = Promise.resolve();
-  private volumeUpdateId = 0;
   private pendingVolumeUpdates = 0;
   private readonly shouldHandleSideEffects =
     getCurrentWindow().label === "main";
@@ -111,16 +101,7 @@ class PlaybackStore {
         if (state.song) {
           const nextTrack = this.toCurrentTrack(state.song);
 
-          // Reset scrobble tracking when song changes or restarts (for repeat mode)
           const songChanged = state.song.id !== this.currentTrack?.id;
-          const songRestarted =
-            state.song.id === this.scrobbledSongId &&
-            state.position < this.lastPosition &&
-            state.position < 5; // Position jumped back to near start
-
-          if (songChanged || songRestarted) {
-            this.scrobbledSongId = null;
-          }
 
           // Notify song change when app is not focused
           if (songChanged && this.shouldHandleSideEffects) {
@@ -138,39 +119,11 @@ class PlaybackStore {
           if (!this.sameTrackMetadata(this.currentTrack, nextTrack)) {
             this.currentTrack = nextTrack;
           }
-
-          // Check scrobble threshold (50% of song played)
-          if (this.shouldHandleSideEffects && state.duration > 0) {
-            const threshold = state.duration * 0.5;
-            if (
-              state.position >= threshold &&
-              this.scrobbledSongId !== state.song.id
-            ) {
-              this.scrobbledSongId = state.song.id;
-              void invoke("scrobble_submit", {
-                songId: state.song.id,
-              }).catch((cause: unknown) => {
-                logError("Failed to submit scrobble", cause);
-              });
-            }
-          }
-
-          this.lastPosition = state.position;
         } else if (this.currentTrack !== null) {
           this.currentTrack = null;
         }
       }
     );
-
-    // Listen for playback ended
-    this.unlistenEnded = await listen("playback-ended", () => {
-      this.isPlaying = false;
-      this.position = 0;
-      this.duration = 0;
-      this.currentTrack = null;
-      this.scrobbledSongId = null;
-      this.lastPosition = 0;
-    });
 
     // Sync startup UI state with backend-applied runtime values (e.g. restored volume).
     void this.refreshStatus();
@@ -239,7 +192,6 @@ class PlaybackStore {
 
   async setVolume(volume: number) {
     const clamped = Math.max(0, Math.min(1, volume));
-    const updateId = ++this.volumeUpdateId;
     this.volume = clamped;
     this.pendingVolumeUpdates += 1;
 
@@ -250,29 +202,11 @@ class PlaybackStore {
 
     try {
       await update;
-      if (updateId === this.volumeUpdateId) {
-        this.scheduleVolumePersistence(clamped);
-      }
     } catch (cause) {
       logError("Failed to set volume", cause);
     } finally {
       this.pendingVolumeUpdates -= 1;
     }
-  }
-
-  private scheduleVolumePersistence(volume: number) {
-    if (!this.shouldHandleSideEffects) return;
-
-    if (this.persistVolumeTimeout) {
-      clearTimeout(this.persistVolumeTimeout);
-    }
-
-    this.persistVolumeTimeout = setTimeout(() => {
-      void setPersistedVolume(volume).catch((cause: unknown) => {
-        logError("Failed to persist volume", cause);
-      });
-      this.persistVolumeTimeout = null;
-    }, PlaybackStore.PERSIST_DEBOUNCE_MS);
   }
 
   async refreshStatus() {
@@ -293,13 +227,6 @@ class PlaybackStore {
   destroy() {
     if (this.unlistenState) {
       this.unlistenState();
-    }
-    if (this.unlistenEnded) {
-      this.unlistenEnded();
-    }
-    if (this.persistVolumeTimeout) {
-      clearTimeout(this.persistVolumeTimeout);
-      this.persistVolumeTimeout = null;
     }
   }
 }

@@ -5,6 +5,7 @@ const PAGE_SIZE = 120;
 
 interface LoadViewOptions {
   force?: boolean;
+  background?: boolean;
 }
 
 class AlbumListStore {
@@ -45,6 +46,7 @@ class AlbumListStore {
     }
 
     const shouldReset = !isSameList || this.entries.length === 0;
+    const showLoading = options.background !== true || shouldReset;
     const requestId = ++this.loadRequestId;
 
     if (shouldReset) {
@@ -56,7 +58,9 @@ class AlbumListStore {
 
     this.error = null;
     this.currentListType = listType;
-    this.isLoading = true;
+    if (showLoading) {
+      this.isLoading = true;
+    }
     this.isLoadingMore = false;
 
     try {
@@ -83,7 +87,9 @@ class AlbumListStore {
         this.loadRequestId === requestId &&
         this.currentListType === listType
       ) {
-        this.isLoading = false;
+        if (showLoading) {
+          this.isLoading = false;
+        }
       }
     }
   }

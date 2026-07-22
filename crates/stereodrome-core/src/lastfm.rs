@@ -344,6 +344,22 @@ fn load_session(db_path: &Path) -> CoreResult<Option<LastfmSession>> {
     Ok(Some(serde_json::from_str(&json)?))
 }
 
+pub(crate) fn import_session_if_missing(
+    db_path: &Path,
+    username: String,
+    session_key: String,
+) -> CoreResult<()> {
+    if load_session(db_path)?.is_some() {
+        return Ok(());
+    }
+    let session = LastfmSession {
+        username,
+        session_key,
+    };
+    write_sync_value(db_path, KEY_SESSION, &serde_json::to_string(&session)?)?;
+    write_sync_value(db_path, KEY_ENABLED, "true")
+}
+
 fn sync_value(db_path: &Path, key: &str) -> CoreResult<Option<String>> {
     let conn = Connection::open(db_path)?;
     let value = conn

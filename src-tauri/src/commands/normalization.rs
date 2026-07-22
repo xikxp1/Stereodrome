@@ -2,9 +2,9 @@ use log::{info, warn};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::audio::loudness;
-use crate::cache::AudioCache;
 use crate::db;
 use crate::error::{AppError, AppResult, MutexExt};
+use crate::runtime::{deserialize_result, file_uri_path};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -22,6 +22,87 @@ pub struct AnalysisProgress {
     pub total_count: i64,
 }
 
+pub(crate) fn analyze_song_if_needed(
+    runtime: stereodrome_core::StereodromeRuntimeHandle,
+    db_path: std::path::PathBuf,
+    song_id: String,
+) {
+    tauri::async_runtime::spawn_blocking(move || {
+        match deserialize_result::<stereodrome_core::AudioProcessingSettings>(
+            runtime.dispatch_command(stereodrome_core::CoreCommand::GetAudioProcessingSettings),
+        ) {
+            Ok(settings) if settings.normalization_enabled => {}
+            Ok(_) => return,
+            Err(error) => {
+                warn!("Failed to read normalization settings for {song_id}: {error}");
+                return;
+            }
+        }
+
+        let album_id = match normalization_album_if_missing(&db_path, &song_id) {
+            Ok(Some(album_id)) => album_id,
+            Ok(None) => return,
+            Err(error) => {
+                warn!("Failed to inspect normalization state for {song_id}: {error}");
+                return;
+            }
+        };
+        let download: stereodrome_core::DownloadStatus = match deserialize_result(
+            runtime.dispatch_command(stereodrome_core::CoreCommand::DownloadSong {
+                song_id: song_id.clone(),
+            }),
+        ) {
+            Ok(download) => download,
+            Err(error) => {
+                warn!("Failed to fetch audio for analysis of {song_id}: {error}");
+                return;
+            }
+        };
+        let Some(path) = download.path.as_deref().and_then(file_uri_path) else {
+            warn!("Runtime download returned no local path for analysis of {song_id}");
+            return;
+        };
+        let result = std::fs::read(path)
+            .map_err(AppError::from)
+            .and_then(|audio| {
+                loudness::analyze_loudness(audio)
+                    .map_err(|error| AppError::Audio(error.to_string()))
+            });
+        match result {
+            Ok(result) => {
+                if let Err(error) = db::save_normalization_result(
+                    &db_path,
+                    &song_id,
+                    &album_id,
+                    result.integrated_lufs,
+                    result.true_peak,
+                ) {
+                    warn!("Failed to save loudness analysis for {song_id}: {error}");
+                }
+            }
+            Err(error) => warn!("Failed to analyze loudness for {song_id}: {error}"),
+        }
+    });
+}
+
+fn normalization_album_if_missing(
+    db_path: &std::path::Path,
+    song_id: &str,
+) -> AppResult<Option<String>> {
+    use rusqlite::OptionalExtension;
+
+    let conn = rusqlite::Connection::open(db_path)?;
+    conn.query_row(
+        "SELECT s.album_id FROM songs s
+         WHERE s.id = ?1
+           AND NOT EXISTS (SELECT 1 FROM normalization_data n WHERE n.song_id = s.id)",
+        [song_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(AppError::Database)
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_analysis_progress(state: State<'_, AppState>) -> Option<AnalysisProgress> {
@@ -31,7 +112,7 @@ pub fn get_analysis_progress(state: State<'_, AppState>) -> Option<AnalysisProgr
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_normalization_stats(state: State<'_, AppState>) -> AppResult<NormalizationStats> {
-    let conn = state.db.lock_recover();
+    let conn = rusqlite::Connection::open(&state.db_path)?;
 
     let analyzed_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM normalization_data", [], |row| {
@@ -62,7 +143,7 @@ pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>
 
     // Get all songs that haven't been analyzed yet, plus total counts
     let (songs, total_count, already_analyzed) = {
-        let conn = state.db.lock_recover();
+        let conn = rusqlite::Connection::open(&state.db_path)?;
 
         let total_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM songs", [], |row| row.get(0))
@@ -102,26 +183,36 @@ pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>
         return Ok(());
     }
 
-    let client = state.client.clone();
+    let runtime = state.runtime.clone();
     let progress_state = state.analysis_progress.clone();
 
     tauri::async_runtime::spawn(async move {
-        let cache = match AudioCache::new(&app_handle) {
-            Ok(c) => c,
-            Err(e) => {
-                warn!("Failed to create audio cache for batch analysis: {e}");
-                return;
-            }
-        };
-
         let mut successful_writes: i64 = 0;
 
-        for (i, (song_id, suffix, album_id)) in songs.into_iter().enumerate() {
-            // Fetch audio data
-            let audio_data = match cache.get_or_fetch(&client, &song_id, &suffix).await {
-                Ok(data) => data,
+        for (i, (song_id, _suffix, album_id)) in songs.into_iter().enumerate() {
+            let download: stereodrome_core::DownloadStatus = match deserialize_result(
+                runtime.dispatch_command(stereodrome_core::CoreCommand::DownloadSong {
+                    song_id: song_id.clone(),
+                }),
+            ) {
+                Ok(download) => download,
                 Err(e) => {
                     warn!("Failed to fetch audio for analysis of {song_id}: {e}");
+                    continue;
+                }
+            };
+            let Some(path) = download.path else {
+                warn!("Runtime download returned no path for analysis of {song_id}");
+                continue;
+            };
+            let Some(path) = file_uri_path(&path) else {
+                warn!("Runtime download returned a non-file path for analysis of {song_id}");
+                continue;
+            };
+            let audio_data = match std::fs::read(path) {
+                Ok(data) => data,
+                Err(e) => {
+                    warn!("Failed to read audio for analysis of {song_id}: {e}");
                     continue;
                 }
             };
@@ -191,7 +282,7 @@ pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn clear_normalization_data(state: State<'_, AppState>) -> AppResult<()> {
-    let conn = state.db.lock_recover();
+    let conn = rusqlite::Connection::open(&state.db_path)?;
     conn.execute("DELETE FROM normalization_data", [])
         .map_err(AppError::Database)?;
     Ok(())

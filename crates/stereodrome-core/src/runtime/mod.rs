@@ -2751,6 +2751,15 @@ mod tests {
     }
 
     #[test]
+    fn desktop_now_playing_query_is_a_read_only_runtime_effect() {
+        let command = CoreCommand::GetNowPlaying;
+        assert!(!command.is_mutation());
+        assert!(command.runs_as_effect());
+        let json = serde_json::to_value(command).expect("command serializes");
+        assert_eq!(json["type"], "get-now-playing");
+    }
+
+    #[test]
     fn mailbox_serializes_mutations_and_events() {
         let data_dir = test_dir("serialized");
         let handle = StereodromeRuntimeHandle::start(&data_dir).expect("runtime starts");

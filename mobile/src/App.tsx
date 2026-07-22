@@ -27,6 +27,19 @@ function ignoreFailure(promise: Promise<unknown>): void {
   void promise.catch(() => undefined);
 }
 
+const libraryQueryRoots = new Set([
+  "album-list",
+  "album-songs",
+  "albums",
+  "artist-albums",
+  "artist-songs",
+  "artists",
+  "playlist-songs",
+  "playlists",
+  "search",
+  "songs",
+]);
+
 export default function App() {
   const queryClient = useMemo(
     () =>
@@ -53,7 +66,15 @@ export default function App() {
         lastLibraryRevision !== null &&
         revision > lastLibraryRevision
       ) {
-        ignoreFailure(queryClient.invalidateQueries({ refetchType: "active" }));
+        ignoreFailure(
+          queryClient.invalidateQueries({
+            predicate: (query) => {
+              const root = query.queryKey[0];
+              return typeof root === "string" && libraryQueryRoots.has(root);
+            },
+            refetchType: "active",
+          })
+        );
       }
       lastLibraryRevision = revision;
     });

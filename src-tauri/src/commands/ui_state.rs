@@ -21,15 +21,15 @@ fn normalized_volume(volume: f32) -> f32 {
     }
 }
 
-pub fn read_persisted_volume(app_handle: &AppHandle) -> f32 {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Some(value) = store.get(KEY_VOLUME)
-        && let Ok(volume) = serde_json::from_value::<f32>(value.clone())
-    {
-        return normalized_volume(volume);
-    }
-
-    DEFAULT_VOLUME
+pub(crate) fn take_legacy_persisted_volume(app_handle: &AppHandle) -> Option<f32> {
+    let store = app_handle.store(STORE_FILE).ok()?;
+    let volume = store
+        .get(KEY_VOLUME)
+        .and_then(|value| serde_json::from_value::<f32>(value.clone()).ok())
+        .map(normalized_volume)?;
+    store.delete(KEY_VOLUME);
+    let _ = store.save();
+    Some(volume)
 }
 
 pub fn write_persisted_volume(app_handle: &AppHandle, volume: f32) -> AppResult<()> {

@@ -1,19 +1,16 @@
 mod audio;
 mod cache;
-mod client;
 mod commands;
 mod credentials;
 mod db;
 mod error;
-mod lastfm;
 mod media;
-mod search;
+mod runtime;
 mod state;
 mod tray;
 
 use std::sync::Arc;
 
-use error::MutexExt as _;
 use log::{LevelFilter, info, warn};
 use media::MediaControlsManager;
 use state::AppState;
@@ -75,41 +72,58 @@ pub fn run() {
     builder
         .setup(move |app| {
             let db_path = db::get_db_path(app.handle())?;
-            let index_path = search::get_index_path(app.handle())?;
+            let data_dir = std::path::Path::new(&db_path)
+                .parent()
+                .ok_or_else(|| std::io::Error::other("database path has no parent"))?;
 
-            // Spawn the submarine client thread
-            let client_handle = client::spawn();
-
-            let app_state = AppState::new(&db_path, index_path, client_handle.clone())?;
-
-            // Restore persisted runtime volume before UI starts consuming playback state.
+            if cache::current_cache_root(app.handle())? != cache::default_cache_root(app.handle())?
             {
-                let persisted_volume = commands::read_persisted_volume(app.handle());
-                let audio_player = app_state.audio_player.lock_recover();
-                if let Err(e) = audio_player.set_volume(persisted_volume) {
-                    warn!("Failed to apply persisted runtime volume: {e}");
-                }
+                info!("Migrating desktop cache back to the shared runtime data directory");
+                cache::set_cache_root(app.handle(), None)?;
             }
 
-            // Start position emitter for audio playback
+            let app_state = AppState::new(data_dir)?;
+            commands::settings::apply_desktop_runtime_settings(app.handle(), &app_state)?;
+            commands::cache::migrate_desktop_cache_settings(app.handle(), &app_state)?;
+
+            // Migrate the legacy desktop volume store into runtime persistence.
+            if let Some(persisted_volume) =
+                commands::ui_state::take_legacy_persisted_volume(app.handle())
+                && let Err(e) = runtime::dispatch::<()>(
+                    &app_state,
+                    stereodrome_core::CoreCommand::SetPlaybackVolume {
+                        volume: persisted_volume,
+                    },
+                )
             {
-                let audio_player = app_state.audio_player.lock_recover();
-                audio_player.start_position_emitter(app.handle().clone());
-                audio_player.start_spectrum_emitter(app.handle().clone());
+                warn!("Failed to apply persisted runtime volume: {e}");
             }
 
-            // Start now playing emitter with the client handle
+            let desktop_runtime = app_state.runtime.clone();
+            let runtime_audio = Arc::clone(&app_state.runtime_audio);
+            let emitter_running = Arc::clone(&app_state.emitter_running);
+            audio::player::start_position_emitter(
+                Arc::clone(&runtime_audio),
+                app.handle().clone(),
+                Arc::clone(&emitter_running),
+            );
+            audio::player::start_spectrum_emitter(
+                runtime_audio,
+                app.handle().clone(),
+                Arc::clone(&emitter_running),
+            );
+
+            // Project the server's now-playing list through the runtime.
             let emitter_running = Arc::clone(&app_state.emitter_running);
             commands::nowplaying::start_now_playing_emitter(
                 app.handle().clone(),
-                client_handle,
+                desktop_runtime.clone(),
                 emitter_running,
             );
 
             app.manage(app_state);
 
-            commands::library::start_library_sync_scheduler(app.handle().clone());
-            lastfm::start_lastfm_retry_scheduler(app.handle().clone());
+            commands::library::start_library_sync_scheduler(app.handle());
 
             // Initialize media controls for OS integration (Control Center, media keys)
             if let Some(media_controls) = MediaControlsManager::new(app.handle().clone()) {
@@ -126,6 +140,8 @@ pub fn run() {
             } else {
                 info!("Tray icon not available on this platform");
             }
+
+            runtime::start_event_bridge(app.handle().clone(), desktop_runtime);
 
             Ok(())
         })
@@ -240,10 +256,12 @@ pub fn run() {
                 }
             }
             tauri::RunEvent::Exit => {
-                // Shutdown the client thread gracefully
                 if let Some(state) = app_handle.try_state::<AppState>() {
-                    info!("Shutting down client thread");
-                    state.client.shutdown();
+                    state
+                        .emitter_running
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    info!("Shutting down desktop runtime");
+                    state.runtime.shutdown();
                 }
             }
             _ => {}

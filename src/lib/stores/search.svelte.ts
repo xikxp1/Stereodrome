@@ -55,8 +55,7 @@ class SearchStore {
     this.isSearching = true;
 
     try {
-      // Call Tantivy backend with high limit to get all matches
-      const results = await searchLibrary(q, 1000);
+      const results = await searchLibrary(q, 100);
       if (requestId !== this.searchRequestId || this.query.trim() !== q) {
         return;
       }

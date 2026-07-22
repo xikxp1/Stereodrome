@@ -151,6 +151,7 @@ pub enum CoreCommand {
     RunDueLibrarySync,
     GetScanStatus,
     StartScan,
+    GetNowPlaying,
     GetLibrarySyncStatus,
     GetArtists,
     GetAlbums {
@@ -407,6 +408,7 @@ impl CoreCommand {
                 | Self::GetConnectivitySettings
                 | Self::GetSavedPlaylistsOfflineStatus
                 | Self::GetScanStatus
+                | Self::GetNowPlaying
                 | Self::GetLibrarySyncStatus
                 | Self::GetArtists
                 | Self::GetAlbums { .. }
@@ -473,6 +475,7 @@ impl CoreCommand {
                 | Self::RunDueLibrarySync
                 | Self::GetScanStatus
                 | Self::StartScan
+                | Self::GetNowPlaying
                 | Self::GetAlbumList { .. }
                 | Self::GetPlaylists
                 | Self::GetPlaylistSongs { .. }

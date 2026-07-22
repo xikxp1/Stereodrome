@@ -205,7 +205,7 @@
   $effect(() => {
     const handler = () => {
       if (!connection.status.server_url) return;
-      void loadLibraryData();
+      void loadLibraryData(true);
       if (
         connection.status.connected &&
         !connection.manualOfflineEnabled &&
@@ -213,7 +213,10 @@
           activeView === "recently_played" ||
           activeView === "most_played")
       ) {
-        void albumListStore.loadView(activeView, { force: true });
+        void albumListStore.loadView(activeView, {
+          force: true,
+          background: true,
+        });
       }
     };
 
@@ -261,8 +264,10 @@
     }
   });
 
-  async function loadLibraryData() {
-    isLoading = true;
+  async function loadLibraryData(background = false) {
+    if (!background) {
+      isLoading = true;
+    }
     loadError = null;
     try {
       const [
@@ -291,7 +296,9 @@
     } catch (e) {
       loadError = e instanceof Error ? e : new Error(String(e));
     } finally {
-      isLoading = false;
+      if (!background) {
+        isLoading = false;
+      }
     }
   }
 

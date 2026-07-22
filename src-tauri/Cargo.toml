@@ -23,33 +23,16 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 base64 = "0.22.1"
-bs2b = { version = "0.2.2", features = ["streaming"] }
 chrono = { version = "0.4.45", features = ["serde"] }
-ebur128 = "0.1.10"
-filetime = "0.2.29"
-fundsp = "0.23.0"
 keyring = { version = "4.1.5", features = ["cli"] }
 keyring-core = "1.0.0"
 log = "0.4.33"
-md5 = "0.8.1"
-rand = "0.10.2"
-reqwest = { version = "0.13.4", default-features = false, features = [
-  "form",
-  "json",
-  "rustls",
-  "system-proxy",
-] }
-ringbuf = "0.5.1"
-rodio = { version = "0.22.2", features = ["symphonia-all"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
-rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 souvlaki = "0.8.3"
 stereodrome-audio = { version = "0.2.0", path = "../crates/stereodrome-audio" }
 stereodrome-core = { version = "0.2.0", path = "../crates/stereodrome-core" }
-submarine = "0.1.1"
-tantivy = "0.26.1"
 tauri = { version = "2.11.5", features = ["tray-icon"] }
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-log = "2.9.0"
@@ -60,9 +43,8 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-single-instance = "2.4.3"
 tauri-plugin-store = "2.4.4"
 thiserror = "2.0.19"
-time = "0.3.54"
 tokio = { version = "1.53.1", features = ["full"] }
-uuid = { version = "1.24.0", features = ["v4"] }
+url = "2.5.8"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8.1"

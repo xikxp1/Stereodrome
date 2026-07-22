@@ -17,7 +17,6 @@
     getAudioCacheStats,
     getCacheLocations,
     clearAudioCache,
-    setCacheRoot,
     setMaxCacheSize,
     getScanStatus,
     startScan,
@@ -49,7 +48,7 @@
   } from "$lib/api/commands";
   import { marked } from "marked";
   import { error } from "@tauri-apps/plugin-log";
-  import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { ask } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { connection } from "$lib/stores/connection.svelte";
@@ -80,7 +79,6 @@
     LastfmQueueItem,
     LastfmStatus,
     CacheLocationInfo,
-    CacheRootUpdateResult,
   } from "$lib/types";
 
   interface Props {
@@ -97,8 +95,6 @@
   let savingSize = $state(false);
   let cacheLocations = $state<CacheLocationInfo | null>(null);
   let loadingCacheLocations = $state(false);
-  let movingCacheLocation = $state(false);
-  let cacheMoveResult = $state<CacheRootUpdateResult | null>(null);
 
   // Scan state
   let scanStatus = $state<ScanStatus | null>(null);
@@ -207,7 +203,6 @@
       syncSettings = null;
       syncStatus = null;
       cacheLocations = null;
-      cacheMoveResult = null;
     }
   });
 
@@ -257,44 +252,6 @@
       error(`Failed to set cache size: ${e}`);
     } finally {
       savingSize = false;
-    }
-  }
-
-  async function handleChooseCacheRoot() {
-    const selected = await openDialog({
-      directory: true,
-      multiple: false,
-      title: "Choose Cache Folder",
-    });
-    if (!selected) return;
-    const cacheRoot = Array.isArray(selected) ? selected[0] : selected;
-    if (!cacheRoot) return;
-
-    await updateCacheRoot(cacheRoot);
-  }
-
-  async function handleResetCacheRoot() {
-    if (!cacheLocations || cacheLocations.is_default) return;
-    const confirmed = await ask(
-      "Move cached audio and artwork back to the default cache folder?",
-      { title: "Reset Cache Location", kind: "warning" }
-    );
-    if (!confirmed) return;
-    await updateCacheRoot(null);
-  }
-
-  async function updateCacheRoot(cacheRoot: string | null) {
-    movingCacheLocation = true;
-    cacheMoveResult = null;
-    try {
-      const result = await setCacheRoot(cacheRoot);
-      cacheMoveResult = result;
-      cacheLocations = result.locations;
-      await loadCacheStats();
-    } catch (e) {
-      error(`Failed to update cache location: ${e}`);
-    } finally {
-      movingCacheLocation = false;
     }
   }
 
@@ -1495,11 +1452,7 @@
           {loadingStats}
           {cacheStats}
           {loadingCacheLocations}
-          {movingCacheLocation}
           {cacheLocations}
-          {handleChooseCacheRoot}
-          {handleResetCacheRoot}
-          {cacheMoveResult}
           {cacheSizeGB}
           {savingSize}
           {handleSizeChange}

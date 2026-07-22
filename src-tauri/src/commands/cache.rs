@@ -1,101 +1,86 @@
-use tauri::{AppHandle, State};
+use stereodrome_core::{CacheStats, CoreCommand};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_store::StoreExt;
 
 use crate::cache::{
-    AudioCache, CacheLocationInfo, CacheRootUpdateResult, CacheStats, KEY_MAX_CACHE_SIZE,
-    MAX_CACHE_SIZE, MIN_CACHE_SIZE, STORE_FILE, cache_location_info,
-    downloading_song_ids as current_downloading_song_ids, emit_audio_cache_changed,
+    CacheLocationInfo, CacheRootUpdateResult, cache_location_info,
     set_cache_root as persist_cache_root,
 };
-use crate::error::{AppResult, MutexExt};
+use crate::error::AppResult;
+use crate::runtime::{dispatch, dispatch_async, dispatch_unit_async, snapshot};
 use crate::state::AppState;
 
-/// Get configured cache locations.
+const STORE_FILE: &str = "settings.json";
+const KEY_MAX_CACHE_SIZE: &str = "max_cache_size";
+
+pub(crate) fn migrate_desktop_cache_settings(
+    app_handle: &AppHandle,
+    state: &AppState,
+) -> AppResult<()> {
+    let Ok(store) = app_handle.store(STORE_FILE) else {
+        return Ok(());
+    };
+    let Some(size) = store
+        .get(KEY_MAX_CACHE_SIZE)
+        .and_then(|value| value.as_u64())
+    else {
+        return Ok(());
+    };
+    dispatch::<CacheStats>(state, CoreCommand::SetMaxCacheSize { max_size: size })?;
+    store.delete(KEY_MAX_CACHE_SIZE);
+    let _ = store.save();
+    Ok(())
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_cache_locations(app_handle: AppHandle) -> AppResult<CacheLocationInfo> {
     cache_location_info(&app_handle)
 }
 
-/// Set the cache root and move existing cache files into the new root.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn set_cache_root(
     app_handle: AppHandle,
     cache_root: Option<String>,
 ) -> AppResult<CacheRootUpdateResult> {
+    if cache_root.is_some() {
+        return Err(crate::error::AppError::Runtime(
+            "custom cache roots are not supported by the shared runtime".to_string(),
+        ));
+    }
     let result = persist_cache_root(&app_handle, cache_root)?;
-    emit_audio_cache_changed(&app_handle, "location_changed");
+    let _ = app_handle.emit(
+        "audio-cache-changed",
+        serde_json::json!({ "reason": "location_changed" }),
+    );
     Ok(result)
 }
 
-/// Get statistics about the audio cache
-#[tauri::command]
-pub async fn get_audio_cache_stats(app_handle: AppHandle) -> AppResult<CacheStats> {
-    let cache = AudioCache::new(&app_handle)?;
-    cache.get_stats()
-}
-
-/// Get locally cached song IDs that can be played without a server connection.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_offline_song_ids(
-    app_handle: AppHandle,
-    state: State<'_, AppState>,
-) -> AppResult<Vec<String>> {
-    let cache = AudioCache::new(&app_handle)?;
-    let db = state.db.lock_recover();
-    let mut stmt = db.prepare("SELECT id, suffix FROM songs")?;
-
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-        ))
-    })?;
-
-    let mut song_ids = Vec::new();
-    for row in rows {
-        let (song_id, suffix) = row?;
-        if cache.is_cached(&song_id, &suffix) {
-            song_ids.push(song_id);
-        }
-    }
-
-    Ok(song_ids)
+pub fn get_audio_cache_stats(state: State<'_, AppState>) -> AppResult<CacheStats> {
+    dispatch(&state, CoreCommand::GetAudioCacheStats)
 }
 
-/// Get song IDs whose audio files are currently being downloaded.
 #[tauri::command]
-pub fn get_downloading_song_ids() -> Vec<String> {
-    current_downloading_song_ids()
+#[allow(clippy::needless_pass_by_value)]
+pub fn get_offline_song_ids(state: State<'_, AppState>) -> AppResult<Vec<String>> {
+    dispatch(&state, CoreCommand::GetOfflineSongIds)
 }
 
-/// Clear all cached audio files
 #[tauri::command]
-pub async fn clear_audio_cache(app_handle: AppHandle) -> AppResult<()> {
-    let cache = AudioCache::new(&app_handle)?;
-    cache.clear()
+#[allow(clippy::needless_pass_by_value)]
+pub fn get_downloading_song_ids(state: State<'_, AppState>) -> AppResult<Vec<String>> {
+    Ok(snapshot(&state)?.downloads.downloading_song_ids)
 }
 
-/// Set the maximum cache size (in bytes)
 #[tauri::command]
-pub async fn set_max_cache_size(app_handle: AppHandle, size: u64) -> AppResult<CacheStats> {
-    let size = size.clamp(MIN_CACHE_SIZE, MAX_CACHE_SIZE);
+pub async fn clear_audio_cache(state: State<'_, AppState>) -> AppResult<()> {
+    dispatch_unit_async(&state, CoreCommand::ClearAudioCache).await
+}
 
-    // Save to store
-    if let Ok(store) = app_handle.store(STORE_FILE) {
-        store.set(KEY_MAX_CACHE_SIZE, serde_json::json!(size));
-        let _ = store.save();
-    }
-
-    // Enforce new limit (AudioCache::new reads the size we just saved to the store)
-    let cache = AudioCache::new(&app_handle)?;
-    let evicted = cache.enforce_size_limit()?;
-    if evicted {
-        cache.emit_changed("evicted");
-    }
-
-    // Return updated stats
-    cache.get_stats()
+#[tauri::command]
+pub async fn set_max_cache_size(state: State<'_, AppState>, size: u64) -> AppResult<CacheStats> {
+    dispatch_async(&state, CoreCommand::SetMaxCacheSize { max_size: size }).await
 }

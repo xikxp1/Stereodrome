@@ -247,6 +247,19 @@ pub struct ScanStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NowPlayingEntry {
+    pub id: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub duration: Option<i32>,
+    pub cover_art: Option<String>,
+    pub username: String,
+    pub minutes_ago: i32,
+    pub player_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResultSong {
     pub id: String,
     pub title: String,

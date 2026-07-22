@@ -59,6 +59,7 @@ pub(crate) async fn execute(core: &StereodromeCore, command: CoreCommand) -> Cor
         CoreCommand::RunDueLibrarySync => value(core.run_due_library_sync().await),
         CoreCommand::GetScanStatus => value(core.get_scan_status().await),
         CoreCommand::StartScan => value(core.start_scan().await),
+        CoreCommand::GetNowPlaying => value(core.get_now_playing().await),
         CoreCommand::GetLibrarySyncStatus => value(core.get_library_sync_status()),
         CoreCommand::GetArtists => value(core.get_artists()),
         CoreCommand::GetAlbums { artist_id } => value(core.get_albums(artist_id)),

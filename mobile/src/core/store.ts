@@ -30,11 +30,21 @@ function publish(next: CoreStoreState): void {
 }
 
 function setError(error: unknown): void {
-  publish({ ...state, error: errorMessage(error) });
+  const message = errorMessage(error);
+  if (state.error !== message) {
+    publish({ ...state, error: message });
+  }
 }
 
 function applySnapshot(snapshot: CoreSnapshot): void {
   if (state.snapshot !== null && snapshot.revision < state.snapshot.revision) {
+    return;
+  }
+  if (
+    state.snapshot !== null &&
+    snapshot.revision === state.snapshot.revision &&
+    JSON.stringify(snapshot) === JSON.stringify(state.snapshot)
+  ) {
     return;
   }
   publish({ ...state, snapshot });
@@ -113,7 +123,7 @@ async function run(
   command: Parameters<typeof coreClient.dispatch>[0],
   clearError = true
 ) {
-  if (clearError) {
+  if (clearError && state.error !== null) {
     publish({ ...state, error: null });
   }
   try {

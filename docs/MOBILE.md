@@ -13,7 +13,7 @@ Key desktop backend surfaces:
 - Authentication and Subsonic session restore: `src-tauri/src/commands/auth.rs`, `src-tauri/src/client/*`.
 - Local SQLite library and migrations: `src-tauri/src/db/schema.sql`, `src-tauri/src/db/mod.rs`.
 - Full, incremental, and reconcile library sync with scheduler/status events: `src-tauri/src/commands/library.rs`.
-- Local search index with Tantivy: `src-tauri/src/search/mod.rs`.
+- Shared local SQLite search across songs, albums, and artists: `crates/stereodrome-core/src/lib.rs`.
 - Playlist sync and playlist mutation: `src-tauri/src/commands/playlist.rs`.
 - Rust playback engine: `src-tauri/src/audio/player.rs`.
 - Queue model, persistence, shuffle, repeat, reroll, next/previous semantics: `src-tauri/src/audio/queue.rs`, `src-tauri/src/commands/queue.rs`, `src-tauri/src/db/queue.rs`.
@@ -48,7 +48,7 @@ Important mobile limitations:
 - Playback state is not reported consistently to the server. The desktop reports "now playing" on track start and submits a scrobble at 50 percent playback.
 - Mobile cover art is fetched through signed URLs and platform image caching, not the desktop cover cache.
 - Mobile audio streams are signed URLs handed to TrackPlayer, not cached files from the Rust audio cache.
-- Mobile sync is a simple full sync in `crates/stereodrome-core/src/lib.rs`; it does not implement desktop incremental sync, reconcile sync, scheduler status, search indexing, or event notifications.
+- Mobile sync is a simple full sync in `crates/stereodrome-core/src/lib.rs`; it does not implement desktop incremental sync, reconcile sync, scheduler status, or event notifications.
 - Mobile playlist support is read-only in the UI and mostly live-server backed in the core.
 - Mobile settings do not expose desktop playback, normalization, cache, sync, notification, or server scan settings.
 
@@ -115,7 +115,7 @@ Do not try to emulate the desktop DSP with JavaScript TrackPlayer options. That 
 | Incremental sync             | Newest-album incremental sync with scheduler                       | Missing                               | Background-capable incremental sync with status and errors                           |
 | Reconcile sync               | Full reconcile path                                                | Missing                               | Shared reconcile path with mobile UI controls                                        |
 | Sync settings/status         | Configurable intervals, status events                              | Missing                               | Mobile settings and background job visibility                                        |
-| Search                       | Tantivy index                                                      | SQL LIKE search                       | Shared indexed search or mobile-compatible equivalent                                |
+| Search                       | Shared SQLite substring search                                     | Shared SQLite substring search        | Consider FTS5 if large-library performance requires relevance-ranked indexed search  |
 | Artist/album/song browsing   | Mature desktop views                                               | Basic lists                           | Mobile optimized browse, sort, sections, fast lists, offline reads                   |
 | Album lists                  | Recent/played/newest style views via server                        | Basic `getAlbumList`                  | Mobile discovery screens with cached metadata where possible                         |
 | Playlists                    | Sync, create, rename, delete, add/remove songs                     | Read-only screens                     | Full playlist management with mobile gestures/forms                                  |
@@ -188,9 +188,7 @@ Goal: mobile library state and search behave like desktop.
 Tasks:
 
 - Move desktop full sync, incremental sync, reconcile sync, sync job locking, status keys, and status calculation into shared core.
-- Port or share the desktop search indexing path. If Tantivy is too heavy for mobile initially, define a shared `SearchBackend` trait and provide:
-  - Tantivy backend for desktop.
-  - SQLite FTS5 or optimized SQL backend for mobile.
+- Keep desktop and mobile on the shared SQLite search path. Consider SQLite FTS5 only if profiling shows substring search is insufficient for large libraries.
 - Persist playlists locally on mobile instead of using only live playlist fetches.
 - Add shared playlist mutation methods: create, rename, delete, add songs, remove songs.
 - Add mobile background sync policy:

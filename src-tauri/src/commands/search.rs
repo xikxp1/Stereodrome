@@ -1,51 +1,9 @@
-use log::debug;
-use serde::{Deserialize, Serialize};
+use stereodrome_core::{CoreCommand, SearchResults};
 use tauri::State;
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
+use crate::runtime::dispatch;
 use crate::state::AppState;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResultSong {
-    pub id: String,
-    pub title: String,
-    pub artist: Option<String>,
-    pub album: Option<String>,
-    pub duration: Option<i32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResultAlbum {
-    pub id: String,
-    pub name: String,
-    pub artist: Option<String>,
-    pub year: Option<i32>,
-    pub song_count: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResultArtist {
-    pub id: String,
-    pub name: String,
-    pub album_count: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResults {
-    pub songs: Vec<SearchResultSong>,
-    pub albums: Vec<SearchResultAlbum>,
-    pub artists: Vec<SearchResultArtist>,
-}
-
-fn i64_to_i32_saturating(value: i64) -> i32 {
-    i32::try_from(value).unwrap_or_else(|_| {
-        if value.is_negative() {
-            i32::MIN
-        } else {
-            i32::MAX
-        }
-    })
-}
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -54,72 +12,6 @@ pub fn search_library(
     query: String,
     limit: Option<i32>,
 ) -> AppResult<SearchResults> {
-    let limit = usize::try_from(limit.unwrap_or(20).max(0)).unwrap_or(usize::MAX);
-
-    let search_index_guard = state
-        .search_index
-        .lock()
-        .map_err(|e| AppError::Search(format!("Failed to lock search index: {e}")))?;
-
-    let index_manager = search_index_guard.as_ref().ok_or_else(|| {
-        AppError::Search("Search index not initialized. Please sync library first.".to_string())
-    })?;
-
-    // Multiply limit to get enough results for each category
-    let hits = index_manager.search(&query, limit.saturating_mul(3))?;
-
-    debug!(
-        "search_library: query='{}', limit={}, hits={}",
-        query,
-        limit,
-        hits.len()
-    );
-
-    let mut songs = Vec::new();
-    let mut albums = Vec::new();
-    let mut artists = Vec::new();
-
-    for hit in hits {
-        match hit.entity_type.as_str() {
-            "song" if songs.len() < limit => {
-                songs.push(SearchResultSong {
-                    id: hit.id,
-                    title: hit.name,
-                    artist: hit.artist_name,
-                    album: hit.album_name,
-                    duration: hit.duration.map(i64_to_i32_saturating),
-                });
-            }
-            "album" if albums.len() < limit => {
-                albums.push(SearchResultAlbum {
-                    id: hit.id,
-                    name: hit.name,
-                    artist: hit.artist_name,
-                    year: hit.year.map(i64_to_i32_saturating),
-                    song_count: i64_to_i32_saturating(hit.song_count.unwrap_or(0)),
-                });
-            }
-            "artist" if artists.len() < limit => {
-                artists.push(SearchResultArtist {
-                    id: hit.id,
-                    name: hit.name,
-                    album_count: i64_to_i32_saturating(hit.album_count.unwrap_or(0)),
-                });
-            }
-            _ => {}
-        }
-    }
-
-    debug!(
-        "search_library: returning {} songs, {} albums, {} artists",
-        songs.len(),
-        albums.len(),
-        artists.len()
-    );
-
-    Ok(SearchResults {
-        songs,
-        albums,
-        artists,
-    })
+    let limit = limit.map(|value| usize::try_from(value.max(0)).unwrap_or(usize::MAX));
+    dispatch(&state, CoreCommand::SearchLibrary { query, limit })
 }

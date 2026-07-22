@@ -18,6 +18,7 @@ reqwest = { version = "0.13.4", default-features = false, features = [
   "system-proxy",
   "rustls-no-provider",
 ] }
+ringbuf = "0.5.1"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 rustls = { version = "0.23.41", default-features = false, features = ["ring"] }
 serde = { version = "1.0.228", features = ["derive"] }

@@ -838,6 +838,45 @@ impl StereodromeCore {
         })
     }
 
+    /// Returns the server's currently playing entries.
+    ///
+    /// # Errors
+    /// Returns an error if no server is connected or the request fails.
+    pub async fn get_now_playing(&self) -> CoreResult<Vec<NowPlayingEntry>> {
+        let client = self.connected_client().await?;
+        let now_playing = client
+            .get_now_playing()
+            .await
+            .map_err(|error| CoreError::Subsonic(error.to_string()))?;
+        Ok(now_playing
+            .entry
+            .into_iter()
+            .map(|entry| NowPlayingEntry {
+                id: entry.child.id,
+                title: entry.child.title,
+                artist: entry.child.artist,
+                album: entry.child.album,
+                duration: entry.child.duration,
+                cover_art: entry.child.cover_art,
+                username: entry.username,
+                minutes_ago: entry.minutes_ago,
+                player_name: entry.player_name,
+            })
+            .collect())
+    }
+
+    /// Imports a legacy platform credential when no shared Last.fm session exists.
+    ///
+    /// # Errors
+    /// Returns an error if the session cannot be read or persisted.
+    pub fn import_lastfm_session_if_missing(
+        &self,
+        username: String,
+        session_key: String,
+    ) -> CoreResult<()> {
+        lastfm::import_session_if_missing(&self.db_path, username, session_key)
+    }
+
     /// # Errors
     /// Returns an error if synchronization settings or persisted job state cannot be read.
     pub fn get_library_sync_status(&self) -> CoreResult<LibrarySyncStatus> {

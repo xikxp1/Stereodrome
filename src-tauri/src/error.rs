@@ -2,8 +2,6 @@ use serde::Serialize;
 use std::sync::{Mutex, MutexGuard};
 use thiserror::Error;
 
-use crate::client::ClientError;
-
 /// Extension trait for Mutex that provides poison-recovery locking.
 ///
 /// When a thread panics while holding a mutex lock, the mutex becomes "poisoned".
@@ -29,9 +27,6 @@ pub enum AppError {
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
 
-    #[error("Subsonic API error: {0}")]
-    Subsonic(String),
-
     #[error("Not connected to server")]
     NotConnected,
 
@@ -44,39 +39,17 @@ pub enum AppError {
     #[error("Audio playback error: {0}")]
     Audio(String),
 
-    #[error("Search error: {0}")]
-    Search(String),
-
     #[error("Credentials error: {0}")]
     Credentials(String),
-
-    #[error("Client channel error: {0}")]
-    ClientChannel(String),
-
-    #[error("Request timed out")]
-    Timeout,
 
     #[error("Window error: {0}")]
     Window(String),
 
-    #[error("Last.fm error: {0}")]
-    Lastfm(String),
-
     #[error("Backup error: {0}")]
     Backup(String),
-}
 
-impl From<ClientError> for AppError {
-    fn from(err: ClientError) -> Self {
-        match err {
-            ClientError::NotConnected => AppError::NotConnected,
-            ClientError::ConnectionFailed(s) | ClientError::ApiError(s) => AppError::Subsonic(s),
-            ClientError::ChannelClosed => {
-                AppError::ClientChannel("Client channel closed".to_string())
-            }
-            ClientError::Timeout => AppError::Timeout,
-        }
-    }
+    #[error("Runtime error: {0}")]
+    Runtime(String),
 }
 
 impl Serialize for AppError {
