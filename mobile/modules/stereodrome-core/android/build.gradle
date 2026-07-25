@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'dev.xikxp1.stereodrome'
-version = '0.2.1'
+version = '0.3.0'
 
 android {
   namespace "expo.modules.stereodromecore"
@@ -17,7 +17,7 @@ android {
   defaultConfig {
     minSdkVersion 26
     versionCode 1
-    versionName "0.2.1"
+    versionName "0.3.0"
 
     externalNativeBuild {
       cmake {
