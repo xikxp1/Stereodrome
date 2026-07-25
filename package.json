@@ -43,7 +43,7 @@
     "@tailwindcss/vite": "4.3.3",
     "@tauri-apps/cli": "2.11.4",
     "@types/node": "26.1.1",
-    "brace-expansion": "5.0.7",
+    "brace-expansion": "5.0.8",
     "daisyui": "5.7.0",
     "eslint-plugin-svelte": "3.22.0",
     "jiti": "2.7.0",
@@ -55,9 +55,10 @@
     "vite-plus": "0.2.5"
   },
   "overrides": {
-    "brace-expansion": "^5.0.2",
+    "brace-expansion": "^5.0.8",
     "cookie": "^0.7.2",
     "flatted": "^3.4.2",
+    "postcss": "^8.5.23",
     "yaml": "^1.10.3",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.2.5"
   }
