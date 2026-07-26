@@ -598,9 +598,12 @@ fn sanitize_preferences(preferences: &mut PortablePreferences) {
     if let Some(sync) = preferences.sync.take() {
         preferences.sync = Some(sync.clamped());
     }
-    if let Some(volume) = &mut preferences.volume
-        && volume.is_finite()
-    {
+    if let Some(volume) = &mut preferences.volume {
+        // clamp() folds ±infinity into the range but propagates NaN, which has no
+        // meaningful volume to fall back to.
+        if volume.is_nan() {
+            *volume = 1.0;
+        }
         *volume = volume.clamp(0.0, 1.0);
     }
     let Some(audio) = &mut preferences.audio_processing else {
@@ -888,6 +891,60 @@ mod tests {
         assert!((audio.preamp_db - 12.0).abs() < f64::EPSILON);
         assert_eq!(audio.crossfade_duration_ms, 15_000);
         assert!((audio.target_lufs + 8.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn sanitizing_preferences_repairs_non_finite_volume() {
+        // A corrupt local app_volume must not make the whole export unbackupable.
+        for (input, expected) in [
+            (f64::NAN, 1.0),
+            (f64::INFINITY, 1.0),
+            (f64::NEG_INFINITY, 0.0),
+            (4.0, 1.0),
+            (-1.0, 0.0),
+            (0.35, 0.35),
+        ] {
+            let mut preferences = PortablePreferences {
+                sync: None,
+                connectivity: None,
+                audio_processing: None,
+                volume: Some(input),
+            };
+
+            sanitize_preferences(&mut preferences);
+
+            let volume = preferences.volume.expect("volume preserved");
+            assert!(
+                (volume - expected).abs() < f64::EPSILON,
+                "volume {input} sanitized to {volume}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitized_backup_with_corrupt_volume_passes_validation() {
+        let mut backup = PortableBackup {
+            format: BACKUP_FORMAT.to_string(),
+            version: BACKUP_VERSION,
+            created_at: Utc::now().to_rfc3339(),
+            source_fingerprint: None,
+            preferences: PortablePreferences {
+                sync: None,
+                connectivity: None,
+                audio_processing: None,
+                volume: Some(f64::NAN),
+            },
+            library: BackupLibrary::default(),
+            playlists: Vec::new(),
+            playlist_songs: Vec::new(),
+            queue: BackupQueue::default(),
+            sync_metadata: LibrarySyncMetadata::default(),
+        };
+
+        // validate() rejects a non-finite volume, so sanitizing has to repair it first.
+        assert!(validate(&backup).is_err());
+        sanitize_preferences(&mut backup.preferences);
+        validate(&backup).expect("sanitized backup validates");
     }
 
     #[test]
