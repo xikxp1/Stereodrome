@@ -4526,26 +4526,12 @@ struct PlaybackStateWrite {
     scrobbled_song_id: Option<String>,
 }
 
+// Preset fields are enums, so deserialization already constrains them.
 pub(crate) fn clamp_audio_processing_settings(settings: &mut AudioProcessingSettings) {
-    if settings.normalization_mode != "album" {
-        settings.normalization_mode = "track".to_string();
-    }
     settings.target_lufs = settings.target_lufs.clamp(-24.0, -8.0);
     settings.preamp_db = settings.preamp_db.clamp(-12.0, 12.0);
     settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(500, 15_000);
     settings.prefetch_count = settings.prefetch_count.clamp(1, 10);
-    if !matches!(
-        settings.dynamics_preset.as_str(),
-        "light" | "medium" | "heavy"
-    ) {
-        settings.dynamics_preset = "light".to_string();
-    }
-    if !matches!(
-        settings.binaural_preset.as_str(),
-        "light" | "medium" | "strong"
-    ) {
-        settings.binaural_preset = "medium".to_string();
-    }
     settings.equalizer_bands_db.resize(12, 0.0);
     settings.equalizer_bands_db.truncate(12);
     for band in &mut settings.equalizer_bands_db {
@@ -4556,14 +4542,15 @@ pub(crate) fn clamp_audio_processing_settings(settings: &mut AudioProcessingSett
 #[cfg(test)]
 mod tests {
     use super::{
-        AudioProcessingSettings, CacheStateEvent, ConnectivitySettings, CoreError,
+        AudioProcessingSettings, BinauralPreset, CacheStateEvent, ConnectivitySettings, CoreError,
         DownloadInProgressGuard, DownloadRecord, DownloadRecordFinalizer, DueSyncJob,
-        LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate, NewestAlbumPageEntry,
-        NewestPageScanResult, PlaybackProgress, ServerConfig, Song, StereodromeCore, SyncSettings,
-        build_client, compute_next_run_at, cover_art_filename_matches, cover_cache_filename,
-        distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete, is_job_due,
-        path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
-        scan_newest_album_page, should_prefetch_large_cover_art, write_sync_value,
+        DynamicsPreset, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate,
+        NewestAlbumPageEntry, NewestPageScanResult, NormalizationMode, PlaybackProgress,
+        ServerConfig, Song, StereodromeCore, SyncSettings, build_client, compute_next_run_at,
+        cover_art_filename_matches, cover_cache_filename, distinct_nonempty_cover_art_ids,
+        ensure_incremental_albums_complete, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
+        prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
+        write_sync_value,
     };
     use crate::queue::{PlayQueue, QueueItem, RepeatMode};
     use chrono::{Duration as ChronoDuration, Utc};
@@ -4839,14 +4826,14 @@ mod tests {
         let settings = core
             .set_audio_processing_settings(AudioProcessingSettings {
                 normalization_enabled: true,
-                normalization_mode: "invalid".to_string(),
+                normalization_mode: NormalizationMode::Album,
                 target_lufs: -100.0,
                 preamp_db: 100.0,
                 prevent_clipping: true,
                 dynamics_enabled: true,
-                dynamics_preset: "invalid".to_string(),
+                dynamics_preset: DynamicsPreset::Heavy,
                 binaural_enabled: true,
-                binaural_preset: "invalid".to_string(),
+                binaural_preset: BinauralPreset::Strong,
                 equalizer_enabled: true,
                 equalizer_bands_db: vec![24.0],
                 gapless_enabled: true,
@@ -4855,7 +4842,7 @@ mod tests {
                 prefetch_count: 100,
             })
             .expect("audio settings persist");
-        assert_eq!(settings.normalization_mode, "track");
+        assert_eq!(settings.normalization_mode, NormalizationMode::Album);
         assert!((settings.target_lufs + 24.0).abs() < f64::EPSILON);
         assert!((settings.preamp_db - 12.0).abs() < f64::EPSILON);
         assert_eq!(settings.equalizer_bands_db.len(), 12);

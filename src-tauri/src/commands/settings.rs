@@ -1,4 +1,7 @@
-use stereodrome_core::{AudioProcessingSettings, CoreCommand};
+use stereodrome_core::{
+    AudioProcessingSettings, BinauralPreset as CoreBinauralPreset, CoreCommand,
+    DynamicsPreset as CoreDynamicsPreset, NormalizationMode as CoreNormalizationMode,
+};
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_store::StoreExt;
 
@@ -427,27 +430,24 @@ pub(crate) fn desktop_audio_processing(app_handle: &AppHandle) -> AudioProcessin
     AudioProcessingSettings {
         normalization_enabled: normalization.enabled,
         normalization_mode: match normalization.mode {
-            NormalizationMode::Track => "track",
-            NormalizationMode::Album => "album",
-        }
-        .to_string(),
+            NormalizationMode::Track => CoreNormalizationMode::Track,
+            NormalizationMode::Album => CoreNormalizationMode::Album,
+        },
         target_lufs: normalization.target_lufs,
         preamp_db: normalization.pre_amp_db,
         prevent_clipping: normalization.prevent_clipping,
         dynamics_enabled: normalization.dynamics_enabled,
         dynamics_preset: match normalization.dynamics_preset {
-            DynamicsPreset::Light => "light",
-            DynamicsPreset::Medium => "medium",
-            DynamicsPreset::Heavy => "heavy",
-        }
-        .to_string(),
+            DynamicsPreset::Light => CoreDynamicsPreset::Light,
+            DynamicsPreset::Medium => CoreDynamicsPreset::Medium,
+            DynamicsPreset::Heavy => CoreDynamicsPreset::Heavy,
+        },
         binaural_enabled: playback.binaural_enabled,
         binaural_preset: match playback.binaural_preset {
-            BinauralPreset::Aggressive => "strong",
-            BinauralPreset::Jmeier => "medium",
-            BinauralPreset::Default | BinauralPreset::Cmoy => "light",
-        }
-        .to_string(),
+            BinauralPreset::Aggressive => CoreBinauralPreset::Strong,
+            BinauralPreset::Jmeier => CoreBinauralPreset::Medium,
+            BinauralPreset::Default | BinauralPreset::Cmoy => CoreBinauralPreset::Light,
+        },
         equalizer_enabled: playback.equalizer_enabled,
         equalizer_bands_db: playback
             .equalizer_bands_db

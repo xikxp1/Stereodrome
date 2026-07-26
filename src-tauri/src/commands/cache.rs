@@ -1,11 +1,8 @@
 use stereodrome_core::{CacheStats, CoreCommand};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 
-use crate::cache::{
-    CacheLocationInfo, CacheRootUpdateResult, cache_location_info,
-    set_cache_root as persist_cache_root,
-};
+use crate::cache::{CacheLocationInfo, cache_location_info};
 use crate::error::AppResult;
 use crate::runtime::{dispatch, snapshot};
 use crate::state::AppState;
@@ -36,25 +33,6 @@ pub(crate) fn migrate_desktop_cache_settings(
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_cache_locations(app_handle: AppHandle) -> AppResult<CacheLocationInfo> {
     cache_location_info(&app_handle)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn set_cache_root(
-    app_handle: AppHandle,
-    cache_root: Option<String>,
-) -> AppResult<CacheRootUpdateResult> {
-    if cache_root.is_some() {
-        return Err(crate::error::AppError::Runtime(
-            "custom cache roots are not supported by the shared runtime".to_string(),
-        ));
-    }
-    let result = persist_cache_root(&app_handle, cache_root)?;
-    let _ = app_handle.emit(
-        "audio-cache-changed",
-        serde_json::json!({ "reason": "location_changed" }),
-    );
-    Ok(result)
 }
 
 #[tauri::command]

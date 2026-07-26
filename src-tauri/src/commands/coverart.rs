@@ -26,28 +26,6 @@ pub async fn get_cover_art(
 }
 
 #[tauri::command]
-pub async fn get_song_cover_art(
-    state: State<'_, AppState>,
-    song_id: String,
-    size: Option<i32>,
-) -> AppResult<Option<String>> {
-    let uri: Option<String> = dispatch_async(
-        &state,
-        CoreCommand::GetSongCoverArtUri { id: song_id, size },
-    )
-    .await?;
-    let Some(uri) = uri else {
-        return Ok(None);
-    };
-    let bytes = std::fs::read(runtime_file_path(&uri)?)?;
-    let mime = guess_mime_type(&bytes);
-    Ok(Some(format!(
-        "data:{mime};base64,{}",
-        STANDARD.encode(bytes)
-    )))
-}
-
-#[tauri::command]
 pub async fn get_cover_art_path(
     state: State<'_, AppState>,
     cover_art_id: String,

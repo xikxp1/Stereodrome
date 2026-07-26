@@ -22,7 +22,6 @@ pub use coverart::*;
 pub use library::*;
 pub use normalization::*;
 pub use notifications::*;
-pub use nowplaying::*;
 pub use playback::*;
 pub use playlist::*;
 pub use settings::*;

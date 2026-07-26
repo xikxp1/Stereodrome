@@ -189,16 +189,22 @@ export type PlaybackProgress = {
   is_playing: boolean;
 };
 
+export type NormalizationMode = "track" | "album";
+
+export type DynamicsPreset = "light" | "medium" | "heavy";
+
+export type BinauralPreset = "light" | "medium" | "strong";
+
 export type AudioProcessingSettings = {
   normalization_enabled: boolean;
-  normalization_mode: string;
+  normalization_mode: NormalizationMode;
   target_lufs: number;
   preamp_db: number;
   prevent_clipping: boolean;
   dynamics_enabled: boolean;
-  dynamics_preset: string;
+  dynamics_preset: DynamicsPreset;
   binaural_enabled: boolean;
-  binaural_preset: string;
+  binaural_preset: BinauralPreset;
   equalizer_enabled: boolean;
   equalizer_bands_db: Array<number>;
   gapless_enabled: boolean;

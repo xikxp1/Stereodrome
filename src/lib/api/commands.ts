@@ -10,7 +10,6 @@ import type {
   Song,
   SyncResult,
   ScanStatus,
-  PlaybackState,
   SearchResults,
   NormalizationSettings,
   NormalizationStats,
@@ -29,7 +28,6 @@ import type {
   MiniPlayerMode,
   MiniPlayerPosition,
   CacheLocationInfo,
-  CacheRootUpdateResult,
 } from "$lib/types";
 
 // Auth commands
@@ -137,32 +135,12 @@ export async function playSong(songId: string): Promise<void> {
   });
 }
 
-export async function pausePlayback(): Promise<void> {
-  return dispatch({ type: "pause-playback" });
-}
-
-export async function resumePlayback(): Promise<void> {
-  return dispatch({ type: "resume-playback" });
-}
-
-export async function stopPlayback(): Promise<void> {
-  return dispatch({ type: "stop-playback" });
-}
-
 export async function setVolume(volume: number): Promise<void> {
   return dispatch({ type: "set-playback-volume", volume });
 }
 
-export async function setPersistedVolume(volume: number): Promise<void> {
-  return invoke("set_persisted_volume", { volume });
-}
-
 export async function seekPlayback(position: number): Promise<void> {
   return dispatch({ type: "seek-to", seconds: position });
-}
-
-export async function getPlaybackStatus(): Promise<PlaybackState> {
-  return invoke<PlaybackState>("get_playback_status");
 }
 
 export interface BackupSummary {
@@ -215,13 +193,6 @@ export async function getCoverArt(
   size?: number
 ): Promise<string> {
   return invoke<string>("get_cover_art", { coverArtId, size });
-}
-
-export async function getSongCoverArt(
-  songId: string,
-  size?: number
-): Promise<string | null> {
-  return invoke<string | null>("get_song_cover_art", { songId, size });
 }
 
 export async function getCoverArtPath(
@@ -278,12 +249,6 @@ export async function getCacheLocations(): Promise<CacheLocationInfo> {
   return invoke<CacheLocationInfo>("get_cache_locations");
 }
 
-export async function setCacheRoot(
-  cacheRoot: string | null
-): Promise<CacheRootUpdateResult> {
-  return invoke<CacheRootUpdateResult>("set_cache_root", { cacheRoot });
-}
-
 export async function getAudioCacheStats(): Promise<CacheStats> {
   return dispatch({ type: "get-audio-cache-stats" });
 }
@@ -302,11 +267,6 @@ export async function clearAudioCache(): Promise<void> {
 
 export async function setMaxCacheSize(size: number): Promise<CacheStats> {
   return dispatch({ type: "set-max-cache-size", max_size: size });
-}
-
-// Scrobbling commands
-export async function scrobbleSubmit(songId: string): Promise<void> {
-  return invoke("scrobble_submit", { songId });
 }
 
 // Scan commands

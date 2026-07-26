@@ -1,8 +1,11 @@
 use std::path::Path;
 
 use log::warn;
-use stereodrome_core::CoreCommand;
 use stereodrome_core::backup::{BackupSummary, PortablePreferences, read_from_file};
+use stereodrome_core::{
+    BinauralPreset as CoreBinauralPreset, CoreCommand, DynamicsPreset as CoreDynamicsPreset,
+    NormalizationMode as CoreNormalizationMode,
+};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::audio::binaural::BinauralPreset;
@@ -61,16 +64,15 @@ fn apply_desktop_preferences(
     if let Some(audio) = &preferences.audio_processing {
         let mut normalization = read_normalization_settings(app_handle);
         normalization.enabled = audio.normalization_enabled;
-        normalization.mode = if audio.normalization_mode == "album" {
-            NormalizationMode::Album
-        } else {
-            NormalizationMode::Track
+        normalization.mode = match audio.normalization_mode {
+            CoreNormalizationMode::Track => NormalizationMode::Track,
+            CoreNormalizationMode::Album => NormalizationMode::Album,
         };
         normalization.target_lufs = audio.target_lufs.clamp(-30.0, 0.0);
         normalization.pre_amp_db = audio.preamp_db.clamp(-10.0, 10.0);
         normalization.prevent_clipping = audio.prevent_clipping;
         normalization.dynamics_enabled = audio.dynamics_enabled;
-        normalization.dynamics_preset = parse_dynamics(&audio.dynamics_preset);
+        normalization.dynamics_preset = parse_dynamics(audio.dynamics_preset);
         write_normalization_settings(app_handle, &normalization)?;
 
         let mut playback = read_playback_settings(app_handle);
@@ -78,7 +80,7 @@ fn apply_desktop_preferences(
         playback.crossfade_enabled = audio.crossfade_enabled;
         playback.crossfade_duration_ms = audio.crossfade_duration_ms.clamp(1000, 12_000);
         playback.binaural_enabled = audio.binaural_enabled;
-        playback.binaural_preset = parse_binaural(&audio.binaural_preset);
+        playback.binaural_preset = parse_binaural(audio.binaural_preset);
         playback.equalizer_enabled = audio.equalizer_enabled;
         playback.equalizer_bands_db = audio
             .equalizer_bands_db
@@ -111,19 +113,19 @@ fn emit_import_events(app_handle: &AppHandle) {
     let _ = app_handle.emit("sync-settings-changed", read_sync_settings(app_handle));
 }
 
-fn parse_dynamics(value: &str) -> DynamicsPreset {
+fn parse_dynamics(value: CoreDynamicsPreset) -> DynamicsPreset {
     match value {
-        "heavy" => DynamicsPreset::Heavy,
-        "medium" => DynamicsPreset::Medium,
-        _ => DynamicsPreset::Light,
+        CoreDynamicsPreset::Light => DynamicsPreset::Light,
+        CoreDynamicsPreset::Medium => DynamicsPreset::Medium,
+        CoreDynamicsPreset::Heavy => DynamicsPreset::Heavy,
     }
 }
 
-fn parse_binaural(value: &str) -> BinauralPreset {
+fn parse_binaural(value: CoreBinauralPreset) -> BinauralPreset {
     match value {
-        "strong" => BinauralPreset::Aggressive,
-        "medium" => BinauralPreset::Jmeier,
-        _ => BinauralPreset::Default,
+        CoreBinauralPreset::Strong => BinauralPreset::Aggressive,
+        CoreBinauralPreset::Medium => BinauralPreset::Jmeier,
+        CoreBinauralPreset::Light => BinauralPreset::Default,
     }
 }
 

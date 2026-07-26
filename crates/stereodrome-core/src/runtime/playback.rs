@@ -18,7 +18,10 @@ use crate::protocol::{
     PlaybackProjectionSong,
 };
 use crate::queue::{QueueItem, QueueState, RepeatMode};
-use crate::{AudioProcessingSettings, CoreError, CoreResult, PlaybackProgress, StereodromeCore};
+use crate::{
+    AudioProcessingSettings, BinauralPreset as SettingsBinauralPreset, CoreError, CoreResult,
+    DynamicsPreset as SettingsDynamicsPreset, PlaybackProgress, StereodromeCore,
+};
 
 /// Clock boundary for playback progress scheduling tests.
 pub trait PlaybackClock: Send + Sync {
@@ -635,34 +638,20 @@ fn audio_processing(settings: &AudioProcessingSettings) -> CoreResult<AudioProce
     } else {
         None
     };
-    let dynamics = if settings.dynamics_enabled {
-        Some(match settings.dynamics_preset.as_str() {
-            "light" => DynamicsPreset::Light,
-            "medium" => DynamicsPreset::Medium,
-            "heavy" => DynamicsPreset::Heavy,
-            value => {
-                return Err(CoreError::InvalidInput(format!(
-                    "unknown dynamics preset: {value}"
-                )));
-            }
-        })
-    } else {
-        None
-    };
-    let binaural = if settings.binaural_enabled {
-        Some(match settings.binaural_preset.as_str() {
-            "light" => BinauralPreset::Default,
-            "medium" => BinauralPreset::Jmeier,
-            "strong" => BinauralPreset::Aggressive,
-            value => {
-                return Err(CoreError::InvalidInput(format!(
-                    "unknown binaural preset: {value}"
-                )));
-            }
-        })
-    } else {
-        None
-    };
+    let dynamics = settings
+        .dynamics_enabled
+        .then_some(match settings.dynamics_preset {
+            SettingsDynamicsPreset::Light => DynamicsPreset::Light,
+            SettingsDynamicsPreset::Medium => DynamicsPreset::Medium,
+            SettingsDynamicsPreset::Heavy => DynamicsPreset::Heavy,
+        });
+    let binaural = settings
+        .binaural_enabled
+        .then_some(match settings.binaural_preset {
+            SettingsBinauralPreset::Light => BinauralPreset::Default,
+            SettingsBinauralPreset::Medium => BinauralPreset::Jmeier,
+            SettingsBinauralPreset::Strong => BinauralPreset::Aggressive,
+        });
     let equalizer = if settings.equalizer_enabled {
         Some(EqualizerSettings::new(
             settings

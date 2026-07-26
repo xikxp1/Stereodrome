@@ -5,46 +5,14 @@ use std::time::Duration;
 
 use log::warn;
 use serde::{Deserialize, Serialize};
-use stereodrome_core::{CoreCommand, NowPlayingEntry, PlaybackProgress, StereodromeRuntimeHandle};
-use tauri::{AppHandle, Emitter, State};
+use stereodrome_core::{CoreCommand, NowPlayingEntry, StereodromeRuntimeHandle};
+use tauri::{AppHandle, Emitter};
 
-use crate::error::AppResult;
-use crate::runtime::{deserialize_result, dispatch_unit_async, snapshot};
-use crate::state::AppState;
+use crate::runtime::deserialize_result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NowPlayingEvent {
     pub entries: Vec<NowPlayingEntry>,
-}
-
-#[tauri::command]
-pub async fn scrobble_now_playing(state: State<'_, AppState>, song_id: String) -> AppResult<()> {
-    report_current_progress(&state, song_id).await
-}
-
-#[tauri::command]
-pub async fn scrobble_submit(
-    state: State<'_, AppState>,
-    song_id: String,
-    _timestamp: Option<u64>,
-) -> AppResult<()> {
-    report_current_progress(&state, song_id).await
-}
-
-async fn report_current_progress(state: &AppState, song_id: String) -> AppResult<()> {
-    let playback = snapshot(state)?.playback;
-    dispatch_unit_async(
-        state,
-        CoreCommand::SavePlaybackPosition {
-            progress: PlaybackProgress {
-                song_id,
-                position_seconds: playback.position_seconds,
-                duration_seconds: playback.duration_seconds,
-                is_playing: playback.is_playing,
-            },
-        },
-    )
-    .await
 }
 
 pub fn start_now_playing_emitter(
