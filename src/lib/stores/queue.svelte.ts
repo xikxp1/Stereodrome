@@ -59,13 +59,11 @@ class QueueStore {
       song_id: song.id,
       title: song.title,
       artist:
-        song.artist !== undefined && song.artist !== ""
+        song.artist !== null && song.artist !== ""
           ? song.artist
           : "Unknown Artist",
       album:
-        song.album !== undefined && song.album !== ""
-          ? song.album
-          : "Unknown Album",
+        song.album !== null && song.album !== "" ? song.album : "Unknown Album",
       duration:
         song.duration !== null &&
         song.duration !== 0 &&

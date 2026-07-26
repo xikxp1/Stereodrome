@@ -3,6 +3,7 @@ use rand::prelude::IndexedRandom;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RepeatMode {
     #[default]
@@ -11,6 +12,7 @@ pub enum RepeatMode {
     One,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueItem {
     pub song_id: String,
@@ -20,6 +22,7 @@ pub struct QueueItem {
     pub duration: i64,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueState {
     pub items: Vec<QueueItem>,

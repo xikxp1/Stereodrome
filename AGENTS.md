@@ -36,12 +36,19 @@
 - Mobile native bridge checks (from `mobile`) when changing `crates/stereodrome-ffi`, `crates/stereodrome-core`, `mobile/modules/stereodrome-core`, or generated native library artifacts:
 - If a change crosses desktop, mobile, and/or shared Rust boundaries, run the checks for every affected area.
 
+## Generated Protocol Types
+
+- `src/lib/types/protocol.generated.ts` and `mobile/src/core/protocol.generated.ts` are generated from the Rust types by `scripts/generate-protocol-types.sh`. Never hand-edit them.
+- After changing any type in `crates/stereodrome-core/src/{models,queue,lastfm,backup,protocol}.rs`, run `vp run protocol:types` and commit the result. CI fails via `vp run protocol:types:check` when the output is stale.
+- To expose a new type, derive `TS` with `#[cfg_attr(feature = "ts", derive(ts_rs::TS))]` and add it to the list in `crates/stereodrome-core/src/bin/export-protocol-types.rs`.
+- Command result payloads are not generated: the runtime erases them to `serde_json::Value`, so the command-to-payload mapping lives in the hand-written `mobile/src/core/protocol.responses.ts` and must be kept in sync with `runtime/effect.rs`.
+
 ## Project Conventions
 
 - Root desktop frontend is SPA-only (`src/routes/+layout.ts` has `ssr = false`): avoid SSR-only patterns.
 - Use Svelte 5 runes (`$state`, `$derived`, `$effect`, `$props`) for new root Svelte stateful frontend code.
 - Mobile UI is Expo/React Native. Keep mobile UI and platform integration inside `mobile` unless the change is intentionally shared through Rust FFI or shared TypeScript abstractions.
-- Keep Rust/TypeScript payload fields in `snake_case` unless explicit serde renames are added.
+- Keep Rust/TypeScript payload fields in `snake_case` unless explicit serde renames are added. Prefer changing the frontend over adding a serde rename, since renames force hand-written wrapper structs that bypass the generated types.
 - Use structured logging (`log` crate / Tauri log plugin / platform logging), not `println!` or `console.log`.
 
 ## Tauri Command Checklist

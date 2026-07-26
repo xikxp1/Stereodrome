@@ -3,9 +3,9 @@ use std::thread;
 use std::time::Duration;
 
 use log::warn;
-use serde::Serialize;
 use stereodrome_core::{
-    Album, Artist, CoreCommand, LibrarySyncStatus, ScanStatus, Song, SyncKind, SyncResult,
+    Album, AlbumListEntry, Artist, CoreCommand, LibrarySyncStatus, ScanStatus, Song, SyncKind,
+    SyncResult,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -14,68 +14,6 @@ use crate::runtime::{dispatch, dispatch_async, dispatch_detached_and_wait};
 use crate::state::AppState;
 
 const SYNC_SCHEDULER_POLL_INTERVAL: Duration = Duration::from_mins(1);
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DesktopAlbum {
-    pub id: String,
-    pub artist_id: String,
-    pub name: String,
-    pub year: Option<i32>,
-    pub song_count: i32,
-    pub duration: Option<i32>,
-    pub cover_art_id: Option<String>,
-    pub synced_at: String,
-    #[serde(rename = "artistName")]
-    pub artist_name: Option<String>,
-}
-
-impl From<Album> for DesktopAlbum {
-    fn from(album: Album) -> Self {
-        Self {
-            id: album.id,
-            artist_id: album.artist_id,
-            name: album.name,
-            year: album.year,
-            song_count: album.song_count,
-            duration: album.duration,
-            cover_art_id: album.cover_art_id,
-            synced_at: album.synced_at,
-            artist_name: album.artist_name,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DesktopAlbumListEntry {
-    pub id: String,
-    pub name: String,
-    pub artist_id: Option<String>,
-    #[serde(rename = "artistName")]
-    pub artist_name: Option<String>,
-    pub year: Option<i32>,
-    pub song_count: Option<i32>,
-    pub duration: Option<i32>,
-    pub cover_art_id: Option<String>,
-    pub play_count: Option<i64>,
-    pub created: Option<String>,
-}
-
-impl From<stereodrome_core::AlbumListEntry> for DesktopAlbumListEntry {
-    fn from(album: stereodrome_core::AlbumListEntry) -> Self {
-        Self {
-            id: album.id,
-            name: album.name,
-            artist_id: album.artist_id,
-            artist_name: album.artist_name,
-            year: album.year,
-            song_count: album.song_count,
-            duration: album.duration,
-            cover_art_id: album.cover_art_id,
-            play_count: album.play_count,
-            created: album.created,
-        }
-    }
-}
 
 pub fn start_library_sync_scheduler(app_handle: &AppHandle) {
     let Some(state) = app_handle.try_state::<AppState>() else {
@@ -173,12 +111,8 @@ pub fn get_album_count(state: State<'_, AppState>) -> AppResult<i64> {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_albums(
-    state: State<'_, AppState>,
-    artist_id: Option<String>,
-) -> AppResult<Vec<DesktopAlbum>> {
-    dispatch::<Vec<Album>>(&state, CoreCommand::GetAlbums { artist_id })
-        .map(|albums| albums.into_iter().map(Into::into).collect())
+pub fn get_albums(state: State<'_, AppState>, artist_id: Option<String>) -> AppResult<Vec<Album>> {
+    dispatch(&state, CoreCommand::GetAlbums { artist_id })
 }
 
 #[tauri::command]
@@ -203,8 +137,8 @@ pub async fn get_album_list(
     list_type: String,
     size: Option<u32>,
     offset: Option<u32>,
-) -> AppResult<Vec<DesktopAlbumListEntry>> {
-    dispatch_async::<Vec<stereodrome_core::AlbumListEntry>>(
+) -> AppResult<Vec<AlbumListEntry>> {
+    dispatch_async(
         &state,
         CoreCommand::GetAlbumList {
             list_type,
@@ -213,7 +147,6 @@ pub async fn get_album_list(
         },
     )
     .await
-    .map(|albums| albums.into_iter().map(Into::into).collect())
 }
 
 #[tauri::command]

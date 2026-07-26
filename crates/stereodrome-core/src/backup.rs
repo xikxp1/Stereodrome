@@ -82,6 +82,7 @@ pub struct LibrarySyncMetadata {
     pub newest_head_album_id: Option<String>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupSummary {
     pub artists: usize,

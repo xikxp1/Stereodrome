@@ -751,7 +751,7 @@
           duration: entry.duration,
           cover_art_id: entry.cover_art_id,
           synced_at: "",
-          ...(entry.artistName ? { artistName: entry.artistName } : {}),
+          artist_name: entry.artist_name,
         },
       };
     }
@@ -899,7 +899,7 @@
 
   function getAlbumArtistName(album: Album | AlbumListEntry): string {
     return (
-      album.artistName ??
+      album.artist_name ??
       (album.artist_id
         ? (artists.find((artist) => artist.id === album.artist_id)?.name ??
           "Unknown Artist")
@@ -1301,7 +1301,7 @@
             <!-- Album Detail: Header + Song List -->
             <DetailHeader
               title={detailView.album.name}
-              subtitle={detailView.album.artistName ?? ""}
+              subtitle={detailView.album.artist_name ?? ""}
               coverArtId={detailView.album.cover_art_id}
               onBack={handleDetailBack}
               onCoverArtClick={handleDetailAlbumCoverArtClick}
@@ -1351,7 +1351,7 @@
             <!-- Album Detail: Header + Song List -->
             <DetailHeader
               title={detailView.album.name}
-              subtitle={detailView.album.artistName ?? ""}
+              subtitle={detailView.album.artist_name ?? ""}
               coverArtId={detailView.album.cover_art_id}
               onBack={handleDetailBack}
               onCoverArtClick={handleDetailAlbumCoverArtClick}

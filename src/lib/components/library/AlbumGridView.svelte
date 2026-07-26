@@ -209,7 +209,7 @@
                   {album.name}
                 </h3>
                 <p class="text-xs opacity-70 truncate w-full h-4">
-                  {album.artistName ?? ""}
+                  {album.artist_name ?? ""}
                 </p>
                 <p class="text-xs opacity-50">
                   {#if album.year}

@@ -22,6 +22,7 @@ const MAX_BATCH_SIZE: i64 = 50;
 
 // These flags are independent wire-format fields consumed by the mobile UI.
 #[allow(clippy::struct_excessive_bools)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LastfmStatus {
     pub available: bool,
@@ -33,11 +34,13 @@ pub struct LastfmStatus {
     pub last_error: Option<String>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LastfmAuthStart {
     pub auth_url: String,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LastfmQueueItem {
     pub id: i64,

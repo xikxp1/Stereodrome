@@ -75,7 +75,6 @@
     ConnectivitySettings,
     SyncSettings,
     LibrarySyncStatus,
-    SyncJobKind,
     LastfmQueueItem,
     LastfmStatus,
     CacheLocationInfo,
@@ -578,7 +577,7 @@
     return syncDateTimeFormatter.format(new Date(value * 1000));
   }
 
-  function syncJobLabel(job: SyncJobKind | null | undefined): string {
+  function syncJobLabel(job: string | null | undefined): string {
     if (!job) return "Idle";
     return job === "incremental"
       ? "Running incremental sync"

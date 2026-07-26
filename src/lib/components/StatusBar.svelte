@@ -156,7 +156,7 @@
     return syncDateTimeFormatter.format(parsed);
   }
 
-  function syncJobLabel(job: SyncJobKind | null | undefined): string {
+  function syncJobLabel(job: string | null | undefined): string {
     if (!job) return "Idle";
     return job === "incremental"
       ? "Running incremental sync"

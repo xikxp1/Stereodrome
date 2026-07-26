@@ -8,6 +8,7 @@ pub struct ServerConfig {
     pub password: String,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectParams {
     pub url: String,
@@ -15,12 +16,16 @@ pub struct ConnectParams {
     pub password: String,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerSettingsUpdate {
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub url: Option<String>,
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub username: Option<String>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionStatus {
     pub connected: bool,
@@ -41,6 +46,7 @@ impl ConnectionStatus {
     }
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artist {
     pub id: String,
@@ -67,6 +73,7 @@ impl Artist {
     }
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Album {
     pub id: String,
@@ -101,6 +108,7 @@ impl Album {
     }
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlbumListEntry {
     pub id: String,
@@ -115,6 +123,7 @@ pub struct AlbumListEntry {
     pub created: Option<String>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Song {
     pub id: String,
@@ -165,6 +174,7 @@ impl Song {
     }
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Playlist {
     pub id: String,
@@ -179,6 +189,7 @@ pub struct Playlist {
     pub offline_saved_at: Option<String>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SyncResult {
     pub artists: usize,
@@ -186,6 +197,7 @@ pub struct SyncResult {
     pub songs: usize,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyncSettings {
     #[serde(default = "default_true")]
@@ -234,18 +246,21 @@ impl SyncSettings {
     }
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectivitySettings {
     #[serde(default)]
     pub manual_offline_enabled: bool,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanStatus {
     pub scanning: bool,
     pub count: Option<i64>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NowPlayingEntry {
     pub id: String,
@@ -259,6 +274,7 @@ pub struct NowPlayingEntry {
     pub player_name: Option<String>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResultSong {
     pub id: String,
@@ -268,6 +284,7 @@ pub struct SearchResultSong {
     pub duration: Option<i32>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResultAlbum {
     pub id: String,
@@ -277,6 +294,7 @@ pub struct SearchResultAlbum {
     pub song_count: i32,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResultArtist {
     pub id: String,
@@ -284,6 +302,7 @@ pub struct SearchResultArtist {
     pub album_count: i32,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResults {
     pub songs: Vec<SearchResultSong>,
@@ -291,6 +310,7 @@ pub struct SearchResults {
     pub artists: Vec<SearchResultArtist>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncJobStatus {
     pub enabled: bool,
@@ -302,6 +322,7 @@ pub struct SyncJobStatus {
     pub next_run_at: Option<String>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibrarySyncStatus {
     pub active_job: Option<String>,
@@ -310,6 +331,7 @@ pub struct LibrarySyncStatus {
     pub full_reconcile: SyncJobStatus,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheStats {
     pub total_size: u64,
@@ -317,6 +339,7 @@ pub struct CacheStats {
     pub max_size: u64,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadStatus {
     pub song_id: String,
@@ -325,6 +348,7 @@ pub struct DownloadStatus {
     pub bytes: u64,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedPlaylistOfflineResult {
     pub playlist_id: String,
@@ -334,6 +358,7 @@ pub struct SavedPlaylistOfflineResult {
     pub skipped_protected_count: i32,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackState {
     pub current_song_id: Option<String>,
@@ -344,6 +369,7 @@ pub struct PlaybackState {
     pub updated_at: String,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackProgress {
     pub song_id: String,
@@ -354,6 +380,7 @@ pub struct PlaybackProgress {
 
 // These booleans are stable, independently configurable serialized settings.
 #[allow(clippy::struct_excessive_bools)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioProcessingSettings {
     pub normalization_enabled: bool,

@@ -13,16 +13,19 @@ use crate::{
 pub const CORE_PROTOCOL_VERSION: u32 = 1;
 
 /// Identifier supplied by a caller for idempotent command submission.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct CommandId(pub u64);
 
 /// Identifier assigned by the runtime to a mutating operation.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct OperationId(pub u64);
 
 /// A versioned command request.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreCommandRequest {
     pub protocol_version: u32,
@@ -31,6 +34,7 @@ pub struct CoreCommandRequest {
 }
 
 /// Library synchronization mode requested through the runtime shell.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SyncKind {
@@ -40,6 +44,7 @@ pub enum SyncKind {
 }
 
 /// Platform lifecycle input used by runtime scheduling policy.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PlatformLifecycle {
@@ -48,6 +53,7 @@ pub enum PlatformLifecycle {
 }
 
 /// Kind of long-running work owned by the runtime.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum JobKind {
@@ -65,6 +71,7 @@ pub enum JobKind {
 }
 
 /// A queue navigation requested as one complete playback transition.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum PlaybackNavigation {
@@ -74,6 +81,7 @@ pub enum PlaybackNavigation {
 }
 
 /// Facts reported by an OS audio-session/focus adapter.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum PlatformPlaybackEvent {
@@ -86,6 +94,7 @@ pub enum PlatformPlaybackEvent {
 }
 
 /// Lifecycle of one operation in the runtime registry.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OperationPhase {
@@ -94,6 +103,7 @@ pub enum OperationPhase {
 }
 
 /// Snapshot entry for active long-running work.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationSnapshot {
     pub operation_id: OperationId,
@@ -103,6 +113,7 @@ pub struct OperationSnapshot {
 }
 
 /// Authoritative saved-playlist offline job state.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SavedPlaylistOfflineStatus {
     pub running: bool,
@@ -113,6 +124,7 @@ pub struct SavedPlaylistOfflineStatus {
 /// Commands currently owned by the runtime shell.
 ///
 /// Every playback mutation is an intent handled by the serialized runtime.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum CoreCommand {
@@ -234,10 +246,12 @@ pub enum CoreCommand {
     GetSavedPlaylistsOfflineStatus,
     StartQueuePrefetch {
         #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
         reserve_first: bool,
     },
     CancelQueuePrefetch {
         #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
         invalidate_completed: bool,
     },
     GetPlaybackState,
@@ -504,6 +518,7 @@ impl CoreCommand {
 }
 
 /// Runtime lifecycle exposed in snapshots.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeLifecycle {
@@ -514,6 +529,7 @@ pub enum RuntimeLifecycle {
 }
 
 /// Connectivity projection known by the serialized runtime shell.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum ConnectivityState {
@@ -534,6 +550,7 @@ pub enum ConnectivityState {
 }
 
 /// Aggregate download projection used for reconciliation.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadSnapshot {
     pub downloading_song_ids: Vec<String>,
@@ -541,6 +558,7 @@ pub struct DownloadSnapshot {
 }
 
 /// Song metadata projected to UI and native media sessions.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackProjectionSong {
     pub id: String,
@@ -552,6 +570,7 @@ pub struct PlaybackProjectionSong {
 }
 
 /// Stable live transport phase exposed by runtime snapshots.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlaybackPhase {
@@ -562,6 +581,7 @@ pub enum PlaybackPhase {
 }
 
 /// Stable audio-output phase exposed without leaking engine internals.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlaybackOutputState {
@@ -572,6 +592,7 @@ pub enum PlaybackOutputState {
 }
 
 /// Authoritative live playback/queue projection built inside the runtime.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct PlaybackProjection {
@@ -594,6 +615,7 @@ pub struct PlaybackProjection {
 }
 
 /// Complete operational projection available after missed events.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreSnapshot {
     pub protocol_version: u32,
@@ -614,6 +636,7 @@ pub struct CoreSnapshot {
 }
 
 /// Stable error categories at protocol boundaries.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProtocolErrorCode {
@@ -632,6 +655,7 @@ pub enum ProtocolErrorCode {
 }
 
 /// Structured protocol failure.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolError {
     pub code: ProtocolErrorCode,
@@ -670,6 +694,7 @@ impl From<&CoreError> for ProtocolError {
 }
 
 /// Failure retained in a snapshot for post-suspension diagnosis.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationFailure {
     pub command_id: CommandId,
@@ -678,6 +703,7 @@ pub struct OperationFailure {
 }
 
 /// Command completion status.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandStatus {
@@ -686,6 +712,7 @@ pub enum CommandStatus {
 }
 
 /// Deterministic response to a command request.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreCommandResult {
     pub protocol_version: u32,
@@ -738,6 +765,7 @@ impl CoreCommandResult {
 }
 
 /// Ordered event emitted before a mutating command reports completion.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreEvent {
     pub protocol_version: u32,
@@ -750,6 +778,7 @@ pub struct CoreEvent {
 }
 
 /// Runtime event payload.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum CoreEventKind {

@@ -28,8 +28,21 @@ submarine = "0.1.1"
 thiserror = "2.0.19"
 tokio = { version = "1.53.1", features = ["full"] }
 tokio-util = { version = "0.7.19", features = ["rt"] }
+ts-rs = { version = "12.0.1", default-features = false, features = [
+  "serde-compat",
+  "serde-json-impl",
+], optional = true }
 url = "2.5.8"
 urlencoding = "2.1.3"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+
+[features]
+# Enables `TS` derives used by the `export-protocol-types` binary. Kept off by
+# default so desktop and mobile builds do not link the generator.
+ts = ["dep:ts-rs"]
+
+[[bin]]
+name = "export-protocol-types"
+required-features = ["ts"]
