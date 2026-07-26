@@ -456,7 +456,8 @@ fn summarize_response_body(body: &str) -> String {
 
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.len() > MAX_LEN {
-        format!("{}...", &compact[..MAX_LEN])
+        // Response bodies are arbitrary remote bytes, so MAX_LEN can land mid-character.
+        format!("{}...", &compact[..compact.floor_char_boundary(MAX_LEN)])
     } else if compact.is_empty() {
         "<empty>".to_string()
     } else {
@@ -709,5 +710,24 @@ mod tests {
     fn retry_backoff_is_capped() {
         assert_eq!(retry_delay_secs(1), 120);
         assert_eq!(retry_delay_secs(99), 3600);
+    }
+
+    #[test]
+    fn summarize_response_body_truncates_multibyte_bodies() {
+        // A leading ASCII byte shifts every following 3-byte character so that the
+        // 300-byte cutoff falls inside one of them.
+        let body = format!("a{}", "\u{4e2d}".repeat(200));
+        let summary = summarize_response_body(&body);
+
+        assert!(summary.ends_with("..."));
+        let truncated = summary.strip_suffix("...").expect("suffix checked");
+        assert!(truncated.len() <= 300);
+        assert!(body.starts_with(truncated));
+    }
+
+    #[test]
+    fn summarize_response_body_passes_through_short_and_empty_bodies() {
+        assert_eq!(summarize_response_body("  bad   gateway "), "bad gateway");
+        assert_eq!(summarize_response_body("   "), "<empty>");
     }
 }
