@@ -72,32 +72,71 @@ function currentSong(playback: PlaybackProjection | null): PlayableSong | null {
       };
 }
 
-function nextSong(playback: PlaybackProjection | null): PlayableSong | null {
+function resolveNextSong(
+  playback: PlaybackProjection | null,
+  force: boolean
+): PlayableSong | null {
   if (playback === null || playback.queue.items.length === 0) {
     return null;
   }
-  if (playback.queue.prepared_next_item !== null) {
-    return playableFromQueueItem(playback.queue.prepared_next_item);
+
+  const queue = playback.queue;
+  const index = queue.current_index;
+  const pending = queue.pending_navigation_index;
+  const repeat = queue.repeat_mode;
+  const first = queue.items[0];
+
+  // Current track was removed: resume wherever the cursor now points.
+  if (index === null && pending !== null) {
+    if (pending < queue.items.length) {
+      const item = queue.items[pending];
+      return item === undefined ? null : playableFromQueueItem(item);
+    }
+    // The cursor sits past the last item, so only a wrap can continue.
+    const wraps = repeat === "All" || (repeat === "One" && force);
+    return wraps && first !== undefined ? playableFromQueueItem(first) : null;
   }
-  const index = playback.queue.current_index;
-  if (playback.queue.repeat_mode === "One" && index !== null) {
-    const item = playback.queue.items[index];
+
+  if (queue.prepared_next_item !== null) {
+    return playableFromQueueItem(queue.prepared_next_item);
+  }
+
+  // Auto-advance under repeat one replays the current track, so an idle queue has
+  // nothing to advance to.
+  if (repeat === "One" && !force) {
+    if (index === null) {
+      return null;
+    }
+    const item = queue.items[index];
     return item === undefined ? null : playableFromQueueItem(item);
   }
+
   if (index === null) {
-    const pending = playback.queue.pending_navigation_index ?? 0;
-    const item =
-      playback.queue.items[Math.min(pending, playback.queue.items.length - 1)];
-    return item === undefined ? null : playableFromQueueItem(item);
+    return first === undefined ? null : playableFromQueueItem(first);
   }
-  const item = playback.queue.items[index + 1];
+
+  const item = queue.items[index + 1];
   if (item !== undefined) {
     return playableFromQueueItem(item);
   }
-  const first = playback.queue.items[0];
-  return playback.queue.repeat_mode === "All" && first !== undefined
+
+  // At the end - wrap unless repeat is off.
+  return repeat !== "Off" && first !== undefined
     ? playableFromQueueItem(first)
     : null;
+}
+
+// The song the Next control will play. Skipping is forced navigation, so under repeat
+// one it advances rather than replaying the current track.
+function nextSong(playback: PlaybackProjection | null): PlayableSong | null {
+  return resolveNextSong(playback, true);
+}
+
+// The song that will play once the current one ends on its own.
+function upcomingSong(
+  playback: PlaybackProjection | null
+): PlayableSong | null {
+  return resolveNextSong(playback, false);
 }
 
 function useInterpolatedPosition(playback: PlaybackProjection | null): number {
@@ -153,6 +192,7 @@ export function usePlaybackMetadata() {
       isPlaying: playback?.is_playing ?? false,
       nextSong: nextSong(playback),
       queue: playback?.queue.items.map(playableFromQueueItem) ?? [],
+      upcomingSong: upcomingSong(playback),
       repeatMode: playback?.queue.repeat_mode ?? ("Off" as const),
       repeatEnabled: (playback?.queue.repeat_mode ?? "Off") !== "Off",
       shuffleEnabled: playback?.queue.shuffle ?? false,

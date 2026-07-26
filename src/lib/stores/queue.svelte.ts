@@ -236,38 +236,58 @@ class QueueStore {
 
     if (this.currentIndex === null) return null;
 
+    // Repeat one restarts the current track instead of stepping back.
+    if (this.repeatMode === "One") {
+      return this.items[this.currentIndex] ?? null;
+    }
+
     if (this.currentIndex > 0) {
       return this.items[this.currentIndex - 1] ?? null;
     }
 
-    // At the start - wrap around if repeat is on
+    // At the start - wrap around with repeat all, otherwise restart the current track.
     if (this.repeatMode === "All") {
       return this.items[this.items.length - 1] ?? null;
     }
 
-    return null;
+    return this.items[0] ?? null;
   }
 
-  // Get the next song (what will play when Next is clicked)
+  // Get the song the Next control will play. Skipping is forced navigation, so under
+  // repeat one it advances rather than replaying the current track.
   get nextSong(): QueueItem | null {
+    return this.resolveNextSong(true);
+  }
+
+  // Get the song that will play once the current one ends on its own.
+  get upcomingSong(): QueueItem | null {
+    return this.resolveNextSong(false);
+  }
+
+  private resolveNextSong(force: boolean): QueueItem | null {
     if (this.items.length === 0) return null;
 
-    // If current was removed, use pending navigation index
+    // Current track was removed: resume wherever the cursor now points.
     if (this.currentIndex === null && this.pendingNavigationIndex !== null) {
-      const nextIdx = Math.min(
-        this.pendingNavigationIndex,
-        this.items.length - 1
-      );
-      return this.items[nextIdx] ?? null;
+      if (this.pendingNavigationIndex < this.items.length) {
+        return this.items[this.pendingNavigationIndex] ?? null;
+      }
+      // The cursor sits past the last item, so only a wrap can continue.
+      const wraps =
+        this.repeatMode === "All" || (this.repeatMode === "One" && force);
+      return wraps ? (this.items[0] ?? null) : null;
     }
 
     if (this.preparedNextItem !== null) {
       return this.preparedNextItem;
     }
 
-    // If repeat one, next will play the same song
-    if (this.repeatMode === "One" && this.currentIndex !== null) {
-      return this.items[this.currentIndex] ?? null;
+    // Auto-advance under repeat one replays the current track, so an idle queue has
+    // nothing to advance to.
+    if (this.repeatMode === "One" && !force) {
+      return this.currentIndex === null
+        ? null
+        : (this.items[this.currentIndex] ?? null);
     }
 
     if (this.currentIndex === null) {
@@ -279,8 +299,8 @@ class QueueStore {
       return this.items[this.currentIndex + 1] ?? null;
     }
 
-    // At the end - wrap around if repeat is on
-    if (this.repeatMode === "All") {
+    // At the end - wrap unless repeat is off.
+    if (this.repeatMode !== "Off") {
       return this.items[0] ?? null;
     }
 

@@ -57,7 +57,7 @@ export function NowPlayingScreen() {
     width: 0,
   });
   const song = playback.currentSong;
-  const nextSong = playback.nextSong;
+  const nextSong = playback.upcomingSong;
   const songId = song?.id ?? null;
   const nextSongId = nextSong?.id ?? null;
   const coverUri = useCoverArtUri(songId, 512);

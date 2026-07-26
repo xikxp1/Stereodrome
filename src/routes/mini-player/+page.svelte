@@ -78,8 +78,8 @@
     const currentLine = currentTrack
       ? `${currentTrack.artist || "Unknown Artist"} - ${currentTrack.title || "Unknown Title"}`
       : null;
-    const nextLine = queue.nextSong
-      ? `${queue.nextSong.artist || "Unknown Artist"} - ${queue.nextSong.title || "Unknown Title"}`
+    const nextLine = queue.upcomingSong
+      ? `${queue.upcomingSong.artist || "Unknown Artist"} - ${queue.upcomingSong.title || "Unknown Title"}`
       : null;
 
     const lines = [currentLine, nextLine].filter(
@@ -587,11 +587,11 @@
       canNext={queue.hasNext}
       canReroll={queue.canRerollNext}
       {showNextSongInMiniPlayer}
-      nextTrack={queue.nextSong
+      nextTrack={queue.upcomingSong
         ? {
-            title: queue.nextSong.title,
-            artist: queue.nextSong.artist,
-            album: queue.nextSong.album,
+            title: queue.upcomingSong.title,
+            artist: queue.upcomingSong.artist,
+            album: queue.upcomingSong.album,
           }
         : null}
       previousTrackTooltip={miniPreviousTooltip}
