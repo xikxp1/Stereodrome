@@ -619,8 +619,6 @@ fn sanitize_preferences(preferences: &mut PortablePreferences) {
         }
     }
     crate::clamp_audio_processing_settings(audio);
-    audio.preamp_db = audio.preamp_db.clamp(-10.0, 10.0);
-    audio.crossfade_duration_ms = audio.crossfade_duration_ms.clamp(1000, 12_000);
 }
 
 fn unique_ids<'a>(ids: impl Iterator<Item = &'a str>, kind: &str) -> CoreResult<HashSet<&'a str>> {
@@ -842,6 +840,84 @@ mod tests {
     use rusqlite::Connection;
 
     use super::*;
+
+    #[test]
+    fn sanitizing_preferences_preserves_the_full_supported_ranges() {
+        // Every value here is legal per clamp_audio_processing_settings, so a backup
+        // round trip must return it untouched.
+        let extremes = AudioProcessingSettings {
+            target_lufs: -24.0,
+            preamp_db: -12.0,
+            crossfade_duration_ms: 500,
+            prefetch_count: 10,
+            equalizer_bands_db: vec![-12.0; 12],
+            ..AudioProcessingSettings::default()
+        };
+        let mut preferences = PortablePreferences {
+            sync: None,
+            connectivity: None,
+            audio_processing: Some(extremes.clone()),
+            volume: Some(1.0),
+        };
+
+        sanitize_preferences(&mut preferences);
+
+        let audio = preferences
+            .audio_processing
+            .expect("audio processing preserved");
+        assert!((audio.preamp_db - extremes.preamp_db).abs() < f64::EPSILON);
+        assert_eq!(audio.crossfade_duration_ms, extremes.crossfade_duration_ms);
+        assert!((audio.target_lufs - extremes.target_lufs).abs() < f64::EPSILON);
+        assert_eq!(audio.prefetch_count, extremes.prefetch_count);
+        assert_eq!(audio.equalizer_bands_db, extremes.equalizer_bands_db);
+
+        // The opposite ends of each range survive too.
+        let mut upper = PortablePreferences {
+            sync: None,
+            connectivity: None,
+            audio_processing: Some(AudioProcessingSettings {
+                target_lufs: -8.0,
+                preamp_db: 12.0,
+                crossfade_duration_ms: 15_000,
+                ..AudioProcessingSettings::default()
+            }),
+            volume: Some(0.0),
+        };
+        sanitize_preferences(&mut upper);
+        let audio = upper.audio_processing.expect("audio processing preserved");
+        assert!((audio.preamp_db - 12.0).abs() < f64::EPSILON);
+        assert_eq!(audio.crossfade_duration_ms, 15_000);
+        assert!((audio.target_lufs + 8.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn sanitizing_preferences_still_rejects_out_of_range_values() {
+        let mut preferences = PortablePreferences {
+            sync: None,
+            connectivity: None,
+            audio_processing: Some(AudioProcessingSettings {
+                target_lufs: -100.0,
+                preamp_db: 99.0,
+                crossfade_duration_ms: 999_999,
+                prefetch_count: 999,
+                equalizer_bands_db: vec![50.0; 12],
+                ..AudioProcessingSettings::default()
+            }),
+            volume: Some(4.0),
+        };
+
+        sanitize_preferences(&mut preferences);
+
+        let audio = preferences
+            .audio_processing
+            .expect("audio processing preserved");
+        assert!((audio.preamp_db - 12.0).abs() < f64::EPSILON);
+        assert_eq!(audio.crossfade_duration_ms, 15_000);
+        assert!((audio.target_lufs + 24.0).abs() < f64::EPSILON);
+        assert_eq!(audio.prefetch_count, 10);
+        assert_eq!(audio.equalizer_bands_db, vec![12.0; 12]);
+        assert_eq!(preferences.volume, Some(1.0));
+    }
 
     #[test]
     fn portable_backup_round_trip_replaces_data_and_preserves_secrets() {
