@@ -56,6 +56,10 @@ const eqLabels = [
 const eqMinDb = -12;
 const eqMaxDb = 12;
 const eqStepDb = 0.5;
+// Mirrors clamp_audio_processing_settings in stereodrome-core.
+const preampMinDb = -12;
+const preampMaxDb = 12;
+const preampStepDb = 0.5;
 
 type TextEditConfig = {
   title: string;
@@ -1298,14 +1302,18 @@ function normalizationOptions(
                 onSubmit: async (value) => {
                   const db = parseNumberInput(value, "Preamp");
                   await updateAudioSetting({
-                    preamp_db: clamp(db, -12, 12),
+                    preamp_db: clamp(db, preampMinDb, preampMaxDb),
                   });
                 },
               });
             },
             onLongSelect: () =>
               updateAudioSetting({
-                preamp_db: clamp(settings.preamp_db - 0.5, -6, 6),
+                preamp_db: clamp(
+                  settings.preamp_db - preampStepDb,
+                  preampMinDb,
+                  preampMaxDb
+                ),
               }),
           },
           {
