@@ -34,8 +34,15 @@ pub use protocol::*;
 pub use queue::{QueueItem as SharedQueueItem, QueueState as SharedQueueState};
 pub use runtime::StereodromeRuntimeHandle;
 
-const API_VERSION: &str = "1.16.1";
-const CLIENT_NAME: &str = "StereodromeMobile";
+pub(crate) const API_VERSION: &str = "1.16.1";
+
+/// Subsonic `c` parameter. Servers key per-client state (transcoding profiles, now
+/// playing entries) on this, so desktop and mobile must not share one identity.
+pub(crate) const CLIENT_NAME: &str = if cfg!(any(target_os = "android", target_os = "ios")) {
+    "StereodromeMobile"
+} else {
+    "StereodromeDesktop"
+};
 const MOBILE_PLAYBACK_FORMAT: &str = "mp3";
 const LARGE_COVER_ART_SIZE: i32 = 512;
 const NEWEST_HEAD_ALBUM_KEY: &str = "library_newest_head_album_id";
