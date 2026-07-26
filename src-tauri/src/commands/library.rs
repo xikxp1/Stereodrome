@@ -3,14 +3,11 @@ use std::thread;
 use std::time::Duration;
 
 use log::warn;
-use stereodrome_core::{
-    Album, AlbumListEntry, Artist, CoreCommand, LibrarySyncStatus, ScanStatus, Song, SyncKind,
-    SyncResult,
-};
+use stereodrome_core::{Album, CoreCommand, SyncKind, SyncResult};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::error::AppResult;
-use crate::runtime::{dispatch, dispatch_async, dispatch_detached_and_wait};
+use crate::runtime::{dispatch, dispatch_detached_and_wait};
 use crate::state::AppState;
 
 const SYNC_SCHEDULER_POLL_INTERVAL: Duration = Duration::from_mins(1);
@@ -92,69 +89,7 @@ pub async fn reconcile_library_state(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_library_sync_status(state: State<'_, AppState>) -> AppResult<LibrarySyncStatus> {
-    dispatch(&state, CoreCommand::GetLibrarySyncStatus)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn get_artists(state: State<'_, AppState>) -> AppResult<Vec<Artist>> {
-    dispatch(&state, CoreCommand::GetArtists)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
 pub fn get_album_count(state: State<'_, AppState>) -> AppResult<i64> {
     let albums: Vec<Album> = dispatch(&state, CoreCommand::GetAlbums { artist_id: None })?;
     i64::try_from(albums.len()).map_err(|error| crate::error::AppError::Runtime(error.to_string()))
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn get_albums(state: State<'_, AppState>, artist_id: Option<String>) -> AppResult<Vec<Album>> {
-    dispatch(&state, CoreCommand::GetAlbums { artist_id })
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn get_songs(
-    state: State<'_, AppState>,
-    album_id: Option<String>,
-    artist_id: Option<String>,
-) -> AppResult<Vec<Song>> {
-    dispatch(
-        &state,
-        CoreCommand::GetSongs {
-            album_id,
-            artist_id,
-        },
-    )
-}
-
-#[tauri::command]
-pub async fn get_album_list(
-    state: State<'_, AppState>,
-    list_type: String,
-    size: Option<u32>,
-    offset: Option<u32>,
-) -> AppResult<Vec<AlbumListEntry>> {
-    dispatch_async(
-        &state,
-        CoreCommand::GetAlbumList {
-            list_type,
-            size: size.map(|value| value as usize),
-            offset: offset.map(|value| value as usize),
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn get_scan_status(state: State<'_, AppState>) -> AppResult<ScanStatus> {
-    dispatch_async(&state, CoreCommand::GetScanStatus).await
-}
-
-#[tauri::command]
-pub async fn start_scan(state: State<'_, AppState>) -> AppResult<ScanStatus> {
-    dispatch_async(&state, CoreCommand::StartScan).await
 }

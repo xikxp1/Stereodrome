@@ -2690,7 +2690,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use crate::protocol::{CommandStatus, CoreCommand, CoreCommandRequest};
-    use crate::queue::QueueItem;
+    use crate::queue::{QueueItem, QueueState, RepeatMode};
     use crate::test_support::{AudioCall, FakeAudio, ManualPlaybackClock};
 
     use super::*;
@@ -2780,6 +2780,45 @@ mod tests {
         assert!(command.runs_as_effect());
         let json = serde_json::to_value(command).expect("command serializes");
         assert_eq!(json["type"], "get-now-playing");
+    }
+
+    /// Guards the hand-maintained command -> payload map used by the generated
+    /// `CoreCommandValue`. Desktop wrappers previously asserted `bool` and
+    /// `RepeatMode` for these commands and failed to deserialize at runtime.
+    #[test]
+    fn queue_mutations_all_respond_with_the_projected_queue() {
+        let data_dir = test_dir("queue-payloads");
+        let handle = StereodromeRuntimeHandle::start(&data_dir).expect("runtime starts");
+        let _ = handle.dispatch_command(CoreCommand::AddSongsToQueue {
+            items: (0..3).map(queue_item).collect(),
+        });
+
+        for command in [
+            CoreCommand::GetQueue,
+            CoreCommand::AddToQueue {
+                item: queue_item(9),
+            },
+            CoreCommand::InsertNext {
+                item: queue_item(10),
+            },
+            CoreCommand::MoveQueueItem { from: 0, to: 1 },
+            CoreCommand::ToggleShuffle,
+            CoreCommand::SetRepeatMode {
+                mode: RepeatMode::All,
+            },
+            CoreCommand::CycleRepeatMode,
+            CoreCommand::RerollNext,
+            CoreCommand::RemoveFromQueue { index: 0 },
+        ] {
+            let label = format!("{command:?}");
+            let result = handle.dispatch_command(command);
+            assert_eq!(result.status, CommandStatus::Succeeded, "{label} succeeded");
+            let value = result.value.expect("payload present");
+            serde_json::from_value::<QueueState>(value)
+                .unwrap_or_else(|error| panic!("{label} payload is a QueueState: {error}"));
+        }
+
+        handle.shutdown();
     }
 
     #[test]

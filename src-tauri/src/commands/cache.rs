@@ -7,7 +7,7 @@ use crate::cache::{
     set_cache_root as persist_cache_root,
 };
 use crate::error::AppResult;
-use crate::runtime::{dispatch, dispatch_async, dispatch_unit_async, snapshot};
+use crate::runtime::{dispatch, snapshot};
 use crate::state::AppState;
 
 const STORE_FILE: &str = "settings.json";
@@ -59,28 +59,6 @@ pub fn set_cache_root(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_audio_cache_stats(state: State<'_, AppState>) -> AppResult<CacheStats> {
-    dispatch(&state, CoreCommand::GetAudioCacheStats)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn get_offline_song_ids(state: State<'_, AppState>) -> AppResult<Vec<String>> {
-    dispatch(&state, CoreCommand::GetOfflineSongIds)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
 pub fn get_downloading_song_ids(state: State<'_, AppState>) -> AppResult<Vec<String>> {
     Ok(snapshot(&state)?.downloads.downloading_song_ids)
-}
-
-#[tauri::command]
-pub async fn clear_audio_cache(state: State<'_, AppState>) -> AppResult<()> {
-    dispatch_unit_async(&state, CoreCommand::ClearAudioCache).await
-}
-
-#[tauri::command]
-pub async fn set_max_cache_size(state: State<'_, AppState>, size: u64) -> AppResult<CacheStats> {
-    dispatch_async(&state, CoreCommand::SetMaxCacheSize { max_size: size }).await
 }

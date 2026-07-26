@@ -1,5 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+import { dispatch } from "$lib/api/core";
 import {
   playSongWithQueue as playSongWithQueueCommand,
   rerollNextQueueItem,
@@ -47,7 +48,7 @@ class QueueStore {
 
   private async loadFromBackend() {
     try {
-      const state = await invoke<QueueState>("get_queue");
+      const state = await dispatch({ type: "get-queue" });
       this.updateFromState(state);
     } catch (cause) {
       logError("Failed to load queue", cause);
@@ -76,7 +77,7 @@ class QueueStore {
   async addSong(song: Song) {
     const item = this.songToQueueItem(song);
     try {
-      await invoke("add_to_queue", { item });
+      await dispatch({ type: "add-to-queue", item });
     } catch (cause) {
       logError("Failed to add to queue", cause);
     }
@@ -85,7 +86,7 @@ class QueueStore {
   async addSongs(songs: Song[]) {
     const items = songs.map((s) => this.songToQueueItem(s));
     try {
-      await invoke("add_songs_to_queue", { items });
+      await dispatch({ type: "add-songs-to-queue", items });
     } catch (cause) {
       logError("Failed to add songs to queue", cause);
     }
@@ -96,7 +97,7 @@ class QueueStore {
       // Insert song as next to play
       const item = this.songToQueueItem(song);
       try {
-        await invoke("insert_next_in_queue", { item });
+        await dispatch({ type: "insert-next", item });
       } catch (cause) {
         logError("Failed to insert next", cause);
       }
@@ -105,7 +106,10 @@ class QueueStore {
       // force=true: always advance (user clicked Next button)
       // force=false: respect repeat mode (auto-advance when song ends)
       try {
-        await invoke<boolean>("play_next", { force });
+        await dispatch({
+          type: "navigate-playback",
+          navigation: { type: "next", force },
+        });
       } catch (cause) {
         logError("Failed to play next", cause);
       }
@@ -115,7 +119,7 @@ class QueueStore {
   async playNextSongs(songs: Song[]) {
     const items = songs.map((s) => this.songToQueueItem(s));
     try {
-      await invoke("insert_next_songs_in_queue", { items });
+      await dispatch({ type: "insert-next-songs", items });
     } catch (cause) {
       logError("Failed to insert songs next", cause);
     }
@@ -123,7 +127,10 @@ class QueueStore {
 
   async playPrevious() {
     try {
-      await invoke<boolean>("play_previous");
+      await dispatch({
+        type: "navigate-playback",
+        navigation: { type: "previous" },
+      });
     } catch (cause) {
       logError("Failed to play previous", cause);
     }
@@ -131,7 +138,10 @@ class QueueStore {
 
   async playQueueItem(index: number) {
     try {
-      await invoke("play_queue_item", { index });
+      await dispatch({
+        type: "navigate-playback",
+        navigation: { type: "index", index },
+      });
     } catch (cause) {
       logError("Failed to play queue item", cause);
     }
@@ -139,7 +149,7 @@ class QueueStore {
 
   async removeFromQueue(index: number) {
     try {
-      await invoke("remove_from_queue", { index });
+      await dispatch({ type: "remove-from-queue", index });
     } catch (cause) {
       logError("Failed to remove from queue", cause);
     }
@@ -147,7 +157,7 @@ class QueueStore {
 
   async clearQueue() {
     try {
-      await invoke("clear_queue");
+      await dispatch({ type: "clear-playback" });
     } catch (cause) {
       logError("Failed to clear queue", cause);
     }
@@ -155,7 +165,7 @@ class QueueStore {
 
   async moveItem(from: number, to: number) {
     try {
-      await invoke("move_queue_item", { from, to });
+      await dispatch({ type: "move-queue-item", from, to });
     } catch (cause) {
       logError("Failed to move queue item", cause);
     }
@@ -163,7 +173,7 @@ class QueueStore {
 
   async toggleShuffle() {
     try {
-      await invoke<boolean>("toggle_shuffle");
+      await dispatch({ type: "toggle-shuffle" });
     } catch (cause) {
       logError("Failed to toggle shuffle", cause);
     }
@@ -171,7 +181,7 @@ class QueueStore {
 
   async cycleRepeatMode() {
     try {
-      await invoke<RepeatMode>("cycle_repeat_mode");
+      await dispatch({ type: "cycle-repeat-mode" });
     } catch (cause) {
       logError("Failed to cycle repeat mode", cause);
     }
@@ -179,7 +189,7 @@ class QueueStore {
 
   async setRepeatMode(mode: RepeatMode) {
     try {
-      await invoke("set_repeat_mode", { mode });
+      await dispatch({ type: "set-repeat-mode", mode });
     } catch (cause) {
       logError("Failed to set repeat mode", cause);
     }
@@ -191,7 +201,8 @@ class QueueStore {
     }
 
     try {
-      return await rerollNextQueueItem();
+      await rerollNextQueueItem();
+      return true;
     } catch (cause) {
       logError("Failed to reroll next track", cause);
       return false;

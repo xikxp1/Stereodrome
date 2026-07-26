@@ -19,15 +19,6 @@ use crate::state::AppState;
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn export_portable_backup(
-    state: State<'_, AppState>,
-    path: String,
-) -> AppResult<BackupSummary> {
-    dispatch(&state, CoreCommand::ExportPortableBackup { path })
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
 pub fn import_portable_backup(
     app_handle: AppHandle,
     state: State<'_, AppState>,

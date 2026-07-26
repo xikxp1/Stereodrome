@@ -34,6 +34,22 @@ where
     .map_err(|error| AppError::Runtime(error.to_string()))?
 }
 
+/// Dispatches an arbitrary runtime command and returns its raw payload.
+///
+/// The frontend maps commands to payload types through the generated
+/// `CoreCommandValue`, so the desktop shell does not need to know the shape.
+pub async fn dispatch_value_async(
+    state: &AppState,
+    command: CoreCommand,
+) -> AppResult<serde_json::Value> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        successful_value(runtime.dispatch_command(command))
+    })
+    .await
+    .map_err(|error| AppError::Runtime(error.to_string()))?
+}
+
 pub async fn dispatch_unit_async(state: &AppState, command: CoreCommand) -> AppResult<()> {
     let runtime = state.runtime.clone();
     tauri::async_runtime::spawn_blocking(move || {

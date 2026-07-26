@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+
+import { dispatch } from "$lib/api/core";
 import {
   reconcileSavedPlaylistsOffline,
   removeSongsFromPlaylist as removeSongsFromPlaylistCommand,
@@ -55,7 +57,7 @@ class PlaylistStore {
   async loadPlaylists() {
     this.isLoading = true;
     try {
-      this.playlists = await invoke<Playlist[]>("get_playlists");
+      this.playlists = await dispatch({ type: "get-playlists" });
     } catch (cause) {
       logError("Failed to load playlists", cause);
     } finally {
@@ -91,9 +93,10 @@ class PlaylistStore {
     songIds?: string[]
   ): Promise<Playlist | null> {
     try {
-      const playlist = await invoke<Playlist>("create_playlist", {
+      const playlist = await dispatch({
+        type: "create-playlist",
         name,
-        songIds,
+        song_ids: songIds ?? [],
       });
       await this.loadPlaylists();
       return playlist;
@@ -105,7 +108,11 @@ class PlaylistStore {
 
   async updatePlaylist(playlistId: string, name: string) {
     try {
-      await invoke("update_playlist", { playlistId, name });
+      await dispatch({
+        type: "rename-playlist",
+        playlist_id: playlistId,
+        name,
+      });
       await this.loadPlaylists();
 
       // Update current playlist if it's the one being edited
@@ -122,7 +129,7 @@ class PlaylistStore {
 
   async deletePlaylist(playlistId: string) {
     try {
-      await invoke("delete_playlist", { playlistId });
+      await dispatch({ type: "delete-playlist", playlist_id: playlistId });
       await this.loadPlaylists();
 
       // Clear current playlist if it was deleted
@@ -138,7 +145,12 @@ class PlaylistStore {
   async addSongsToPlaylist(playlistId: string, songIds: string[]) {
     await this.mutatePlaylistMembership(
       playlistId,
-      () => invoke("add_songs_to_playlist", { playlistId, songIds }),
+      () =>
+        dispatch({
+          type: "add-songs-to-playlist",
+          playlist_id: playlistId,
+          song_ids: songIds,
+        }),
       "Failed to add songs to playlist"
     );
   }

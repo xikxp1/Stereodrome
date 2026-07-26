@@ -41,7 +41,7 @@
 - `src/lib/types/protocol.generated.ts` and `mobile/src/core/protocol.generated.ts` are generated from the Rust types by `scripts/generate-protocol-types.sh`. Never hand-edit them.
 - After changing any type in `crates/stereodrome-core/src/{models,queue,lastfm,backup,protocol}.rs`, run `vp run protocol:types` and commit the result. CI fails via `vp run protocol:types:check` when the output is stale.
 - To expose a new type, derive `TS` with `#[cfg_attr(feature = "ts", derive(ts_rs::TS))]` and add it to the list in `crates/stereodrome-core/src/bin/export-protocol-types.rs`.
-- Command result payloads are not generated: the runtime erases them to `serde_json::Value`, so the command-to-payload mapping lives in the hand-written `mobile/src/core/protocol.responses.ts` and must be kept in sync with `runtime/effect.rs`.
+- Command result payloads cannot be derived: the runtime erases them to `serde_json::Value`. The command-to-payload mapping is the hand-maintained `COMMAND_RESULTS` table in `crates/stereodrome-core/src/bin/export-protocol-types.rs`, which generates `CoreCommandValue` for both platforms. Keep it in sync with `runtime/effect.rs` and `runtime/mod.rs`; commands omitted from it resolve to `void` on the client.
 
 ## Project Conventions
 
@@ -51,9 +51,14 @@
 - Keep Rust/TypeScript payload fields in `snake_case` unless explicit serde renames are added. Prefer changing the frontend over adding a serde rename, since renames force hand-written wrapper structs that bypass the generated types.
 - Use structured logging (`log` crate / Tauri log plugin / platform logging), not `println!` or `console.log`.
 
-## Tauri Command Checklist
+## Desktop Runtime Commands
 
-When adding, removing, or renaming a Tauri command, update all of these:
+Runtime operations reach the desktop through the single `core_dispatch` Tauri command, mirroring how mobile dispatches over FFI. Prefer this path:
+
+- Call `dispatch({ type: "..." })` from `src/lib/api/core.ts`. The payload type comes from the generated `CoreCommandValue`, so no hand-written return type is needed.
+- A new `CoreCommand` variant needs no desktop Rust change at all. If it returns a value, add it to `COMMAND_RESULTS` in `crates/stereodrome-core/src/bin/export-protocol-types.rs` and re-run `vp run protocol:types`. The exporter panics if the tag is not a real variant.
+
+Only add a dedicated `#[tauri::command]` when the operation needs desktop-specific work (keyring, windowing, tray, file I/O, desktop settings store, event emission). In that case update all of these:
 
 1. Implement/update the Rust command in `src-tauri/src/commands/*.rs` with `#[tauri::command]`.
 2. Re-export it in `src-tauri/src/commands/mod.rs`.

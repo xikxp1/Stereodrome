@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+
+import { dispatch } from "$lib/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Song } from "$lib/types";
@@ -131,7 +133,11 @@ class PlaybackStore {
 
   async playSong(song: Song) {
     try {
-      await invoke("play_song", { songId: song.id });
+      await dispatch({
+        type: "play-selection",
+        song_id: song.id,
+        song_ids: [song.id],
+      });
       this.isPlaying = true;
       this.position = 0;
       this.duration =
@@ -148,7 +154,7 @@ class PlaybackStore {
 
   async pause() {
     try {
-      await invoke("pause_playback");
+      await dispatch({ type: "pause-playback" });
       this.isPlaying = false;
     } catch (cause) {
       logError("Failed to pause", cause);
@@ -157,7 +163,7 @@ class PlaybackStore {
 
   async resume() {
     try {
-      await invoke("resume_playback");
+      await dispatch({ type: "resume-playback" });
       this.isPlaying = true;
     } catch (cause) {
       logError("Failed to resume", cause);
@@ -181,7 +187,7 @@ class PlaybackStore {
 
   async stop() {
     try {
-      await invoke("stop_playback");
+      await dispatch({ type: "stop-playback" });
       this.isPlaying = false;
       this.position = 0;
       this.currentTrack = null;
@@ -196,7 +202,7 @@ class PlaybackStore {
     this.pendingVolumeUpdates += 1;
 
     const update = this.volumeUpdateQueue.then(() =>
-      invoke("set_volume", { volume: clamped }).then(() => undefined)
+      dispatch({ type: "set-playback-volume", volume: clamped })
     );
     this.volumeUpdateQueue = update.catch(() => undefined);
 

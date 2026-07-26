@@ -5,7 +5,7 @@ use tauri::State;
 
 use crate::credentials;
 use crate::error::AppResult;
-use crate::runtime::{dispatch, dispatch_async, dispatch_unit_async};
+use crate::runtime::{dispatch_async, dispatch_unit_async};
 use crate::state::{AppState, ServerConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,13 +68,6 @@ pub async fn disconnect_server(state: State<'_, AppState>) -> AppResult<()> {
         warn!("Failed to clear mirrored desktop credentials: {error}");
     }
     Ok(())
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn get_connection_status(state: State<'_, AppState>) -> AppResult<ConnectionStatus> {
-    dispatch::<stereodrome_core::ConnectionStatus>(&state, CoreCommand::GetConnectionStatus)
-        .map(Into::into)
 }
 
 #[tauri::command]

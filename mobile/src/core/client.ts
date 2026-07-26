@@ -4,13 +4,13 @@ import NativeStereodromeCore from "../../modules/stereodrome-core/src";
 import {
   CORE_PROTOCOL_VERSION,
   type CoreCommand,
+  type CoreCommandValue,
   type CoreCommandRequest,
   type CoreEvent,
   type OperationFailure,
   type ProtocolError,
   type CoreSnapshot,
 } from "@/core/protocol.generated";
-import type { CoreCommandValue } from "@/core/protocol.responses";
 
 const unavailable =
   "Stereodrome native core is not available in this development build";
