@@ -1434,10 +1434,15 @@ impl StereodromeCore {
                 if protected_paths.contains(&path) {
                     continue;
                 }
-                match std::fs::remove_file(path) {
+                match std::fs::remove_file(&path) {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
+                    Err(error) => {
+                        warn!(
+                            "skipping cached audio file that could not be cleared: {} ({error})",
+                            path.display()
+                        );
+                    }
                 }
             }
             let conn = Connection::open(&self.db_path)?;
@@ -3394,6 +3399,18 @@ impl StereodromeCore {
         Ok(paths)
     }
 
+    /// Cache file backing the track that is playing right now.
+    ///
+    /// Automatic eviction must skip it: on Windows the file cannot be unlinked while the
+    /// decoder holds it open, and elsewhere evicting it silently drops the download record
+    /// for a track the user is still listening to.
+    fn active_playback_cache_path(&self) -> CoreResult<Option<PathBuf>> {
+        let Some(song_id) = self.get_playback_state()?.current_song_id else {
+            return Ok(None);
+        };
+        self.cached_song_path(&song_id)
+    }
+
     fn song_protected_by_saved_playlist(&self, song_id: &str) -> CoreResult<bool> {
         let conn = Connection::open(&self.db_path)?;
         conn.query_row(
@@ -3423,10 +3440,16 @@ impl StereodromeCore {
     }
 
     fn enforce_audio_cache_limit(&self) -> CoreResult<()> {
+        self.enforce_audio_cache_limit_to(self.max_cache_size()?)
+    }
+
+    fn enforce_audio_cache_limit_to(&self, max_size: u64) -> CoreResult<()> {
         let _cache_guard = cache_mutation_guard()?;
-        let max_size = self.max_cache_size()?;
         let mut entries = self.audio_cache_entries()?;
-        let protected_paths = self.protected_audio_cache_paths()?;
+        let mut protected_paths = self.protected_audio_cache_paths()?;
+        if let Some(active_path) = self.active_playback_cache_path()? {
+            protected_paths.insert(active_path);
+        }
         let mut total_size: u64 = entries.iter().map(|(_, size)| *size).sum();
         if total_size <= max_size {
             return Ok(());
@@ -3470,7 +3493,14 @@ impl StereodromeCore {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     self.emit_cache_state_event(CacheStateEvent::Reconcile);
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    // The file is still in use (or otherwise locked), so leave its size and
+                    // download record intact and keep evicting the rest.
+                    warn!(
+                        "skipping cached audio file that could not be evicted: {} ({error})",
+                        path.display()
+                    );
+                }
             }
         }
 
@@ -5640,6 +5670,63 @@ mod tests {
 
         assert!(saved_path.exists());
         assert!(!cache_path.exists());
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn eviction_keeps_the_currently_playing_track() {
+        // Written oldest-first so "playing" is the entry the least-recently-used
+        // ordering reaches first.
+        fn seed_cache(
+            core: &StereodromeCore,
+        ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+            let mut paths = Vec::new();
+            for song_id in ["playing", "older", "newer"] {
+                let path = core
+                    .audio_cache_path(song_id, MOBILE_PLAYBACK_FORMAT)
+                    .expect("cache path");
+                std::fs::write(&path, vec![0u8; 100]).expect("write cache file");
+                std::thread::sleep(Duration::from_millis(20));
+                paths.push(path);
+            }
+            let mut paths = paths.into_iter();
+            (
+                paths.next().expect("playing"),
+                paths.next().expect("older"),
+                paths.next().expect("newer"),
+            )
+        }
+
+        // Control: with nothing playing, the oldest entry is the one evicted.
+        let idle_dir = unique_temp_dir("eviction-idle");
+        let idle = StereodromeCore::new(&idle_dir).expect("core initializes");
+        let (idle_oldest, idle_older, idle_newer) = seed_cache(&idle);
+        idle.enforce_audio_cache_limit_to(250)
+            .expect("enforce cache limit");
+        assert!(!idle_oldest.exists(), "oldest entry is evicted first");
+        assert!(idle_older.exists());
+        assert!(idle_newer.exists());
+        std::fs::remove_dir_all(&idle_dir).ok();
+
+        // With that same track playing, eviction skips it and takes the next candidate.
+        let data_dir = unique_temp_dir("eviction-playing");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let (playing, older, newer) = seed_cache(&core);
+        core.save_playback_position(PlaybackProgress {
+            song_id: "playing".to_string(),
+            position_seconds: 12.0,
+            duration_seconds: 180.0,
+            is_playing: true,
+        })
+        .expect("persist playback position");
+
+        core.enforce_audio_cache_limit_to(250)
+            .expect("enforce cache limit");
+
+        assert!(playing.exists(), "playing track survives eviction");
+        assert!(!older.exists(), "eviction moves on to the next candidate");
+        assert!(newer.exists());
 
         std::fs::remove_dir_all(data_dir).ok();
     }
