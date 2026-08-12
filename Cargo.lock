@@ -5822,7 +5822,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stereodrome"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -5857,7 +5857,7 @@ dependencies = [
 
 [[package]]
 name = "stereodrome-audio"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bs2b",
  "ebur128",
@@ -5872,7 +5872,7 @@ dependencies = [
 
 [[package]]
 name = "stereodrome-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "log",
@@ -5897,7 +5897,7 @@ dependencies = [
 
 [[package]]
 name = "stereodrome-ffi"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "log",
  "serde",
