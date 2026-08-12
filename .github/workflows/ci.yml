@@ -120,7 +120,12 @@ jobs:
       - name: Audit mobile dependencies
         working-directory: mobile
         # xcode uses uuid.v4 only; GHSA-w5hq-g745-h8pq affects buffered v3/v5/v6.
-        run: vp pm audit -- --ignore GHSA-w5hq-g745-h8pq
+        # image-size has no patched release yet; Metro only uses it on local image assets.
+        run: >-
+          vp pm audit --
+          --ignore GHSA-w5hq-g745-h8pq
+          --ignore GHSA-w3rx-r6r6-pgpr
+          --ignore GHSA-5p2g-fcmc-qvqq
 
       - name: Build Android Rust core
         run: scripts/build-mobile-rust.sh android
