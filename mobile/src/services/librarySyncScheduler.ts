@@ -1,7 +1,8 @@
 import * as BackgroundTask from "expo-background-task";
 import * as TaskManager from "expo-task-manager";
 
-import { stereodromeCore } from "@/services/stereodromeCore";
+import { coreClient } from "@/core/client";
+import { coreActions, coreStore } from "@/core/store";
 import type { SyncSettings } from "@/types/music";
 
 const TASK_NAME = "stereodrome-library-sync";
@@ -9,19 +10,8 @@ const MIN_OS_BACKGROUND_INTERVAL_MINUTES = 15;
 
 TaskManager.defineTask(TASK_NAME, async () => {
   try {
-    await stereodromeCore.initialize();
-    const connectivitySettings =
-      await stereodromeCore.getConnectivitySettings();
-    if (connectivitySettings.manual_offline_enabled) {
-      return BackgroundTask.BackgroundTaskResult.Success;
-    }
-
-    const status = await stereodromeCore.restoreSession();
-    if (!status.connected) {
-      return BackgroundTask.BackgroundTaskResult.Success;
-    }
-
-    await stereodromeCore.runDueLibrarySync();
+    await coreStore.initialize();
+    await coreActions.runBackgroundTick();
     return BackgroundTask.BackgroundTaskResult.Success;
   } catch {
     return BackgroundTask.BackgroundTaskResult.Failed;
@@ -29,13 +19,9 @@ TaskManager.defineTask(TASK_NAME, async () => {
 });
 
 export async function syncLibraryBackgroundRegistration(): Promise<void> {
-  const connectivitySettings = await stereodromeCore.getConnectivitySettings();
-  if (connectivitySettings.manual_offline_enabled) {
-    await configureLibrarySyncBackgroundTask(null);
-    return;
-  }
-
-  const settings = await stereodromeCore.getSyncSettings();
+  const settings = await coreClient.dispatchTyped({
+    type: "get-sync-settings",
+  });
   await configureLibrarySyncBackgroundTask(settings);
 }
 

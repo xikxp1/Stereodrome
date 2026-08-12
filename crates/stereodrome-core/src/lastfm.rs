@@ -22,6 +22,7 @@ const MAX_BATCH_SIZE: i64 = 50;
 
 // These flags are independent wire-format fields consumed by the mobile UI.
 #[allow(clippy::struct_excessive_bools)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LastfmStatus {
     pub available: bool,
@@ -33,11 +34,13 @@ pub struct LastfmStatus {
     pub last_error: Option<String>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LastfmAuthStart {
     pub auth_url: String,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LastfmQueueItem {
     pub id: i64,
@@ -344,6 +347,22 @@ fn load_session(db_path: &Path) -> CoreResult<Option<LastfmSession>> {
     Ok(Some(serde_json::from_str(&json)?))
 }
 
+pub(crate) fn import_session_if_missing(
+    db_path: &Path,
+    username: String,
+    session_key: String,
+) -> CoreResult<()> {
+    if load_session(db_path)?.is_some() {
+        return Ok(());
+    }
+    let session = LastfmSession {
+        username,
+        session_key,
+    };
+    write_sync_value(db_path, KEY_SESSION, &serde_json::to_string(&session)?)?;
+    write_sync_value(db_path, KEY_ENABLED, "true")
+}
+
 fn sync_value(db_path: &Path, key: &str) -> CoreResult<Option<String>> {
     let conn = Connection::open(db_path)?;
     let value = conn
@@ -437,7 +456,8 @@ fn summarize_response_body(body: &str) -> String {
 
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.len() > MAX_LEN {
-        format!("{}...", &compact[..MAX_LEN])
+        // Response bodies are arbitrary remote bytes, so MAX_LEN can land mid-character.
+        format!("{}...", &compact[..compact.floor_char_boundary(MAX_LEN)])
     } else if compact.is_empty() {
         "<empty>".to_string()
     } else {
@@ -690,5 +710,24 @@ mod tests {
     fn retry_backoff_is_capped() {
         assert_eq!(retry_delay_secs(1), 120);
         assert_eq!(retry_delay_secs(99), 3600);
+    }
+
+    #[test]
+    fn summarize_response_body_truncates_multibyte_bodies() {
+        // A leading ASCII byte shifts every following 3-byte character so that the
+        // 300-byte cutoff falls inside one of them.
+        let body = format!("a{}", "\u{4e2d}".repeat(200));
+        let summary = summarize_response_body(&body);
+
+        assert!(summary.ends_with("..."));
+        let truncated = summary.strip_suffix("...").expect("suffix checked");
+        assert!(truncated.len() <= 300);
+        assert!(body.starts_with(truncated));
+    }
+
+    #[test]
+    fn summarize_response_body_passes_through_short_and_empty_bodies() {
+        assert_eq!(summarize_response_body("  bad   gateway "), "bad gateway");
+        assert_eq!(summarize_response_body("   "), "<empty>");
     }
 }

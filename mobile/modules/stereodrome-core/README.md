@@ -4,15 +4,19 @@ This local Expo module is the mobile boundary for `crates/stereodrome-ffi`.
 
 Current shape:
 
-- TypeScript calls `StereodromeCore.call(method, payloadJson)`.
-- The Rust FFI crate exposes `stereodrome_core_call(core, method, payload)`.
-- Payloads and return values are JSON envelopes:
-  - success: `{ "ok": true, "value": ... }`
-  - failure: `{ "ok": false, "error": "..." }`
+- TypeScript calls `StereodromeCore.dispatch(commandJson)` with a versioned
+  `CoreCommandRequest`.
+- The Rust FFI crate exposes only the `stereodrome_runtime_*` lifecycle,
+  dispatch, snapshot, and event callback functions.
+- Results and events use the types generated from
+  `crates/stereodrome-core/src/protocol.rs`.
+- The event callback forwards one unwrapped, ordered `CoreEvent` stream.
 
 The Swift/Kotlin module files are intentionally thin. They keep one native
-`StereodromeCore` handle alive after `initialize(dataDir)` and forward every
-`call` invocation to `stereodrome_core_call`.
+runtime handle alive after `initialize(dataDir)`, forward typed dispatches, map
+`snapshot.playback` to platform media APIs, and forward runtime events to JS
+when it is awake. The wire contract is documented in
+`docs/MOBILE_RUNTIME_PROTOCOL.md`.
 
 Before creating a dev build, generate the Rust native artifacts:
 

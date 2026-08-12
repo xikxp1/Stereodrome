@@ -2,7 +2,7 @@ import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 
-import { stereodromeCore } from "@/services/stereodromeCore";
+import { coreClient } from "@/core/client";
 import type { BackupSummary } from "@/types/music";
 
 export async function sharePortableBackup(): Promise<BackupSummary> {
@@ -14,9 +14,10 @@ export async function sharePortableBackup(): Promise<BackupSummary> {
   if (file.exists) {
     file.delete();
   }
-  const summary = await stereodromeCore.exportPortableBackup(
-    nativeFilePath(file.uri)
-  );
+  const summary = await coreClient.dispatchTyped({
+    type: "export-portable-backup",
+    path: nativeFilePath(file.uri),
+  });
   try {
     await Sharing.shareAsync(file.uri, {
       dialogTitle: "Export Stereodrome Backup",
@@ -46,9 +47,10 @@ export async function pickAndImportPortableBackup(): Promise<BackupSummary | nul
   }
   const file = new File(asset.uri);
   try {
-    return await stereodromeCore.importPortableBackup(
-      nativeFilePath(asset.uri)
-    );
+    return await coreClient.dispatchTyped({
+      type: "import-portable-backup",
+      path: nativeFilePath(asset.uri),
+    });
   } finally {
     if (file.exists) {
       file.delete();

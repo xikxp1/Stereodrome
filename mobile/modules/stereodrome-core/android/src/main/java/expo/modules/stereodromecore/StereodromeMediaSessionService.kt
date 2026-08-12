@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Looper
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import org.json.JSONObject
 
 class StereodromeMediaSessionService : MediaSessionService() {
   private var mediaSession: MediaSession? = null
@@ -17,8 +18,12 @@ class StereodromeMediaSessionService : MediaSessionService() {
   private val becomingNoisyReceiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
       if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-        StereodromeCoreCommandQueue.enqueue("audioPause") {
-          StereodromeCoreBridge.pause()
+        StereodromeCoreCommandQueue.enqueue("route-lost") {
+          StereodromeCoreBridge.dispatchCommand(
+            JSONObject()
+              .put("type", "report-platform-playback")
+              .put("event", JSONObject().put("type", "route-lost")),
+          )
         }
       }
     }

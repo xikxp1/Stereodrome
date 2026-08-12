@@ -2,9 +2,9 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
 import { SelectableList } from "@/components/SelectableList";
-import { usePlaybackActions } from "@/context/PlaybackContext";
+import { coreClient } from "@/core/client";
+import { usePlaybackActions } from "@/core/selectors";
 import { useViewStack } from "@/context/ViewContext";
-import { stereodromeCore } from "@/services/stereodromeCore";
 import type { AlbumListEntry } from "@/types/music";
 
 export type RankedAlbumListKind =
@@ -51,7 +51,12 @@ export function AlbumListScreen({ kind }: { kind: RankedAlbumListKind }) {
   const albums = useInfiniteQuery({
     queryKey: ["album-list", kind],
     queryFn: ({ pageParam }) =>
-      stereodromeCore.getAlbumList(config.listType, pageSize, pageParam),
+      coreClient.dispatchTyped({
+        type: "get-album-list",
+        list_type: config.listType,
+        size: pageSize,
+        offset: pageParam,
+      }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, pages) =>
       lastPage.length < pageSize ? undefined : pages.length * pageSize,
@@ -63,7 +68,11 @@ export function AlbumListScreen({ kind }: { kind: RankedAlbumListKind }) {
 
   const playAlbum = useCallback(
     async (albumId: string) => {
-      const songs = await stereodromeCore.getSongs(albumId);
+      const songs = await coreClient.dispatchTyped({
+        type: "get-songs",
+        album_id: albumId,
+        artist_id: null,
+      });
       const firstSong = songs[0];
       if (firstSong) {
         await playback.playSong(firstSong, songs);

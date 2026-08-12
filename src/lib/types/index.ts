@@ -1,93 +1,34 @@
-// Connection types
-export interface ConnectionStatus {
-  connected: boolean;
-  server_url: string | null;
-  username: string | null;
-  server_version: string | null;
-}
+export type {
+  Album,
+  AlbumListEntry,
+  Artist,
+  BackupSummary,
+  CacheStats,
+  ConnectParams,
+  ConnectionStatus,
+  ConnectivitySettings,
+  LastfmAuthStart,
+  LastfmQueueItem,
+  LastfmStatus,
+  LibrarySyncStatus,
+  NowPlayingEntry,
+  Playlist,
+  QueueItem,
+  QueueState,
+  RepeatMode,
+  SavedPlaylistOfflineResult,
+  ScanStatus,
+  SearchResultAlbum,
+  SearchResultArtist,
+  SearchResultSong,
+  SearchResults,
+  Song,
+  SyncJobStatus,
+  SyncResult,
+  SyncSettings,
+} from "./protocol.generated";
 
-export interface ConnectParams {
-  url: string;
-  username: string;
-  password: string;
-}
-
-// Library types
-export interface Artist {
-  id: string;
-  name: string;
-  album_count: number;
-  cover_art_id: string | null;
-  synced_at: string;
-}
-
-export interface Album {
-  id: string;
-  artist_id: string;
-  name: string;
-  year: number | null;
-  song_count: number;
-  duration: number | null;
-  cover_art_id: string | null;
-  synced_at: string;
-  // Joined fields
-  artistName?: string;
-}
-
-export interface AlbumListEntry {
-  id: string;
-  name: string;
-  artist_id: string | null;
-  artistName: string | null;
-  year: number | null;
-  song_count: number | null;
-  duration: number | null;
-  cover_art_id: string | null;
-  play_count: number | null;
-  created: string | null;
-}
-
-export interface Song {
-  id: string;
-  album_id: string;
-  artist_id: string;
-  title: string;
-  track_number: number | null;
-  disc_number: number;
-  duration: number | null;
-  bit_rate: number | null;
-  size: number | null;
-  suffix: string | null;
-  content_type: string | null;
-  path: string | null;
-  year: number | null;
-  genre: string | null;
-  synced_at: string;
-  // Joined fields
-  artist?: string;
-  album?: string;
-}
-
-export interface Playlist {
-  id: string;
-  name: string;
-  song_count: number;
-  duration: number;
-  owner: string | null;
-  cover_art_id: string | null;
-  created_at: string;
-  changed_at: string;
-  saved_offline: boolean;
-  offline_saved_at: string | null;
-}
-
-export interface SavedPlaylistOfflineResult {
-  playlist_id: string;
-  saved_offline: boolean;
-  downloaded_count: number;
-  removed_count: number;
-  skipped_protected_count: number;
-}
+import type { NowPlayingEntry, Song } from "./protocol.generated";
 
 // Playback types
 export interface PlaybackState {
@@ -96,67 +37,6 @@ export interface PlaybackState {
   position: number;
   duration: number;
   volume: number;
-}
-
-// Queue types
-export interface QueueItem {
-  song_id: string;
-  title: string;
-  artist: string;
-  album: string;
-  duration: number;
-}
-
-export type RepeatMode = "Off" | "All" | "One";
-
-export interface QueueState {
-  items: QueueItem[];
-  current_index: number | null;
-  shuffle: boolean;
-  repeat_mode: RepeatMode;
-  pending_navigation_index: number | null;
-  prepared_next_item: QueueItem | null;
-}
-
-// Sync types
-export interface SyncResult {
-  artists: number;
-  albums: number;
-  songs: number;
-}
-
-export interface ScanStatus {
-  scanning: boolean;
-  count: number | null;
-}
-
-// Search types
-export interface SearchResultSong {
-  id: string;
-  title: string;
-  artist: string | null;
-  album: string | null;
-  duration: number | null;
-}
-
-export interface SearchResultAlbum {
-  id: string;
-  name: string;
-  artist: string | null;
-  year: number | null;
-  song_count: number;
-}
-
-export interface SearchResultArtist {
-  id: string;
-  name: string;
-  album_count: number;
-}
-
-export interface SearchResults {
-  songs: SearchResultSong[];
-  albums: SearchResultAlbum[];
-  artists: SearchResultArtist[];
 }
 
 // Normalization types
@@ -205,10 +85,6 @@ export interface NotificationSettings {
   notify_when_miniplayer_open: boolean;
 }
 
-export interface ConnectivitySettings {
-  manual_offline_enabled: boolean;
-}
-
 export interface CacheLocationInfo {
   cache_root: string;
   default_cache_root: string;
@@ -235,30 +111,7 @@ export interface SendNowPlayingNotificationParams {
   cover_art_path?: string | null;
 }
 
-export interface SyncSettings {
-  incremental_enabled: boolean;
-  incremental_interval_minutes: number;
-  full_reconcile_enabled: boolean;
-  full_reconcile_interval_hours: number;
-}
-
 export type SyncJobKind = "incremental" | "full_reconcile";
-
-export interface SyncJobStatus {
-  enabled: boolean;
-  interval_minutes: number;
-  running: boolean;
-  last_attempt_at: string | null;
-  last_success_at: string | null;
-  last_error: string | null;
-  next_run_at: string | null;
-}
-
-export interface LibrarySyncStatus {
-  active_job: SyncJobKind | null;
-  incremental: SyncJobStatus;
-  full_reconcile: SyncJobStatus;
-}
 
 export interface LibraryContentUpdatedEvent {
   job: SyncJobKind;
@@ -273,35 +126,6 @@ export interface SystemTimePreferences {
   locale: string | null;
 }
 
-export interface LastfmStatus {
-  available: boolean;
-  authenticated: boolean;
-  enabled: boolean;
-  username: string | null;
-  pending_auth: boolean;
-  queue_count: number;
-  last_error: string | null;
-}
-
-export interface LastfmAuthStart {
-  auth_url: string;
-}
-
-export interface LastfmQueueItem {
-  id: number;
-  song_id: string;
-  title: string;
-  artist: string;
-  album: string | null;
-  duration: number | null;
-  played_at: number;
-  attempts: number;
-  next_retry_at: number;
-  last_error: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface MiniPlayerPosition {
   x: number;
   y: number;
@@ -311,19 +135,6 @@ export type MiniPlayerMode = "mini" | "nano";
 
 export interface MiniPlayerHoverState {
   hovered: boolean;
-}
-
-// Now Playing types
-export interface NowPlayingEntry {
-  id: string;
-  title: string;
-  artist: string | null;
-  album: string | null;
-  duration: number | null;
-  cover_art: string | null;
-  username: string;
-  minutes_ago: number;
-  player_name: string | null;
 }
 
 export interface NowPlayingEvent {

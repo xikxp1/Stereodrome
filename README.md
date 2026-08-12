@@ -10,7 +10,7 @@ Desktop and mobile music player for Subsonic-compatible servers, inspired by cla
 
 - Music playback experience inspired by legacy iTunes versions (2010-2012)
 - Sync library metadata from your Subsonic server
-- Full-text search powered by Tantivy
+- Local library search across songs, albums, and artists
 - System integration: media controls, system tray, keyboard controls
 - Local audio cache with configurable size
 - Mini player and desktop notifications

@@ -21,27 +21,15 @@ fn normalized_volume(volume: f32) -> f32 {
     }
 }
 
-pub fn read_persisted_volume(app_handle: &AppHandle) -> f32 {
-    if let Ok(store) = app_handle.store(STORE_FILE)
-        && let Some(value) = store.get(KEY_VOLUME)
-        && let Ok(volume) = serde_json::from_value::<f32>(value.clone())
-    {
-        return normalized_volume(volume);
-    }
-
-    DEFAULT_VOLUME
-}
-
-pub fn write_persisted_volume(app_handle: &AppHandle, volume: f32) -> AppResult<()> {
-    let volume = normalized_volume(volume);
-    let store = app_handle
-        .store(STORE_FILE)
-        .map_err(|e| to_io_error("failed to open runtime state store", e))?;
-    store.set(KEY_VOLUME, serde_json::json!(volume));
-    store
-        .save()
-        .map_err(|e| to_io_error("failed to save runtime state store", e))?;
-    Ok(())
+pub(crate) fn take_legacy_persisted_volume(app_handle: &AppHandle) -> Option<f32> {
+    let store = app_handle.store(STORE_FILE).ok()?;
+    let volume = store
+        .get(KEY_VOLUME)
+        .and_then(|value| serde_json::from_value::<f32>(value.clone()).ok())
+        .map(normalized_volume)?;
+    store.delete(KEY_VOLUME);
+    let _ = store.save();
+    Some(volume)
 }
 
 fn is_finite_position(position: &MiniPlayerPosition) -> bool {
@@ -80,12 +68,6 @@ pub fn write_mini_player_position(
         .save()
         .map_err(|e| to_io_error("failed to save runtime state store", e))?;
     Ok(())
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn set_persisted_volume(app_handle: AppHandle, volume: f32) -> AppResult<()> {
-    write_persisted_volume(&app_handle, volume)
 }
 
 #[tauri::command]

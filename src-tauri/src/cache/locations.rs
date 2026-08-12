@@ -12,8 +12,7 @@ use crate::error::{AppError, AppResult};
 pub const AUDIO_CACHE_DIR_NAME: &str = "audio_cache";
 pub const COVER_CACHE_DIR_NAME: &str = "cover_cache";
 pub const KEY_CACHE_ROOT: &str = "cache_root";
-
-use super::STORE_FILE;
+const STORE_FILE: &str = "settings.json";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CacheLocationInfo {
@@ -62,18 +61,6 @@ pub fn current_cache_root(app_handle: &AppHandle) -> AppResult<PathBuf> {
     }
 
     default_cache_root(app_handle)
-}
-
-pub fn audio_cache_dir(app_handle: &AppHandle) -> AppResult<PathBuf> {
-    let cache_dir = current_cache_root(app_handle)?.join(AUDIO_CACHE_DIR_NAME);
-    fs::create_dir_all(&cache_dir)?;
-    Ok(cache_dir)
-}
-
-pub fn cover_cache_dir(app_handle: &AppHandle) -> AppResult<PathBuf> {
-    let cache_dir = current_cache_root(app_handle)?.join(COVER_CACHE_DIR_NAME);
-    fs::create_dir_all(&cache_dir)?;
-    Ok(cache_dir)
 }
 
 pub fn cache_location_info(app_handle: &AppHandle) -> AppResult<CacheLocationInfo> {

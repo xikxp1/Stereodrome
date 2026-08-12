@@ -13,7 +13,6 @@ object StereodromeAudioFocus {
   private var focusRequest: AudioFocusRequest? = null
   private var ownsFocus = false
   private var focusGeneration = 0L
-  @Volatile private var shouldResumeAfterTransientLoss = false
   private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
     handleFocusChange(focusChange)
   }
@@ -53,7 +52,6 @@ object StereodromeAudioFocus {
   }
 
   fun abandon(context: Context) = synchronized(lock) {
-    shouldResumeAfterTransientLoss = false
     if (!ownsFocus) {
       return@synchronized
     }
@@ -86,8 +84,7 @@ object StereodromeAudioFocus {
           if (!isCurrentGeneration(lossGeneration)) {
             return@enqueue
           }
-          shouldResumeAfterTransientLoss = false
-          StereodromeCoreBridge.pauseFromAudioFocusLoss()
+          StereodromeCoreBridge.reportAudioFocusLost(transient = false)
         }
       }
       AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
@@ -100,8 +97,7 @@ object StereodromeAudioFocus {
           if (!isCurrentGeneration(lossGeneration)) {
             return@enqueue
           }
-          shouldResumeAfterTransientLoss =
-            StereodromeCoreBridge.pauseFromTransientAudioFocusLoss()
+          StereodromeCoreBridge.reportAudioFocusLost(transient = true)
         }
       }
       AudioManager.AUDIOFOCUS_GAIN -> {
@@ -114,11 +110,7 @@ object StereodromeAudioFocus {
           if (!isCurrentGeneration(gainGeneration)) {
             return@enqueue
           }
-          val shouldResume = shouldResumeAfterTransientLoss
-          shouldResumeAfterTransientLoss = false
-          if (shouldResume) {
-            StereodromeCoreBridge.resumeFromAudioFocusGain()
-          }
+          StereodromeCoreBridge.reportAudioFocusGained()
         }
       }
     }

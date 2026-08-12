@@ -82,6 +82,7 @@ pub struct LibrarySyncMetadata {
     pub newest_head_album_id: Option<String>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupSummary {
     pub artists: usize,
@@ -597,9 +598,12 @@ fn sanitize_preferences(preferences: &mut PortablePreferences) {
     if let Some(sync) = preferences.sync.take() {
         preferences.sync = Some(sync.clamped());
     }
-    if let Some(volume) = &mut preferences.volume
-        && volume.is_finite()
-    {
+    if let Some(volume) = &mut preferences.volume {
+        // clamp() folds ±infinity into the range but propagates NaN, which has no
+        // meaningful volume to fall back to.
+        if volume.is_nan() {
+            *volume = 1.0;
+        }
         *volume = volume.clamp(0.0, 1.0);
     }
     let Some(audio) = &mut preferences.audio_processing else {
@@ -618,8 +622,6 @@ fn sanitize_preferences(preferences: &mut PortablePreferences) {
         }
     }
     crate::clamp_audio_processing_settings(audio);
-    audio.preamp_db = audio.preamp_db.clamp(-10.0, 10.0);
-    audio.crossfade_duration_ms = audio.crossfade_duration_ms.clamp(1000, 12_000);
 }
 
 fn unique_ids<'a>(ids: impl Iterator<Item = &'a str>, kind: &str) -> CoreResult<HashSet<&'a str>> {
@@ -841,6 +843,138 @@ mod tests {
     use rusqlite::Connection;
 
     use super::*;
+
+    #[test]
+    fn sanitizing_preferences_preserves_the_full_supported_ranges() {
+        // Every value here is legal per clamp_audio_processing_settings, so a backup
+        // round trip must return it untouched.
+        let extremes = AudioProcessingSettings {
+            target_lufs: -24.0,
+            preamp_db: -12.0,
+            crossfade_duration_ms: 500,
+            prefetch_count: 10,
+            equalizer_bands_db: vec![-12.0; 12],
+            ..AudioProcessingSettings::default()
+        };
+        let mut preferences = PortablePreferences {
+            sync: None,
+            connectivity: None,
+            audio_processing: Some(extremes.clone()),
+            volume: Some(1.0),
+        };
+
+        sanitize_preferences(&mut preferences);
+
+        let audio = preferences
+            .audio_processing
+            .expect("audio processing preserved");
+        assert!((audio.preamp_db - extremes.preamp_db).abs() < f64::EPSILON);
+        assert_eq!(audio.crossfade_duration_ms, extremes.crossfade_duration_ms);
+        assert!((audio.target_lufs - extremes.target_lufs).abs() < f64::EPSILON);
+        assert_eq!(audio.prefetch_count, extremes.prefetch_count);
+        assert_eq!(audio.equalizer_bands_db, extremes.equalizer_bands_db);
+
+        // The opposite ends of each range survive too.
+        let mut upper = PortablePreferences {
+            sync: None,
+            connectivity: None,
+            audio_processing: Some(AudioProcessingSettings {
+                target_lufs: -8.0,
+                preamp_db: 12.0,
+                crossfade_duration_ms: 15_000,
+                ..AudioProcessingSettings::default()
+            }),
+            volume: Some(0.0),
+        };
+        sanitize_preferences(&mut upper);
+        let audio = upper.audio_processing.expect("audio processing preserved");
+        assert!((audio.preamp_db - 12.0).abs() < f64::EPSILON);
+        assert_eq!(audio.crossfade_duration_ms, 15_000);
+        assert!((audio.target_lufs + 8.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn sanitizing_preferences_repairs_non_finite_volume() {
+        // A corrupt local app_volume must not make the whole export unbackupable.
+        for (input, expected) in [
+            (f64::NAN, 1.0),
+            (f64::INFINITY, 1.0),
+            (f64::NEG_INFINITY, 0.0),
+            (4.0, 1.0),
+            (-1.0, 0.0),
+            (0.35, 0.35),
+        ] {
+            let mut preferences = PortablePreferences {
+                sync: None,
+                connectivity: None,
+                audio_processing: None,
+                volume: Some(input),
+            };
+
+            sanitize_preferences(&mut preferences);
+
+            let volume = preferences.volume.expect("volume preserved");
+            assert!(
+                (volume - expected).abs() < f64::EPSILON,
+                "volume {input} sanitized to {volume}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitized_backup_with_corrupt_volume_passes_validation() {
+        let mut backup = PortableBackup {
+            format: BACKUP_FORMAT.to_string(),
+            version: BACKUP_VERSION,
+            created_at: Utc::now().to_rfc3339(),
+            source_fingerprint: None,
+            preferences: PortablePreferences {
+                sync: None,
+                connectivity: None,
+                audio_processing: None,
+                volume: Some(f64::NAN),
+            },
+            library: BackupLibrary::default(),
+            playlists: Vec::new(),
+            playlist_songs: Vec::new(),
+            queue: BackupQueue::default(),
+            sync_metadata: LibrarySyncMetadata::default(),
+        };
+
+        // validate() rejects a non-finite volume, so sanitizing has to repair it first.
+        assert!(validate(&backup).is_err());
+        sanitize_preferences(&mut backup.preferences);
+        validate(&backup).expect("sanitized backup validates");
+    }
+
+    #[test]
+    fn sanitizing_preferences_still_rejects_out_of_range_values() {
+        let mut preferences = PortablePreferences {
+            sync: None,
+            connectivity: None,
+            audio_processing: Some(AudioProcessingSettings {
+                target_lufs: -100.0,
+                preamp_db: 99.0,
+                crossfade_duration_ms: 999_999,
+                prefetch_count: 999,
+                equalizer_bands_db: vec![50.0; 12],
+                ..AudioProcessingSettings::default()
+            }),
+            volume: Some(4.0),
+        };
+
+        sanitize_preferences(&mut preferences);
+
+        let audio = preferences
+            .audio_processing
+            .expect("audio processing preserved");
+        assert!((audio.preamp_db - 12.0).abs() < f64::EPSILON);
+        assert_eq!(audio.crossfade_duration_ms, 15_000);
+        assert!((audio.target_lufs + 24.0).abs() < f64::EPSILON);
+        assert_eq!(audio.prefetch_count, 10);
+        assert_eq!(audio.equalizer_bands_db, vec![12.0; 12]);
+        assert_eq!(preferences.volume, Some(1.0));
+    }
 
     #[test]
     fn portable_backup_round_trip_replaces_data_and_preserves_secrets() {

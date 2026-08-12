@@ -1,28 +1,29 @@
 package expo.modules.stereodromecore
 
 import android.content.Context
-import android.util.Log
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicLong
 
 object StereodromeCoreBridge {
-  private const val TAG = "StereodromeCoreBridge"
   private val jni = StereodromeCoreJni()
   private val lock = Any()
+  private val nextCallbackToken = AtomicLong(1)
+  private val nextNativeCommandId = AtomicLong(Long.MAX_VALUE)
   @Volatile private var handle: Long = 0
   private var applicationContext: Context? = null
-  @Volatile private var playbackSnapshotListener: ((String) -> Unit)? = null
   @Volatile private var coreEventListener: ((String) -> Unit)? = null
-  @Volatile private var eventStreamId: Long? = null
+  @Volatile private var activeCallbackToken: Long = 0
 
   fun initialize(context: Context, dataDir: String): Boolean = synchronized(lock) {
     applicationContext = context.applicationContext
     if (handle != 0L) {
       return@synchronized true
     }
-    eventStreamId = null
-    handle = jni.initialize(dataDir)
-    if (handle != 0L) {
-      eventStreamId = envelopeLong(jni.call(handle, "getEventStreamId", "null"))
+    val callbackToken = nextCallbackToken.getAndIncrement()
+    activeCallbackToken = callbackToken
+    handle = jni.initialize(dataDir, callbackToken)
+    if (handle == 0L) {
+      activeCallbackToken = 0
     }
     handle != 0L
   }
@@ -31,7 +32,7 @@ object StereodromeCoreBridge {
     val context = synchronized(lock) {
       val currentHandle = handle
       handle = 0
-      eventStreamId = null
+      activeCallbackToken = 0
       applicationContext?.let(StereodromeAudioFocus::abandon)
       if (currentHandle != 0L) {
         jni.destroy(currentHandle)
@@ -41,72 +42,37 @@ object StereodromeCoreBridge {
     context?.let(StereodromeMediaSessionState::clear)
   }
 
-  fun setPlaybackSnapshotListener(listener: ((String) -> Unit)?) {
-    playbackSnapshotListener = listener
-  }
-
   fun setCoreEventListener(listener: ((String) -> Unit)?) {
     coreEventListener = listener
   }
 
   @JvmStatic
-  fun onRustCoreEvent(event: String) {
-    val streamId = try {
-      JSONObject(event).optLong("stream_id", -1L)
-    } catch (_: Throwable) {
-      -1L
-    }
-    if (handle != 0L && streamId >= 0L && streamId == eventStreamId) {
-      coreEventListener?.invoke(event)
-    }
-  }
-
-  private fun envelopeLong(envelope: String): Long? = try {
-    val parsed = JSONObject(envelope)
-    if (parsed.optBoolean("ok")) parsed.optLong("value") else null
-  } catch (_: Throwable) {
-    null
-  }
-
-  @JvmStatic
-  fun onRustPlaybackSnapshot(snapshot: String) {
-    // destroy() clears handle before joining Rust's monitor thread. Do not take
-    // lock here or teardown can wait on a callback that is waiting on teardown.
-    if (handle == 0L) {
+  fun onRustCoreEvent(callbackToken: Long, event: String) {
+    if (callbackToken != activeCallbackToken) {
       return
     }
-    // Apply the OS projection before returning through JNI; the Rust command
-    // completes as soon as this callback returns.
-    try {
-      applicationContext?.let { context ->
-        StereodromeMediaSessionState.applyPlaybackSnapshot(context, snapshot)
-      }
-    } catch (error: Throwable) {
-      Log.e(TAG, "Failed to apply synchronous playback projection", error)
+    applicationContext?.let { context ->
+      StereodromeMediaSessionState.applyRuntimeEvent(context, event)
     }
-    playbackSnapshotListener?.invoke(snapshot)
+    coreEventListener?.invoke(event)
   }
 
-  fun call(method: String, payload: String): String = synchronized(lock) {
+  fun dispatch(commandJson: String): String = synchronized(lock) {
     if (handle == 0L) {
-      return """{"ok":false,"error":"Stereodrome Rust core is not initialized"}"""
+      return """{"protocol_version":1,"command_id":0,"accepted_revision":0,"operation_id":null,"status":"failed","error":{"code":"runtime_unavailable","message":"Stereodrome Rust core is not initialized","retryable":true}}"""
     }
-    jni.call(handle, method, payload)
+    jni.dispatch(handle, commandJson)
   }
 
-  fun callWithAudioFocus(
-    context: Context,
-    method: String,
-    payload: String,
-  ): String = synchronized(lock) {
+  fun dispatchWithAudioFocus(context: Context, command: JSONObject): String = synchronized(lock) {
     val lease = StereodromeAudioFocus.request(context.applicationContext)
-      ?: return@synchronized errorEnvelope("Android audio focus request was denied")
+      ?: return@synchronized runtimeError("Android audio focus request was denied")
     val result = if (handle == 0L) {
-      errorEnvelope("Stereodrome Rust core is not initialized")
+      runtimeError("Stereodrome Rust core is not initialized")
     } else {
-      jni.call(handle, method, payload)
+      dispatchCommandLocked(command)
     }
-    if (!isSuccessfulResponse(result)) {
+    if (!isSuccessfulRuntimeResponse(result)) {
       StereodromeAudioFocus.rollback(context.applicationContext, lease)
     }
     result
@@ -116,96 +82,69 @@ object StereodromeCoreBridge {
     handle != 0L
   }
 
-  fun pauseFromAudioFocusLoss() {
+  fun reportAudioFocusLost(transient: Boolean) {
     if (!hasCore()) {
       return
     }
-    if (!isPlaying()) {
-      return
-    }
-    call("audioPause", "null")
+    dispatchCommand(
+      JSONObject()
+        .put("type", "report-platform-playback")
+        .put(
+          "event",
+          JSONObject().put("type", "audio-focus-lost").put("transient", transient),
+        ),
+    )
   }
 
-  fun pauseFromTransientAudioFocusLoss(): Boolean {
-    if (!hasCore() || !isPlaying()) {
-      return false
-    }
-    call("audioPause", "null")
-    return true
-  }
-
-  fun resumeFromAudioFocusGain() {
+  fun reportAudioFocusGained() {
     if (!hasCore()) {
       return
     }
-    val result = call("audioResume", "null")
-    if (!isSuccessfulResponse(result)) {
+    val result = dispatchCommand(
+      JSONObject()
+        .put("type", "report-platform-playback")
+        .put("event", JSONObject().put("type", "audio-focus-gained")),
+    )
+    if (!isSuccessfulRuntimeResponse(result)) {
       applicationContext?.let(StereodromeAudioFocus::abandon)
     }
   }
 
-  fun play() {
-    if (!hasCore()) {
-      return
+  fun dispatchCommand(command: JSONObject): String = synchronized(lock) {
+    if (handle == 0L) {
+      return@synchronized runtimeError("Stereodrome Rust core is not initialized")
     }
-
-    call("audioResume", "null")
+    dispatchCommandLocked(command)
   }
 
-  fun pause() {
-    if (!hasCore()) {
-      return
-    }
-    call("audioPause", "null")
-  }
-
-  fun stop() {
-    if (!hasCore()) {
-      return
-    }
-    call("audioStop", "null")
-  }
-
-  fun next() {
-    if (!hasCore()) {
-      return
-    }
-    call("audioPlayNext", "true")
-  }
-
-  fun previous() {
-    if (!hasCore()) {
-      return
-    }
-    call("audioPlayPrevious", "null")
-  }
-
-  fun seekTo(positionSeconds: Double) {
-    if (!hasCore()) {
-      return
-    }
-    call("audioSeek", JSONObject.numberToString(positionSeconds))
-  }
-
-  private fun isPlaying(): Boolean {
-    return try {
-      val envelope = JSONObject(call("getPlaybackSnapshot", "null"))
-      if (envelope.optBoolean("ok", false)) {
-        envelope.optJSONObject("value")?.optBoolean("is_playing", false) == true
-      } else {
-        false
-      }
-    } catch (error: Throwable) {
-      false
-    }
-  }
-
-  fun isSuccessfulResponse(raw: String): Boolean = try {
-    JSONObject(raw).optBoolean("ok", false)
+  fun isSuccessfulRuntimeResponse(raw: String): Boolean = try {
+    JSONObject(raw).optString("status") == "succeeded"
   } catch (error: Throwable) {
     false
   }
 
-  private fun errorEnvelope(message: String): String =
-    JSONObject(mapOf("ok" to false, "error" to message)).toString()
+  private fun dispatchCommandLocked(command: JSONObject): String =
+    jni.dispatch(
+      handle,
+      JSONObject()
+        .put("protocol_version", 1)
+        .put("command_id", nextNativeCommandId.getAndDecrement())
+        .put("command", command)
+        .toString(),
+    )
+
+  private fun runtimeError(message: String): String = JSONObject()
+    .put("protocol_version", 1)
+    .put("command_id", 0)
+    .put("accepted_revision", 0)
+    .put("operation_id", JSONObject.NULL)
+    .put("status", "failed")
+    .put(
+      "error",
+      JSONObject()
+        .put("code", "runtime_unavailable")
+        .put("message", message)
+        .put("retryable", true),
+    )
+    .toString()
 }

@@ -1,4 +1,7 @@
-use log::warn;
+use stereodrome_core::{
+    AudioProcessingSettings, BinauralPreset as CoreBinauralPreset, CoreCommand,
+    DynamicsPreset as CoreDynamicsPreset, NormalizationMode as CoreNormalizationMode,
+};
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_store::StoreExt;
 
@@ -6,6 +9,7 @@ use crate::audio::binaural::BinauralPreset;
 use crate::audio::compressor::DynamicsPreset;
 use crate::audio::equalizer::{default_bands_db, sanitize_bands_db};
 use crate::error::{AppError, AppResult};
+use crate::runtime::{dispatch, dispatch_unit_async};
 use crate::state::AppState;
 
 const STORE_FILE: &str = "settings.json";
@@ -88,11 +92,13 @@ pub async fn set_normalization_settings(
     settings.pre_amp_db = settings.pre_amp_db.clamp(-10.0, 10.0);
     write_normalization_settings(&app_handle, &settings)?;
 
-    if let Err(e) =
-        crate::commands::playback::reapply_settings_to_current_song(&app_handle, &state).await
-    {
-        warn!("Failed to reapply normalization settings to current playback: {e}");
-    }
+    dispatch_unit_async(
+        &state,
+        CoreCommand::SetAudioProcessing {
+            settings: desktop_audio_processing(&app_handle),
+        },
+    )
+    .await?;
 
     Ok(())
 }
@@ -265,11 +271,13 @@ pub async fn set_playback_settings(
     write_playback_settings(&app_handle, &settings)?;
     let _ = app_handle.emit("playback-settings-changed", &settings);
 
-    if let Err(e) =
-        crate::commands::playback::reapply_settings_to_current_song(&app_handle, &state).await
-    {
-        warn!("Failed to reapply playback settings to current playback: {e}");
-    }
+    dispatch_unit_async(
+        &state,
+        CoreCommand::SetAudioProcessing {
+            settings: desktop_audio_processing(&app_handle),
+        },
+    )
+    .await?;
 
     Ok(())
 }
@@ -299,23 +307,32 @@ pub(crate) fn write_connectivity_settings(
     write_store_setting(app_handle, KEY_CONNECTIVITY, settings)
 }
 
-pub fn manual_offline_enabled(app_handle: &AppHandle) -> bool {
-    read_connectivity_settings(app_handle).manual_offline_enabled
-}
-
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_connectivity_settings(app_handle: AppHandle) -> ConnectivitySettings {
-    read_connectivity_settings(&app_handle)
+pub fn get_connectivity_settings(state: State<'_, AppState>) -> AppResult<ConnectivitySettings> {
+    let settings: stereodrome_core::ConnectivitySettings =
+        dispatch(&state, CoreCommand::GetConnectivitySettings)?;
+    Ok(ConnectivitySettings {
+        manual_offline_enabled: settings.manual_offline_enabled,
+    })
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub fn set_connectivity_settings(
     app_handle: AppHandle,
+    state: State<'_, AppState>,
     settings: ConnectivitySettings,
 ) -> AppResult<ConnectivitySettings> {
-    write_connectivity_settings(&app_handle, &settings)?;
+    let runtime_settings = stereodrome_core::ConnectivitySettings {
+        manual_offline_enabled: settings.manual_offline_enabled,
+    };
+    dispatch::<stereodrome_core::ConnectivitySettings>(
+        &state,
+        CoreCommand::SetConnectivity {
+            settings: runtime_settings,
+        },
+    )?;
     let _ = app_handle.emit("connectivity-settings-changed", &settings);
     Ok(settings)
 }
@@ -372,18 +389,122 @@ pub(crate) fn write_sync_settings(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_sync_settings(app_handle: AppHandle) -> SyncSettings {
-    read_sync_settings(&app_handle)
+pub fn get_sync_settings(state: State<'_, AppState>) -> AppResult<SyncSettings> {
+    let settings: stereodrome_core::SyncSettings = dispatch(&state, CoreCommand::GetSyncSettings)?;
+    Ok(SyncSettings {
+        incremental_enabled: settings.incremental_enabled,
+        incremental_interval_minutes: settings.incremental_interval_minutes,
+        full_reconcile_enabled: settings.full_reconcile_enabled,
+        full_reconcile_interval_hours: settings.full_reconcile_interval_hours,
+    })
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
-pub fn set_sync_settings(app_handle: AppHandle, mut settings: SyncSettings) -> AppResult<()> {
+pub fn set_sync_settings(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    mut settings: SyncSettings,
+) -> AppResult<()> {
     settings.incremental_interval_minutes = settings.incremental_interval_minutes.clamp(5, 720);
     settings.full_reconcile_interval_hours = settings.full_reconcile_interval_hours.clamp(1, 168);
 
-    write_sync_settings(&app_handle, &settings)?;
+    dispatch::<stereodrome_core::SyncSettings>(
+        &state,
+        CoreCommand::SetSyncSettings {
+            settings: stereodrome_core::SyncSettings {
+                incremental_enabled: settings.incremental_enabled,
+                incremental_interval_minutes: settings.incremental_interval_minutes,
+                full_reconcile_enabled: settings.full_reconcile_enabled,
+                full_reconcile_interval_hours: settings.full_reconcile_interval_hours,
+            },
+        },
+    )?;
     let _ = app_handle.emit("sync-settings-changed", &settings);
+    Ok(())
+}
+
+pub(crate) fn desktop_audio_processing(app_handle: &AppHandle) -> AudioProcessingSettings {
+    let normalization = read_normalization_settings(app_handle);
+    let playback = read_playback_settings(app_handle);
+    AudioProcessingSettings {
+        normalization_enabled: normalization.enabled,
+        normalization_mode: match normalization.mode {
+            NormalizationMode::Track => CoreNormalizationMode::Track,
+            NormalizationMode::Album => CoreNormalizationMode::Album,
+        },
+        target_lufs: normalization.target_lufs,
+        preamp_db: normalization.pre_amp_db,
+        prevent_clipping: normalization.prevent_clipping,
+        dynamics_enabled: normalization.dynamics_enabled,
+        dynamics_preset: match normalization.dynamics_preset {
+            DynamicsPreset::Light => CoreDynamicsPreset::Light,
+            DynamicsPreset::Medium => CoreDynamicsPreset::Medium,
+            DynamicsPreset::Heavy => CoreDynamicsPreset::Heavy,
+        },
+        binaural_enabled: playback.binaural_enabled,
+        binaural_preset: match playback.binaural_preset {
+            BinauralPreset::Aggressive => CoreBinauralPreset::Strong,
+            BinauralPreset::Jmeier => CoreBinauralPreset::Medium,
+            BinauralPreset::Default | BinauralPreset::Cmoy => CoreBinauralPreset::Light,
+        },
+        equalizer_enabled: playback.equalizer_enabled,
+        equalizer_bands_db: playback
+            .equalizer_bands_db
+            .iter()
+            .map(|value| f64::from(*value))
+            .collect(),
+        gapless_enabled: playback.gapless_enabled,
+        crossfade_enabled: playback.crossfade_enabled,
+        crossfade_duration_ms: playback.crossfade_duration_ms,
+        prefetch_count: playback.prefetch_count,
+    }
+}
+
+pub(crate) fn apply_desktop_runtime_settings(
+    app_handle: &AppHandle,
+    state: &AppState,
+) -> AppResult<()> {
+    let store = app_handle.store(STORE_FILE).map_err(store_error)?;
+    if let Some(connectivity) = store
+        .get(KEY_CONNECTIVITY)
+        .and_then(|value| serde_json::from_value::<ConnectivitySettings>(value.clone()).ok())
+    {
+        dispatch::<stereodrome_core::ConnectivitySettings>(
+            state,
+            CoreCommand::SetConnectivity {
+                settings: stereodrome_core::ConnectivitySettings {
+                    manual_offline_enabled: connectivity.manual_offline_enabled,
+                },
+            },
+        )?;
+        store.delete(KEY_CONNECTIVITY);
+    }
+
+    if let Some(sync) = store
+        .get(KEY_SYNC)
+        .and_then(|value| serde_json::from_value::<SyncSettings>(value.clone()).ok())
+    {
+        dispatch::<stereodrome_core::SyncSettings>(
+            state,
+            CoreCommand::SetSyncSettings {
+                settings: stereodrome_core::SyncSettings {
+                    incremental_enabled: sync.incremental_enabled,
+                    incremental_interval_minutes: sync.incremental_interval_minutes,
+                    full_reconcile_enabled: sync.full_reconcile_enabled,
+                    full_reconcile_interval_hours: sync.full_reconcile_interval_hours,
+                },
+            },
+        )?;
+        store.delete(KEY_SYNC);
+    }
+    let _ = store.save();
+    dispatch::<AudioProcessingSettings>(
+        state,
+        CoreCommand::SetAudioProcessing {
+            settings: desktop_audio_processing(app_handle),
+        },
+    )?;
     Ok(())
 }
 

@@ -2,95 +2,70 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use log::{debug, info, warn};
-use rusqlite::Connection;
+use log::warn;
+use serde::{Deserialize, Serialize};
+use stereodrome_core::runtime::StereodromeAudioPort;
+use stereodrome_core::{StereodromeCore, StereodromeRuntimeHandle};
 
-use crate::audio::{AudioPlayer, PlayQueue};
-use crate::client::SubsonicClientHandle;
 use crate::commands::normalization::AnalysisProgress;
-use crate::db::queue::{load_queue_items, load_queue_original_items, load_queue_state};
-use crate::error::AppResult;
-use crate::lastfm::LastfmPlaybackTracker;
-use crate::search::IndexManager;
+use crate::error::{AppError, AppResult};
 
-// Re-export ServerConfig from client module for backward compatibility
-pub use crate::client::ServerConfig;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    pub url: String,
+    pub username: String,
+    pub password: String,
+}
 
 pub struct AppState {
-    pub client: SubsonicClientHandle,
-    pub db: Mutex<Connection>,
-    pub audio_player: Mutex<AudioPlayer>,
-    pub queue: Mutex<PlayQueue>,
-    pub search_index: Mutex<Option<IndexManager>>,
-    pub index_path: PathBuf,
+    /// Authoritative owner of desktop operational state and transitions.
+    pub runtime: StereodromeRuntimeHandle,
+    /// Concrete runtime audio boundary retained only for desktop visualization.
+    pub runtime_audio: Arc<StereodromeAudioPort>,
+    /// Shared database location for desktop-only analysis/read-model adapters.
+    pub db_path: PathBuf,
     pub emitter_running: Arc<AtomicBool>,
-    /// Prevents race conditions when rapidly clicking next/previous
-    pub navigating: AtomicBool,
-    pub lastfm_retry_lock: tokio::sync::Mutex<()>,
-    pub lastfm_tracker: Mutex<LastfmPlaybackTracker>,
     /// Current analysis progress (set by `analyze_all_songs`, cleared on completion)
     pub analysis_progress: Arc<Mutex<Option<AnalysisProgress>>>,
 }
 
 impl AppState {
-    pub fn new(
-        db_path: &str,
-        index_path: PathBuf,
-        client_handle: SubsonicClientHandle,
-    ) -> AppResult<Self> {
-        let conn = Connection::open(db_path)?;
-        crate::db::init_db(&conn)?;
-        let audio_player = AudioPlayer::new()?;
-
-        // Try to create search index, but don't fail if it errors
-        let search_index = match IndexManager::new(&index_path) {
-            Ok(manager) => {
-                info!("Search index initialized at {}", index_path.display());
-                Some(manager)
+    pub fn new(data_dir: &std::path::Path) -> AppResult<Self> {
+        let db_path = data_dir.join("stereodrome.db");
+        let core = Arc::new(
+            StereodromeCore::new(data_dir).map_err(|error| AppError::Runtime(error.to_string()))?,
+        );
+        match crate::credentials::load_legacy_lastfm_session() {
+            Ok(Some(session)) => {
+                match core.import_lastfm_session_if_missing(session.username, session.session_key) {
+                    Ok(()) => {
+                        if let Err(error) = crate::credentials::delete_legacy_lastfm_session() {
+                            warn!("Failed to remove migrated Last.fm credential: {error}");
+                        }
+                    }
+                    Err(error) => warn!("Failed to migrate Last.fm credential: {error}"),
+                }
             }
-            Err(e) => {
-                warn!("Failed to initialize search index: {e}");
-                None
-            }
-        };
-
-        // Load persisted queue
-        let queue =
-            if let (Ok(items), Ok(original_order), Ok((current_index, shuffle, repeat_mode))) = (
-                load_queue_items(&conn),
-                load_queue_original_items(&conn),
-                load_queue_state(&conn),
-            ) {
-                debug!("Loaded queue with {} items from database", items.len());
-                PlayQueue::load_with_original_order(
-                    items,
-                    original_order,
-                    current_index,
-                    shuffle,
-                    repeat_mode,
-                )
-            } else {
-                debug!("No persisted queue found, starting fresh");
-                PlayQueue::new()
-            };
+            Ok(None) => {}
+            Err(error) => warn!("Failed to inspect legacy Last.fm credential: {error}"),
+        }
+        let runtime_audio = Arc::new(
+            StereodromeAudioPort::new_with_spectrum(true)
+                .map_err(|error| AppError::Runtime(error.to_string()))?,
+        );
+        let runtime = StereodromeRuntimeHandle::start_with_core_and_audio(
+            data_dir,
+            core,
+            Arc::clone(&runtime_audio) as Arc<dyn stereodrome_core::runtime::AudioPort>,
+        )
+        .map_err(|error| AppError::Runtime(error.to_string()))?;
 
         Ok(Self {
-            client: client_handle,
-            db: Mutex::new(conn),
-            audio_player: Mutex::new(audio_player),
-            queue: Mutex::new(queue),
-            search_index: Mutex::new(search_index),
-            index_path,
+            runtime,
+            runtime_audio,
+            db_path,
             emitter_running: Arc::new(AtomicBool::new(true)),
-            navigating: AtomicBool::new(false),
-            lastfm_retry_lock: tokio::sync::Mutex::new(()),
-            lastfm_tracker: Mutex::new(LastfmPlaybackTracker::default()),
             analysis_progress: Arc::new(Mutex::new(None)),
         })
-    }
-
-    /// Check if connected (fast, no lock needed)
-    pub fn is_connected(&self) -> bool {
-        self.client.is_connected()
     }
 }

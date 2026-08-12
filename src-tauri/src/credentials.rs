@@ -30,6 +30,12 @@ struct StoredCredentials {
     password: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyLastfmSession {
+    pub username: String,
+    pub session_key: String,
+}
+
 impl From<&ServerConfig> for StoredCredentials {
     fn from(config: &ServerConfig) -> Self {
         Self {
@@ -94,50 +100,28 @@ pub fn delete_credentials() -> AppResult<()> {
     }
 }
 
-/// Last.fm session stored in the OS keyring.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LastfmSession {
-    pub username: String,
-    pub session_key: String,
-}
-
-pub fn save_lastfm_session(session: &LastfmSession) -> AppResult<()> {
+pub fn load_legacy_lastfm_session() -> AppResult<Option<LegacyLastfmSession>> {
     let entry = keyring_entry(LASTFM_ACCOUNT_NAME)?;
-
-    let json = serde_json::to_string(session)
-        .map_err(|e| AppError::Credentials(format!("Failed to serialize Last.fm session: {e}")))?;
-
-    entry
-        .set_password(&json)
-        .map_err(|e| AppError::Credentials(format!("Failed to save Last.fm session: {e}")))?;
-
-    Ok(())
-}
-
-pub fn load_lastfm_session() -> AppResult<Option<LastfmSession>> {
-    let entry = keyring_entry(LASTFM_ACCOUNT_NAME)?;
-
-    match entry.get_password() {
-        Ok(json) => {
-            let session: LastfmSession = serde_json::from_str(&json).map_err(|e| {
-                AppError::Credentials(format!("Failed to parse Last.fm session: {e}"))
-            })?;
-            Ok(Some(session))
+    let json = match entry.get_password() {
+        Ok(json) => json,
+        Err(KeyringError::NoEntry) => return Ok(None),
+        Err(error) => {
+            return Err(AppError::Credentials(format!(
+                "Failed to load legacy Last.fm session: {error}"
+            )));
         }
-        Err(KeyringError::NoEntry) => Ok(None),
-        Err(e) => Err(AppError::Credentials(format!(
-            "Failed to load Last.fm session: {e}"
-        ))),
-    }
+    };
+    let session = serde_json::from_str(&json).map_err(|error| {
+        AppError::Credentials(format!("Failed to parse legacy Last.fm session: {error}"))
+    })?;
+    Ok(Some(session))
 }
 
-pub fn delete_lastfm_session() -> AppResult<()> {
-    let entry = keyring_entry(LASTFM_ACCOUNT_NAME)?;
-
-    match entry.delete_credential() {
+pub fn delete_legacy_lastfm_session() -> AppResult<()> {
+    match keyring_entry(LASTFM_ACCOUNT_NAME)?.delete_credential() {
         Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
-        Err(e) => Err(AppError::Credentials(format!(
-            "Failed to delete Last.fm session: {e}"
+        Err(error) => Err(AppError::Credentials(format!(
+            "Failed to delete legacy Last.fm session: {error}"
         ))),
     }
 }

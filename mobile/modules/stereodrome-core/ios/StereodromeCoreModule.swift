@@ -3,25 +3,25 @@ import ExpoModulesCore
 import MediaPlayer
 import UIKit
 
-@_silgen_name("stereodrome_core_new")
-private func stereodromeCoreNew(_ dataDir: UnsafePointer<CChar>) -> OpaquePointer?
+@_silgen_name("stereodrome_runtime_new")
+private func stereodromeRuntimeNew(_ dataDir: UnsafePointer<CChar>) -> OpaquePointer?
 
-@_silgen_name("stereodrome_core_destroy")
-private func stereodromeCoreDestroy(_ core: OpaquePointer?)
+@_silgen_name("stereodrome_runtime_destroy")
+private func stereodromeRuntimeDestroy(_ core: OpaquePointer?)
 
-@_silgen_name("stereodrome_core_call")
-private func stereodromeCoreCall(
+@_silgen_name("stereodrome_string_free")
+private func stereodromeStringFree(_ value: UnsafeMutablePointer<CChar>?)
+
+@_silgen_name("stereodrome_runtime_dispatch")
+private func stereodromeRuntimeDispatch(
   _ core: OpaquePointer?,
-  _ method: UnsafePointer<CChar>,
-  _ payload: UnsafePointer<CChar>
+  _ commandJson: UnsafePointer<CChar>
 ) -> UnsafeMutablePointer<CChar>?
 
-@_silgen_name("stereodrome_core_free_string")
-private func stereodromeCoreFreeString(_ value: UnsafeMutablePointer<CChar>?)
-
 private typealias StereodromeRustLogCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
-private typealias StereodromePlaybackCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
-private typealias StereodromeEventCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
+private typealias StereodromeEventCallback = @convention(c) (
+  UnsafePointer<CChar>?, UnsafeMutableRawPointer?
+) -> Void
 private let playbackPositionDeduplicationToleranceSeconds = 0.25
 
 fileprivate struct PlaybackProjection {
@@ -124,10 +124,15 @@ fileprivate struct PlaybackProjection {
     return false
   }
 
-  init?(snapshotJson: String) {
+  init?(eventJson: String) {
     guard
-      let data = snapshotJson.data(using: .utf8),
-      let snapshot = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+      let data = eventJson.data(using: .utf8),
+      let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      Self.intValue(event["protocol_version"]) == 1,
+      let kind = event["kind"] as? [String: Any],
+      Self.stringValue(kind["type"]) == "snapshot-changed",
+      let runtimeSnapshot = kind["snapshot"] as? [String: Any],
+      let snapshot = runtimeSnapshot["playback"] as? [String: Any]
     else {
       return nil
     }
@@ -206,14 +211,15 @@ fileprivate struct PlaybackProjection {
   )
 }
 
-@_silgen_name("stereodrome_core_set_log_callback")
-private func stereodromeCoreSetLogCallback(_ callback: StereodromeRustLogCallback?)
+@_silgen_name("stereodrome_runtime_set_log_callback")
+private func stereodromeRuntimeSetLogCallback(_ callback: StereodromeRustLogCallback?)
 
-@_silgen_name("stereodrome_core_set_playback_callback")
-private func stereodromeCoreSetPlaybackCallback(_ callback: StereodromePlaybackCallback?)
-
-@_silgen_name("stereodrome_core_set_event_callback")
-private func stereodromeCoreSetEventCallback(_ callback: StereodromeEventCallback?)
+@_silgen_name("stereodrome_runtime_set_event_callback")
+private func stereodromeRuntimeSetEventCallback(
+  _ core: OpaquePointer?,
+  _ callback: StereodromeEventCallback?,
+  _ context: UnsafeMutableRawPointer?
+)
 
 private weak var activeStereodromeCoreModule: StereodromeCoreModule?
 private let activeStereodromeCoreModuleLock = NSLock()
@@ -275,58 +281,25 @@ private func stereodromeRustLogCallback(_ message: UnsafePointer<CChar>?) {
   }
 }
 
-private func stereodromePlaybackCallback(_ snapshot: UnsafePointer<CChar>?) {
-  guard let snapshot else {
-    return
+private final class StereodromeEventCallbackContext {
+  weak var module: StereodromeCoreModule?
+
+  init(module: StereodromeCoreModule) {
+    self.module = module
   }
-  let rawSnapshot = String(cString: snapshot)
-  // Holding the module through the synchronous hop prevents deinit from joining
-  // a Rust monitor thread that is itself waiting for this callback on main.
-  guard let module = getActiveStereodromeCoreModule() else {
-    return
-  }
-  guard let projection = PlaybackProjection(snapshotJson: rawSnapshot) else {
-    module.enqueueDeferredPlaybackSnapshotUpdates(rawSnapshot, artworkUri: nil)
-    return
-  }
-  guard module.reservePlaybackProjection(projection) else {
-    module.enqueueDeferredPlaybackSnapshotUpdates(
-      rawSnapshot,
-      artworkUri: module.artworkUriNeedingLoad(for: projection)
-    )
-    return
-  }
-  // Rust treats the snapshot callback return as transport completion. Keep the
-  // scalar OS projection inside that boundary so suspension cannot preserve stale state.
-  let projectionResult: (applied: Bool, artworkUri: String?) = performOnMainSync {
-    guard getActiveStereodromeCoreModule() === module else {
-      return (false, nil)
-    }
-    return (true, module.applyPlaybackProjection(projection))
-  }
-  if !projectionResult.applied {
-    _ = module.invalidatePlaybackProjection()
-  }
-  module.enqueueDeferredPlaybackSnapshotUpdates(
-    rawSnapshot,
-    artworkUri: projectionResult.artworkUri
-  )
 }
 
-private func stereodromeEventCallback(_ event: UnsafePointer<CChar>?) {
-  guard let event else {
+private func stereodromeEventCallback(
+  _ event: UnsafePointer<CChar>?,
+  _ context: UnsafeMutableRawPointer?
+) {
+  guard let event, let context else {
     return
   }
-  let rawEvent = String(cString: event)
-  DispatchQueue.main.async {
-    guard
-      let module = getActiveStereodromeCoreModule(),
-      module.acceptsMobileEvent(rawEvent)
-    else {
-      return
-    }
-    module.sendMobileEvent(rawEvent)
-  }
+  let callbackContext = Unmanaged<StereodromeEventCallbackContext>
+    .fromOpaque(context)
+    .takeUnretainedValue()
+  callbackContext.module?.handleCoreEvent(String(cString: event))
 }
 
 public class StereodromeCoreModule: Module {
@@ -352,20 +325,16 @@ public class StereodromeCoreModule: Module {
   private let remoteCommandStateLock = NSLock()
   private var remoteCommandTargets: [Any] = []
   private var audioSessionObservers: [NSObjectProtocol] = []
-  private var shouldResumeAfterInterruption = false
   private var canPlayRemoteCommandsValue = false
   private let audioSessionStateLock = NSLock()
-  private let eventStreamStateLock = NSLock()
   private var ownsAudioSession = false
   private var audioSessionGeneration: UInt64 = 0
-  private var eventStreamId: UInt64?
+  private var eventCallbackContext: UnsafeMutableRawPointer?
+  private var nextNativeCommandId = Int64.max
 
   deinit {
     clearAudioSessionObservers()
     if clearActiveStereodromeCoreModule(self) {
-      stereodromeCoreSetPlaybackCallback(nil)
-      stereodromeCoreSetEventCallback(nil)
-      setEventStreamId(nil)
       performOnMainSync {
         self.clearNowPlayingInfo()
       }
@@ -373,8 +342,18 @@ public class StereodromeCoreModule: Module {
       clearRemoteCommandHandlers()
     }
     releaseAudioSession()
-    coreQueue.sync {
-      stereodromeCoreDestroy(core)
+    let coreToDestroy = core
+    let callbackContextToRelease = eventCallbackContext
+    core = nil
+    eventCallbackContext = nil
+    coreQueue.async {
+      stereodromeRuntimeSetEventCallback(coreToDestroy, nil, nil)
+      stereodromeRuntimeDestroy(coreToDestroy)
+      if let callbackContextToRelease {
+        Unmanaged<StereodromeEventCallbackContext>
+          .fromOpaque(callbackContextToRelease)
+          .release()
+      }
     }
   }
 
@@ -383,20 +362,21 @@ public class StereodromeCoreModule: Module {
 
     AsyncFunction("initialize") { (_ dataDir: String) -> Bool in
       setActiveStereodromeCoreModule(self)
-      stereodromeCoreSetLogCallback(stereodromeRustLogCallback)
-      stereodromeCoreSetPlaybackCallback(stereodromePlaybackCallback)
-      stereodromeCoreSetEventCallback(stereodromeEventCallback)
+      stereodromeRuntimeSetLogCallback(stereodromeRustLogCallback)
       self.configureAudioSession()
       if self.core == nil {
-        self.setEventStreamId(nil)
         self.core = self.coreQueue.sync {
-          dataDir.withCString { stereodromeCoreNew($0) }
+          dataDir.withCString { stereodromeRuntimeNew($0) }
         }
         if self.core != nil {
-          self.setEventStreamId(
-            self.envelopeUInt64(
-              self.callSync(method: "getEventStreamId", payload: "null")
-            )
+          let callbackContext = Unmanaged.passRetained(
+            StereodromeEventCallbackContext(module: self)
+          ).toOpaque()
+          self.eventCallbackContext = callbackContext
+          stereodromeRuntimeSetEventCallback(
+            self.core,
+            stereodromeEventCallback,
+            callbackContext
           )
         }
       }
@@ -404,66 +384,27 @@ public class StereodromeCoreModule: Module {
       return self.core != nil
     }
 
-    AsyncFunction("call") { (_ method: String, _ payload: String) -> String in
-      let result = self.requiresAudioSession(method)
-        ? self.callWithAudioSession(method: method, payload: payload)
-        : self.callSync(method: method, payload: payload)
-      if method == "audioStop" && self.isSuccessfulEnvelope(result) {
-        self.releaseAudioSession()
+    AsyncFunction("dispatch") { (_ commandJson: String) -> String in
+      return self.coreQueue.sync {
+        guard let core = self.core else {
+          return #"{"protocol_version":1,"command_id":0,"accepted_revision":0,"operation_id":null,"status":"failed","error":{"code":"runtime_unavailable","message":"Stereodrome Rust core is not initialized","retryable":true}}"#
+        }
+        return commandJson.withCString { commandPointer in
+          guard let resultPointer = stereodromeRuntimeDispatch(core, commandPointer) else {
+            return #"{"protocol_version":1,"command_id":0,"accepted_revision":0,"operation_id":null,"status":"failed","error":{"code":"internal","message":"Rust returned null","retryable":false}}"#
+          }
+          let result = String(cString: resultPointer)
+          stereodromeStringFree(resultPointer)
+          return result
+        }
       }
-      return result
     }
 
-    AsyncFunction("getConnectionStatus") { () -> String in
-      return self.callSync(method: "getConnectionStatus", payload: "null")
-    }
-
-    AsyncFunction("getStreamUri") { (_ songId: String) -> String in
-      let escapedSongId = songId
-        .replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "\"", with: "\\\"")
-      return self.callSync(method: "getStreamUri", payload: "\"\(escapedSongId)\"")
-    }
-
-    Events("playback-snapshot", "core-event")
+    Events("core-event")
   }
 
   fileprivate func emitRustLog(_ message: String) {
     appContext?.jsLogger.info(message)
-  }
-
-  fileprivate func sendMobileEvent(_ event: String) {
-    sendEvent("core-event", ["event": event])
-  }
-
-  fileprivate func acceptsMobileEvent(_ event: String) -> Bool {
-    guard
-      let data = event.data(using: .utf8),
-      let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      let streamId = (payload["stream_id"] as? NSNumber)?.uint64Value
-    else {
-      return false
-    }
-    eventStreamStateLock.lock()
-    defer { eventStreamStateLock.unlock() }
-    return eventStreamId == streamId
-  }
-
-  private func setEventStreamId(_ streamId: UInt64?) {
-    eventStreamStateLock.lock()
-    eventStreamId = streamId
-    eventStreamStateLock.unlock()
-  }
-
-  private func envelopeUInt64(_ raw: String) -> UInt64? {
-    guard
-      let data = raw.data(using: .utf8),
-      let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      (envelope["ok"] as? NSNumber)?.boolValue == true
-    else {
-      return nil
-    }
-    return (envelope["value"] as? NSNumber)?.uint64Value
   }
 
   fileprivate func reservePlaybackProjection(_ projection: PlaybackProjection) -> Bool {
@@ -520,30 +461,6 @@ public class StereodromeCoreModule: Module {
     return artworkUri
   }
 
-  private func callSync(method: String, payload: String) -> String {
-    return coreQueue.sync {
-      callCore(method: method, payload: payload)
-    }
-  }
-
-  private func callCore(method: String, payload: String) -> String {
-    guard let core else {
-      return #"{"ok":false,"error":"Stereodrome Rust core is not initialized"}"#
-    }
-
-    return method.withCString { methodPointer in
-      payload.withCString { payloadPointer in
-        guard let resultPointer = stereodromeCoreCall(core, methodPointer, payloadPointer) else {
-          return #"{"ok":false,"error":"Rust returned null"}"#
-        }
-
-        let result = String(cString: resultPointer)
-        stereodromeCoreFreeString(resultPointer)
-        return result
-      }
-    }
-  }
-
   private func configureAudioSession() {
     let session = AVAudioSession.sharedInstance()
     do {
@@ -552,12 +469,6 @@ public class StereodromeCoreModule: Module {
       // Rust returns playback errors through the FFI call path; session setup
       // failure should not prevent core initialization in development builds.
     }
-  }
-
-  private func requiresAudioSession(_ method: String) -> Bool {
-    return method == "audioPlayCurrent" || method == "audioPlayQueueItem"
-      || method == "audioPlayNext" || method == "audioPlayPrevious"
-      || method == "audioResume" || method == "audioRebuildOutput"
   }
 
   private func acquireAudioSession() -> AudioSessionAcquisition {
@@ -618,52 +529,122 @@ public class StereodromeCoreModule: Module {
     }
   }
 
-  private func callWithAudioSession(method: String, payload: String) -> String {
+  private func dispatchCommand(
+    _ command: [String: Any],
+    activateAudioSession: Bool = false
+  ) -> String {
     return coreQueue.sync {
-      switch acquireAudioSession() {
-      case .failed(let message):
-        return errorEnvelope("Failed to activate audio session: \(message)")
-      case .acquired(let lease):
-        let result = callCore(method: method, payload: payload)
-        if !isSuccessfulEnvelope(result) {
-          rollbackAudioSession(lease)
+      var lease: AudioSessionLease?
+      if activateAudioSession {
+        switch acquireAudioSession() {
+        case .failed(let message):
+          return runtimeError("Failed to activate audio session: \(message)")
+        case .acquired(let acquiredLease):
+          lease = acquiredLease
         }
-        return result
       }
+      let result = dispatchCommandCore(command)
+      if let lease, !isSuccessfulRuntimeResult(result) {
+        rollbackAudioSession(lease)
+      }
+      return result
     }
   }
 
-  private func isSuccessfulEnvelope(_ raw: String) -> Bool {
+  private func dispatchCommandCore(_ command: [String: Any]) -> String {
+    guard let core else {
+      return runtimeError("Stereodrome Rust core is not initialized")
+    }
+    let commandId = nextNativeCommandId
+    nextNativeCommandId &-= 1
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: [
+        "protocol_version": 1,
+        "command_id": commandId,
+        "command": command,
+      ]),
+      let request = String(data: data, encoding: .utf8)
+    else {
+      return runtimeError("Failed to serialize native runtime command")
+    }
+    return request.withCString { commandPointer in
+      guard let resultPointer = stereodromeRuntimeDispatch(core, commandPointer) else {
+        return runtimeError("Rust returned null")
+      }
+      let result = String(cString: resultPointer)
+      stereodromeStringFree(resultPointer)
+      return result
+    }
+  }
+
+  private func dispatchPlatformEvent(
+    _ event: [String: Any],
+    activateAudioSession: Bool = false
+  ) -> String {
+    dispatchCommand(
+      [
+        "type": "report-platform-playback",
+        "event": event,
+      ],
+      activateAudioSession: activateAudioSession
+    )
+  }
+
+  private func isSuccessfulRuntimeResult(_ raw: String) -> Bool {
     guard
       let data = raw.data(using: .utf8),
       let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else {
       return false
     }
-    return boolValue(envelope["ok"])
+    return stringValue(envelope["status"]) == "succeeded"
   }
 
-  private func errorEnvelope(_ message: String) -> String {
+  private func runtimeError(_ message: String) -> String {
     guard
-      let data = try? JSONSerialization.data(withJSONObject: ["ok": false, "error": message]),
+      let data = try? JSONSerialization.data(withJSONObject: [
+        "protocol_version": 1,
+        "command_id": 0,
+        "accepted_revision": 0,
+        "operation_id": NSNull(),
+        "status": "failed",
+        "error": [
+          "code": "runtime_unavailable",
+          "message": message,
+          "retryable": true,
+        ],
+      ]),
       let result = String(data: data, encoding: .utf8)
     else {
-      return #"{"ok":false,"error":"Audio session acquisition failed"}"#
+      return #"{"protocol_version":1,"command_id":0,"accepted_revision":0,"operation_id":null,"status":"failed","error":{"code":"internal","message":"Native adapter failed","retryable":false}}"#
     }
     return result
   }
 
-  fileprivate func enqueueDeferredPlaybackSnapshotUpdates(
-    _ snapshot: String,
-    artworkUri: String?
-  ) {
+  fileprivate func handleCoreEvent(_ event: String) {
+    if let projection = PlaybackProjection(eventJson: event) {
+      let artworkUri: String?
+      if reservePlaybackProjection(projection) {
+        artworkUri = performOnMainSync {
+          guard getActiveStereodromeCoreModule() === self else {
+            return nil
+          }
+          return applyPlaybackProjection(projection)
+        }
+      } else {
+        artworkUri = artworkUriNeedingLoad(for: projection)
+      }
+      enqueueArtworkUpdate(artworkUri)
+    }
     DispatchQueue.main.async { [weak self] in
       guard let self, getActiveStereodromeCoreModule() === self else {
         return
       }
-      self.sendEvent("playback-snapshot", ["snapshot": snapshot])
+      self.sendEvent("core-event", ["event": event])
     }
+  }
 
+  private func enqueueArtworkUpdate(_ artworkUri: String?) {
     guard let artworkUri else {
       return
     }
@@ -691,6 +672,20 @@ public class StereodromeCoreModule: Module {
       clearNowPlayingInfo()
       releaseAudioSession()
       return nil
+    }
+    if projection.isPlaying {
+      switch acquireAudioSession() {
+      case .acquired:
+        break
+      case .failed(let message):
+        appContext?.jsLogger.warn("Failed to activate audio session: \(message)")
+        remoteCommandQueue.async {
+          _ = self.dispatchPlatformEvent([
+            "type": "audio-focus-lost",
+            "transient": false,
+          ])
+        }
+      }
     }
     if projection.outputState == "unavailable" {
       releaseAudioSession()
@@ -845,23 +840,20 @@ public class StereodromeCoreModule: Module {
         guard self.isCurrentAudioSessionGeneration(interruptionGeneration) else {
           return
         }
-        let wasPlaying = self.isCorePlaying()
-        self.shouldResumeAfterInterruption = wasPlaying
-        if wasPlaying {
-          _ = self.callSync(method: "audioPause", payload: "null")
-        }
+        _ = self.dispatchPlatformEvent(["type": "interruption-began"])
       }
     case .ended:
       let optionsValue =
         notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
       let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
       remoteCommandQueue.async {
-        let shouldResume =
-          self.shouldResumeAfterInterruption && options.contains(.shouldResume)
-        self.shouldResumeAfterInterruption = false
-        if shouldResume {
-          _ = self.callWithAudioSession(method: "audioResume", payload: "null")
-        }
+        let shouldResume = options.contains(.shouldResume)
+        _ = self.dispatchPlatformEvent(
+          [
+            "type": "interruption-ended",
+            "should_resume": shouldResume,
+          ]
+        )
       }
     @unknown default:
       break
@@ -883,17 +875,13 @@ public class StereodromeCoreModule: Module {
     }
 
     remoteCommandQueue.async {
-      self.shouldResumeAfterInterruption = false
-      if self.isCorePlaying() {
-        _ = self.callSync(method: "audioPause", payload: "null")
-      }
+      _ = self.dispatchPlatformEvent(["type": "route-lost"])
     }
   }
 
   private func handleMediaServicesReset() {
     let projectionToRestore = invalidatePlaybackProjection()
     remoteCommandQueue.async {
-      self.shouldResumeAfterInterruption = false
       self.configureAudioSession()
       _ = self.markAudioSessionInactive()
       if let projectionToRestore,
@@ -901,13 +889,8 @@ public class StereodromeCoreModule: Module {
       {
         self.replayPlaybackProjectionIfCurrent(projectionToRestore)
       }
-      _ = self.callWithAudioSession(method: "audioRebuildOutput", payload: "null")
+      _ = self.dispatchPlatformEvent(["type": "media-services-reset"])
     }
-  }
-
-  private func isCorePlaying() -> Bool {
-    let snapshot = parseOkValue(callSync(method: "getPlaybackSnapshot", payload: "null"))
-    return boolValue(snapshot?["is_playing"])
   }
 
   private func updateNowPlayingPlaybackState(isPlaying: Bool) {
@@ -936,7 +919,7 @@ public class StereodromeCoreModule: Module {
   }
 
   /// Remote command handlers run on the main thread, but the underlying core
-  /// calls can block (e.g. audioPlayNext downloads the song). Acknowledge
+  /// calls can block while Rust prepares media. Acknowledge
   /// the command immediately and run it on a serial background queue.
   private func enqueueRemoteCommand(_ action: RemoteCommandAction) -> MPRemoteCommandHandlerStatus {
     remoteCommandQueue.async {
@@ -947,12 +930,11 @@ public class StereodromeCoreModule: Module {
 
   private func enqueueRemoteSeek(_ positionSeconds: TimeInterval) -> MPRemoteCommandHandlerStatus {
     let positionSeconds = max(0.0, positionSeconds)
-    if var info = MPNowPlayingInfoCenter.default().nowPlayingInfo {
-      info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = positionSeconds
-      MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-    }
     remoteCommandQueue.async {
-      _ = self.callSync(method: "audioSeek", payload: "\(positionSeconds)")
+      _ = self.dispatchCommand([
+        "type": "seek-to",
+        "seconds": positionSeconds,
+      ])
     }
     return .success
   }
@@ -963,31 +945,39 @@ public class StereodromeCoreModule: Module {
       guard canPlayRemoteCommands() else {
         return
       }
-      _ = callWithAudioSession(method: "audioResume", payload: "null")
+      _ = dispatchCommand(["type": "resume-playback"], activateAudioSession: true)
     case .pause:
-      _ = callSync(method: "audioPause", payload: "null")
+      _ = dispatchCommand(["type": "pause-playback"])
     case .toggle:
-      let snapshot = parseOkValue(callSync(method: "getPlaybackSnapshot", payload: "null"))
-      if boolValue(snapshot?["is_playing"]) {
-        _ = callSync(method: "audioPause", payload: "null")
-      } else if !canPlayRemoteCommands() {
+      if !canPlayRemoteCommands() {
         return
-      } else {
-        _ = callWithAudioSession(method: "audioResume", payload: "null")
       }
+      _ = dispatchCommand(["type": "toggle-playback"], activateAudioSession: true)
     case .next:
       guard canPlayRemoteCommands() else {
         return
       }
-      _ = callWithAudioSession(method: "audioPlayNext", payload: "true")
+      _ = dispatchCommand(
+        [
+          "type": "navigate-playback",
+          "navigation": ["type": "next", "force": true],
+        ],
+        activateAudioSession: true
+      )
     case .previous:
       guard canPlayRemoteCommands() else {
         return
       }
-      _ = callWithAudioSession(method: "audioPlayPrevious", payload: "null")
+      _ = dispatchCommand(
+        [
+          "type": "navigate-playback",
+          "navigation": ["type": "previous"],
+        ],
+        activateAudioSession: true
+      )
     case .stop:
-      let result = callSync(method: "audioStop", payload: "null")
-      if isSuccessfulEnvelope(result) {
+      let result = dispatchCommand(["type": "stop-playback"])
+      if isSuccessfulRuntimeResult(result) {
         releaseAudioSession()
       }
     }
@@ -1030,18 +1020,6 @@ public class StereodromeCoreModule: Module {
     return artwork
   }
 
-  private func parseOkValue(_ raw: String) -> [String: Any]? {
-    guard
-      let data = raw.data(using: .utf8),
-      let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      boolValue(envelope["ok"]),
-      let value = envelope["value"] as? [String: Any]
-    else {
-      return nil
-    }
-    return value
-  }
-
   private func stringValue(_ value: Any?) -> String? {
     if let value = value as? String, !value.isEmpty {
       return value
@@ -1049,42 +1027,4 @@ public class StereodromeCoreModule: Module {
     return nil
   }
 
-  private func doubleValue(_ value: Any?) -> Double {
-    if let value = value as? Double {
-      return value
-    }
-    if let value = value as? NSNumber {
-      return value.doubleValue
-    }
-    if let value = value as? String {
-      return Double(value) ?? 0.0
-    }
-    return 0.0
-  }
-
-  private func intValue(_ value: Any?) -> Int? {
-    if let value = value as? Int {
-      return value
-    }
-    if let value = value as? NSNumber {
-      return value.intValue
-    }
-    if let value = value as? String {
-      return Int(value)
-    }
-    return nil
-  }
-
-  private func boolValue(_ value: Any?) -> Bool {
-    if let value = value as? Bool {
-      return value
-    }
-    if let value = value as? NSNumber {
-      return value.boolValue
-    }
-    if let value = value as? String {
-      return value == "true"
-    }
-    return false
-  }
 }

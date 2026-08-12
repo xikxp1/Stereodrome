@@ -45,6 +45,9 @@ jobs:
       - name: Audit frontend dependencies
         run: vp pm audit --production
 
+      - name: Check generated protocol types are current
+        run: vp run protocol:types:check
+
       - name: Check frontend
         run: vp check
 

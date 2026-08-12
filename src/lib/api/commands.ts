@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+
+import { dispatch } from "$lib/api/core";
 import type {
   ConnectionStatus,
   ConnectParams,
@@ -8,7 +10,6 @@ import type {
   Song,
   SyncResult,
   ScanStatus,
-  PlaybackState,
   SearchResults,
   NormalizationSettings,
   NormalizationStats,
@@ -27,7 +28,6 @@ import type {
   MiniPlayerMode,
   MiniPlayerPosition,
   CacheLocationInfo,
-  CacheRootUpdateResult,
 } from "$lib/types";
 
 // Auth commands
@@ -42,7 +42,7 @@ export async function disconnectServer(): Promise<void> {
 }
 
 export async function getConnectionStatus(): Promise<ConnectionStatus> {
-  return invoke<ConnectionStatus>("get_connection_status");
+  return dispatch({ type: "get-connection-status" });
 }
 
 export async function restoreSession(): Promise<ConnectionStatus> {
@@ -59,11 +59,11 @@ export async function reconcileLibraryState(): Promise<SyncResult> {
 }
 
 export async function getLibrarySyncStatus(): Promise<LibrarySyncStatus> {
-  return invoke<LibrarySyncStatus>("get_library_sync_status");
+  return dispatch({ type: "get-library-sync-status" });
 }
 
 export async function getArtists(): Promise<Artist[]> {
-  return invoke<Artist[]>("get_artists");
+  return dispatch({ type: "get-artists" });
 }
 
 export async function getAlbumCount(): Promise<number> {
@@ -71,7 +71,7 @@ export async function getAlbumCount(): Promise<number> {
 }
 
 export async function getAlbums(artistId?: string): Promise<Album[]> {
-  return invoke<Album[]>("get_albums", { artistId });
+  return dispatch({ type: "get-albums", artist_id: artistId ?? null });
 }
 
 export async function getAlbumList(
@@ -79,72 +79,68 @@ export async function getAlbumList(
   size?: number,
   offset?: number
 ): Promise<AlbumListEntry[]> {
-  return invoke<AlbumListEntry[]>("get_album_list", { listType, size, offset });
+  return dispatch({
+    type: "get-album-list",
+    list_type: listType,
+    size: size ?? null,
+    offset: offset ?? null,
+  });
 }
 
 export async function getSongs(
   albumId?: string,
   artistId?: string
 ): Promise<Song[]> {
-  return invoke<Song[]>("get_songs", { albumId, artistId });
+  return dispatch({
+    type: "get-songs",
+    album_id: albumId ?? null,
+    artist_id: artistId ?? null,
+  });
 }
 
 export async function removeSongsFromPlaylist(
   playlistId: string,
   positions: number[]
 ): Promise<void> {
-  return invoke("remove_songs_from_playlist", { playlistId, positions });
+  await dispatch({
+    type: "remove-songs-from-playlist",
+    playlist_id: playlistId,
+    song_indexes: positions,
+  });
 }
 
 export async function setPlaylistSavedOffline(
   playlistId: string,
   savedOffline: boolean
 ): Promise<SavedPlaylistOfflineResult> {
-  return invoke<SavedPlaylistOfflineResult>("set_playlist_saved_offline", {
-    playlistId,
-    savedOffline,
+  return dispatch({
+    type: "set-playlist-saved-offline",
+    playlist_id: playlistId,
+    saved_offline: savedOffline,
   });
 }
 
 export async function reconcileSavedPlaylistsOffline(): Promise<
   SavedPlaylistOfflineResult[]
 > {
-  return invoke<SavedPlaylistOfflineResult[]>(
-    "reconcile_saved_playlists_offline"
-  );
+  return dispatch({ type: "reconcile-saved-playlists-offline" });
 }
 
 // Playback commands
 export async function playSong(songId: string): Promise<void> {
-  return invoke("play_song", { songId });
-}
-
-export async function pausePlayback(): Promise<void> {
-  return invoke("pause_playback");
-}
-
-export async function resumePlayback(): Promise<void> {
-  return invoke("resume_playback");
-}
-
-export async function stopPlayback(): Promise<void> {
-  return invoke("stop_playback");
+  return dispatch({
+    type: "play-selection",
+    song_id: songId,
+    song_ids: [songId],
+  });
 }
 
 export async function setVolume(volume: number): Promise<void> {
-  return invoke("set_volume", { volume });
-}
-
-export async function setPersistedVolume(volume: number): Promise<void> {
-  return invoke("set_persisted_volume", { volume });
+  return dispatch({ type: "set-playback-volume", volume });
 }
 
 export async function seekPlayback(position: number): Promise<void> {
-  return invoke("seek_playback", { position });
-}
-
-export async function getPlaybackStatus(): Promise<PlaybackState> {
-  return invoke<PlaybackState>("get_playback_status");
+  return dispatch({ type: "seek-to", seconds: position });
 }
 
 export interface BackupSummary {
@@ -158,7 +154,7 @@ export interface BackupSummary {
 export async function exportPortableBackup(
   path: string
 ): Promise<BackupSummary> {
-  return invoke<BackupSummary>("export_portable_backup", { path });
+  return dispatch({ type: "export-portable-backup", path });
 }
 
 export async function importPortableBackup(
@@ -172,11 +168,15 @@ export async function playSongWithQueue(
   songId: string,
   songIds: string[]
 ): Promise<void> {
-  return invoke("play_song_with_queue", { songId, songIds });
+  return dispatch({
+    type: "play-selection",
+    song_id: songId,
+    song_ids: songIds,
+  });
 }
 
-export async function rerollNextQueueItem(): Promise<boolean> {
-  return invoke<boolean>("reroll_next_queue_item");
+export async function rerollNextQueueItem(): Promise<void> {
+  await dispatch({ type: "reroll-next" });
 }
 
 // Search commands
@@ -184,7 +184,7 @@ export async function searchLibrary(
   query: string,
   limit?: number
 ): Promise<SearchResults> {
-  return invoke<SearchResults>("search_library", { query, limit });
+  return dispatch({ type: "search-library", query, limit: limit ?? null });
 }
 
 // Cover art commands
@@ -193,13 +193,6 @@ export async function getCoverArt(
   size?: number
 ): Promise<string> {
   return invoke<string>("get_cover_art", { coverArtId, size });
-}
-
-export async function getSongCoverArt(
-  songId: string,
-  size?: number
-): Promise<string | null> {
-  return invoke<string | null>("get_song_cover_art", { songId, size });
 }
 
 export async function getCoverArtPath(
@@ -256,18 +249,12 @@ export async function getCacheLocations(): Promise<CacheLocationInfo> {
   return invoke<CacheLocationInfo>("get_cache_locations");
 }
 
-export async function setCacheRoot(
-  cacheRoot: string | null
-): Promise<CacheRootUpdateResult> {
-  return invoke<CacheRootUpdateResult>("set_cache_root", { cacheRoot });
-}
-
 export async function getAudioCacheStats(): Promise<CacheStats> {
-  return invoke<CacheStats>("get_audio_cache_stats");
+  return dispatch({ type: "get-audio-cache-stats" });
 }
 
 export async function getOfflineSongIds(): Promise<string[]> {
-  return invoke<string[]>("get_offline_song_ids");
+  return dispatch({ type: "get-offline-song-ids" });
 }
 
 export async function getDownloadingSongIds(): Promise<string[]> {
@@ -275,25 +262,20 @@ export async function getDownloadingSongIds(): Promise<string[]> {
 }
 
 export async function clearAudioCache(): Promise<void> {
-  return invoke("clear_audio_cache");
+  await dispatch({ type: "clear-audio-cache" });
 }
 
 export async function setMaxCacheSize(size: number): Promise<CacheStats> {
-  return invoke<CacheStats>("set_max_cache_size", { size });
-}
-
-// Scrobbling commands
-export async function scrobbleSubmit(songId: string): Promise<void> {
-  return invoke("scrobble_submit", { songId });
+  return dispatch({ type: "set-max-cache-size", max_size: size });
 }
 
 // Scan commands
 export async function getScanStatus(): Promise<ScanStatus> {
-  return invoke<ScanStatus>("get_scan_status");
+  return dispatch({ type: "get-scan-status" });
 }
 
 export async function startScan(): Promise<ScanStatus> {
-  return invoke<ScanStatus>("start_scan");
+  return dispatch({ type: "start-scan" });
 }
 
 // Normalization commands
@@ -383,27 +365,27 @@ export async function getSystemTimePreferences(): Promise<SystemTimePreferences>
 
 // Last.fm commands
 export async function getLastfmStatus(): Promise<LastfmStatus> {
-  return invoke<LastfmStatus>("get_lastfm_status");
+  return dispatch({ type: "get-lastfm-status" });
 }
 
 export async function beginLastfmAuth(): Promise<LastfmAuthStart> {
-  return invoke<LastfmAuthStart>("begin_lastfm_auth");
+  return dispatch({ type: "begin-lastfm-auth" });
 }
 
 export async function completeLastfmAuth(): Promise<LastfmStatus> {
-  return invoke<LastfmStatus>("complete_lastfm_auth");
+  return dispatch({ type: "complete-lastfm-auth" });
 }
 
 export async function disconnectLastfm(): Promise<LastfmStatus> {
-  return invoke<LastfmStatus>("disconnect_lastfm");
+  return dispatch({ type: "disconnect-lastfm" });
 }
 
 export async function getLastfmQueue(): Promise<LastfmQueueItem[]> {
-  return invoke<LastfmQueueItem[]>("get_lastfm_queue");
+  return dispatch({ type: "get-lastfm-queue" });
 }
 
 export async function retryLastfmQueue(): Promise<number> {
-  return invoke<number>("retry_lastfm_queue");
+  return dispatch({ type: "retry-lastfm-queue" });
 }
 
 // Tray commands

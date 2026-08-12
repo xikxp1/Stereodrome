@@ -3,8 +3,12 @@ mod db;
 mod error;
 mod lastfm;
 mod models;
+pub mod protocol;
 pub mod queue;
+pub mod runtime;
 mod subsonic;
+#[cfg(test)]
+pub mod test_support;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -26,10 +30,19 @@ pub use tokio_util::sync::CancellationToken as PrefetchCancellationToken;
 pub use error::{CoreError, CoreResult};
 pub use lastfm::{LastfmAuthStart, LastfmQueueItem, LastfmStatus};
 pub use models::*;
+pub use protocol::*;
 pub use queue::{QueueItem as SharedQueueItem, QueueState as SharedQueueState};
+pub use runtime::StereodromeRuntimeHandle;
 
-const API_VERSION: &str = "1.16.1";
-const CLIENT_NAME: &str = "StereodromeMobile";
+pub(crate) const API_VERSION: &str = "1.16.1";
+
+/// Subsonic `c` parameter. Servers key per-client state (transcoding profiles, now
+/// playing entries) on this, so desktop and mobile must not share one identity.
+pub(crate) const CLIENT_NAME: &str = if cfg!(any(target_os = "android", target_os = "ios")) {
+    "StereodromeMobile"
+} else {
+    "StereodromeDesktop"
+};
 const MOBILE_PLAYBACK_FORMAT: &str = "mp3";
 const LARGE_COVER_ART_SIZE: i32 = 512;
 const NEWEST_HEAD_ALBUM_KEY: &str = "library_newest_head_album_id";
@@ -536,6 +549,11 @@ impl StereodromeCore {
         Ok(())
     }
 
+    /// Clears the active network client without deleting persisted server configuration.
+    pub async fn deactivate_session(&self) {
+        *self.client.lock().await = None;
+    }
+
     /// # Errors
     /// Returns an error if the shared server configuration lock is poisoned.
     pub fn get_connection_status(&self) -> CoreResult<ConnectionStatus> {
@@ -825,6 +843,45 @@ impl StereodromeCore {
             scanning: status.scanning,
             count: status.count,
         })
+    }
+
+    /// Returns the server's currently playing entries.
+    ///
+    /// # Errors
+    /// Returns an error if no server is connected or the request fails.
+    pub async fn get_now_playing(&self) -> CoreResult<Vec<NowPlayingEntry>> {
+        let client = self.connected_client().await?;
+        let now_playing = client
+            .get_now_playing()
+            .await
+            .map_err(|error| CoreError::Subsonic(error.to_string()))?;
+        Ok(now_playing
+            .entry
+            .into_iter()
+            .map(|entry| NowPlayingEntry {
+                id: entry.child.id,
+                title: entry.child.title,
+                artist: entry.child.artist,
+                album: entry.child.album,
+                duration: entry.child.duration,
+                cover_art: entry.child.cover_art,
+                username: entry.username,
+                minutes_ago: entry.minutes_ago,
+                player_name: entry.player_name,
+            })
+            .collect())
+    }
+
+    /// Imports a legacy platform credential when no shared Last.fm session exists.
+    ///
+    /// # Errors
+    /// Returns an error if the session cannot be read or persisted.
+    pub fn import_lastfm_session_if_missing(
+        &self,
+        username: String,
+        session_key: String,
+    ) -> CoreResult<()> {
+        lastfm::import_session_if_missing(&self.db_path, username, session_key)
     }
 
     /// # Errors
@@ -1384,10 +1441,15 @@ impl StereodromeCore {
                 if protected_paths.contains(&path) {
                     continue;
                 }
-                match std::fs::remove_file(path) {
+                match std::fs::remove_file(&path) {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
+                    Err(error) => {
+                        warn!(
+                            "skipping cached audio file that could not be cleared: {} ({error})",
+                            path.display()
+                        );
+                    }
                 }
             }
             let conn = Connection::open(&self.db_path)?;
@@ -3344,6 +3406,18 @@ impl StereodromeCore {
         Ok(paths)
     }
 
+    /// Cache file backing the track that is playing right now.
+    ///
+    /// Automatic eviction must skip it: on Windows the file cannot be unlinked while the
+    /// decoder holds it open, and elsewhere evicting it silently drops the download record
+    /// for a track the user is still listening to.
+    fn active_playback_cache_path(&self) -> CoreResult<Option<PathBuf>> {
+        let Some(song_id) = self.get_playback_state()?.current_song_id else {
+            return Ok(None);
+        };
+        self.cached_song_path(&song_id)
+    }
+
     fn song_protected_by_saved_playlist(&self, song_id: &str) -> CoreResult<bool> {
         let conn = Connection::open(&self.db_path)?;
         conn.query_row(
@@ -3373,10 +3447,16 @@ impl StereodromeCore {
     }
 
     fn enforce_audio_cache_limit(&self) -> CoreResult<()> {
+        self.enforce_audio_cache_limit_to(self.max_cache_size()?)
+    }
+
+    fn enforce_audio_cache_limit_to(&self, max_size: u64) -> CoreResult<()> {
         let _cache_guard = cache_mutation_guard()?;
-        let max_size = self.max_cache_size()?;
         let mut entries = self.audio_cache_entries()?;
-        let protected_paths = self.protected_audio_cache_paths()?;
+        let mut protected_paths = self.protected_audio_cache_paths()?;
+        if let Some(active_path) = self.active_playback_cache_path()? {
+            protected_paths.insert(active_path);
+        }
         let mut total_size: u64 = entries.iter().map(|(_, size)| *size).sum();
         if total_size <= max_size {
             return Ok(());
@@ -3420,7 +3500,14 @@ impl StereodromeCore {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     self.emit_cache_state_event(CacheStateEvent::Reconcile);
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    // The file is still in use (or otherwise locked), so leave its size and
+                    // download record intact and keep evicting the rest.
+                    warn!(
+                        "skipping cached audio file that could not be evicted: {} ({error})",
+                        path.display()
+                    );
+                }
             }
         }
 
@@ -4476,26 +4563,12 @@ struct PlaybackStateWrite {
     scrobbled_song_id: Option<String>,
 }
 
+// Preset fields are enums, so deserialization already constrains them.
 pub(crate) fn clamp_audio_processing_settings(settings: &mut AudioProcessingSettings) {
-    if settings.normalization_mode != "album" {
-        settings.normalization_mode = "track".to_string();
-    }
     settings.target_lufs = settings.target_lufs.clamp(-24.0, -8.0);
     settings.preamp_db = settings.preamp_db.clamp(-12.0, 12.0);
     settings.crossfade_duration_ms = settings.crossfade_duration_ms.clamp(500, 15_000);
     settings.prefetch_count = settings.prefetch_count.clamp(1, 10);
-    if !matches!(
-        settings.dynamics_preset.as_str(),
-        "light" | "medium" | "heavy"
-    ) {
-        settings.dynamics_preset = "light".to_string();
-    }
-    if !matches!(
-        settings.binaural_preset.as_str(),
-        "light" | "medium" | "strong"
-    ) {
-        settings.binaural_preset = "medium".to_string();
-    }
     settings.equalizer_bands_db.resize(12, 0.0);
     settings.equalizer_bands_db.truncate(12);
     for band in &mut settings.equalizer_bands_db {
@@ -4506,10 +4579,11 @@ pub(crate) fn clamp_audio_processing_settings(settings: &mut AudioProcessingSett
 #[cfg(test)]
 mod tests {
     use super::{
-        CacheStateEvent, ConnectivitySettings, CoreError, DownloadInProgressGuard, DownloadRecord,
-        DownloadRecordFinalizer, DueSyncJob, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT,
-        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, ServerConfig, Song,
-        StereodromeCore, SyncSettings, build_client, compute_next_run_at,
+        AudioProcessingSettings, BinauralPreset, CacheStateEvent, ConnectivitySettings, CoreError,
+        DownloadInProgressGuard, DownloadRecord, DownloadRecordFinalizer, DueSyncJob,
+        DynamicsPreset, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate,
+        NewestAlbumPageEntry, NewestPageScanResult, NormalizationMode, PlaybackProgress,
+        ServerConfig, Song, StereodromeCore, SyncSettings, build_client, compute_next_run_at,
         cover_art_filename_matches, cover_cache_filename, distinct_nonempty_cover_art_ids,
         ensure_incremental_albums_complete, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
         prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
@@ -4704,6 +4778,129 @@ mod tests {
             album: "Album".to_string(),
             duration: 180,
         }
+    }
+
+    #[test]
+    fn cold_restore_preserves_queue_selection_and_playback_position() {
+        let data_dir = unique_temp_dir("cold-restore-characterization");
+        {
+            let core = StereodromeCore::new(&data_dir).expect("core initializes");
+            core.add_songs_to_queue(vec![
+                prefetch_queue_item("song-a"),
+                prefetch_queue_item("song-b"),
+            ])
+            .expect("queue is populated");
+            core.play_queue_item(1).expect("second song is selected");
+            core.save_playback_position(PlaybackProgress {
+                song_id: "song-b".to_string(),
+                position_seconds: 42.5,
+                duration_seconds: 180.0,
+                is_playing: true,
+            })
+            .expect("playback position is saved");
+        }
+
+        let restored = StereodromeCore::new(&data_dir).expect("core restores");
+        let queue = restored.get_queue().expect("queue restores");
+        let playback = restored.get_playback_state().expect("playback restores");
+
+        assert_eq!(queue.items.len(), 2);
+        assert_eq!(queue.current_index, Some(1));
+        assert_eq!(queue.items[1].song_id, "song-b");
+        assert_eq!(playback.current_song_id.as_deref(), Some("song-b"));
+        assert!((playback.position_seconds - 42.5).abs() < f64::EPSILON);
+        assert!(playback.was_playing);
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn rapid_queue_navigation_remains_ordered_and_durable() {
+        let data_dir = unique_temp_dir("rapid-navigation-characterization");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        core.add_songs_to_queue(vec![
+            prefetch_queue_item("song-a"),
+            prefetch_queue_item("song-b"),
+            prefetch_queue_item("song-c"),
+        ])
+        .expect("queue is populated");
+        core.play_queue_item(0).expect("first song is selected");
+
+        for _ in 0..20 {
+            assert_eq!(
+                core.play_next(Some(true))
+                    .expect("next succeeds")
+                    .as_ref()
+                    .map(|item| item.song_id.as_str()),
+                Some("song-b")
+            );
+            assert_eq!(
+                core.play_previous()
+                    .expect("previous succeeds")
+                    .as_ref()
+                    .map(|item| item.song_id.as_str()),
+                Some("song-a")
+            );
+        }
+
+        drop(core);
+        let restored = StereodromeCore::new(&data_dir).expect("core restores");
+        assert_eq!(
+            restored.get_queue().expect("queue restores").current_index,
+            Some(0)
+        );
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn clear_queue_and_audio_settings_are_persisted_across_restart() {
+        let data_dir = unique_temp_dir("clear-settings-characterization");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        core.add_to_queue(prefetch_queue_item("song-a"))
+            .expect("queue item is added");
+        core.play_queue_item(0).expect("song is selected");
+        core.clear_queue().expect("queue clears");
+
+        let settings = core
+            .set_audio_processing_settings(AudioProcessingSettings {
+                normalization_enabled: true,
+                normalization_mode: NormalizationMode::Album,
+                target_lufs: -100.0,
+                preamp_db: 100.0,
+                prevent_clipping: true,
+                dynamics_enabled: true,
+                dynamics_preset: DynamicsPreset::Heavy,
+                binaural_enabled: true,
+                binaural_preset: BinauralPreset::Strong,
+                equalizer_enabled: true,
+                equalizer_bands_db: vec![24.0],
+                gapless_enabled: true,
+                crossfade_enabled: true,
+                crossfade_duration_ms: 100,
+                prefetch_count: 100,
+            })
+            .expect("audio settings persist");
+        assert_eq!(settings.normalization_mode, NormalizationMode::Album);
+        assert!((settings.target_lufs + 24.0).abs() < f64::EPSILON);
+        assert!((settings.preamp_db - 12.0).abs() < f64::EPSILON);
+        assert_eq!(settings.equalizer_bands_db.len(), 12);
+
+        drop(core);
+        let restored = StereodromeCore::new(&data_dir).expect("core restores");
+        assert!(
+            restored
+                .get_queue()
+                .expect("queue restores")
+                .items
+                .is_empty()
+        );
+        assert_eq!(
+            restored
+                .get_audio_processing_settings()
+                .expect("settings restore")
+                .prefetch_count,
+            10
+        );
+        std::fs::remove_dir_all(data_dir).ok();
     }
 
     #[test]
@@ -5186,6 +5383,59 @@ mod tests {
         std::fs::remove_dir_all(data_dir).ok();
     }
 
+    #[tokio::test]
+    async fn saved_playlist_reconcile_uses_cached_library_without_a_connection() {
+        let data_dir = unique_temp_dir("saved-playlist-reconcile-characterization");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let conn = Connection::open(&core.db_path).expect("open test db");
+
+        conn.execute(
+            "INSERT INTO artists (id, name, synced_at) VALUES ('artist', 'Artist', 'now')",
+            [],
+        )
+        .expect("insert artist");
+        conn.execute(
+            "INSERT INTO albums (id, artist_id, name, synced_at)
+             VALUES ('album', 'artist', 'Album', 'now')",
+            [],
+        )
+        .expect("insert album");
+        conn.execute(
+            "INSERT INTO songs (id, album_id, artist_id, title, synced_at)
+             VALUES ('cached-song', 'album', 'artist', 'Cached Song', 'now')",
+            [],
+        )
+        .expect("insert song");
+        conn.execute(
+            "INSERT INTO playlists
+             (id, name, song_count, duration, created_at, changed_at, offline_saved_at, synced_at)
+             VALUES ('saved-playlist', 'Saved Playlist', 1, 0, 'now', 'now', 'now', 'now')",
+            [],
+        )
+        .expect("insert playlist");
+        conn.execute(
+            "INSERT INTO playlist_songs (playlist_id, song_id, position)
+             VALUES ('saved-playlist', 'cached-song', 0)",
+            [],
+        )
+        .expect("insert playlist song");
+        let cache_path = core
+            .audio_cache_path("cached-song", MOBILE_PLAYBACK_FORMAT)
+            .expect("cache path");
+        std::fs::write(cache_path, b"cached audio").expect("write cached song");
+
+        let results = core
+            .reconcile_saved_playlists_offline()
+            .await
+            .expect("saved playlist reconciliation succeeds");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].playlist_id, "saved-playlist");
+        assert_eq!(results[0].downloaded_count, 1);
+        assert!(results[0].saved_offline);
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
     #[test]
     fn download_guard_publishes_start_and_finish_events() {
         let (sender, receiver) = mpsc::channel();
@@ -5427,6 +5677,63 @@ mod tests {
 
         assert!(saved_path.exists());
         assert!(!cache_path.exists());
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn eviction_keeps_the_currently_playing_track() {
+        // Written oldest-first so "playing" is the entry the least-recently-used
+        // ordering reaches first.
+        fn seed_cache(
+            core: &StereodromeCore,
+        ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+            let mut paths = Vec::new();
+            for song_id in ["playing", "older", "newer"] {
+                let path = core
+                    .audio_cache_path(song_id, MOBILE_PLAYBACK_FORMAT)
+                    .expect("cache path");
+                std::fs::write(&path, vec![0u8; 100]).expect("write cache file");
+                std::thread::sleep(Duration::from_millis(20));
+                paths.push(path);
+            }
+            let mut paths = paths.into_iter();
+            (
+                paths.next().expect("playing"),
+                paths.next().expect("older"),
+                paths.next().expect("newer"),
+            )
+        }
+
+        // Control: with nothing playing, the oldest entry is the one evicted.
+        let idle_dir = unique_temp_dir("eviction-idle");
+        let idle = StereodromeCore::new(&idle_dir).expect("core initializes");
+        let (idle_oldest, idle_older, idle_newer) = seed_cache(&idle);
+        idle.enforce_audio_cache_limit_to(250)
+            .expect("enforce cache limit");
+        assert!(!idle_oldest.exists(), "oldest entry is evicted first");
+        assert!(idle_older.exists());
+        assert!(idle_newer.exists());
+        std::fs::remove_dir_all(&idle_dir).ok();
+
+        // With that same track playing, eviction skips it and takes the next candidate.
+        let data_dir = unique_temp_dir("eviction-playing");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let (playing, older, newer) = seed_cache(&core);
+        core.save_playback_position(PlaybackProgress {
+            song_id: "playing".to_string(),
+            position_seconds: 12.0,
+            duration_seconds: 180.0,
+            is_playing: true,
+        })
+        .expect("persist playback position");
+
+        core.enforce_audio_cache_limit_to(250)
+            .expect("enforce cache limit");
+
+        assert!(playing.exists(), "playing track survives eviction");
+        assert!(!older.exists(), "eviction moves on to the next candidate");
+        assert!(newer.exists());
 
         std::fs::remove_dir_all(data_dir).ok();
     }

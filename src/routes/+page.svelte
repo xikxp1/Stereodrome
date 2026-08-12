@@ -205,7 +205,7 @@
   $effect(() => {
     const handler = () => {
       if (!connection.status.server_url) return;
-      void loadLibraryData();
+      void loadLibraryData(true);
       if (
         connection.status.connected &&
         !connection.manualOfflineEnabled &&
@@ -213,7 +213,10 @@
           activeView === "recently_played" ||
           activeView === "most_played")
       ) {
-        void albumListStore.loadView(activeView, { force: true });
+        void albumListStore.loadView(activeView, {
+          force: true,
+          background: true,
+        });
       }
     };
 
@@ -261,8 +264,10 @@
     }
   });
 
-  async function loadLibraryData() {
-    isLoading = true;
+  async function loadLibraryData(background = false) {
+    if (!background) {
+      isLoading = true;
+    }
     loadError = null;
     try {
       const [
@@ -291,7 +296,9 @@
     } catch (e) {
       loadError = e instanceof Error ? e : new Error(String(e));
     } finally {
-      isLoading = false;
+      if (!background) {
+        isLoading = false;
+      }
     }
   }
 
@@ -744,7 +751,7 @@
           duration: entry.duration,
           cover_art_id: entry.cover_art_id,
           synced_at: "",
-          ...(entry.artistName ? { artistName: entry.artistName } : {}),
+          artist_name: entry.artist_name,
         },
       };
     }
@@ -892,7 +899,7 @@
 
   function getAlbumArtistName(album: Album | AlbumListEntry): string {
     return (
-      album.artistName ??
+      album.artist_name ??
       (album.artist_id
         ? (artists.find((artist) => artist.id === album.artist_id)?.name ??
           "Unknown Artist")
@@ -1294,7 +1301,7 @@
             <!-- Album Detail: Header + Song List -->
             <DetailHeader
               title={detailView.album.name}
-              subtitle={detailView.album.artistName ?? ""}
+              subtitle={detailView.album.artist_name ?? ""}
               coverArtId={detailView.album.cover_art_id}
               onBack={handleDetailBack}
               onCoverArtClick={handleDetailAlbumCoverArtClick}
@@ -1344,7 +1351,7 @@
             <!-- Album Detail: Header + Song List -->
             <DetailHeader
               title={detailView.album.name}
-              subtitle={detailView.album.artistName ?? ""}
+              subtitle={detailView.album.artist_name ?? ""}
               coverArtId={detailView.album.cover_art_id}
               onBack={handleDetailBack}
               onCoverArtClick={handleDetailAlbumCoverArtClick}

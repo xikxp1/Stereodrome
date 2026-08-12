@@ -1,19 +1,16 @@
 mod audio;
 mod cache;
-mod client;
 mod commands;
 mod credentials;
 mod db;
 mod error;
-mod lastfm;
 mod media;
-mod search;
+mod runtime;
 mod state;
 mod tray;
 
 use std::sync::Arc;
 
-use error::MutexExt as _;
 use log::{LevelFilter, info, warn};
 use media::MediaControlsManager;
 use state::AppState;
@@ -75,41 +72,58 @@ pub fn run() {
     builder
         .setup(move |app| {
             let db_path = db::get_db_path(app.handle())?;
-            let index_path = search::get_index_path(app.handle())?;
+            let data_dir = std::path::Path::new(&db_path)
+                .parent()
+                .ok_or_else(|| std::io::Error::other("database path has no parent"))?;
 
-            // Spawn the submarine client thread
-            let client_handle = client::spawn();
-
-            let app_state = AppState::new(&db_path, index_path, client_handle.clone())?;
-
-            // Restore persisted runtime volume before UI starts consuming playback state.
+            if cache::current_cache_root(app.handle())? != cache::default_cache_root(app.handle())?
             {
-                let persisted_volume = commands::read_persisted_volume(app.handle());
-                let audio_player = app_state.audio_player.lock_recover();
-                if let Err(e) = audio_player.set_volume(persisted_volume) {
-                    warn!("Failed to apply persisted runtime volume: {e}");
-                }
+                info!("Migrating desktop cache back to the shared runtime data directory");
+                cache::set_cache_root(app.handle(), None)?;
             }
 
-            // Start position emitter for audio playback
+            let app_state = AppState::new(data_dir)?;
+            commands::settings::apply_desktop_runtime_settings(app.handle(), &app_state)?;
+            commands::cache::migrate_desktop_cache_settings(app.handle(), &app_state)?;
+
+            // Migrate the legacy desktop volume store into runtime persistence.
+            if let Some(persisted_volume) =
+                commands::ui_state::take_legacy_persisted_volume(app.handle())
+                && let Err(e) = runtime::dispatch::<()>(
+                    &app_state,
+                    stereodrome_core::CoreCommand::SetPlaybackVolume {
+                        volume: persisted_volume,
+                    },
+                )
             {
-                let audio_player = app_state.audio_player.lock_recover();
-                audio_player.start_position_emitter(app.handle().clone());
-                audio_player.start_spectrum_emitter(app.handle().clone());
+                warn!("Failed to apply persisted runtime volume: {e}");
             }
 
-            // Start now playing emitter with the client handle
+            let desktop_runtime = app_state.runtime.clone();
+            let runtime_audio = Arc::clone(&app_state.runtime_audio);
+            let emitter_running = Arc::clone(&app_state.emitter_running);
+            audio::player::start_position_emitter(
+                Arc::clone(&runtime_audio),
+                app.handle().clone(),
+                Arc::clone(&emitter_running),
+            );
+            audio::player::start_spectrum_emitter(
+                runtime_audio,
+                app.handle().clone(),
+                Arc::clone(&emitter_running),
+            );
+
+            // Project the server's now-playing list through the runtime.
             let emitter_running = Arc::clone(&app_state.emitter_running);
             commands::nowplaying::start_now_playing_emitter(
                 app.handle().clone(),
-                client_handle,
+                desktop_runtime.clone(),
                 emitter_running,
             );
 
             app.manage(app_state);
 
-            commands::library::start_library_sync_scheduler(app.handle().clone());
-            lastfm::start_lastfm_retry_scheduler(app.handle().clone());
+            commands::library::start_library_sync_scheduler(app.handle());
 
             // Initialize media controls for OS integration (Control Center, media keys)
             if let Some(media_controls) = MediaControlsManager::new(app.handle().clone()) {
@@ -127,72 +141,26 @@ pub fn run() {
                 info!("Tray icon not available on this platform");
             }
 
+            runtime::start_event_bridge(app.handle().clone(), desktop_runtime);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::core_dispatch,
             commands::connect_server,
             commands::disconnect_server,
-            commands::get_connection_status,
             commands::restore_session,
-            commands::export_portable_backup,
             commands::import_portable_backup,
             commands::sync_library,
             commands::reconcile_library_state,
-            commands::get_library_sync_status,
-            commands::get_artists,
             commands::get_album_count,
-            commands::get_albums,
-            commands::get_songs,
-            commands::get_album_list,
-            commands::play_song,
-            commands::pause_playback,
-            commands::resume_playback,
-            commands::stop_playback,
-            commands::set_volume,
-            commands::seek_playback,
             commands::get_playback_status,
-            commands::get_queue,
-            commands::play_song_with_queue,
-            commands::add_to_queue,
-            commands::add_songs_to_queue,
-            commands::insert_next_in_queue,
-            commands::insert_next_songs_in_queue,
-            commands::remove_from_queue,
-            commands::clear_queue,
-            commands::move_queue_item,
-            commands::reroll_next_queue_item,
-            commands::play_queue_item,
-            commands::play_next,
-            commands::play_previous,
-            commands::toggle_shuffle,
-            commands::set_repeat_mode,
-            commands::cycle_repeat_mode,
             commands::sync_playlists,
-            commands::get_playlists,
             commands::get_playlist_songs,
-            commands::create_playlist,
-            commands::update_playlist,
-            commands::delete_playlist,
-            commands::add_songs_to_playlist,
-            commands::remove_song_from_playlist,
-            commands::remove_songs_from_playlist,
-            commands::set_playlist_saved_offline,
-            commands::reconcile_saved_playlists_offline,
-            commands::search_library,
-            commands::scrobble_now_playing,
-            commands::scrobble_submit,
             commands::get_cover_art,
             commands::get_cover_art_path,
-            commands::get_song_cover_art,
             commands::get_cache_locations,
-            commands::set_cache_root,
-            commands::get_audio_cache_stats,
-            commands::get_offline_song_ids,
             commands::get_downloading_song_ids,
-            commands::clear_audio_cache,
-            commands::set_max_cache_size,
-            commands::get_scan_status,
-            commands::start_scan,
             commands::set_tray_update_available,
             commands::get_normalization_settings,
             commands::set_normalization_settings,
@@ -204,7 +172,6 @@ pub fn run() {
             commands::set_playback_settings,
             commands::get_connectivity_settings,
             commands::set_connectivity_settings,
-            commands::set_persisted_volume,
             commands::get_mini_player_position,
             commands::set_mini_player_position,
             commands::get_notification_settings,
@@ -213,12 +180,6 @@ pub fn run() {
             commands::get_sync_settings,
             commands::set_sync_settings,
             commands::get_system_time_preferences,
-            commands::get_lastfm_status,
-            commands::begin_lastfm_auth,
-            commands::complete_lastfm_auth,
-            commands::disconnect_lastfm,
-            commands::get_lastfm_queue,
-            commands::retry_lastfm_queue,
             commands::open_mini_player,
             commands::set_mini_player_mode,
             commands::close_mini_player,
@@ -240,10 +201,12 @@ pub fn run() {
                 }
             }
             tauri::RunEvent::Exit => {
-                // Shutdown the client thread gracefully
                 if let Some(state) = app_handle.try_state::<AppState>() {
-                    info!("Shutting down client thread");
-                    state.client.shutdown();
+                    state
+                        .emitter_running
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    info!("Shutting down desktop runtime");
+                    state.runtime.shutdown();
                 }
             }
             _ => {}

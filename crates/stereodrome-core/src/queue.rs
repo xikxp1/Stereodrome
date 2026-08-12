@@ -3,6 +3,7 @@ use rand::prelude::IndexedRandom;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RepeatMode {
     #[default]
@@ -11,6 +12,7 @@ pub enum RepeatMode {
     One,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueItem {
     pub song_id: String,
@@ -20,6 +22,7 @@ pub struct QueueItem {
     pub duration: i64,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueState {
     pub items: Vec<QueueItem>,
@@ -44,6 +47,17 @@ impl QueueState {
     }
 }
 
+/// Where forward navigation resumes after the playing item was removed from the queue.
+///
+/// Anchored by song id rather than by position: reordering the queue must not silently
+/// point the cursor at a different track.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingNavigation {
+    At(String),
+    /// The removed item was last, so forward navigation has run off the end.
+    PastEnd,
+}
+
 #[derive(Debug, Clone)]
 pub struct PlayQueue {
     items: Vec<QueueItem>,
@@ -51,7 +65,7 @@ pub struct PlayQueue {
     shuffle: bool,
     repeat_mode: RepeatMode,
     original_order: Vec<QueueItem>,
-    pending_navigation_index: Option<usize>,
+    pending_navigation: Option<PendingNavigation>,
     prepared_shuffle_cycle: Option<Vec<QueueItem>>,
 }
 
@@ -70,7 +84,7 @@ impl PlayQueue {
             shuffle: false,
             repeat_mode: RepeatMode::Off,
             original_order: Vec::new(),
-            pending_navigation_index: None,
+            pending_navigation: None,
             prepared_shuffle_cycle: None,
         }
     }
@@ -105,7 +119,7 @@ impl PlayQueue {
             current_index,
             shuffle,
             repeat_mode,
-            pending_navigation_index: None,
+            pending_navigation: None,
             prepared_shuffle_cycle: None,
         }
     }
@@ -140,9 +154,38 @@ impl PlayQueue {
         self.repeat_mode
     }
 
+    /// Position the navigation cursor sits at, or `items.len()` when it is past the last item.
     #[must_use]
     pub fn pending_navigation_index(&self) -> Option<usize> {
-        self.pending_navigation_index
+        match self.pending_navigation.as_ref()? {
+            PendingNavigation::At(song_id) => {
+                self.items.iter().position(|item| &item.song_id == song_id)
+            }
+            PendingNavigation::PastEnd => Some(self.items.len()),
+        }
+    }
+
+    /// Index forward navigation resumes at, or `None` when the cursor is past the last item.
+    fn pending_resume_index(&self) -> Option<usize> {
+        match self.pending_navigation.as_ref()? {
+            PendingNavigation::At(song_id) => {
+                self.items.iter().position(|item| &item.song_id == song_id)
+            }
+            PendingNavigation::PastEnd => None,
+        }
+    }
+
+    fn pending_is_past_end(&self) -> bool {
+        self.pending_navigation == Some(PendingNavigation::PastEnd)
+    }
+
+    /// Anchor the cursor at whichever item now occupies `index`.
+    fn pending_navigation_at_slot(&self, index: usize) -> PendingNavigation {
+        self.items
+            .get(index)
+            .map_or(PendingNavigation::PastEnd, |item| {
+                PendingNavigation::At(item.song_id.clone())
+            })
     }
 
     #[must_use]
@@ -199,28 +242,23 @@ impl PlayQueue {
             self.original_order.remove(pos);
         }
 
+        if self.items.is_empty() {
+            self.current_index = None;
+            self.pending_navigation = None;
+            return Some(item);
+        }
+
         if let Some(current) = self.current_index {
             if index < current {
                 self.current_index = Some(current - 1);
-                if let Some(pending) = self.pending_navigation_index
-                    && index <= pending
-                {
-                    self.pending_navigation_index = Some(pending.saturating_sub(1));
-                }
             } else if index == current {
+                // The playing item is gone; resume at whatever took its slot.
                 self.current_index = None;
-                if self.items.is_empty() {
-                    self.pending_navigation_index = None;
-                } else {
-                    self.pending_navigation_index = Some(index.min(self.items.len()));
-                }
+                self.pending_navigation = Some(self.pending_navigation_at_slot(index));
             }
-        } else if let Some(pending) = self.pending_navigation_index {
-            if index < pending {
-                self.pending_navigation_index = Some(pending - 1);
-            } else if index == pending && self.items.is_empty() {
-                self.pending_navigation_index = None;
-            }
+        } else if self.pending_navigation == Some(PendingNavigation::At(item.song_id.clone())) {
+            // The anchor itself was removed, so the cursor slides onto its successor.
+            self.pending_navigation = Some(self.pending_navigation_at_slot(index));
         }
 
         Some(item)
@@ -230,7 +268,7 @@ impl PlayQueue {
         self.items.clear();
         self.original_order.clear();
         self.current_index = None;
-        self.pending_navigation_index = None;
+        self.pending_navigation = None;
         self.shuffle = false;
         self.repeat_mode = RepeatMode::Off;
         self.prepared_shuffle_cycle = None;
@@ -261,7 +299,7 @@ impl PlayQueue {
         if index < self.items.len() {
             self.invalidate_prepared_shuffle_cycle();
             self.current_index = Some(index);
-            self.pending_navigation_index = None;
+            self.pending_navigation = None;
             self.items.get(index)
         } else {
             None
@@ -270,19 +308,36 @@ impl PlayQueue {
 
     pub fn next(&mut self, force: bool) -> Option<&QueueItem> {
         if self.items.is_empty() {
-            self.pending_navigation_index = None;
+            self.pending_navigation = None;
             self.prepared_shuffle_cycle = None;
             return None;
         }
 
-        let effective_index = self.current_index.or(self.pending_navigation_index);
+        // The playing item was removed and nothing followed it, so there is no slot to
+        // resume at: end playback unless a repeat mode asks to wrap.
+        if self.current_index.is_none() && self.pending_is_past_end() {
+            self.pending_navigation = None;
+            let wraps = match self.repeat_mode {
+                RepeatMode::All => true,
+                RepeatMode::One => force,
+                RepeatMode::Off => false,
+            };
+            if !wraps {
+                return None;
+            }
+            self.invalidate_prepared_shuffle_cycle();
+            self.current_index = Some(0);
+            return self.items.first();
+        }
+
+        let effective_index = self.current_index.or_else(|| self.pending_resume_index());
 
         match self.repeat_mode {
             RepeatMode::One if !force => {
                 if self.current_index.is_none()
-                    && let Some(pending) = self.pending_navigation_index.take()
+                    && let Some(idx) = self.pending_resume_index()
                 {
-                    let idx = pending.min(self.items.len() - 1);
+                    self.pending_navigation = None;
                     self.current_index = Some(idx);
                     return self.items.get(idx);
                 }
@@ -292,11 +347,11 @@ impl PlayQueue {
                 self.invalidate_prepared_shuffle_cycle();
                 let next_idx = match effective_index {
                     Some(i) if self.current_index.is_some() => (i + 1) % self.items.len(),
-                    Some(i) => i.min(self.items.len() - 1),
+                    Some(i) => i,
                     None => 0,
                 };
                 self.current_index = Some(next_idx);
-                self.pending_navigation_index = None;
+                self.pending_navigation = None;
                 self.items.get(next_idx)
             }
             RepeatMode::All => {
@@ -306,18 +361,18 @@ impl PlayQueue {
                     if let Some(next_cycle) = self.prepared_shuffle_cycle.take() {
                         self.items = next_cycle;
                         self.current_index = Some(0);
-                        self.pending_navigation_index = None;
+                        self.pending_navigation = None;
                         return self.items.first();
                     }
                 }
 
                 let next_idx = match effective_index {
                     Some(i) if self.current_index.is_some() => (i + 1) % self.items.len(),
-                    Some(i) => i.min(self.items.len() - 1),
+                    Some(i) => i,
                     None => 0,
                 };
                 self.current_index = Some(next_idx);
-                self.pending_navigation_index = None;
+                self.pending_navigation = None;
                 self.items.get(next_idx)
             }
             RepeatMode::Off => {
@@ -329,11 +384,11 @@ impl PlayQueue {
                             None
                         }
                     }
-                    Some(i) => Some(i.min(self.items.len() - 1)),
+                    Some(i) => Some(i),
                     None => Some(0),
                 };
                 self.current_index = next_idx;
-                self.pending_navigation_index = None;
+                self.pending_navigation = None;
                 next_idx.and_then(|i| self.items.get(i))
             }
         }
@@ -350,25 +405,20 @@ impl PlayQueue {
             return None;
         }
 
-        let effective_index = self.current_index.or(self.pending_navigation_index);
+        let Some(current) = self.current_index else {
+            return match self.pending_navigation.as_ref() {
+                Some(PendingNavigation::At(_)) => self.pending_resume_index(),
+                Some(PendingNavigation::PastEnd) => match self.repeat_mode {
+                    RepeatMode::One | RepeatMode::All => Some(0),
+                    RepeatMode::Off => None,
+                },
+                None => Some(0),
+            };
+        };
 
         match self.repeat_mode {
-            RepeatMode::One | RepeatMode::All => match effective_index {
-                Some(i) if self.current_index.is_some() => Some((i + 1) % self.items.len()),
-                Some(i) => Some(i.min(self.items.len() - 1)),
-                None => Some(0),
-            },
-            RepeatMode::Off => match effective_index {
-                Some(i) if self.current_index.is_some() => {
-                    if i + 1 < self.items.len() {
-                        Some(i + 1)
-                    } else {
-                        None
-                    }
-                }
-                Some(i) => Some(i.min(self.items.len() - 1)),
-                None => Some(0),
-            },
+            RepeatMode::One | RepeatMode::All => Some((current + 1) % self.items.len()),
+            RepeatMode::Off => (current + 1 < self.items.len()).then_some(current + 1),
         }
     }
 
@@ -419,21 +469,25 @@ impl PlayQueue {
 
     pub fn previous(&mut self) -> Option<&QueueItem> {
         if self.items.is_empty() {
-            self.pending_navigation_index = None;
+            self.pending_navigation = None;
             self.prepared_shuffle_cycle = None;
             return None;
         }
 
         self.invalidate_prepared_shuffle_cycle();
+        // A cursor past the last item resolves to `items.len()`, so stepping back from it
+        // lands on the final track.
+        let pending_index = self.pending_navigation_index();
         let effective_index = self
             .current_index
-            .or_else(|| self.pending_navigation_index.map(|i| i.saturating_sub(1)));
+            .or_else(|| pending_index.map(|i| i.saturating_sub(1)));
 
         match self.repeat_mode {
             RepeatMode::One => {
                 if self.current_index.is_none()
-                    && let Some(pending) = self.pending_navigation_index.take()
+                    && let Some(pending) = pending_index
                 {
+                    self.pending_navigation = None;
                     let idx = pending.saturating_sub(1).min(self.items.len() - 1);
                     self.current_index = Some(idx);
                     return self.items.get(idx);
@@ -441,13 +495,11 @@ impl PlayQueue {
                 self.current_item()
             }
             RepeatMode::All => {
-                let prev_idx = if let (None, Some(pending)) =
-                    (self.current_index, self.pending_navigation_index)
-                {
+                let prev_idx = if let (None, Some(pending)) = (self.current_index, pending_index) {
                     if pending == 0 {
                         self.items.len() - 1
                     } else {
-                        pending - 1
+                        (pending - 1).min(self.items.len() - 1)
                     }
                 } else {
                     match effective_index {
@@ -456,14 +508,12 @@ impl PlayQueue {
                     }
                 };
                 self.current_index = Some(prev_idx);
-                self.pending_navigation_index = None;
+                self.pending_navigation = None;
                 self.items.get(prev_idx)
             }
             RepeatMode::Off => {
-                let prev_idx = if let (None, Some(pending)) =
-                    (self.current_index, self.pending_navigation_index)
-                {
-                    Some(pending.saturating_sub(1))
+                let prev_idx = if let (None, Some(pending)) = (self.current_index, pending_index) {
+                    Some(pending.saturating_sub(1).min(self.items.len() - 1))
                 } else {
                     match effective_index {
                         Some(i) if i > 0 => Some(i - 1),
@@ -471,7 +521,7 @@ impl PlayQueue {
                     }
                 };
                 self.current_index = prev_idx;
-                self.pending_navigation_index = None;
+                self.pending_navigation = None;
                 prev_idx.and_then(|i| self.items.get(i))
             }
         }
@@ -530,7 +580,15 @@ impl PlayQueue {
         }
 
         self.prepare_next_cycle_if_needed();
-        let effective_index = self.current_index.or(self.pending_navigation_index);
+
+        if self.current_index.is_none() && self.pending_is_past_end() {
+            return match self.repeat_mode {
+                RepeatMode::All => self.items.first(),
+                RepeatMode::One | RepeatMode::Off => None,
+            };
+        }
+
+        let effective_index = self.current_index.or_else(|| self.pending_resume_index());
 
         match self.repeat_mode {
             RepeatMode::One => self.current_item(),
@@ -541,7 +599,7 @@ impl PlayQueue {
 
                 let next_idx = match effective_index {
                     Some(i) if self.current_index.is_some() => (i + 1) % self.items.len(),
-                    Some(i) => i.min(self.items.len() - 1),
+                    Some(i) => i,
                     None => 0,
                 };
                 self.items.get(next_idx)
@@ -554,7 +612,7 @@ impl PlayQueue {
                         None
                     }
                 }
-                Some(i) => self.items.get(i.min(self.items.len() - 1)),
+                Some(i) => self.items.get(i),
                 None => self.items.first(),
             },
         }
@@ -575,17 +633,19 @@ impl PlayQueue {
             return self
                 .current_item()
                 .or_else(|| {
-                    self.pending_navigation_index
-                        .and_then(|index| self.items.get(index.min(self.items.len() - 1)))
+                    self.pending_resume_index()
+                        .and_then(|index| self.items.get(index))
                 })
                 .cloned()
                 .into_iter()
                 .collect();
         }
 
-        let start_index = match (self.current_index, self.pending_navigation_index) {
+        // `items.len()` for a past-end cursor leaves nothing before the wrap, which the
+        // repeat-off and repeat-all arms below both handle.
+        let start_index = match (self.current_index, self.pending_navigation_index()) {
             (Some(index), _) => index + 1,
-            (None, Some(index)) => index.min(self.items.len() - 1),
+            (None, Some(index)) => index,
             (None, None) => 0,
         };
 
@@ -623,7 +683,7 @@ impl PlayQueue {
         if !self.shuffle
             || self.repeat_mode != RepeatMode::All
             || self.items.len() <= 1
-            || self.pending_navigation_index.is_some()
+            || self.pending_navigation.is_some()
         {
             self.prepared_shuffle_cycle = None;
             return;
@@ -665,7 +725,7 @@ impl PlayQueue {
         self.shuffle
             && self.repeat_mode == RepeatMode::All
             && self.items.len() > 1
-            && self.pending_navigation_index.is_none()
+            && self.pending_navigation.is_none()
             && self.current_index == Some(self.items.len() - 1)
     }
 }
@@ -1049,7 +1109,8 @@ mod tests {
             RepeatMode::Off,
         );
         pending_last.remove(2);
-        assert_eq!(song_ids(&pending_last.peek_upcoming(2)), vec!["b"]);
+        // Nothing followed the removed track, so with repeat off nothing is upcoming.
+        assert!(pending_last.peek_upcoming(2).is_empty());
 
         let mut repeat_one = PlayQueue::load(
             vec![queue_item("a"), queue_item("b"), queue_item("c")],
@@ -1089,6 +1150,138 @@ mod tests {
         assert!(!queue.is_shuffle());
         assert_eq!(song_ids(queue.items()), vec!["a", "b", "c"]);
         assert_eq!(queue.current_index(), Some(2));
+    }
+
+    #[test]
+    fn removing_current_last_item_ends_playback_instead_of_replaying() {
+        let items = vec![queue_item("a"), queue_item("b"), queue_item("c")];
+
+        let mut repeat_off = PlayQueue::load(items.clone(), Some(2), false, RepeatMode::Off);
+        repeat_off.remove(2);
+        assert_eq!(repeat_off.pending_navigation_index(), Some(2));
+        assert!(repeat_off.peek_next().is_none());
+        assert!(repeat_off.next(false).is_none());
+        assert_eq!(repeat_off.current_index(), None);
+
+        // Repeat-all still wraps to the top of the queue.
+        let mut repeat_all = PlayQueue::load(items.clone(), Some(2), false, RepeatMode::All);
+        repeat_all.remove(2);
+        assert_eq!(
+            repeat_all.peek_next().map(|item| item.song_id.as_str()),
+            Some("a")
+        );
+        assert_eq!(
+            repeat_all.next(false).map(|item| item.song_id.as_str()),
+            Some("a")
+        );
+
+        // Stepping backwards from the gap lands on the new final track.
+        let mut backwards = PlayQueue::load(items, Some(2), false, RepeatMode::Off);
+        backwards.remove(2);
+        assert_eq!(
+            backwards.previous().map(|item| item.song_id.as_str()),
+            Some("b")
+        );
+    }
+
+    #[test]
+    fn pending_navigation_survives_reordering_the_queue() {
+        // Disabling shuffle rebuilds the visible order from the canonical order.
+        let mut shuffled = PlayQueue::load_with_original_order(
+            vec![
+                queue_item("c"),
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("d"),
+            ],
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(1),
+            true,
+            RepeatMode::Off,
+        );
+        shuffled.remove(1);
+        let expected = shuffled
+            .peek_next()
+            .map(|item| item.song_id.clone())
+            .expect("a track follows the gap");
+        assert_eq!(expected, "b");
+
+        shuffled.toggle_shuffle();
+        assert_eq!(song_ids(shuffled.items()), vec!["b", "c", "d"]);
+        assert_eq!(
+            shuffled.next(false).map(|item| item.song_id.as_str()),
+            Some(expected.as_str())
+        );
+
+        // Moving items around keeps the cursor on the same track.
+        let mut moved = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(1),
+            false,
+            RepeatMode::Off,
+        );
+        moved.remove(1);
+        moved.move_item(0, 2);
+        assert_eq!(song_ids(moved.items()), vec!["c", "d", "a"]);
+        assert_eq!(
+            moved.next(false).map(|item| item.song_id.as_str()),
+            Some("c")
+        );
+    }
+
+    #[test]
+    fn removing_the_pending_anchor_slides_the_cursor_to_its_successor() {
+        let mut queue = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(1),
+            false,
+            RepeatMode::Off,
+        );
+
+        queue.remove(1);
+        assert_eq!(queue.pending_navigation_index(), Some(1));
+
+        // "c" is the anchor; removing it should hand the cursor to "d".
+        queue.remove(1);
+        assert_eq!(queue.pending_navigation_index(), Some(1));
+        assert_eq!(
+            queue.next(false).map(|item| item.song_id.as_str()),
+            Some("d")
+        );
+
+        // Removing an unrelated earlier track must not shift the cursor off its track.
+        let mut unrelated = PlayQueue::load(
+            vec![
+                queue_item("a"),
+                queue_item("b"),
+                queue_item("c"),
+                queue_item("d"),
+            ],
+            Some(2),
+            false,
+            RepeatMode::Off,
+        );
+        unrelated.remove(2);
+        unrelated.remove(0);
+        assert_eq!(
+            unrelated.next(false).map(|item| item.song_id.as_str()),
+            Some("d")
+        );
     }
 
     #[test]

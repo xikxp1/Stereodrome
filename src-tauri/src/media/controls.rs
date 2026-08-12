@@ -7,9 +7,11 @@ use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
     SeekDirection,
 };
-use tauri::{AppHandle, Emitter};
+use stereodrome_core::{CoreCommand, PlaybackNavigation};
+use tauri::{AppHandle, Manager};
 
 use crate::audio::SongMetadata;
+use crate::state::AppState;
 
 #[derive(Debug)]
 pub enum MediaCommand {
@@ -215,27 +217,33 @@ fn run_media_controls_thread(
 
 #[allow(clippy::needless_pass_by_value)]
 fn handle_media_event(app_handle: &AppHandle, event: MediaControlEvent) {
-    let payload = match event {
-        MediaControlEvent::Play => serde_json::json!({ "action": "play" }),
-        MediaControlEvent::Pause => serde_json::json!({ "action": "pause" }),
-        MediaControlEvent::Toggle => serde_json::json!({ "action": "play_pause" }),
-        MediaControlEvent::Next => serde_json::json!({ "action": "next" }),
-        MediaControlEvent::Previous => serde_json::json!({ "action": "previous" }),
-        MediaControlEvent::Stop => serde_json::json!({ "action": "stop" }),
-        MediaControlEvent::Seek(direction) => {
-            serde_json::json!({ "action": "seek_by", "delta": seek_delta_secs(direction, Duration::from_secs(10)) })
-        }
-        MediaControlEvent::SeekBy(direction, duration) => {
-            serde_json::json!({ "action": "seek_by", "delta": seek_delta_secs(direction, duration) })
-        }
-        MediaControlEvent::SetPosition(MediaPosition(position)) => {
-            serde_json::json!({ "action": "seek", "position": position.as_secs_f64() })
-        }
+    let command = match event {
+        MediaControlEvent::Play => CoreCommand::ResumePlayback,
+        MediaControlEvent::Pause => CoreCommand::PausePlayback,
+        MediaControlEvent::Toggle => CoreCommand::TogglePlayback,
+        MediaControlEvent::Next => CoreCommand::NavigatePlayback {
+            navigation: PlaybackNavigation::Next { force: true },
+        },
+        MediaControlEvent::Previous => CoreCommand::NavigatePlayback {
+            navigation: PlaybackNavigation::Previous,
+        },
+        MediaControlEvent::Stop => CoreCommand::StopPlayback,
+        MediaControlEvent::Seek(direction) => CoreCommand::SeekBy {
+            seconds: seek_delta_secs(direction, Duration::from_secs(10)),
+        },
+        MediaControlEvent::SeekBy(direction, duration) => CoreCommand::SeekBy {
+            seconds: seek_delta_secs(direction, duration),
+        },
+        MediaControlEvent::SetPosition(MediaPosition(position)) => CoreCommand::SeekTo {
+            seconds: position.as_secs_f64(),
+        },
         _ => return,
     };
 
-    debug!("Media control event: {}", payload["action"]);
-    let _ = app_handle.emit("media-control", payload);
+    debug!("Dispatching media control intent");
+    if let Some(state) = app_handle.try_state::<AppState>() {
+        let _ = state.runtime.dispatch_command(command);
+    }
 }
 
 fn seek_delta_secs(direction: SeekDirection, duration: Duration) -> f64 {

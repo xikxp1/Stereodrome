@@ -4,16 +4,20 @@ plugins {
 }
 
 group = 'dev.xikxp1.stereodrome'
-version = '0.2.1'
+version = '0.3.0'
 
 android {
   namespace "expo.modules.stereodromecore"
   ndkVersion rootProject.ext.ndkVersion
 
+  sourceSets {
+    test.resources.srcDir "../fixtures"
+  }
+
   defaultConfig {
     minSdkVersion 26
     versionCode 1
-    versionName "0.2.1"
+    versionName "0.3.0"
 
     externalNativeBuild {
       cmake {
@@ -32,4 +36,5 @@ android {
 dependencies {
   implementation "androidx.media3:media3-session:1.10.1"
   testImplementation "junit:junit:4.13.2"
+  testImplementation "org.json:json:20180813"
 }

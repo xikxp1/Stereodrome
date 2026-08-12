@@ -3,8 +3,8 @@ import { Image, StyleSheet, Text, View } from "react-native";
 
 import { SyncedMarqueeText } from "@/components/SyncedMarqueeText";
 import { colors } from "@/components/theme";
-import { usePlayback } from "@/context/PlaybackContext";
-import { stereodromeCore } from "@/services/stereodromeCore";
+import { coreClient } from "@/core/client";
+import { usePlayback } from "@/core/selectors";
 
 type CoverArtState = {
   songId: string;
@@ -25,8 +25,12 @@ function useCoverArtUri(songId: string | null, size: number) {
     }
 
     let cancelled = false;
-    stereodromeCore
-      .getSongCoverArtUri(songId, size)
+    coreClient
+      .dispatchTyped({
+        type: "get-song-cover-art-uri",
+        id: songId,
+        size,
+      })
       .then((uri) => {
         if (!cancelled) {
           setCoverArt({ songId, uri });
@@ -53,7 +57,7 @@ export function NowPlayingScreen() {
     width: 0,
   });
   const song = playback.currentSong;
-  const nextSong = playback.nextSong;
+  const nextSong = playback.upcomingSong;
   const songId = song?.id ?? null;
   const nextSongId = nextSong?.id ?? null;
   const coverUri = useCoverArtUri(songId, 512);
