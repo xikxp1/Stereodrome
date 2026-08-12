@@ -23,7 +23,7 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustls = { version = "0.23.43", default-features = false, features = ["ring"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-stereodrome-audio = { version = "0.3.0", path = "../stereodrome-audio" }
+stereodrome-audio = { version = "0.3.1", path = "../stereodrome-audio" }
 submarine = "0.1.1"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["full"] }
