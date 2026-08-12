@@ -8,7 +8,6 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
-use std::time::Duration;
 
 use log::{Level, LevelFilter, Metadata, Record};
 use stereodrome_core::{
@@ -58,7 +57,13 @@ impl log::Log for MobileLogger {
 fn init_mobile_logging() {
     INIT_LOGGER.call_once(|| {
         if log::set_logger(&MOBILE_LOGGER).is_ok() {
-            log::set_max_level(LevelFilter::Debug);
+            // Debug records cross the FFI boundary and reach platform logs;
+            // release builds cap at Info to keep that path quiet.
+            log::set_max_level(if cfg!(debug_assertions) {
+                LevelFilter::Debug
+            } else {
+                LevelFilter::Info
+            });
         }
     });
     INIT_PANIC_HOOK.call_once(|| {
@@ -199,11 +204,19 @@ pub unsafe extern "C" fn stereodrome_runtime_destroy(runtime: *mut MobileRuntime
             return;
         }
         unsafe {
-            let mut mobile = Box::from_raw(runtime);
-            mobile.event_emitter.set_callback(None, ptr::null_mut());
-            mobile.runtime.shutdown();
-            mobile.event_thread_running.store(false, Ordering::SeqCst);
-            if let Some(event_thread) = mobile.event_thread.take()
+            let MobileRuntime {
+                runtime,
+                event_emitter,
+                event_thread_running,
+                event_thread,
+            } = *Box::from_raw(runtime);
+            event_emitter.set_callback(None, ptr::null_mut());
+            runtime.shutdown();
+            event_thread_running.store(false, Ordering::SeqCst);
+            // Dropping the handle drops the last event sender, closing the
+            // channel so the bridge thread's blocking receive returns.
+            drop(runtime);
+            if let Some(event_thread) = event_thread
                 && event_thread.join().is_err()
             {
                 log::warn!(target: "stereodrome_ffi", "Runtime event bridge panicked during shutdown");
@@ -261,17 +274,17 @@ fn start_runtime_event_bridge(
     event_emitter: MobileEventEmitter,
     running: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
+    // Blocks until an event arrives; the channel closes once the runtime
+    // handle is dropped in stereodrome_runtime_destroy, which unblocks the
+    // final join without any polling.
     thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
-            match events.try_recv() {
+            match events.blocking_recv() {
                 Ok(event) => event_emitter.emit(&event),
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     log::warn!(target: "stereodrome_ffi", "Runtime event bridge skipped {skipped} events");
                 }
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     })

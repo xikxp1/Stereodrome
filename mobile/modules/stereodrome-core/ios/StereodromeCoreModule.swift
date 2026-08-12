@@ -690,6 +690,13 @@ public class StereodromeCoreModule: Module {
     if projection.outputState == "unavailable" {
       releaseAudioSession()
     }
+    // The Rust engine closes its output device after a pause idle timeout.
+    // Nothing renders once the device is closed, so hand the session back and
+    // let iOS suspend the app until the user resumes; Now Playing info stays
+    // so lock screen controls keep working.
+    if !projection.isPlaying, projection.outputState == "closed" {
+      releaseAudioSession()
+    }
 
     var info: [String: Any] = [
       MPMediaItemPropertyTitle: projection.title,

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -80,6 +80,7 @@ struct RuntimeInner {
     next_command_id: AtomicU64,
     stopped: AtomicBool,
     monitor_running: Arc<AtomicBool>,
+    tick_gate: Arc<PlaybackTickGate>,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
@@ -89,11 +90,70 @@ impl Drop for RuntimeInner {
             let _ = self.mailbox.send(MailboxMessage::Stop);
         }
         self.monitor_running.store(false, Ordering::SeqCst);
+        self.tick_gate.stop();
         if let Ok(thread) = self.thread.get_mut()
             && let Some(thread) = thread.take()
         {
             let _ = thread.join();
         }
+    }
+}
+
+/// Blocks the playback tick thread while nothing is playing so a paused or
+/// idle runtime schedules zero periodic wakeups.
+struct PlaybackTickGate {
+    state: Mutex<TickGateState>,
+    condvar: Condvar,
+}
+
+struct TickGateState {
+    playing: bool,
+    running: bool,
+}
+
+impl PlaybackTickGate {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(TickGateState {
+                playing: false,
+                running: true,
+            }),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn set_playing(&self, playing: bool) {
+        if let Ok(mut state) = self.state.lock()
+            && state.playing != playing
+        {
+            state.playing = playing;
+            self.condvar.notify_all();
+        }
+    }
+
+    fn stop(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.running = false;
+            self.condvar.notify_all();
+        }
+    }
+
+    /// Blocks until playback is active; returns false once the runtime stops.
+    fn wait_until_playing(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        while state.running && !state.playing {
+            state = match self.condvar.wait(state) {
+                Ok(state) => state,
+                Err(_) => return false,
+            };
+        }
+        state.running
+    }
+
+    fn is_running(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.running)
     }
 }
 
@@ -170,7 +230,14 @@ impl StereodromeRuntimeHandle {
         let actor_events = events.clone();
         let stream_id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
         let monitor_running = Arc::new(AtomicBool::new(true));
-        start_playback_inputs(&audio, mailbox.clone(), Arc::clone(&monitor_running));
+        let tick_gate = Arc::new(PlaybackTickGate::new());
+        start_playback_inputs(
+            &audio,
+            mailbox.clone(),
+            Arc::clone(&monitor_running),
+            Arc::clone(&tick_gate),
+        );
+        let actor_tick_gate = Arc::clone(&tick_gate);
         let actor_thread = thread::Builder::new()
             .name("stereodrome-runtime".to_string())
             .spawn(move || {
@@ -184,6 +251,7 @@ impl StereodromeRuntimeHandle {
                     clock,
                     connectivity,
                     tokio_runtime,
+                    actor_tick_gate,
                     lease,
                 );
             })?;
@@ -194,6 +262,7 @@ impl StereodromeRuntimeHandle {
                 next_command_id: AtomicU64::new(GENERATED_COMMAND_ID_START),
                 stopped: AtomicBool::new(false),
                 monitor_running,
+                tick_gate,
                 thread: Mutex::new(Some(actor_thread)),
             }),
         })
@@ -269,6 +338,7 @@ impl StereodromeRuntimeHandle {
             return;
         }
         self.inner.monitor_running.store(false, Ordering::SeqCst);
+        self.inner.tick_gate.stop();
         let command_id = CommandId(self.inner.next_command_id.fetch_add(1, Ordering::Relaxed));
         let (response_sender, response_receiver) = mpsc::channel();
         let _ = self.inner.mailbox.send(MailboxMessage::Dispatch {
@@ -381,16 +451,18 @@ fn start_playback_inputs(
     audio: &Arc<dyn AudioPort>,
     mailbox: SyncSender<MailboxMessage>,
     running: Arc<AtomicBool>,
+    tick_gate: Arc<PlaybackTickGate>,
 ) {
     if let Some(notifications) = audio.take_notifications() {
         let notification_mailbox = mailbox.clone();
-        let notification_running = Arc::clone(&running);
+        let notification_running = running;
+        // Blocks until the audio engine sends a notification; the channel
+        // disconnects when the audio port is dropped at shutdown, so no
+        // periodic wakeup is needed to observe the running flag.
         thread::spawn(move || {
             while notification_running.load(Ordering::SeqCst) {
-                let notification = match notifications.recv_timeout(Duration::from_millis(250)) {
-                    Ok(notification) => notification,
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                let Ok(notification) = notifications.recv() else {
+                    break;
                 };
                 if notification_mailbox
                     .send(MailboxMessage::PlaybackNotification(notification))
@@ -402,11 +474,9 @@ fn start_playback_inputs(
         });
     }
     thread::spawn(move || {
-        while running.load(Ordering::SeqCst) {
+        while tick_gate.wait_until_playing() {
             thread::sleep(Duration::from_millis(250));
-            if !running.load(Ordering::SeqCst)
-                || mailbox.send(MailboxMessage::PlaybackTick).is_err()
-            {
+            if !tick_gate.is_running() || mailbox.send(MailboxMessage::PlaybackTick).is_err() {
                 break;
             }
         }
@@ -428,6 +498,7 @@ fn run_actor(
     clock: Arc<dyn PlaybackClock>,
     connectivity: ConnectivityState,
     tokio_runtime: tokio::runtime::Runtime,
+    tick_gate: Arc<PlaybackTickGate>,
     _lease: RuntimeLease,
 ) {
     let mut state = CoreState::new(connectivity);
@@ -443,6 +514,10 @@ fn run_actor(
     let mut last_segment_index = 0_usize;
 
     while let Ok(message) = receiver.recv() {
+        // Every playback transition produces at least one mailbox message
+        // (commands directly, engine transitions via PlaybackChanged), so
+        // sampling here keeps the gate current without its own timer.
+        tick_gate.set_playing(audio.status().is_playing);
         let MailboxMessage::Dispatch { request, response } = message else {
             match message {
                 MailboxMessage::EffectCompleted {

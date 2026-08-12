@@ -347,6 +347,8 @@ pub struct StereodromeCore {
     prefetch_failures: Mutex<HashMap<String, PrefetchFailureState>>,
     lastfm_retry_lock: AsyncMutex<()>,
     cache_event_sender: Option<Sender<CacheStateEvent>>,
+    offline_song_ids_cache: Mutex<Option<Vec<String>>>,
+    audio_processing_settings_cache: Mutex<Option<AudioProcessingSettings>>,
 }
 
 fn ensure_queue_navigation_matches(
@@ -416,10 +418,23 @@ impl StereodromeCore {
             prefetch_failures: Mutex::new(HashMap::new()),
             lastfm_retry_lock: AsyncMutex::new(()),
             cache_event_sender,
+            offline_song_ids_cache: Mutex::new(None),
+            audio_processing_settings_cache: Mutex::new(None),
         })
     }
 
+    /// Drops the memoized offline song set after any mutation of the library,
+    /// the download records, or the cached audio files themselves.
+    fn invalidate_offline_song_ids_cache(&self) {
+        if let Ok(mut cache) = self.offline_song_ids_cache.lock() {
+            *cache = None;
+        }
+    }
+
     fn emit_cache_state_event(&self, event: CacheStateEvent) {
+        // Every library or cache mutation funnels through here, making it the
+        // single invalidation point for the memoized offline song set.
+        self.invalidate_offline_song_ids_cache();
         if let Some(sender) = &self.cache_event_sender {
             let _ = sender.send(event);
         }
@@ -595,7 +610,7 @@ impl StereodromeCore {
 
         let newest_head_album_id = fetch_newest_head_album_id(&client).await?;
         let now = Utc::now().to_rfc3339();
-        let mut conn = Connection::open(&self.db_path)?;
+        let mut conn = db::open_connection(&self.db_path)?;
         let tx = conn.transaction()?;
         apply_library_sync_data(
             &tx,
@@ -693,7 +708,7 @@ impl StereodromeCore {
 
         let result = match self.sync_library().await {
             Ok(result) => {
-                let conn = Connection::open(&self.db_path)?;
+                let conn = db::open_connection(&self.db_path)?;
                 let synced_at = sync_value(&conn, "library_last_success_at")?.ok_or_else(|| {
                     CoreError::InvalidInput(
                         "library sync did not record a success time".to_string(),
@@ -729,7 +744,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if synchronization settings cannot be read from the database.
     pub fn get_sync_settings(&self) -> CoreResult<SyncSettings> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let Some(json) = sync_value(&conn, SETTINGS_SYNC_KEY)? else {
             return Ok(SyncSettings::default());
         };
@@ -743,7 +758,7 @@ impl StereodromeCore {
     /// Returns an error if synchronization settings cannot be serialized or persisted.
     pub fn set_sync_settings(&self, settings: SyncSettings) -> CoreResult<SyncSettings> {
         let settings = settings.clamped();
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         write_sync_value(&conn, SETTINGS_SYNC_KEY, &serde_json::to_string(&settings)?)?;
         Ok(settings)
     }
@@ -751,7 +766,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if connectivity settings cannot be read from the database.
     pub fn get_connectivity_settings(&self) -> CoreResult<ConnectivitySettings> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let Some(json) = sync_value(&conn, SETTINGS_CONNECTIVITY_KEY)? else {
             return Ok(ConnectivitySettings::default());
         };
@@ -764,7 +779,7 @@ impl StereodromeCore {
         &self,
         settings: ConnectivitySettings,
     ) -> CoreResult<ConnectivitySettings> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         write_sync_value(
             &conn,
             SETTINGS_CONNECTIVITY_KEY,
@@ -887,7 +902,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if synchronization settings or persisted job state cannot be read.
     pub fn get_library_sync_status(&self) -> CoreResult<LibrarySyncStatus> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let settings = self.get_sync_settings()?;
         let full = Self::sync_job_status(&conn, "library_full", false, 1440)?;
         let incremental = Self::sync_job_status(
@@ -914,7 +929,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if artists cannot be read from the database.
     pub fn get_artists(&self) -> CoreResult<Vec<Artist>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let mut stmt = conn.prepare(
             "SELECT id, name, album_count, cover_art_id, synced_at
              FROM artists ORDER BY name COLLATE NOCASE",
@@ -925,7 +940,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if albums cannot be read from the database.
     pub fn get_albums(&self, artist_id: Option<String>) -> CoreResult<Vec<Album>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         if let Some(artist_id) = artist_id {
             let mut stmt = conn.prepare(
                 "SELECT al.id, al.artist_id, al.name, al.year, al.song_count, al.duration,
@@ -955,7 +970,7 @@ impl StereodromeCore {
         album_id: Option<String>,
         artist_id: Option<String>,
     ) -> CoreResult<Vec<Song>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         match (album_id, artist_id) {
             (Some(album_id), _) => {
                 let mut stmt = conn.prepare(db::SONG_SELECT_WITH_JOINS.to_owned().as_str())?;
@@ -1013,7 +1028,7 @@ impl StereodromeCore {
     /// Returns an error if the search limit is invalid or the library database cannot be queried.
     #[allow(clippy::needless_pass_by_value)]
     pub fn search_library(&self, query: String, limit: Option<usize>) -> CoreResult<SearchResults> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let like = format!("%{query}%");
         let limit = i64::try_from(limit.unwrap_or(25).min(100)).map_err(|_| {
             CoreError::InvalidInput("search limit exceeds SQLite range".to_string())
@@ -1169,7 +1184,7 @@ impl StereodromeCore {
             .await
             .map_err(|e| CoreError::Subsonic(e.to_string()))?;
 
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         conn.execute(
             "UPDATE playlists SET name = ?1, synced_at = ?2 WHERE id = ?3",
             params![name, Utc::now().to_rfc3339(), playlist_id],
@@ -1186,7 +1201,7 @@ impl StereodromeCore {
             .delete_playlist(playlist_id.clone())
             .await
             .map_err(|e| CoreError::Subsonic(e.to_string()))?;
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         conn.execute(
             "DELETE FROM playlist_songs WHERE playlist_id = ?1",
             [&playlist_id],
@@ -1307,7 +1322,7 @@ impl StereodromeCore {
         song_id: String,
         size: Option<i32>,
     ) -> CoreResult<Option<String>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let cover_art_id = conn
             .query_row(
                 "SELECT al.cover_art_id
@@ -1367,7 +1382,23 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if offline song state cannot be read from the database.
     pub fn get_offline_song_ids(&self) -> CoreResult<Vec<String>> {
-        let conn = Connection::open(&self.db_path)?;
+        if let Ok(cache) = self.offline_song_ids_cache.lock()
+            && let Some(song_ids) = cache.as_ref()
+        {
+            return Ok(song_ids.clone());
+        }
+        let song_ids = self.compute_offline_song_ids()?;
+        if let Ok(mut cache) = self.offline_song_ids_cache.lock() {
+            *cache = Some(song_ids.clone());
+        }
+        Ok(song_ids)
+    }
+
+    /// Scans the library and download records for playable cached songs. This
+    /// stats every candidate cache file, so results are memoized and callers
+    /// go through [`Self::get_offline_song_ids`].
+    fn compute_offline_song_ids(&self) -> CoreResult<Vec<String>> {
+        let conn = db::open_connection(&self.db_path)?;
         let mut stmt = conn.prepare("SELECT id FROM songs ORDER BY title COLLATE NOCASE")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let library_song_ids = rows.collect::<Result<Vec<_>, _>>()?;
@@ -1413,7 +1444,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if library state cannot be read from the database.
     pub fn has_library_song(&self, song_id: &str) -> CoreResult<bool> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM songs WHERE id = ?1)",
             [song_id],
@@ -1452,7 +1483,7 @@ impl StereodromeCore {
                     }
                 }
             }
-            let conn = Connection::open(&self.db_path)?;
+            let conn = db::open_connection(&self.db_path)?;
             conn.execute(
                 "DELETE FROM download_items
                  WHERE song_id NOT IN (
@@ -1705,7 +1736,7 @@ impl StereodromeCore {
                 cached: false,
             });
         }
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         conn.execute("DELETE FROM download_items WHERE song_id = ?1", [&song_id])?;
         Ok(DownloadStatus {
             song_id,
@@ -1730,7 +1761,7 @@ impl StereodromeCore {
                 Err(error) => return Err(error.into()),
             }
         }
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         conn.execute("DELETE FROM download_items WHERE song_id = ?1", [song_id])?;
         self.emit_cache_state_event(CacheStateEvent::CachedChanged {
             song_id: song_id.to_string(),
@@ -1856,7 +1887,7 @@ impl StereodromeCore {
         }
 
         let playlist_ids = {
-            let conn = Connection::open(&self.db_path)?;
+            let conn = db::open_connection(&self.db_path)?;
             let mut stmt = conn.prepare(
                 "SELECT id FROM playlists WHERE offline_saved_at IS NOT NULL ORDER BY name",
             )?;
@@ -2142,7 +2173,7 @@ impl StereodromeCore {
         current_song_id: &str,
         next_song_id: &str,
     ) -> CoreResult<bool> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let Some(current) = gapless_track_info(&conn, current_song_id)? else {
             return Ok(false);
         };
@@ -2164,7 +2195,7 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if playback state cannot be read from the database.
     pub fn get_playback_state(&self) -> CoreResult<PlaybackState> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let state = conn
             .query_row(
                 "SELECT current_song_id, position_seconds, duration_seconds, was_playing,
@@ -2330,14 +2361,31 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if audio processing settings cannot be read from the database.
     pub fn get_audio_processing_settings(&self) -> CoreResult<AudioProcessingSettings> {
-        let conn = Connection::open(&self.db_path)?;
-        let Some(json) = sync_value(&conn, "settings_audio_processing")? else {
-            return Ok(AudioProcessingSettings::default());
+        // The playback tick path reads these settings several times a second,
+        // so they are memoized until a setter or backup import replaces them.
+        if let Ok(cache) = self.audio_processing_settings_cache.lock()
+            && let Some(settings) = cache.as_ref()
+        {
+            return Ok(settings.clone());
+        }
+        let conn = db::open_connection(&self.db_path)?;
+        let mut settings = match sync_value(&conn, "settings_audio_processing")? {
+            Some(json) => {
+                serde_json::from_str::<AudioProcessingSettings>(&json).unwrap_or_default()
+            }
+            None => AudioProcessingSettings::default(),
         };
-        let mut settings =
-            serde_json::from_str::<AudioProcessingSettings>(&json).unwrap_or_default();
         clamp_audio_processing_settings(&mut settings);
+        if let Ok(mut cache) = self.audio_processing_settings_cache.lock() {
+            *cache = Some(settings.clone());
+        }
         Ok(settings)
+    }
+
+    fn invalidate_audio_processing_settings_cache(&self) {
+        if let Ok(mut cache) = self.audio_processing_settings_cache.lock() {
+            *cache = None;
+        }
     }
 
     /// # Errors
@@ -2347,12 +2395,15 @@ impl StereodromeCore {
         mut settings: AudioProcessingSettings,
     ) -> CoreResult<AudioProcessingSettings> {
         clamp_audio_processing_settings(&mut settings);
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         write_sync_value(
             &conn,
             "settings_audio_processing",
             &serde_json::to_string(&settings)?,
         )?;
+        if let Ok(mut cache) = self.audio_processing_settings_cache.lock() {
+            *cache = Some(settings.clone());
+        }
         Ok(settings)
     }
 
@@ -2362,7 +2413,7 @@ impl StereodromeCore {
     /// Returns an error if persisted data cannot be read, validated, or written.
     pub fn export_portable_backup(&self, path: impl AsRef<Path>) -> CoreResult<BackupSummary> {
         let _queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
-        let mut conn = Connection::open(&self.db_path)?;
+        let mut conn = db::open_connection(&self.db_path)?;
         let backup = backup::export_from_connection(
             &mut conn,
             PortablePreferences {
@@ -2383,7 +2434,7 @@ impl StereodromeCore {
     pub fn import_portable_backup(&self, path: impl AsRef<Path>) -> CoreResult<BackupSummary> {
         let backup = backup::read_from_file(path.as_ref())?;
         let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
-        let mut conn = Connection::open(&self.db_path)?;
+        let mut conn = db::open_connection(&self.db_path)?;
         let summary = backup::import_into_connection(&mut conn, &backup)?;
         *queue = PlayQueue::load_with_original_order(
             backup.queue.items.clone(),
@@ -2393,14 +2444,20 @@ impl StereodromeCore {
             backup.queue.repeat_mode,
         );
         self.queue_revision.fetch_add(1, Ordering::AcqRel);
+        // The imported backup may carry audio processing preferences.
+        self.invalidate_audio_processing_settings_cache();
         self.emit_cache_state_event(CacheStateEvent::Reconcile);
         Ok(summary)
     }
 
     /// # Errors
-    /// Returns an error if queue state cannot be locked or persisted.
+    /// Returns an error if queue state cannot be locked.
     pub fn get_queue(&self) -> CoreResult<QueueState> {
-        self.with_queue_state(|_| Ok(()))
+        let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
+        // Reads only touch the in-memory queue; prepare_next_cycle_if_needed
+        // inside from_queue mutates prepared_shuffle_cycle, which is never
+        // persisted, so skipping the save keeps reads off the write path.
+        Ok(QueueState::from_queue(&mut queue))
     }
 
     // Owned collection arguments are retained as part of the stable FFI-facing API.
@@ -2639,7 +2696,7 @@ impl StereodromeCore {
     }
 
     fn get_cached_playlist(&self, playlist_id: &str) -> CoreResult<Playlist> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         conn.query_row(
             "SELECT id, name, song_count, duration, owner, cover_art_id,
                     created_at, changed_at, offline_saved_at
@@ -2652,7 +2709,7 @@ impl StereodromeCore {
     }
 
     fn get_cached_playlists(&self, saved_offline_only: bool) -> CoreResult<Vec<Playlist>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let sql = if saved_offline_only {
             "SELECT p.id, p.name, p.song_count, p.duration, p.owner, p.cover_art_id,
                     p.created_at, p.changed_at, p.offline_saved_at
@@ -2670,7 +2727,7 @@ impl StereodromeCore {
     }
 
     fn get_local_playlist_songs(&self, playlist_id: &str) -> CoreResult<Vec<Song>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let mut stmt = conn.prepare(
             "SELECT s.id, s.album_id, s.artist_id, s.title, s.track_number, s.disc_number,
                     s.duration, s.bit_rate, s.size, s.suffix, s.content_type, s.path,
@@ -2686,7 +2743,7 @@ impl StereodromeCore {
     }
 
     fn save_playlists(&self, playlists: &[Playlist]) -> CoreResult<()> {
-        let mut conn = Connection::open(&self.db_path)?;
+        let mut conn = db::open_connection(&self.db_path)?;
         let tx = conn.transaction()?;
         let now = Utc::now().to_rfc3339();
         {
@@ -2723,7 +2780,7 @@ impl StereodromeCore {
     }
 
     fn save_playlist_songs(&self, playlist_id: &str, songs: &[Song]) -> CoreResult<()> {
-        let mut conn = Connection::open(&self.db_path)?;
+        let mut conn = db::open_connection(&self.db_path)?;
         let tx = conn.transaction()?;
         let existing_song_ids = {
             let mut stmt = tx.prepare("SELECT id FROM songs")?;
@@ -2795,7 +2852,7 @@ impl StereodromeCore {
     }
 
     fn playlist_offline_saved_at(&self, playlist_id: &str) -> CoreResult<Option<String>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         conn.query_row(
             "SELECT offline_saved_at FROM playlists WHERE id = ?1",
             [playlist_id],
@@ -2811,7 +2868,7 @@ impl StereodromeCore {
         playlist_id: &str,
         offline_saved_at: Option<&str>,
     ) -> CoreResult<()> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         conn.execute(
             "UPDATE playlists SET offline_saved_at = ?1 WHERE id = ?2",
             params![offline_saved_at, playlist_id],
@@ -2820,7 +2877,7 @@ impl StereodromeCore {
     }
 
     fn playlist_song_ids(&self, playlist_id: &str) -> CoreResult<HashSet<String>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let mut stmt = conn.prepare("SELECT song_id FROM playlist_songs WHERE playlist_id = ?1")?;
         stmt.query_map([playlist_id], |row| row.get::<_, String>(0))?
             .collect::<Result<HashSet<_>, _>>()
@@ -2828,7 +2885,7 @@ impl StereodromeCore {
     }
 
     fn song_cover_art_id(&self, song_id: &str) -> CoreResult<Option<String>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         conn.query_row(
             "SELECT al.cover_art_id
              FROM songs s
@@ -2843,7 +2900,7 @@ impl StereodromeCore {
     }
 
     fn playlist_offline_cover_art_ids(&self, playlist_id: &str) -> CoreResult<Vec<String>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let mut stmt = conn.prepare(
             "SELECT cover_art_id FROM (
                 SELECT 0 AS sort_order, 0 AS position, p.cover_art_id
@@ -2875,7 +2932,7 @@ impl StereodromeCore {
         playlist_id: &str,
     ) -> CoreResult<Vec<DownloadStatus>> {
         let song_ids = {
-            let conn = Connection::open(&self.db_path)?;
+            let conn = db::open_connection(&self.db_path)?;
             let mut stmt = conn.prepare(
                 "SELECT song_id FROM playlist_songs WHERE playlist_id = ?1 ORDER BY position",
             )?;
@@ -2972,7 +3029,7 @@ impl StereodromeCore {
                             song_id: song_id.clone(),
                             cached: false,
                         });
-                        let conn = Connection::open(&self.db_path)?;
+                        let conn = db::open_connection(&self.db_path)?;
                         conn.execute("DELETE FROM download_items WHERE song_id = ?1", [&song_id])?;
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -3023,7 +3080,7 @@ impl StereodromeCore {
     }
 
     fn record_sync_attempt(&self, prefix: &str, error: Option<String>) -> CoreResult<()> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let now = Utc::now().to_rfc3339();
         write_sync_value(&conn, &format!("{prefix}_last_attempt_at"), &now)?;
         if let Some(error) = error {
@@ -3038,7 +3095,7 @@ impl StereodromeCore {
         error_key: &str,
         error: Option<String>,
     ) -> CoreResult<()> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let now = Utc::now().to_rfc3339();
         write_sync_value(&conn, attempt_key, &now)?;
         match error {
@@ -3049,7 +3106,7 @@ impl StereodromeCore {
     }
 
     fn record_sync_success_keyed(&self, success_key: &str, error_key: &str) -> CoreResult<()> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let now = Utc::now().to_rfc3339();
         write_sync_value(&conn, success_key, &now)?;
         write_sync_value(&conn, error_key, "")?;
@@ -3058,7 +3115,7 @@ impl StereodromeCore {
 
     fn next_due_sync_job(&self, settings: &SyncSettings) -> CoreResult<Option<DueSyncJob>> {
         let now = Utc::now();
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let full_last_attempt = sync_value(&conn, FULL_LAST_ATTEMPT_AT_KEY)?;
         let incremental_last_attempt = sync_value(&conn, INCREMENTAL_LAST_ATTEMPT_AT_KEY)?;
 
@@ -3086,7 +3143,7 @@ impl StereodromeCore {
     async fn run_incremental_library_sync(&self) -> CoreResult<SyncResult> {
         let client = self.connected_client().await?;
         let (previous_head_album_id, local_artists, local_album_ids) = {
-            let conn = Connection::open(&self.db_path)?;
+            let conn = db::open_connection(&self.db_path)?;
             (
                 sync_value(&conn, NEWEST_HEAD_ALBUM_KEY)?,
                 load_local_artists(&conn)?,
@@ -3124,7 +3181,7 @@ impl StereodromeCore {
         );
 
         let now = Utc::now().to_rfc3339();
-        let mut conn = Connection::open(&self.db_path)?;
+        let mut conn = db::open_connection(&self.db_path)?;
         let tx = conn.transaction()?;
         apply_library_sync_data(
             &tx,
@@ -3163,7 +3220,7 @@ impl StereodromeCore {
              WHERE s.id IN ({placeholders})"
         );
 
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let mut stmt = conn.prepare(&query)?;
         let items_by_id = stmt
             .query_map(params_from_iter(song_ids.iter()), |row| {
@@ -3355,7 +3412,7 @@ impl StereodromeCore {
             return Ok(Some(mp3_path));
         }
 
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let saved_path = conn
             .query_row(
                 "SELECT path FROM download_items
@@ -3389,7 +3446,7 @@ impl StereodromeCore {
     }
 
     fn protected_audio_cache_paths(&self) -> CoreResult<HashSet<PathBuf>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let mut stmt = conn.prepare(
             "SELECT DISTINCT ps.song_id
              FROM playlist_songs ps
@@ -3419,7 +3476,7 @@ impl StereodromeCore {
     }
 
     fn song_protected_by_saved_playlist(&self, song_id: &str) -> CoreResult<bool> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         conn.query_row(
             "SELECT EXISTS (
                 SELECT 1
@@ -3434,7 +3491,7 @@ impl StereodromeCore {
     }
 
     fn max_cache_size(&self) -> CoreResult<u64> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let value = sync_value(&conn, "setting_max_cache_size")?
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(5 * 1024 * 1024 * 1024);
@@ -3442,7 +3499,7 @@ impl StereodromeCore {
     }
 
     fn set_setting(&self, key: &str, value: &str) -> CoreResult<()> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         write_sync_value(&conn, &format!("setting_{key}"), value)
     }
 
@@ -3476,7 +3533,7 @@ impl StereodromeCore {
                 continue;
             }
             let path_string = path.to_string_lossy().to_string();
-            let conn = Connection::open(&self.db_path)?;
+            let conn = db::open_connection(&self.db_path)?;
             let song_id = conn
                 .query_row(
                     "SELECT song_id FROM download_items WHERE path = ?1 LIMIT 1",
@@ -3515,7 +3572,7 @@ impl StereodromeCore {
     }
 
     fn record_download(&self, record: DownloadRecord<'_>) -> CoreResult<()> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let bytes = i64::try_from(record.bytes).map_err(|_| {
             CoreError::InvalidInput("download size exceeds SQLite range".to_string())
         })?;
@@ -3538,7 +3595,7 @@ impl StereodromeCore {
     }
 
     fn playback_markers(&self) -> CoreResult<PlaybackMarkers> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let markers = conn
             .query_row(
                 "SELECT app_volume, now_playing_song_id, scrobbled_song_id
@@ -3562,7 +3619,7 @@ impl StereodromeCore {
     }
 
     fn save_playback_state(&self, state: &PlaybackStateWrite) -> CoreResult<PlaybackState> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = db::open_connection(&self.db_path)?;
         let updated_at = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT OR REPLACE INTO playback_state
@@ -3588,17 +3645,6 @@ impl StereodromeCore {
         lastfm::retry_queue(&self.db_path, include_not_due).await
     }
 
-    fn with_queue_state(
-        &self,
-        mutate: impl FnOnce(&mut PlayQueue) -> CoreResult<()>,
-    ) -> CoreResult<QueueState> {
-        self.with_queue_result(|queue| {
-            mutate(queue)?;
-            Ok(())
-        })
-        .map(|((), state)| state)
-    }
-
     fn with_queue_mutation_state(
         &self,
         mutate: impl FnOnce(&mut PlayQueue) -> CoreResult<()>,
@@ -3622,17 +3668,6 @@ impl StereodromeCore {
         save_result?;
         Ok((result, state))
     }
-
-    fn with_queue_result<T>(
-        &self,
-        mutate: impl FnOnce(&mut PlayQueue) -> CoreResult<T>,
-    ) -> CoreResult<(T, QueueState)> {
-        let mut queue = self.queue.lock().map_err(|_| CoreError::LockPoisoned)?;
-        let result = mutate(&mut queue)?;
-        let state = QueueState::from_queue(&mut queue);
-        db::save_queue(&self.db_path, &state, queue.original_order())?;
-        Ok((result, state))
-    }
 }
 
 fn handle_empty_incremental_scan(
@@ -3643,7 +3678,7 @@ fn handle_empty_incremental_scan(
     if let Some(head_album_id) = newest_scan.head_album_id.as_deref()
         && previous_head_album_id != Some(head_album_id)
     {
-        let conn = Connection::open(db_path)?;
+        let conn = db::open_connection(db_path)?;
         write_sync_value(&conn, NEWEST_HEAD_ALBUM_KEY, head_album_id)?;
     }
 
@@ -4265,7 +4300,7 @@ fn write_server_config(path: &Path, config: &ServerConfig) -> CoreResult<()> {
 }
 
 fn save_server_row(db_path: &Path, config: &ServerConfig) -> CoreResult<()> {
-    let conn = Connection::open(db_path)?;
+    let conn = db::open_connection(db_path)?;
     conn.execute(
         "INSERT OR REPLACE INTO server_config (id, url, username, last_connected_at)
          VALUES (1, ?1, ?2, ?3)",

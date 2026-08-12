@@ -24,13 +24,6 @@ import {
 } from "@/context/ViewContext";
 import { renderView } from "@/screens/renderView";
 
-function formatPlaybackTime(seconds: number) {
-  const safeSeconds = Math.max(0, Math.floor(seconds));
-  const minutes = Math.floor(safeSeconds / 60);
-  const remainingSeconds = safeSeconds % 60;
-  return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
-}
-
 function ignorePlaybackFailure(promise: Promise<void>): void {
   void promise.catch(() => undefined);
 }
@@ -56,15 +49,6 @@ export function IpodShell() {
   const navigationOffset = transitionDirection === "back" ? -24 : 24;
   const leftHandedButtons = buttonHandedness === "left";
   const RepeatIcon = playback.repeatMode === "One" ? Repeat1 : Repeat;
-  const playbackDuration =
-    playback.duration > 0
-      ? playback.duration
-      : (playback.currentSong?.duration ?? 0);
-  const playbackTime = playback.currentSong
-    ? `${formatPlaybackTime(playback.position)}/${formatPlaybackTime(
-        playbackDuration
-      )}`
-    : undefined;
   const headerTitle =
     current.name !== "nowPlaying" && playback.currentSong
       ? `${playback.currentSong.artist ?? "Unknown Artist"} - ${
@@ -184,7 +168,7 @@ export function IpodShell() {
             marqueeTitle={
               current.name !== "nowPlaying" && Boolean(playback.currentSong)
             }
-            {...(playbackTime === undefined ? {} : { rightText: playbackTime })}
+            showPlaybackTime={Boolean(playback.currentSong)}
             title={headerTitle}
           />
           <View style={styles.viewport}>

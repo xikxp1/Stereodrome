@@ -1725,6 +1725,11 @@ fn should_poll_audio_thread(
     current_sink_active || crossfade_active || lifecycle_state == PlaybackLifecycleState::Playing
 }
 
+/// How long a paused output device stays open before it is released so the
+/// platform can stop its render callback and suspend the process. Resume
+/// transparently rebuilds the output from the persisted position.
+const PAUSED_OUTPUT_RELEASE_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn mark_missing_sink_if_playing(
     shared_state: &SharedState,
     watchdog: &mut PlaybackWatchdog,
@@ -1749,6 +1754,7 @@ struct AudioThread<'a> {
     crossfade_state: Option<CrossfadeState>,
     current_generation: u64,
     watchdog: PlaybackWatchdog,
+    paused_since: Option<Instant>,
 }
 
 fn matches_expected_playback(
@@ -1779,10 +1785,11 @@ impl<'a> AudioThread<'a> {
             crossfade_state: None,
             current_generation: 0,
             watchdog: PlaybackWatchdog::new(),
+            paused_since: None,
         }
     }
 
-    fn next_event(&self, command_rx: &Receiver<AudioCommand>) -> AudioThreadEvent {
+    fn next_event(&mut self, command_rx: &Receiver<AudioCommand>) -> AudioThreadEvent {
         let output_ready = self.shared_state.output_state() == AudioOutputState::Ready;
         let current_sink_active = output_ready
             && self
@@ -1798,22 +1805,72 @@ impl<'a> AudioThread<'a> {
                     .crossfade_sink
                     .as_ref()
                     .is_some_and(|sink| !sink.is_paused() && !sink.empty()));
-        if should_poll_audio_thread(
-            current_sink_active,
-            crossfade_active,
-            self.shared_state.state(),
-        ) {
+        let lifecycle_state = self.shared_state.state();
+        if lifecycle_state == PlaybackLifecycleState::Paused {
+            if self.paused_since.is_none() {
+                self.paused_since = Some(Instant::now());
+            }
+        } else {
+            self.paused_since = None;
+        }
+        if should_poll_audio_thread(current_sink_active, crossfade_active, lifecycle_state) {
             match command_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(command) => AudioThreadEvent::Command(Box::new(command)),
                 Err(mpsc::RecvTimeoutError::Timeout) => AudioThreadEvent::Timeout,
                 Err(mpsc::RecvTimeoutError::Disconnected) => AudioThreadEvent::Disconnected,
             }
         } else {
+            // While paused with the output device still open, wait only until
+            // the release deadline; afterwards the thread blocks with no
+            // periodic wakeups until the next command arrives.
+            if let Some(wait) = self.paused_release_wait() {
+                match command_rx.recv_timeout(wait) {
+                    Ok(command) => return AudioThreadEvent::Command(Box::new(command)),
+                    Err(mpsc::RecvTimeoutError::Timeout) => self.release_paused_output(),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return AudioThreadEvent::Disconnected;
+                    }
+                }
+            }
             match command_rx.recv() {
                 Ok(command) => AudioThreadEvent::Command(Box::new(command)),
                 Err(_) => AudioThreadEvent::Disconnected,
             }
         }
+    }
+
+    /// Returns the remaining time before a paused output should be released,
+    /// or `None` when there is nothing to release or a crossfade is parked.
+    fn paused_release_wait(&self) -> Option<Duration> {
+        if self.stream.is_none()
+            || self.crossfade_sink.is_some()
+            || self.crossfade_state.is_some()
+            || self.shared_state.state() != PlaybackLifecycleState::Paused
+        {
+            return None;
+        }
+        let paused_since = self.paused_since?;
+        Some(
+            (paused_since + PAUSED_OUTPUT_RELEASE_TIMEOUT)
+                .saturating_duration_since(Instant::now()),
+        )
+    }
+
+    /// Drops the sinks and the output device of a long-paused player. The
+    /// consumed position was persisted when the sink paused, so a later
+    /// resume rebuilds the output exactly like recovery from a lost device.
+    fn release_paused_output(&mut self) {
+        info!("Releasing audio output after pause idle timeout");
+        if let Some(sink) = self.current_sink.take() {
+            sink.stop();
+        }
+        if let Some(crossfade_sink) = self.crossfade_sink.take() {
+            crossfade_sink.stop();
+        }
+        self.crossfade_state = None;
+        self.stream.take();
+        self.shared_state.mark_output_closed();
+        self.shared_state.notify_playback_changed();
     }
 
     fn handle_command(&mut self, command: AudioCommand) -> bool {
@@ -2194,6 +2251,21 @@ impl<'a> AudioThread<'a> {
                 );
                 Ok(())
             }
+        } else if self.shared_state.state() == PlaybackLifecycleState::Paused
+            && self.shared_state.read_inner().active_request.is_some()
+        {
+            // The paused output was released; adjust the persisted position so
+            // the rebuild on resume starts from the requested spot.
+            let (_, cumulative_position) = self.seek_positions(position_secs);
+            self.shared_state
+                .set_consumed_position(self.current_generation, cumulative_position);
+            self.watchdog.reset(cumulative_position);
+            if let Some(identity) = self.shared_state.playback_identity() {
+                self.shared_state
+                    .notify(AudioNotification::PositionChanged { identity });
+            }
+            debug!("Playback thread seek stored for released output: {cumulative_position:.3}s");
+            Ok(())
         } else {
             Err(AudioError::Playback(
                 "Cannot seek because there is no active sink".to_string(),

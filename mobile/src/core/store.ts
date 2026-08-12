@@ -36,16 +36,30 @@ function setError(error: unknown): void {
   }
 }
 
+let comparedSnapshotJson: { revision: number; json: string } | null = null;
+
 function applySnapshot(snapshot: CoreSnapshot): void {
   if (state.snapshot !== null && snapshot.revision < state.snapshot.revision) {
     return;
   }
+  // Same-revision snapshots only arrive from explicit refetches (foreground
+  // reconciles), so the serialization for deep equality is confined to that
+  // rare path and cached instead of stringifying twice on every event.
   if (
     state.snapshot !== null &&
-    snapshot.revision === state.snapshot.revision &&
-    JSON.stringify(snapshot) === JSON.stringify(state.snapshot)
+    snapshot.revision === state.snapshot.revision
   ) {
-    return;
+    if (comparedSnapshotJson?.revision !== state.snapshot.revision) {
+      comparedSnapshotJson = {
+        revision: state.snapshot.revision,
+        json: JSON.stringify(state.snapshot),
+      };
+    }
+    const incomingJson = JSON.stringify(snapshot);
+    if (incomingJson === comparedSnapshotJson.json) {
+      return;
+    }
+    comparedSnapshotJson = { revision: snapshot.revision, json: incomingJson };
   }
   publish({ ...state, snapshot });
 }

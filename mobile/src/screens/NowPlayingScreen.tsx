@@ -4,7 +4,7 @@ import { Image, StyleSheet, Text, View } from "react-native";
 import { SyncedMarqueeText } from "@/components/SyncedMarqueeText";
 import { colors } from "@/components/theme";
 import { coreClient } from "@/core/client";
-import { usePlayback } from "@/core/selectors";
+import { usePlayback, usePlaybackPosition } from "@/core/selectors";
 
 type CoverArtState = {
   songId: string;
@@ -52,6 +52,7 @@ function useCoverArtUri(songId: string | null, size: number) {
 
 export function NowPlayingScreen() {
   const playback = usePlayback();
+  const position = usePlaybackPosition();
   const [currentRegionSize, setCurrentRegionSize] = useState({
     height: 0,
     width: 0,
@@ -65,9 +66,7 @@ export function NowPlayingScreen() {
   const duration =
     playback.duration > 0 ? playback.duration : (song?.duration ?? 0);
   const progressRatio =
-    song !== null && duration > 0
-      ? Math.min(1, playback.position / duration)
-      : 0;
+    song !== null && duration > 0 ? Math.min(1, position / duration) : 0;
   const usesWideLayout =
     currentRegionSize.width > 0 &&
     currentRegionSize.width >= currentRegionSize.height * wideLayoutAspectRatio;
@@ -145,7 +144,7 @@ export function NowPlayingScreen() {
             accessibilityValue={{
               min: 0,
               max: Math.max(0, duration),
-              now: Math.max(0, Math.min(playback.position, duration)),
+              now: Math.max(0, Math.min(position, duration)),
             }}
             pointerEvents="none"
             style={[
