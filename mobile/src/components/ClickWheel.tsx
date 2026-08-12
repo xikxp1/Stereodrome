@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
-import { GestureDetector, usePanGesture } from "react-native-gesture-handler";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { FastForward, Menu, Pause, Play, Rewind } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 
@@ -44,12 +44,12 @@ export function ClickWheel() {
   const hasNext = playback.nextSong !== null;
   const TransportIcon = playback.isPlaying ? Pause : Play;
 
-  const pan = usePanGesture({
-    runOnJS: true,
-    onBegin: (event) => {
+  const pan = Gesture.Pan()
+    .runOnJS(true)
+    .onBegin((event) => {
       lastAngle.current = Math.atan2(event.y - 110, event.x - 110);
-    },
-    onUpdate: (event) => {
+    })
+    .onUpdate((event) => {
       const nextAngle = Math.atan2(event.y - 110, event.x - 110);
       const previous = lastAngle.current;
       if (previous === null) {
@@ -62,11 +62,10 @@ export function ClickWheel() {
         emit(delta > 0 ? "scroll_forward" : "scroll_backward");
         lastAngle.current = nextAngle;
       }
-    },
-    onFinalize: () => {
+    })
+    .onFinalize(() => {
       lastAngle.current = null;
-    },
-  });
+    });
 
   return (
     <GestureDetector gesture={pan}>
