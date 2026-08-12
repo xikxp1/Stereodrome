@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  type TextInputInstance,
+  View,
+} from "react-native";
 import { useQuery } from "@tanstack/react-query";
 
 import { SelectableList } from "@/components/SelectableList";
@@ -19,7 +26,7 @@ import {
 } from "@/services/offlineLibrary";
 
 export function SearchScreen() {
-  const inputRef = useRef<TextInput>(null);
+  const inputRef = useRef<TextInputInstance>(null);
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const playback = usePlaybackActions();
@@ -49,7 +56,9 @@ export function SearchScreen() {
   });
 
   useEffect(() => {
-    const focusTimeout = setTimeout(() => inputRef.current?.focus(), 120);
+    const focusTimeout = setTimeout(() => {
+      inputRef.current?.focus();
+    }, 120);
     return () => {
       clearTimeout(focusTimeout);
     };

@@ -374,7 +374,7 @@ export function SelectableList({
         <View style={styles.footer}>
           <Text style={styles.footerText}>{loadingMoreText}</Text>
         </View>
-      ) : null,
+      ) : undefined,
     [loadingMore, loadingMoreText]
   );
 
