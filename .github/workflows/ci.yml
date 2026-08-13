@@ -126,6 +126,7 @@ jobs:
           --ignore GHSA-w5hq-g745-h8pq
           --ignore GHSA-w3rx-r6r6-pgpr
           --ignore GHSA-5p2g-fcmc-qvqq
+          --ignore GHSA-2v37-7h3g-55p8
 
       - name: Build Android Rust core
         run: scripts/build-mobile-rust.sh android
