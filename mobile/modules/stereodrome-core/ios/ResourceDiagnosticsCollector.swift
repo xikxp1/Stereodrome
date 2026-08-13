@@ -42,6 +42,13 @@ final class ResourceDiagnosticsCollector {
   ]
   private var previousCPUTimeMs: Double?
   private var previousSampleUptimeMs: Double?
+  private var cachedLifecycle = "unknown"
+  private var cachedBattery: [String: Any] = [
+    "level_percent": NSNull(),
+    "state": "unknown",
+    "low_power_mode": false,
+  ]
+  private var deviceStateObservers: [NSObjectProtocol] = []
   private var batteryMonitoringWasEnabled = false
   private var managesBatteryMonitoring = false
 
@@ -71,7 +78,8 @@ final class ResourceDiagnosticsCollector {
   }
 
   func start() throws -> String {
-    try queue.sync {
+    let initialDeviceState = deviceStateSnapshot()
+    return try queue.sync {
       stopSamplingLocked()
       try prepareDirectoryLocked()
       try? FileManager.default.removeItem(at: samplesFile)
@@ -85,6 +93,8 @@ final class ResourceDiagnosticsCollector {
       )
       previousCPUTimeMs = nil
       previousSampleUptimeMs = nil
+      cachedLifecycle = initialDeviceState.lifecycle
+      cachedBattery = initialDeviceState.battery
       try writeSessionLocked()
       try appendSampleLocked()
       startSamplingLocked()
@@ -173,7 +183,7 @@ final class ResourceDiagnosticsCollector {
       return
     }
     startNetworkMonitorLocked()
-    setBatteryMonitoringEnabled(true)
+    setDeviceStateMonitoringEnabled(true)
     let timer = DispatchSource.makeTimerSource(queue: queue)
     timer.schedule(
       deadline: .now() + .seconds(Self.sampleIntervalSeconds),
@@ -192,7 +202,7 @@ final class ResourceDiagnosticsCollector {
     timer = nil
     networkMonitor?.cancel()
     networkMonitor = nil
-    setBatteryMonitoringEnabled(false)
+    setDeviceStateMonitoringEnabled(false)
   }
 
   private func collectScheduledSampleLocked() {
@@ -259,9 +269,6 @@ final class ResourceDiagnosticsCollector {
     previousCPUTimeMs = cpuTimeMs
     previousSampleUptimeMs = uptimeMs
     let memory = processMemoryDictionary()
-    let deviceState = onMain {
-      batteryAndLifecycleDictionary()
-    }
     let storage = storageDictionary()
     let networkCounters = networkByteCounters()
     var network = networkStatus
@@ -272,7 +279,7 @@ final class ResourceDiagnosticsCollector {
     return [
       "timestamp": now(),
       "elapsed_since_start_ms": elapsedSinceStartMs(session),
-      "lifecycle": deviceState.lifecycle,
+      "lifecycle": cachedLifecycle,
       "playback": playbackSnapshot(),
       "process": [
         "cpu_time_ms": cpuTimeMs,
@@ -282,7 +289,7 @@ final class ResourceDiagnosticsCollector {
         "virtual_memory_bytes": memory.virtual,
         "thread_count": processThreadCount(),
       ],
-      "battery": deviceState.battery,
+      "battery": cachedBattery,
       "thermal_state": thermalState(),
       "network": network,
       "storage": storage,
@@ -311,7 +318,19 @@ final class ResourceDiagnosticsCollector {
     monitor.start(queue: queue)
   }
 
-  private func batteryAndLifecycleDictionary() -> (
+  private func deviceStateSnapshot() -> (
+    lifecycle: String,
+    battery: [String: Any]
+  ) {
+    if Thread.isMainThread {
+      return deviceStateSnapshotOnMain()
+    }
+    return DispatchQueue.main.sync {
+      deviceStateSnapshotOnMain()
+    }
+  }
+
+  private func deviceStateSnapshotOnMain() -> (
     lifecycle: String,
     battery: [String: Any]
   ) {
@@ -341,16 +360,49 @@ final class ResourceDiagnosticsCollector {
     )
   }
 
-  private func setBatteryMonitoringEnabled(_ enabled: Bool) {
-    onMain {
-      if enabled, !managesBatteryMonitoring {
+  private func setDeviceStateMonitoringEnabled(_ enabled: Bool) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self else {
+        return
+      }
+      if enabled, !self.managesBatteryMonitoring {
         batteryMonitoringWasEnabled = UIDevice.current.isBatteryMonitoringEnabled
         UIDevice.current.isBatteryMonitoringEnabled = true
         managesBatteryMonitoring = true
-      } else if !enabled, managesBatteryMonitoring {
+        let center = NotificationCenter.default
+        let notifications = [
+          UIApplication.didBecomeActiveNotification,
+          UIApplication.willResignActiveNotification,
+          UIApplication.didEnterBackgroundNotification,
+          UIDevice.batteryLevelDidChangeNotification,
+          UIDevice.batteryStateDidChangeNotification,
+          Notification.Name.NSProcessInfoPowerStateDidChange,
+        ]
+        deviceStateObservers = notifications.map { notification in
+          center.addObserver(
+            forName: notification,
+            object: nil,
+            queue: .main
+          ) { [weak self] _ in
+            self?.refreshCachedDeviceStateFromMain()
+          }
+        }
+        refreshCachedDeviceStateFromMain()
+      } else if !enabled, self.managesBatteryMonitoring {
+        let center = NotificationCenter.default
+        deviceStateObservers.forEach(center.removeObserver)
+        deviceStateObservers.removeAll()
         UIDevice.current.isBatteryMonitoringEnabled = batteryMonitoringWasEnabled
         managesBatteryMonitoring = false
       }
+    }
+  }
+
+  private func refreshCachedDeviceStateFromMain() {
+    let state = deviceStateSnapshotOnMain()
+    queue.async { [weak self] in
+      self?.cachedLifecycle = state.lifecycle
+      self?.cachedBattery = state.battery
     }
   }
 
@@ -565,13 +617,6 @@ final class ResourceDiagnosticsCollector {
 
   private func now() -> String {
     isoFormatter.string(from: Date())
-  }
-
-  private func onMain<T>(_ action: () -> T) -> T {
-    if Thread.isMainThread {
-      return action()
-    }
-    return DispatchQueue.main.sync(execute: action)
   }
 
   private static func readSession(from file: URL) -> ResourceDiagnosticsSession? {
