@@ -25,6 +25,7 @@ import {
   useViewStack,
 } from "@/context/ViewContext";
 import { renderView } from "@/screens/renderView";
+import { haptics } from "@/services/haptics";
 
 function ignorePlaybackFailure(promise: Promise<void>): void {
   void promise.catch(() => undefined);
@@ -189,6 +190,7 @@ export function IpodShell() {
             accessibilityRole="button"
             accessibilityState={{ selected: playback.repeatEnabled }}
             onPress={() => {
+              haptics.toggle(!playback.repeatEnabled);
               ignorePlaybackFailure(playback.toggleRepeat());
             }}
             style={[
@@ -211,7 +213,10 @@ export function IpodShell() {
               disabled: !songActions.canOpenSongContextMenu,
             }}
             disabled={!songActions.canOpenSongContextMenu}
-            onPress={songActions.openSongContextMenu}
+            onPress={() => {
+              haptics.selection();
+              songActions.openSongContextMenu();
+            }}
             style={[
               styles.queueButton,
               leftHandedButtons
@@ -233,6 +238,7 @@ export function IpodShell() {
               accessibilityRole="button"
               accessibilityState={{ selected: playback.shuffleEnabled }}
               onPress={() => {
+                haptics.toggle(!playback.shuffleEnabled);
                 ignorePlaybackFailure(playback.toggleShuffle());
               }}
               style={[
@@ -253,6 +259,7 @@ export function IpodShell() {
               accessibilityLabel="Reroll next track"
               accessibilityRole="button"
               onPress={() => {
+                haptics.selection();
                 ignorePlaybackFailure(playback.rerollNext());
               }}
               style={styles.queueButton}

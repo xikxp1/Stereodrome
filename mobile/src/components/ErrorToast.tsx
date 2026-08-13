@@ -9,6 +9,8 @@ import {
 } from "react-native";
 import { CircleAlert, X } from "lucide-react-native";
 
+import { haptics } from "@/services/haptics";
+
 type ErrorToastProps = {
   message: string | null;
   onDismiss: () => void;
@@ -117,7 +119,10 @@ export function ErrorToast({ message, onDismiss }: ErrorToastProps) {
         accessibilityHint="Dismisses this notification"
         accessibilityLabel={`Error: ${displayedMessage}`}
         accessibilityRole="button"
-        onPress={dismiss}
+        onPress={() => {
+          haptics.selection();
+          dismiss();
+        }}
         style={styles.toast}
       >
         <View style={styles.iconBadge}>

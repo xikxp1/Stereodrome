@@ -16,6 +16,7 @@ import type { SongFileState } from "@/types/music";
 import { SongFileStateIcon } from "@/components/SongFileStateIcon";
 import { useInputBus } from "@/context/InputContext";
 import { colors } from "@/components/theme";
+import { haptics } from "@/services/haptics";
 
 const rowHeight = 34;
 const edgePaddingRows = 2;
@@ -305,6 +306,7 @@ export function SelectableList({
   const handleRowLongPress = useCallback(
     (index: number) => {
       rowLongPressed.current = true;
+      haptics.emphasis();
       activateIndex(index);
       if (optionsRef.current[index]?.wheelOnly === true) {
         return;
@@ -320,6 +322,7 @@ export function SelectableList({
         return;
       }
 
+      haptics.selection();
       activateIndex(index);
       if (optionsRef.current[index]?.wheelOnly === true) {
         return;

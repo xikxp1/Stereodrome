@@ -1,15 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import {
-  type KeyboardTypeOptions,
-  Linking,
-  Modal,
-  Pressable,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { type KeyboardTypeOptions, Linking, View } from "react-native";
 
+import { SettingsTextEditModal } from "@/components/SettingsTextEditModal";
 import {
   SelectableList,
   type SelectableOption,
@@ -905,58 +898,19 @@ export function SettingsScreen({ category }: { category?: string }) {
         preserveSelectionOnChange
         resetSelectionKey={selectedCategory ?? "root"}
       />
-      <Modal
-        animationType="fade"
-        onRequestClose={() => {
+      <SettingsTextEditModal
+        config={textEdit}
+        error={textEditError}
+        onCancel={() => {
           setTextEdit(null);
         }}
-        transparent
-        visible={textEdit !== null}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{textEdit?.title}</Text>
-            <TextInput
-              autoFocus
-              keyboardType={textEdit?.keyboardType ?? "default"}
-              onChangeText={setTextEditValue}
-              onSubmitEditing={() => {
-                void submitTextEdit();
-              }}
-              selectTextOnFocus
-              style={styles.modalInput}
-              value={textEditValue}
-            />
-            {hasText(textEditError) ? (
-              <Text numberOfLines={2} style={styles.modalError}>
-                {textEditError}
-              </Text>
-            ) : null}
-            <View style={styles.modalActions}>
-              <Pressable
-                disabled={textEditSaving}
-                onPress={() => {
-                  setTextEdit(null);
-                }}
-                style={styles.modalButton}
-              >
-                <Text style={styles.modalButtonText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                disabled={textEditSaving}
-                onPress={() => {
-                  void submitTextEdit();
-                }}
-                style={[styles.modalButton, styles.modalPrimaryButton]}
-              >
-                <Text style={styles.modalPrimaryButtonText}>
-                  {textEditSaving ? "Saving..." : "Save"}
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        onChangeValue={setTextEditValue}
+        onSubmit={() => {
+          void submitTextEdit();
+        }}
+        saving={textEditSaving}
+        value={textEditValue}
+      />
     </View>
   );
 }

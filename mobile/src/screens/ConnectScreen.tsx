@@ -10,6 +10,7 @@ import {
 
 import { colors } from "@/components/theme";
 import { useStereodrome } from "@/core/selectors";
+import { haptics } from "@/services/haptics";
 
 export function ConnectScreen() {
   const stereodrome = useStereodrome();
@@ -42,6 +43,7 @@ export function ConnectScreen() {
       <TextInput
         autoCapitalize="none"
         onChangeText={setUrl}
+        onFocus={haptics.selection}
         placeholder="Server URL"
         style={styles.input}
         value={url}
@@ -49,12 +51,14 @@ export function ConnectScreen() {
       <TextInput
         autoCapitalize="none"
         onChangeText={setUsername}
+        onFocus={haptics.selection}
         placeholder="Username"
         style={styles.input}
         value={username}
       />
       <TextInput
         onChangeText={setPassword}
+        onFocus={haptics.selection}
         placeholder="Password"
         secureTextEntry
         style={styles.input}
@@ -63,6 +67,7 @@ export function ConnectScreen() {
       <Pressable
         disabled={busy || stereodrome.manualOfflineEnabled}
         onPress={() => {
+          haptics.selection();
           void connect();
         }}
         style={styles.button}

@@ -1,39 +1,12 @@
 import { useRef } from "react";
-import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { FastForward, Menu, Pause, Play, Rewind } from "lucide-react-native";
-import * as Haptics from "expo-haptics";
 
 import { colors } from "@/components/theme";
 import { useInputBus } from "@/context/InputContext";
 import { usePlaybackMetadata } from "@/core/selectors";
-
-const hapticTickIntervalMs = 45;
-let lastHapticTick = 0;
-
-function tick() {
-  const now = Date.now();
-  if (now - lastHapticTick < hapticTickIntervalMs) {
-    return;
-  }
-
-  lastHapticTick = now;
-  if (Platform.OS === "android") {
-    void Haptics.performAndroidHapticsAsync(Haptics.AndroidHaptics.Clock_Tick);
-    return;
-  }
-
-  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-}
-
-function confirm() {
-  if (Platform.OS === "android") {
-    void Haptics.performAndroidHapticsAsync(Haptics.AndroidHaptics.Virtual_Key);
-    return;
-  }
-
-  void Haptics.selectionAsync();
-}
+import { haptics } from "@/services/haptics";
 
 export function ClickWheel() {
   const { emit } = useInputBus();
@@ -58,7 +31,7 @@ export function ClickWheel() {
       }
       const delta = nextAngle - previous;
       if (Math.abs(delta) > 0.22) {
-        tick();
+        haptics.tick();
         emit(delta > 0 ? "scroll_forward" : "scroll_backward");
         lastAngle.current = nextAngle;
       }
@@ -75,7 +48,7 @@ export function ClickWheel() {
           delayLongPress={450}
           onLongPress={() => {
             menuLongPressed.current = true;
-            confirm();
+            haptics.emphasis();
             emit("menu_long");
           }}
           onPress={() => {
@@ -83,7 +56,7 @@ export function ClickWheel() {
               menuLongPressed.current = false;
               return;
             }
-            confirm();
+            haptics.selection();
             emit("menu");
           }}
           style={[styles.button, styles.menu]}
@@ -93,7 +66,7 @@ export function ClickWheel() {
         <Pressable
           accessibilityLabel="Previous"
           onPress={() => {
-            confirm();
+            haptics.selection();
             emit("previous");
           }}
           style={[styles.button, styles.previous]}
@@ -105,7 +78,7 @@ export function ClickWheel() {
           accessibilityState={{ disabled: !hasNext }}
           disabled={!hasNext}
           onPress={() => {
-            confirm();
+            haptics.selection();
             emit("next");
           }}
           style={[styles.button, styles.next, !hasNext && styles.disabled]}
@@ -118,7 +91,7 @@ export function ClickWheel() {
         <Pressable
           accessibilityLabel={playback.isPlaying ? "Pause" : "Play"}
           onPress={() => {
-            confirm();
+            haptics.selection();
             emit("play_pause");
           }}
           style={[styles.button, styles.play]}
@@ -130,7 +103,7 @@ export function ClickWheel() {
           delayLongPress={450}
           onLongPress={() => {
             centerLongPressed.current = true;
-            confirm();
+            haptics.emphasis();
             emit("select_long");
           }}
           onPress={() => {
@@ -138,7 +111,7 @@ export function ClickWheel() {
               centerLongPressed.current = false;
               return;
             }
-            confirm();
+            haptics.selection();
             emit("select");
           }}
           style={styles.center}
