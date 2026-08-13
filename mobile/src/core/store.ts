@@ -1,4 +1,4 @@
-import { coreClient } from "@/core/client";
+import { coreClient, isCancelledCoreCommand } from "@/core/client";
 import type { CoreEvent, CoreSnapshot } from "@/core/protocol.generated";
 import type { PlayableSong } from "@/types/music";
 
@@ -79,7 +79,9 @@ function applyEvent(event: CoreEvent): void {
       applySnapshot(event.kind.snapshot);
       break;
     case "operation-failed":
-      publish({ ...state, error: event.kind.failure.error.message });
+      if (event.kind.failure.error.code !== "cancelled") {
+        publish({ ...state, error: event.kind.failure.error.message });
+      }
       break;
     case "runtime-shutting-down":
       publish({ ...state, ready: false });
@@ -143,7 +145,9 @@ async function run(
   try {
     return await coreClient.dispatch(command);
   } catch (error) {
-    setError(error);
+    if (!isCancelledCoreCommand(error)) {
+      setError(error);
+    }
     throw error;
   }
 }

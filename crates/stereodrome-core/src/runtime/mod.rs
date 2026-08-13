@@ -74,6 +74,14 @@ struct PendingPlayback {
     success_value: Option<Value>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CancellationReporting {
+    /// The runtime superseded obsolete work as part of another command.
+    Silent,
+    /// A caller explicitly cancelled an operation and should observe its terminal state.
+    Failure,
+}
+
 struct RuntimeInner {
     mailbox: SyncSender<MailboxMessage>,
     events: broadcast::Sender<CoreEvent>,
@@ -649,6 +657,7 @@ fn run_actor(
                 &mut next_event_id,
                 &mut pending_effects,
                 &mut result_cache,
+                CancellationReporting::Silent,
             );
         }
         if let CoreCommand::CancelOperation { operation_id } = &request.command {
@@ -662,6 +671,7 @@ fn run_actor(
                 &mut next_event_id,
                 &mut pending_playback,
                 &mut result_cache,
+                CancellationReporting::Failure,
             ) {
                 let result = CoreCommandResult::succeeded(
                     request.command_id,
@@ -1429,6 +1439,7 @@ fn cancel_pending_playback(
     next_event_id: &mut u64,
     pending_playback: &mut HashMap<OperationId, PendingPlayback>,
     result_cache: &mut ResultCache,
+    reporting: CancellationReporting,
 ) -> bool {
     let Some(pending) = pending_playback.remove(&operation_id) else {
         return false;
@@ -1442,21 +1453,23 @@ fn cancel_pending_playback(
     }
     state.revision = state.revision.wrapping_add(1);
     let error = ProtocolError::new(ProtocolErrorCode::Cancelled, "operation cancelled", false);
-    let failure = OperationFailure {
-        command_id: pending.command_id,
-        operation_id: Some(operation_id),
-        error: error.clone(),
-    };
-    state.last_failure = Some(failure.clone());
-    emit_event(
-        events,
-        stream_id,
-        next_event_id,
-        state.revision,
-        pending.command_id,
-        Some(operation_id),
-        CoreEventKind::OperationFailed { failure },
-    );
+    if reporting == CancellationReporting::Failure {
+        let failure = OperationFailure {
+            command_id: pending.command_id,
+            operation_id: Some(operation_id),
+            error: error.clone(),
+        };
+        state.last_failure = Some(failure.clone());
+        emit_event(
+            events,
+            stream_id,
+            next_event_id,
+            state.revision,
+            pending.command_id,
+            Some(operation_id),
+            CoreEventKind::OperationFailed { failure },
+        );
+    }
     emit_snapshot_event(
         core,
         audio,
@@ -1503,6 +1516,7 @@ fn cancel_current_playback(
             next_event_id,
             pending_playback,
             result_cache,
+            CancellationReporting::Silent,
         );
     }
 }
@@ -2214,6 +2228,7 @@ fn cancel_operation(
         next_event_id,
         pending_effects,
         result_cache,
+        CancellationReporting::Failure,
     );
     if cancelled {
         CoreCommandResult::succeeded(cancel_command_id, state.revision, None, Value::Null)
@@ -2242,6 +2257,7 @@ fn cancel_pending_effect(
     next_event_id: &mut u64,
     pending_effects: &mut HashMap<OperationId, PendingEffect>,
     result_cache: &mut ResultCache,
+    reporting: CancellationReporting,
 ) -> bool {
     let Some(pending) = pending_effects.remove(&operation_id) else {
         return false;
@@ -2250,27 +2266,31 @@ fn cancel_pending_effect(
     pending.abort_handle.abort();
     state.operations.remove(&operation_id);
     state.revision = state.revision.wrapping_add(1);
-    if state.saved_playlist_offline.operation_id == Some(operation_id) {
+    if reporting == CancellationReporting::Failure
+        && state.saved_playlist_offline.operation_id == Some(operation_id)
+    {
         state.saved_playlist_offline.running = false;
         state.saved_playlist_offline.operation_id = None;
         state.saved_playlist_offline.last_error = Some("operation cancelled".to_string());
     }
     let error = ProtocolError::new(ProtocolErrorCode::Cancelled, "operation cancelled", false);
-    let failure = OperationFailure {
-        command_id: pending.command_id,
-        operation_id: Some(operation_id),
-        error: error.clone(),
-    };
-    state.last_failure = Some(failure.clone());
-    emit_event(
-        events,
-        stream_id,
-        next_event_id,
-        state.revision,
-        pending.command_id,
-        Some(operation_id),
-        CoreEventKind::OperationFailed { failure },
-    );
+    if reporting == CancellationReporting::Failure {
+        let failure = OperationFailure {
+            command_id: pending.command_id,
+            operation_id: Some(operation_id),
+            error: error.clone(),
+        };
+        state.last_failure = Some(failure.clone());
+        emit_event(
+            events,
+            stream_id,
+            next_event_id,
+            state.revision,
+            pending.command_id,
+            Some(operation_id),
+            CoreEventKind::OperationFailed { failure },
+        );
+    }
     emit_snapshot_event(
         core,
         audio,
@@ -3284,6 +3304,160 @@ mod tests {
 
         assert!(fake.calls().is_empty());
         assert_eq!(state.playback_operation_id, Some(OperationId(2)));
+        runtime.shutdown_timeout(Duration::from_millis(50));
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn superseded_playback_cancellation_is_not_reported_as_a_failure() {
+        let data_dir = test_dir("silent-playback-cancellation");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let fake = FakeAudio::default();
+        let connectivity = initial_connectivity(&core).expect("connectivity initializes");
+        let mut state = CoreState::new(connectivity);
+        let operation_id = OperationId(1);
+        state.playback_operation_id = Some(operation_id);
+        state.operations.insert(
+            operation_id,
+            OperationSnapshot {
+                operation_id,
+                cause_command_id: CommandId(8),
+                kind: JobKind::PlaybackPrepare {
+                    song_id: "song-1".to_string(),
+                },
+                phase: OperationPhase::Running,
+            },
+        );
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let task = runtime.spawn(std::future::pending::<()>());
+        let cancellation = CancellationToken::new();
+        let cancellation_probe = cancellation.clone();
+        let (response, response_receiver) = mpsc::channel();
+        let mut pending = HashMap::from([(
+            operation_id,
+            PendingPlayback {
+                command_id: CommandId(8),
+                command: CoreCommand::NavigatePlayback {
+                    navigation: crate::PlaybackNavigation::Next { force: true },
+                },
+                response: Some(response),
+                cancellation,
+                abort_handle: task.abort_handle(),
+                success_value: None,
+            },
+        )]);
+        let (events, mut event_receiver) = broadcast::channel(4);
+        let mut next_event_id = 1;
+        let mut result_cache = ResultCache::new();
+
+        assert!(cancel_pending_playback(
+            operation_id,
+            &core,
+            &fake,
+            &events,
+            1,
+            &mut state,
+            &mut next_event_id,
+            &mut pending,
+            &mut result_cache,
+            CancellationReporting::Silent,
+        ));
+
+        assert!(cancellation_probe.is_cancelled());
+        assert!(state.last_failure.is_none());
+        assert!(state.operations.is_empty());
+        assert!(state.playback_operation_id.is_none());
+        let result = response_receiver
+            .recv()
+            .expect("caller receives cancellation");
+        assert!(matches!(
+            result.error,
+            Some(ProtocolError {
+                code: ProtocolErrorCode::Cancelled,
+                ..
+            })
+        ));
+        assert!(matches!(
+            event_receiver.try_recv().expect("snapshot event"),
+            CoreEvent {
+                kind: CoreEventKind::SnapshotChanged { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            event_receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        runtime.shutdown_timeout(Duration::from_millis(50));
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn invalidated_prefetch_cancellation_is_not_reported_as_a_failure() {
+        let data_dir = test_dir("silent-prefetch-cancellation");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let fake = FakeAudio::default();
+        let connectivity = initial_connectivity(&core).expect("connectivity initializes");
+        let mut state = CoreState::new(connectivity);
+        let operation_id = OperationId(1);
+        state.operations.insert(
+            operation_id,
+            OperationSnapshot {
+                operation_id,
+                cause_command_id: CommandId(9),
+                kind: JobKind::QueuePrefetch,
+                phase: OperationPhase::Running,
+            },
+        );
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let task = runtime.spawn(std::future::pending::<()>());
+        let cancellation = CancellationToken::new();
+        let cancellation_probe = cancellation.clone();
+        let mut pending = HashMap::from([(
+            operation_id,
+            PendingEffect {
+                command_id: CommandId(9),
+                command: CoreCommand::StartQueuePrefetch {
+                    reserve_first: false,
+                },
+                response: None,
+                cancellation,
+                abort_handle: task.abort_handle(),
+            },
+        )]);
+        let (events, mut event_receiver) = broadcast::channel(4);
+        let mut next_event_id = 1;
+        let mut result_cache = ResultCache::new();
+
+        assert!(cancel_pending_effect(
+            operation_id,
+            &core,
+            &fake,
+            &events,
+            1,
+            &mut state,
+            &mut next_event_id,
+            &mut pending,
+            &mut result_cache,
+            CancellationReporting::Silent,
+        ));
+
+        assert!(cancellation_probe.is_cancelled());
+        assert!(state.last_failure.is_none());
+        assert!(state.operations.is_empty());
+        assert!(matches!(
+            event_receiver.try_recv().expect("snapshot event"),
+            CoreEvent {
+                kind: CoreEventKind::SnapshotChanged { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            event_receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
         runtime.shutdown_timeout(Duration::from_millis(50));
         let _ = std::fs::remove_dir_all(data_dir);
     }
