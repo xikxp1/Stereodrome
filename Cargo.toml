@@ -3,6 +3,7 @@ members = [
   "crates/stereodrome-audio",
   "crates/stereodrome-core",
   "crates/stereodrome-ffi",
+  "crates/submarine",
   "src-tauri",
 ]
 resolver = "3"

@@ -518,6 +518,7 @@ fn run_actor(
     let mut pending_effects = HashMap::<OperationId, PendingEffect>::new();
     let mut pending_playback = HashMap::<OperationId, PendingPlayback>::new();
     let mut last_playback_projection = playback::projection(&core, audio.as_ref(), None).ok();
+    let mut last_tick_fingerprint: Option<PlaybackTickFingerprint> = None;
     let mut last_progress_at = clock.now();
     let mut last_segment_index = 0_usize;
 
@@ -573,6 +574,7 @@ fn run_actor(
                     &mut next_event_id,
                     &mut pending_playback,
                     &mut last_playback_projection,
+                    &mut last_tick_fingerprint,
                     clock.as_ref(),
                     &mut last_progress_at,
                     &mut last_segment_index,
@@ -590,6 +592,7 @@ fn run_actor(
                     &mut next_event_id,
                     &mut pending_playback,
                     &mut last_playback_projection,
+                    &mut last_tick_fingerprint,
                     clock.as_ref(),
                     &mut last_progress_at,
                     &mut last_segment_index,
@@ -1543,6 +1546,38 @@ fn cancel_all_playback(
     }
 }
 
+/// Cheap summary of every input that can change the playback projection short
+/// of a queue mutation (covered by `queue_revision`). While it is unchanged on
+/// a quiet tick, rebuilding the projection is guaranteed to be discarded by
+/// `playback_projection_changed`, so the tick skips the rebuild entirely.
+#[derive(Clone, PartialEq)]
+struct PlaybackTickFingerprint {
+    state: stereodrome_audio::PlaybackLifecycleState,
+    is_playing: bool,
+    song_id: Option<String>,
+    output_state: stereodrome_audio::AudioOutputState,
+    queue_revision: u64,
+    preparing_operation_id: Option<OperationId>,
+}
+
+impl PlaybackTickFingerprint {
+    fn capture(
+        core: &StereodromeCore,
+        audio: &dyn AudioPort,
+        preparing_operation_id: Option<OperationId>,
+    ) -> Self {
+        let status = audio.status();
+        Self {
+            state: status.state,
+            is_playing: status.is_playing,
+            song_id: status.current_song_id,
+            output_state: status.output_state,
+            queue_revision: core.queue_revision(),
+            preparing_operation_id,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn handle_playback_input(
     notification: Option<AudioNotification>,
@@ -1557,10 +1592,12 @@ fn handle_playback_input(
     next_event_id: &mut u64,
     pending_playback: &mut HashMap<OperationId, PendingPlayback>,
     last_projection: &mut Option<crate::PlaybackProjection>,
+    last_tick_fingerprint: &mut Option<PlaybackTickFingerprint>,
     clock: &dyn PlaybackClock,
     last_progress_at: &mut std::time::Instant,
     last_segment_index: &mut usize,
 ) {
+    let is_quiet_tick = notification.is_none();
     if notification
         .as_ref()
         .is_some_and(|notification| !audio_notification_is_current(audio, notification))
@@ -1684,6 +1721,15 @@ fn handle_playback_input(
             );
         }
     }
+
+    // Building the projection clones the queue and hits the database, so quiet
+    // ticks skip it while the cheap fingerprint is unchanged; notifications and
+    // any tick that mutated state above always rebuild.
+    let fingerprint = PlaybackTickFingerprint::capture(core, audio, state.playback_operation_id);
+    if is_quiet_tick && last_tick_fingerprint.as_ref() == Some(&fingerprint) {
+        return;
+    }
+    *last_tick_fingerprint = Some(fingerprint);
 
     if let Ok(projection) = playback::projection(core, audio, state.playback_operation_id)
         && playback_projection_changed(last_projection.as_ref(), &projection)

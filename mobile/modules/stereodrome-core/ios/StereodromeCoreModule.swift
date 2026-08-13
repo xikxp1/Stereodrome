@@ -303,6 +303,13 @@ private func stereodromeEventCallback(
 }
 
 public class StereodromeCoreModule: Module {
+  // Library audio is served at 44.1 kHz; asking the hardware for the same rate
+  // avoids a permanent 44.1->48 kHz software resample on the render thread.
+  private static let preferredHardwareSampleRate: Double = 44_100
+  private static let preferredIOBufferDuration: TimeInterval = 0.1
+  private static let artworkCacheCountLimit = 24
+  private static let artworkCacheTotalCostLimit = 32 * 1024 * 1024
+
   private struct AudioSessionLease {
     let acquiredNow: Bool
   }
@@ -316,7 +323,12 @@ public class StereodromeCoreModule: Module {
   private let coreQueue = DispatchQueue(label: "dev.xikxp1.stereodrome.mobile.core")
   private let remoteCommandQueue = DispatchQueue(
     label: "dev.xikxp1.stereodrome.mobile.remote-commands")
-  private let artworkCache = NSCache<NSString, MPMediaItemArtwork>()
+  private let artworkCache: NSCache<NSString, MPMediaItemArtwork> = {
+    let cache = NSCache<NSString, MPMediaItemArtwork>()
+    cache.countLimit = StereodromeCoreModule.artworkCacheCountLimit
+    cache.totalCostLimit = StereodromeCoreModule.artworkCacheTotalCostLimit
+    return cache
+  }()
   private let artworkQueue = DispatchQueue(
     label: "dev.xikxp1.stereodrome.mobile.artwork", qos: .utility)
   private let playbackProjectionLock = NSLock()
@@ -510,9 +522,22 @@ public class StereodromeCoreModule: Module {
     let session = AVAudioSession.sharedInstance()
     do {
       try session.setCategory(.playback, mode: .default)
+      applyPreferredAudioSessionParameters(session)
     } catch {
       // Rust returns playback errors through the FFI call path; session setup
       // failure should not prevent core initialization in development builds.
+    }
+  }
+
+  private func applyPreferredAudioSessionParameters(_ session: AVAudioSession) {
+    // Matching the library's native rate lets the Rust resampler take its
+    // pass-through path, and a longer IO buffer cuts render-thread wakeups.
+    do {
+      try session.setPreferredSampleRate(Self.preferredHardwareSampleRate)
+      try session.setPreferredIOBufferDuration(Self.preferredIOBufferDuration)
+    } catch {
+      appContext?.jsLogger.warn(
+        "Failed to apply preferred audio session parameters: \(error.localizedDescription)")
     }
   }
 
@@ -526,6 +551,7 @@ public class StereodromeCoreModule: Module {
     let session = AVAudioSession.sharedInstance()
     do {
       try session.setCategory(.playback, mode: .default)
+      applyPreferredAudioSessionParameters(session)
       try session.setActive(true)
       ownsAudioSession = true
       audioSessionGeneration &+= 1
@@ -1068,7 +1094,10 @@ public class StereodromeCoreModule: Module {
 
     let preparedImage = image.preparingForDisplay() ?? image
     let artwork = MPMediaItemArtwork(boundsSize: preparedImage.size) { _ in preparedImage }
-    artworkCache.setObject(artwork, forKey: cacheKey)
+    // Decoded RGBA bitmap cost; without it NSCache never evicts under the limit.
+    let bitmapCost = Int(preparedImage.size.width * preparedImage.size.height
+      * preparedImage.scale * preparedImage.scale * 4)
+    artworkCache.setObject(artwork, forKey: cacheKey, cost: bitmapCost)
     return artwork
   }
 

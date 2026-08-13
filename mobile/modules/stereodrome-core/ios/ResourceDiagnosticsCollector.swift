@@ -459,6 +459,11 @@ final class ResourceDiagnosticsCollector {
     guard task_threads(mach_task_self_, &threads, &count) == KERN_SUCCESS, let threads else {
       return 0
     }
+    // task_threads hands us a send right per thread; releasing only the array
+    // would leak one Mach port per thread on every sample.
+    for index in 0..<Int(count) {
+      mach_port_deallocate(mach_task_self_, threads[index])
+    }
     let size = vm_size_t(Int(count) * MemoryLayout<thread_t>.stride)
     vm_deallocate(mach_task_self_, vm_address_t(bitPattern: threads), size)
     return Int(count)

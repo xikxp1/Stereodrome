@@ -679,10 +679,26 @@ impl SharedState {
             }
             cumulative_position =
                 inner.gapless_segments[segment_idx].cumulative_start + source_position.max(0.0);
+            Self::release_consumed_segment_data(&mut inner, segment_idx);
         }
 
         inner.consumed_position = cumulative_position.clamp(0.0, inner.duration);
         inner.consumed_position > previous + POSITION_EPSILON_SECONDS
+    }
+
+    /// Drop the encoded bytes of gapless segments the playhead has moved past.
+    /// The sink owns its own reference while a segment plays, and seeks and
+    /// rebuilds only ever target the current segment, so earlier segments'
+    /// bytes are unreachable; retaining them would hold every played track of
+    /// an album chain in memory until playback stops. Position accounting is
+    /// untouched: segment metadata, durations, and indices all remain valid.
+    fn release_consumed_segment_data(inner: &mut PlaybackInner, current_segment_idx: usize) {
+        const EMPTY: &[u8] = &[];
+        for segment in &mut inner.gapless_segments[..current_segment_idx] {
+            if !segment.request.audio_data.is_empty() {
+                segment.request.audio_data = Arc::from(EMPTY);
+            }
+        }
     }
 
     fn set_consumed_position(&self, generation: u64, cumulative_position: f64) {
@@ -1404,8 +1420,13 @@ fn append_processed_source<S>(
             sink.append(equalizer_source);
         }
         (None, None, false) => {
-            let normalizing_source = NormalizingSource::new(source, gain);
-            sink.append(normalizing_source);
+            // No processing requested: skip the normalizer wrapper entirely
+            // rather than multiplying every sample by 1.0 on the render thread.
+            if let Some(gain) = normalization_gain {
+                sink.append(NormalizingSource::new(source, gain));
+            } else {
+                sink.append(source);
+            }
         }
     }
 }
@@ -1730,6 +1751,17 @@ fn should_poll_audio_thread(
 /// transparently rebuilds the output from the persisted position.
 const PAUSED_OUTPUT_RELEASE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Supervisor wake interval near timing-sensitive moments (crossfades, track
+/// and segment boundaries) and right after commands.
+const POLL_INTERVAL_FAST: Duration = Duration::from_millis(50);
+/// Supervisor wake interval mid-track; 20 wakeups/sec for the whole playback
+/// session is a measurable energy cost on mobile, and nothing mid-track needs
+/// finer position granularity than this.
+const POLL_INTERVAL_RELAXED: Duration = Duration::from_millis(250);
+/// Remaining time in the current segment below which polling tightens so
+/// boundary detection stays prompt.
+const POLL_BOUNDARY_WINDOW_SECONDS: f64 = 2.0;
+
 fn mark_missing_sink_if_playing(
     shared_state: &SharedState,
     watchdog: &mut PlaybackWatchdog,
@@ -1755,6 +1787,7 @@ struct AudioThread<'a> {
     current_generation: u64,
     watchdog: PlaybackWatchdog,
     paused_since: Option<Instant>,
+    poll_interval: Duration,
 }
 
 fn matches_expected_playback(
@@ -1786,6 +1819,7 @@ impl<'a> AudioThread<'a> {
             current_generation: 0,
             watchdog: PlaybackWatchdog::new(),
             paused_since: None,
+            poll_interval: POLL_INTERVAL_FAST,
         }
     }
 
@@ -1814,7 +1848,7 @@ impl<'a> AudioThread<'a> {
             self.paused_since = None;
         }
         if should_poll_audio_thread(current_sink_active, crossfade_active, lifecycle_state) {
-            match command_rx.recv_timeout(Duration::from_millis(50)) {
+            match command_rx.recv_timeout(self.poll_interval) {
                 Ok(command) => AudioThreadEvent::Command(Box::new(command)),
                 Err(mpsc::RecvTimeoutError::Timeout) => AudioThreadEvent::Timeout,
                 Err(mpsc::RecvTimeoutError::Disconnected) => AudioThreadEvent::Disconnected,
@@ -1874,6 +1908,9 @@ impl<'a> AudioThread<'a> {
     }
 
     fn handle_command(&mut self, command: AudioCommand) -> bool {
+        // Commands can start transitions that need prompt follow-up; poll fast
+        // until the next timeout pass relaxes the interval again.
+        self.poll_interval = POLL_INTERVAL_FAST;
         match command {
             AudioCommand::Play {
                 expected_playback,
@@ -2503,6 +2540,21 @@ impl<'a> AudioThread<'a> {
         }
         self.update_crossfade();
         self.mark_finished_playback();
+        self.refresh_poll_interval();
+    }
+
+    /// Relax the supervisor wake interval mid-track and tighten it whenever a
+    /// crossfade is running or the current segment is about to end.
+    fn refresh_poll_interval(&mut self) {
+        let timing_sensitive = self.crossfade_state.is_some() || self.crossfade_sink.is_some() || {
+            let (state, _) = self.shared_state.get_gapless_state();
+            state.duration <= 0.0 || state.duration - state.position < POLL_BOUNDARY_WINDOW_SECONDS
+        };
+        self.poll_interval = if timing_sensitive {
+            POLL_INTERVAL_FAST
+        } else {
+            POLL_INTERVAL_RELAXED
+        };
     }
 
     fn update_crossfade(&mut self) {

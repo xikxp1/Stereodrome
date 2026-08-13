@@ -349,6 +349,7 @@ pub struct StereodromeCore {
     cache_event_sender: Option<Sender<CacheStateEvent>>,
     offline_song_ids_cache: Mutex<Option<Vec<String>>>,
     audio_processing_settings_cache: Mutex<Option<AudioProcessingSettings>>,
+    gapless_eligibility_cache: Mutex<Option<((String, String), bool)>>,
 }
 
 fn ensure_queue_navigation_matches(
@@ -420,6 +421,7 @@ impl StereodromeCore {
             cache_event_sender,
             offline_song_ids_cache: Mutex::new(None),
             audio_processing_settings_cache: Mutex::new(None),
+            gapless_eligibility_cache: Mutex::new(None),
         })
     }
 
@@ -643,6 +645,7 @@ impl StereodromeCore {
             )?;
         }
         tx.commit()?;
+        self.invalidate_gapless_eligibility_cache();
         let result = SyncResult {
             artists: sync_data.artists.len(),
             albums: sync_data.albums.len(),
@@ -1637,6 +1640,7 @@ impl StereodromeCore {
                 Ok(None)
             }
             Some(Ok(bytes)) => {
+                let byte_count = bytes.len() as u64;
                 {
                     let _cache_guard = cache_mutation_guard()?;
                     if cancellation.is_some_and(PrefetchCancellationToken::is_cancelled) {
@@ -1653,6 +1657,10 @@ impl StereodromeCore {
                         return Ok(None);
                     }
                     write_file_atomically(&path, &bytes)?;
+                    // Release the track buffer before the cache scan and
+                    // cover-art fetch below; holding it across those awaits
+                    // pins a full track in memory per concurrent download.
+                    drop(bytes);
                     self.emit_cache_state_event(CacheStateEvent::CachedChanged {
                         song_id: song_id.clone(),
                         cached: true,
@@ -1663,7 +1671,7 @@ impl StereodromeCore {
                         song_id: &song_id,
                         status: "downloaded",
                         path: Some(&path),
-                        bytes: bytes.len() as u64,
+                        bytes: byte_count,
                         error: None,
                     })?;
                     record_finalizer.disarm();
@@ -1685,7 +1693,7 @@ impl StereodromeCore {
                     song_id,
                     cached: true,
                     path: Some(path_to_file_uri(&path)),
-                    bytes: bytes.len() as u64,
+                    bytes: byte_count,
                 }))
             }
             Some(Err(error)) => {
@@ -2152,6 +2160,12 @@ impl StereodromeCore {
         Ok(queue.peek_next().cloned())
     }
 
+    /// Monotonic counter bumped by every queue mutation. Lets callers detect
+    /// queue changes without cloning the queue.
+    pub fn queue_revision(&self) -> u64 {
+        self.queue_revision.load(Ordering::Acquire)
+    }
+
     /// # Errors
     /// Returns an error if queue state cannot be locked.
     pub fn preview_next_queue_item(&self, force: Option<bool>) -> CoreResult<Option<QueueItem>> {
@@ -2173,23 +2187,45 @@ impl StereodromeCore {
         current_song_id: &str,
         next_song_id: &str,
     ) -> CoreResult<bool> {
-        let conn = db::open_connection(&self.db_path)?;
-        let Some(current) = gapless_track_info(&conn, current_song_id)? else {
-            return Ok(false);
-        };
-        let Some(next) = gapless_track_info(&conn, next_song_id)? else {
-            return Ok(false);
-        };
-
-        if current.album_id != next.album_id {
-            return Ok(false);
+        // The playback tick re-evaluates the same transition several times a
+        // second; track metadata only changes on library sync or backup
+        // import, which invalidate this cache.
+        if let Ok(cache) = self.gapless_eligibility_cache.lock()
+            && let Some(((cached_current, cached_next), eligible)) = cache.as_ref()
+            && cached_current == current_song_id
+            && cached_next == next_song_id
+        {
+            return Ok(*eligible);
         }
 
-        let same_disc_consecutive = current.disc_number == next.disc_number
-            && next.track_number == current.track_number + 1;
-        let next_disc_first_track =
-            next.disc_number == current.disc_number + 1 && next.track_number == 1;
-        Ok(same_disc_consecutive || next_disc_first_track)
+        let conn = db::open_connection(&self.db_path)?;
+        let eligible = match (
+            gapless_track_info(&conn, current_song_id)?,
+            gapless_track_info(&conn, next_song_id)?,
+        ) {
+            (Some(current), Some(next)) if current.album_id == next.album_id => {
+                let same_disc_consecutive = current.disc_number == next.disc_number
+                    && next.track_number == current.track_number + 1;
+                let next_disc_first_track =
+                    next.disc_number == current.disc_number + 1 && next.track_number == 1;
+                same_disc_consecutive || next_disc_first_track
+            }
+            _ => false,
+        };
+
+        if let Ok(mut cache) = self.gapless_eligibility_cache.lock() {
+            *cache = Some((
+                (current_song_id.to_string(), next_song_id.to_string()),
+                eligible,
+            ));
+        }
+        Ok(eligible)
+    }
+
+    fn invalidate_gapless_eligibility_cache(&self) {
+        if let Ok(mut cache) = self.gapless_eligibility_cache.lock() {
+            *cache = None;
+        }
     }
 
     /// # Errors
@@ -2444,8 +2480,10 @@ impl StereodromeCore {
             backup.queue.repeat_mode,
         );
         self.queue_revision.fetch_add(1, Ordering::AcqRel);
-        // The imported backup may carry audio processing preferences.
+        // The imported backup may carry audio processing preferences and
+        // replace song metadata wholesale.
         self.invalidate_audio_processing_settings_cache();
+        self.invalidate_gapless_eligibility_cache();
         self.emit_cache_state_event(CacheStateEvent::Reconcile);
         Ok(summary)
     }
@@ -3198,6 +3236,7 @@ impl StereodromeCore {
             )?;
         }
         tx.commit()?;
+        self.invalidate_gapless_eligibility_cache();
 
         Ok(SyncResult {
             artists: sync_data.artists.len(),

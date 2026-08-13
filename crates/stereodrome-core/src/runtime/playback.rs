@@ -534,12 +534,26 @@ pub(crate) fn gapless_target(
     core: &StereodromeCore,
     audio: &dyn AudioPort,
 ) -> CoreResult<Option<(QueueItem, PlaybackIdentity)>> {
+    // Runs on every playback tick, so the cheap checks (memoized settings,
+    // audio status, single-item peek, memoized eligibility) come first; the
+    // full queue clone happens only for transitions that can actually happen.
     let settings = core.get_audio_processing_settings()?;
-    if !settings.gapless_enabled || audio.status().current_song_id.is_none() {
+    if !settings.gapless_enabled {
         return Ok(None);
     }
+    let Some(current_song_id) = audio.status().current_song_id else {
+        return Ok(None);
+    };
     let (_, segment_index) = audio.gapless_state();
     if !audio.is_last_gapless_segment(segment_index) {
+        return Ok(None);
+    }
+    let Some(next) = core.peek_next_queue_item()? else {
+        return Ok(None);
+    };
+    if current_song_id == next.song_id
+        || !core.songs_are_gapless_eligible(&current_song_id, &next.song_id)?
+    {
         return Ok(None);
     }
     let queue = core.get_queue()?;
@@ -549,12 +563,7 @@ pub(crate) fn gapless_target(
     let Some(current) = queue.current_index.and_then(|index| queue.items.get(index)) else {
         return Ok(None);
     };
-    let Some(next) = core.peek_next_queue_item()? else {
-        return Ok(None);
-    };
-    if current.song_id == next.song_id
-        || !core.songs_are_gapless_eligible(&current.song_id, &next.song_id)?
-    {
+    if current.song_id != current_song_id {
         return Ok(None);
     }
     let Some(identity) = audio.current_identity() else {
