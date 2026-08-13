@@ -43,6 +43,8 @@ pub struct Client {
 pub enum SubsonicError {
     #[error("Connection error")]
     Connection(#[from] reqwest::Error),
+    #[error("File I/O error")]
+    Io(#[from] std::io::Error),
     #[error("Conversion error")]
     Conversion(#[from] serde_json::Error),
     #[error("No server found")]

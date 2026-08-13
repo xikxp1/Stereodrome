@@ -3309,7 +3309,7 @@ mod tests {
         let prepared = playback::PreparedPlayback {
             target_song_id: "stale-song".to_string(),
             prepared: PreparedAudio {
-                audio_data: Arc::from(&b"fake"[..]),
+                audio_path: PathBuf::from("stale-song.mp3"),
                 metadata: stereodrome_audio::SongMetadata {
                     id: "stale-song".to_string(),
                     title: "Stale".to_string(),

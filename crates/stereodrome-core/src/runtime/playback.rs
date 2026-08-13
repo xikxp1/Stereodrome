@@ -39,7 +39,7 @@ impl PlaybackClock for SystemPlaybackClock {
 /// Fully prepared audio passed to an [`AudioPort`].
 #[derive(Debug)]
 pub struct PreparedAudio {
-    pub audio_data: Arc<[u8]>,
+    pub audio_path: PathBuf,
     pub metadata: SongMetadata,
     pub duration_seconds: f64,
     pub normalization_gain: Option<f32>,
@@ -151,7 +151,7 @@ impl AudioPort for StereodromeAudioPort {
         self.player
             .play_with_expected(
                 expected,
-                prepared.audio_data,
+                prepared.audio_path,
                 prepared.metadata,
                 prepared.duration_seconds,
                 prepared.normalization_gain,
@@ -170,7 +170,7 @@ impl AudioPort for StereodromeAudioPort {
         self.player
             .append_gapless(
                 expected,
-                prepared.audio_data,
+                prepared.audio_path,
                 prepared.metadata,
                 prepared.duration_seconds,
                 prepared.normalization_gain,
@@ -190,7 +190,7 @@ impl AudioPort for StereodromeAudioPort {
         self.player
             .crossfade_play(CrossfadePlayRequest {
                 expected_playback: expected,
-                audio_data: prepared.audio_data,
+                audio_path: prepared.audio_path,
                 metadata: prepared.metadata,
                 duration_secs: prepared.duration_seconds,
                 normalization_gain: prepared.normalization_gain,
@@ -289,7 +289,6 @@ pub(crate) async fn prepare(
         ))
     })?;
     let audio_path = file_uri_to_path(path)?;
-    let audio_data = std::fs::read(audio_path)?;
     let settings = core.get_audio_processing_settings()?;
     let processing = audio_processing(&settings)?;
     let cover_art_id = core.song_cover_art_id(&target_song_id)?;
@@ -297,7 +296,7 @@ pub(crate) async fn prepare(
     Ok(PreparedPlayback {
         target_song_id,
         prepared: PreparedAudio {
-            audio_data: Arc::from(audio_data),
+            audio_path,
             metadata: SongMetadata {
                 id: item.song_id,
                 title: item.title,

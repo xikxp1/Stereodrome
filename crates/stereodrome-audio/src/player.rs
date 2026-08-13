@@ -3,8 +3,10 @@ use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::any::Any;
 use std::collections::HashSet;
-use std::io::Cursor;
+use std::fs::File;
+use std::io::BufReader;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
@@ -259,7 +261,7 @@ impl PlaybackIdentity {
 enum AudioCommand {
     Play {
         expected_playback: Option<PlaybackIdentity>,
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -298,7 +300,7 @@ enum AudioCommand {
     /// while a new sink fades in over the specified duration.
     CrossfadePlay {
         expected_playback: Option<PlaybackIdentity>,
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -315,7 +317,7 @@ enum AudioCommand {
 #[derive(Debug)]
 pub struct CrossfadePlayRequest {
     pub expected_playback: Option<PlaybackIdentity>,
-    pub audio_data: Arc<[u8]>,
+    pub audio_path: PathBuf,
     pub metadata: SongMetadata,
     pub duration_secs: f64,
     pub normalization_gain: Option<f32>,
@@ -327,7 +329,7 @@ pub struct CrossfadePlayRequest {
 
 struct GaplessAppendRequest {
     expected_playback: PlaybackIdentity,
-    audio_data: Arc<[u8]>,
+    audio_path: PathBuf,
     metadata: SongMetadata,
     duration_secs: f64,
     normalization_gain: Option<f32>,
@@ -346,7 +348,7 @@ struct AudioProcessingRequest {
 
 #[derive(Debug, Clone)]
 struct ActiveAudioRequest {
-    audio_data: Arc<[u8]>,
+    audio_path: PathBuf,
     metadata: SongMetadata,
     duration_secs: f64,
     processing: AudioProcessingRequest,
@@ -354,7 +356,7 @@ struct ActiveAudioRequest {
 
 impl ActiveAudioRequest {
     fn new(
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -363,7 +365,7 @@ impl ActiveAudioRequest {
         equalizer_settings: Option<EqualizerSettings>,
     ) -> Self {
         Self {
-            audio_data,
+            audio_path,
             metadata,
             duration_secs,
             processing: AudioProcessingRequest {
@@ -679,26 +681,10 @@ impl SharedState {
             }
             cumulative_position =
                 inner.gapless_segments[segment_idx].cumulative_start + source_position.max(0.0);
-            Self::release_consumed_segment_data(&mut inner, segment_idx);
         }
 
         inner.consumed_position = cumulative_position.clamp(0.0, inner.duration);
         inner.consumed_position > previous + POSITION_EPSILON_SECONDS
-    }
-
-    /// Drop the encoded bytes of gapless segments the playhead has moved past.
-    /// The sink owns its own reference while a segment plays, and seeks and
-    /// rebuilds only ever target the current segment, so earlier segments'
-    /// bytes are unreachable; retaining them would hold every played track of
-    /// an album chain in memory until playback stops. Position accounting is
-    /// untouched: segment metadata, durations, and indices all remain valid.
-    fn release_consumed_segment_data(inner: &mut PlaybackInner, current_segment_idx: usize) {
-        const EMPTY: &[u8] = &[];
-        for segment in &mut inner.gapless_segments[..current_segment_idx] {
-            if !segment.request.audio_data.is_empty() {
-                segment.request.audio_data = Arc::from(EMPTY);
-            }
-        }
     }
 
     fn set_consumed_position(&self, generation: u64, cumulative_position: f64) {
@@ -969,7 +955,7 @@ impl AudioPlayer {
     /// source cannot be decoded, or no output stream can be opened.
     pub fn play(
         &self,
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -979,7 +965,7 @@ impl AudioPlayer {
     ) -> AudioResult<()> {
         self.play_with_expected(
             None,
-            audio_data,
+            audio_path,
             metadata,
             duration_secs,
             normalization_gain,
@@ -999,7 +985,7 @@ impl AudioPlayer {
     pub fn play_with_expected(
         &self,
         expected_playback: Option<PlaybackIdentity>,
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -1009,7 +995,7 @@ impl AudioPlayer {
     ) -> AudioResult<()> {
         self.send_start_command("play", |permit, ack| AudioCommand::Play {
             expected_playback,
-            audio_data,
+            audio_path,
             metadata,
             duration_secs,
             normalization_gain,
@@ -1032,7 +1018,7 @@ impl AudioPlayer {
     pub fn append_gapless(
         &self,
         expected_playback: PlaybackIdentity,
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -1043,7 +1029,7 @@ impl AudioPlayer {
         self.send_result_command("append gapless", |ack| AudioCommand::AppendGapless {
             request: Box::new(GaplessAppendRequest {
                 expected_playback,
-                audio_data,
+                audio_path,
                 metadata,
                 duration_secs,
                 normalization_gain,
@@ -1064,7 +1050,7 @@ impl AudioPlayer {
     pub fn crossfade_play(&self, request: CrossfadePlayRequest) -> AudioResult<()> {
         let CrossfadePlayRequest {
             expected_playback,
-            audio_data,
+            audio_path,
             metadata,
             duration_secs,
             normalization_gain,
@@ -1079,7 +1065,7 @@ impl AudioPlayer {
         self.command_tx
             .send(AudioCommand::CrossfadePlay {
                 expected_playback,
-                audio_data,
+                audio_path,
                 metadata,
                 duration_secs,
                 normalization_gain,
@@ -1548,17 +1534,17 @@ fn append_request_to_sink(
     spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
     spectrum_enabled: &Arc<AtomicBool>,
 ) -> AudioResult<()> {
-    let byte_len = request.audio_data.len() as u64;
-    let cursor = Cursor::new(Arc::clone(&request.audio_data));
+    let file = File::open(&request.audio_path)?;
+    let byte_len = file.metadata()?.len();
     let source = Decoder::builder()
-        .with_data(cursor)
+        .with_data(BufReader::new(file))
         .with_byte_len(byte_len)
         .with_coarse_seek(true)
         .build()
         .map_err(|e| {
             AudioError::Decode(format!(
-                "Failed to decode audio for {}: {e:?}",
-                request.metadata.id
+                "Failed to decode cached audio for {}: {e:?}",
+                request.metadata.id,
             ))
         })?;
 
@@ -1914,7 +1900,7 @@ impl<'a> AudioThread<'a> {
         match command {
             AudioCommand::Play {
                 expected_playback,
-                audio_data,
+                audio_path,
                 metadata,
                 duration_secs,
                 normalization_gain,
@@ -1926,7 +1912,7 @@ impl<'a> AudioThread<'a> {
             } => self.play(
                 expected_playback.as_ref(),
                 ActiveAudioRequest::new(
-                    audio_data,
+                    audio_path,
                     metadata,
                     duration_secs,
                     normalization_gain,
@@ -1946,7 +1932,7 @@ impl<'a> AudioThread<'a> {
             AudioCommand::AppendGapless { request, ack } => {
                 let GaplessAppendRequest {
                     expected_playback,
-                    audio_data,
+                    audio_path,
                     metadata,
                     duration_secs,
                     normalization_gain,
@@ -1957,7 +1943,7 @@ impl<'a> AudioThread<'a> {
                 self.append_gapless(
                     &expected_playback,
                     ActiveAudioRequest::new(
-                        audio_data,
+                        audio_path,
                         metadata,
                         duration_secs,
                         normalization_gain,
@@ -1970,7 +1956,7 @@ impl<'a> AudioThread<'a> {
             }
             AudioCommand::CrossfadePlay {
                 expected_playback,
-                audio_data,
+                audio_path,
                 metadata,
                 duration_secs,
                 normalization_gain,
@@ -1983,7 +1969,7 @@ impl<'a> AudioThread<'a> {
             } => self.crossfade_play(
                 expected_playback.as_ref(),
                 ActiveAudioRequest::new(
-                    audio_data,
+                    audio_path,
                     metadata,
                     duration_secs,
                     normalization_gain,
@@ -2011,11 +1997,8 @@ impl<'a> AudioThread<'a> {
         ack: &Sender<AudioResult<()>>,
     ) {
         info!(
-            "Playback thread play: song_id={}, title={:?}, bytes={}, duration={:.3}s",
-            request.metadata.id,
-            request.metadata.title,
-            request.audio_data.len(),
-            request.duration_secs
+            "Playback thread play: song_id={}, title={:?}, duration={:.3}s",
+            request.metadata.id, request.metadata.title, request.duration_secs
         );
         let volume = self.shared_state.read_inner().volume;
         let had_output = self.stream.is_some();
@@ -2338,11 +2321,8 @@ impl<'a> AudioThread<'a> {
         ack: &Sender<AudioResult<()>>,
     ) {
         info!(
-            "Playback thread append gapless: song_id={}, title={:?}, bytes={}, duration={:.3}s",
-            request.metadata.id,
-            request.metadata.title,
-            request.audio_data.len(),
-            request.duration_secs
+            "Playback thread append gapless: song_id={}, title={:?}, duration={:.3}s",
+            request.metadata.id, request.metadata.title, request.duration_secs
         );
         if !matches_expected_playback(
             self.shared_state,
@@ -2409,10 +2389,9 @@ impl<'a> AudioThread<'a> {
         ack: &Sender<AudioResult<()>>,
     ) {
         info!(
-            "Playback thread crossfade: song_id={}, title={:?}, bytes={}, duration={:.3}s, fade={}ms",
+            "Playback thread crossfade: song_id={}, title={:?}, duration={:.3}s, fade={}ms",
             request.metadata.id,
             request.metadata.title,
-            request.audio_data.len(),
             request.duration_secs,
             crossfade_duration_ms
         );
@@ -2860,6 +2839,38 @@ fn run_audio_thread(
 mod tests {
     use super::*;
 
+    static NEXT_TEST_FILE_ID: AtomicU64 = AtomicU64::new(1);
+
+    fn test_wav_path(name: &str) -> PathBuf {
+        let id = NEXT_TEST_FILE_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "stereodrome-audio-{name}-{}-{id}.wav",
+            std::process::id()
+        ));
+        let samples = [0_i16, 1_000, -1_000, 0];
+        let data_len =
+            u32::try_from(samples.len() * std::mem::size_of::<i16>()).expect("test WAV fits u32");
+        let data_capacity = usize::try_from(data_len).expect("test WAV length fits usize");
+        let mut wav = Vec::with_capacity(44 + data_capacity);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&16_000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(&path, wav).expect("test WAV writes");
+        path
+    }
+
     fn test_shared_state() -> SharedState {
         let (notifications, _receiver) = mpsc::channel();
         SharedState::new(notifications)
@@ -2867,7 +2878,7 @@ mod tests {
 
     fn test_request(song_id: &str, duration_secs: f64) -> ActiveAudioRequest {
         ActiveAudioRequest::new(
-            Arc::<[u8]>::from(vec![0_u8; 4]),
+            PathBuf::from(format!("{song_id}.mp3")),
             SongMetadata {
                 id: song_id.to_string(),
                 title: song_id.to_string(),
@@ -2895,6 +2906,59 @@ mod tests {
             spectrum_enabled: Arc::new(AtomicBool::new(false)),
             audio_thread: Some(thread::spawn(|| {})),
         }
+    }
+
+    #[test]
+    fn appends_decoder_backed_by_cached_file() {
+        let path = test_wav_path("file-backed");
+        let request = ActiveAudioRequest::new(
+            path.clone(),
+            SongMetadata {
+                id: "file-backed".to_string(),
+                title: "file-backed".to_string(),
+                artist: "artist".to_string(),
+                album: "album".to_string(),
+                cover_art_id: None,
+            },
+            1.0,
+            None,
+            None,
+            None,
+            None,
+        );
+        let (sink, mut source) = Player::new();
+        let ring_buffer = HeapRb::<f32>::new(SPECTRUM_BUFFER_SIZE);
+        let (producer, _consumer) = ring_buffer.split();
+        let producer = Arc::new(Mutex::new(producer));
+        let spectrum_enabled = Arc::new(AtomicBool::new(false));
+
+        append_request_to_sink(&sink, &request, &producer, &spectrum_enabled)
+            .expect("cached file decodes");
+        assert!(source.next().is_some());
+
+        drop(source);
+        drop(sink);
+        std::fs::remove_file(path).expect("test WAV removes");
+    }
+
+    #[test]
+    fn audio_thread_relaxes_polling_only_away_from_boundaries() {
+        let shared = Arc::new(test_shared_state());
+        let generation = shared.next_generation();
+        shared.set_active_request(generation, test_request("polling", 30.0));
+        shared.mark_playing();
+        let ring_buffer = HeapRb::<f32>::new(SPECTRUM_BUFFER_SIZE);
+        let (producer, _consumer) = ring_buffer.split();
+        let producer = Arc::new(Mutex::new(producer));
+        let spectrum_enabled = Arc::new(AtomicBool::new(false));
+        let mut audio_thread = AudioThread::new(&shared, &producer, &spectrum_enabled);
+
+        audio_thread.refresh_poll_interval();
+        assert_eq!(audio_thread.poll_interval, POLL_INTERVAL_RELAXED);
+
+        shared.set_consumed_position(generation, 29.0);
+        audio_thread.refresh_poll_interval();
+        assert_eq!(audio_thread.poll_interval, POLL_INTERVAL_FAST);
     }
 
     #[test]
@@ -2943,7 +3007,7 @@ mod tests {
     fn play_returns_error_when_audio_thread_is_disconnected() {
         let player = disconnected_audio_player();
         let result = player.play(
-            Arc::<[u8]>::from(vec![0_u8; 4]),
+            PathBuf::from("a.mp3"),
             SongMetadata {
                 id: "a".to_string(),
                 title: "a".to_string(),
@@ -2970,7 +3034,7 @@ mod tests {
                 generation: 1,
                 song_id: "a".to_string(),
             },
-            Arc::<[u8]>::from(vec![0_u8; 4]),
+            PathBuf::from("b.mp3"),
             SongMetadata {
                 id: "b".to_string(),
                 title: "b".to_string(),

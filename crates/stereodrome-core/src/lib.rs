@@ -1470,7 +1470,11 @@ impl StereodromeCore {
     pub fn clear_audio_cache(&self) -> CoreResult<CacheStats> {
         let _cache_guard = cache_mutation_guard()?;
         let mutation_result = (|| -> CoreResult<()> {
-            let protected_paths = self.protected_audio_cache_paths()?;
+            let active_song_id = self.get_playback_state()?.current_song_id;
+            let mut protected_paths = self.protected_audio_cache_paths()?;
+            if let Some(active_path) = self.active_playback_cache_path()? {
+                protected_paths.insert(active_path);
+            }
             for (path, _) in self.audio_cache_entries()? {
                 if protected_paths.contains(&path) {
                     continue;
@@ -1494,8 +1498,9 @@ impl StereodromeCore {
                     FROM playlist_songs ps
                     JOIN playlists p ON p.id = ps.playlist_id
                     WHERE p.offline_saved_at IS NOT NULL
-                )",
-                [],
+                )
+                AND (?1 IS NULL OR song_id != ?1)",
+                [&active_song_id],
             )?;
             Ok(())
         })();
@@ -1607,7 +1612,8 @@ impl StereodromeCore {
             error: None,
         })?;
         let mut record_finalizer = DownloadRecordFinalizer::new(&self.db_path, &song_id);
-        let stream = client.stream(
+        let mut pending_file = PendingAtomicFile::new(&path);
+        let stream = client.stream_to_file(
             song_id.clone(),
             None,
             Some(MOBILE_PLAYBACK_FORMAT),
@@ -1615,6 +1621,7 @@ impl StereodromeCore {
             None::<String>,
             None,
             None,
+            pending_file.path(),
         );
         let stream_result = if let Some(cancellation) = cancellation {
             tokio::select! {
@@ -1639,8 +1646,7 @@ impl StereodromeCore {
                 record_finalizer.disarm();
                 Ok(None)
             }
-            Some(Ok(bytes)) => {
-                let byte_count = bytes.len() as u64;
+            Some(Ok(byte_count)) => {
                 {
                     let _cache_guard = cache_mutation_guard()?;
                     if cancellation.is_some_and(PrefetchCancellationToken::is_cancelled) {
@@ -1656,11 +1662,7 @@ impl StereodromeCore {
                         record_finalizer.disarm();
                         return Ok(None);
                     }
-                    write_file_atomically(&path, &bytes)?;
-                    // Release the track buffer before the cache scan and
-                    // cover-art fetch below; holding it across those awaits
-                    // pins a full track in memory per concurrent download.
-                    drop(bytes);
+                    pending_file.commit(&path)?;
                     self.emit_cache_state_event(CacheStateEvent::CachedChanged {
                         song_id: song_id.clone(),
                         cached: true,
@@ -1717,6 +1719,11 @@ impl StereodromeCore {
     /// Returns an error if the cached song or its persisted record cannot be removed.
     pub fn remove_cached_song(&self, song_id: String) -> CoreResult<DownloadStatus> {
         let _cache_guard = cache_mutation_guard()?;
+        if self.get_playback_state()?.current_song_id.as_deref() == Some(song_id.as_str()) {
+            return Err(CoreError::InvalidInput(format!(
+                "song {song_id} is currently playing"
+            )));
+        }
         if self.song_protected_by_saved_playlist(&song_id)? {
             return Err(CoreError::InvalidInput(format!(
                 "song {song_id} is preserved by a saved playlist"
@@ -4507,22 +4514,47 @@ fn sanitize_file_component(value: &str) -> String {
         .collect()
 }
 
-fn write_file_atomically(path: &Path, bytes: &[u8]) -> CoreResult<()> {
-    let temporary_path = path.with_extension(format!(
+fn atomic_write_temporary_path(path: &Path) -> PathBuf {
+    path.with_extension(format!(
         "{}.part",
         path.extension()
             .and_then(|extension| extension.to_str())
             .unwrap_or("download")
-    ));
-    if let Err(error) = std::fs::write(&temporary_path, bytes) {
-        let _ = std::fs::remove_file(&temporary_path);
-        return Err(error.into());
+    ))
+}
+
+struct PendingAtomicFile {
+    path: PathBuf,
+    cleanup_on_drop: bool,
+}
+
+impl PendingAtomicFile {
+    fn new(destination: &Path) -> Self {
+        let path = atomic_write_temporary_path(destination);
+        let _ = std::fs::remove_file(&path);
+        Self {
+            path,
+            cleanup_on_drop: true,
+        }
     }
-    if let Err(error) = std::fs::rename(&temporary_path, path) {
-        let _ = std::fs::remove_file(&temporary_path);
-        return Err(error.into());
+
+    fn path(&self) -> &Path {
+        &self.path
     }
-    Ok(())
+
+    fn commit(&mut self, destination: &Path) -> CoreResult<()> {
+        std::fs::rename(&self.path, destination)?;
+        self.cleanup_on_drop = false;
+        Ok(())
+    }
+}
+
+impl Drop for PendingAtomicFile {
+    fn drop(&mut self) {
+        if self.cleanup_on_drop {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 fn cover_cache_filename(cover_art_id: &str, size: Option<i32>) -> String {
@@ -4656,12 +4688,12 @@ mod tests {
         AudioProcessingSettings, BinauralPreset, CacheStateEvent, ConnectivitySettings, CoreError,
         DownloadInProgressGuard, DownloadRecord, DownloadRecordFinalizer, DueSyncJob,
         DynamicsPreset, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate,
-        NewestAlbumPageEntry, NewestPageScanResult, NormalizationMode, PlaybackProgress,
-        ServerConfig, Song, StereodromeCore, SyncSettings, build_client, compute_next_run_at,
-        cover_art_filename_matches, cover_cache_filename, distinct_nonempty_cover_art_ids,
-        ensure_incremental_albums_complete, is_job_due, path_to_file_uri, playlist_song_ids_to_add,
-        prune_stale_library_rows, scan_newest_album_page, should_prefetch_large_cover_art,
-        write_sync_value,
+        NewestAlbumPageEntry, NewestPageScanResult, NormalizationMode, PendingAtomicFile,
+        PlaybackProgress, ServerConfig, Song, StereodromeCore, SyncSettings, build_client,
+        compute_next_run_at, cover_art_filename_matches, cover_cache_filename,
+        distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete, is_job_due,
+        path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
+        scan_newest_album_page, should_prefetch_large_cover_art, write_sync_value,
     };
     use crate::queue::{PlayQueue, QueueItem, RepeatMode};
     use chrono::{Duration as ChronoDuration, Utc};
@@ -4676,6 +4708,40 @@ mod tests {
         assert!(should_prefetch_large_cover_art(Some(
             LARGE_COVER_ART_SIZE - 1
         )));
+    }
+
+    #[test]
+    fn streamed_download_commit_atomically_replaces_partial_path() {
+        let data_dir = unique_temp_dir("streamed-download-commit");
+        std::fs::create_dir_all(&data_dir).expect("test directory");
+        let destination = data_dir.join("song.mp3");
+        let mut pending = PendingAtomicFile::new(&destination);
+        std::fs::write(pending.path(), b"streamed audio").expect("partial file writes");
+
+        pending.commit(&destination).expect("partial file commits");
+
+        assert!(!pending.path().exists());
+        assert_eq!(
+            std::fs::read(&destination).expect("committed file reads"),
+            b"streamed audio"
+        );
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn streamed_download_partial_is_removed_on_early_return() {
+        let data_dir = unique_temp_dir("streamed-download-cleanup");
+        std::fs::create_dir_all(&data_dir).expect("test directory");
+        let destination = data_dir.join("song.mp3");
+        let temporary = {
+            let pending = PendingAtomicFile::new(&destination);
+            std::fs::write(pending.path(), b"partial audio").expect("partial file writes");
+            pending.path().to_path_buf()
+        };
+
+        assert!(!temporary.exists());
+        assert!(!destination.exists());
+        std::fs::remove_dir_all(data_dir).ok();
     }
 
     #[test]
@@ -5751,6 +5817,34 @@ mod tests {
 
         assert!(saved_path.exists());
         assert!(!cache_path.exists());
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn clear_and_manual_removal_keep_the_currently_playing_track() {
+        let data_dir = unique_temp_dir("clear-keeps-playing");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let playing_path = core
+            .audio_cache_path("playing", MOBILE_PLAYBACK_FORMAT)
+            .expect("cache path");
+        std::fs::write(&playing_path, b"playing audio").expect("write cache file");
+        core.save_playback_position(PlaybackProgress {
+            song_id: "playing".to_string(),
+            position_seconds: 12.0,
+            duration_seconds: 180.0,
+            is_playing: true,
+        })
+        .expect("persist playback position");
+
+        core.clear_audio_cache().expect("cache clear succeeds");
+        assert!(playing_path.exists(), "cache clear preserves active source");
+        let removal = core.remove_cached_song("playing".to_string());
+        assert!(matches!(removal, Err(CoreError::InvalidInput(_))));
+        assert!(
+            playing_path.exists(),
+            "manual removal preserves active source"
+        );
 
         std::fs::remove_dir_all(data_dir).ok();
     }

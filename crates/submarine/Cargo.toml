@@ -41,6 +41,7 @@ rand = "0.8.5" # for creating salt
 thiserror = "1.0.38"
 cfg-if = "1.0.0"
 url = "2.4.1"
+tokio = { version = "1.53.1", features = ["fs", "io-util"] }
 
 [dev-dependencies]
 tokio = { version = "1.32.0", features = ["full"] }
