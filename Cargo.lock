@@ -5805,6 +5805,7 @@ dependencies = [
  "md5 0.7.0",
  "rand 0.8.7",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

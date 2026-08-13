@@ -74,6 +74,13 @@ impl Parameter {
 
 impl Client {
     pub fn new(server_url: &str, auth: auth::Auth) -> Self {
+        // reqwest is built with `rustls-no-provider`, which panics on client
+        // construction unless a process-wide crypto provider is installed.
+        // Install Ring (the provider the host app uses) if none is set so the
+        // library and its tests are self-contained.
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
         let client = Self {
             server_url: String::from(server_url),
             auth,

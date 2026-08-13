@@ -162,7 +162,7 @@ mod tests {
         ];
         for test in oracle {
             println!("testing: {test:?}");
-            println!("  to_string: {}", test.to_string());
+            println!("  to_string: {}", test);
             println!("  to_order: {:?}", Order::from_str(&test.to_string()));
             assert_eq!(
                 test,

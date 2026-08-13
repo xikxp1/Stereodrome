@@ -32,6 +32,10 @@ reqwest = { version = "0.13.4", default-features = false, features = [
   "rustls-no-provider",
 ] }
 md5 = "0.7.0"
+rustls = { version = "0.23.43", default-features = false, features = [
+  "ring",
+  "std",
+] }
 chrono = { version = "0.4.23", features = ["std", "serde"] }
 rand = "0.8.5" # for creating salt
 thiserror = "1.0.38"

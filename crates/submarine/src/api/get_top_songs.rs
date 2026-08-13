@@ -43,7 +43,7 @@ mod tests {
             .unwrap()
             .inner;
         if let crate::data::ResponseType::TopSongs { top_songs } = response.data {
-            assert_eq!(top_songs.song.is_empty(), true);
+            assert!(top_songs.song.is_empty());
         } else {
             panic!("wrong type {:?}", response.data);
         }

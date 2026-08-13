@@ -40,7 +40,7 @@ mod tests {
             .unwrap()
             .inner;
         if let ResponseType::ScanStatus { scan_status } = response.data {
-            assert_eq!(scan_status.scanning, false);
+            assert!(!scan_status.scanning);
             assert_eq!(scan_status.count, Some(18352));
         } else {
             panic!("wrong type: {response:?}");

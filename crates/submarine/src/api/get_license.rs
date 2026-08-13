@@ -39,7 +39,7 @@ mod tests {
             .unwrap()
             .inner;
         if let ResponseType::License { license } = response.data {
-            assert_eq!(license.valid, true);
+            assert!(license.valid);
         } else {
             panic!("wrong type");
         }

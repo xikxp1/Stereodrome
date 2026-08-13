@@ -142,7 +142,7 @@ mod tests {
         if let ResponseType::AlbumList2 { album_list2 } = response.data {
             assert_eq!(album_list2.album.len(), 2);
             assert_eq!(album_list2.album[0].year, Some(2014));
-            assert_eq!(album_list2.album[0].starred.is_some(), true);
+            assert!(album_list2.album[0].starred.is_some());
         } else {
             panic!("wrong type: {response:?}");
         }
@@ -367,7 +367,7 @@ mod tests {
         if let ResponseType::AlbumList2 { album_list2 } = response.data {
             assert_eq!(album_list2.album.len(), 2);
             assert_eq!(album_list2.album[0].year, Some(2024));
-            assert_eq!(album_list2.album[0].starred.is_some(), true);
+            assert!(album_list2.album[0].starred.is_some());
         } else {
             panic!("wrong type: {response:?}");
         }
