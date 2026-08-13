@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Image, StyleSheet, Text, View } from "react-native";
+import { Image, StyleSheet, View } from "react-native";
 
 import { SyncedMarqueeText } from "@/components/SyncedMarqueeText";
 import { colors } from "@/components/theme";
@@ -190,11 +190,6 @@ export function NowPlayingScreen() {
           </View>
         ) : null}
       </View>
-      {playback.error !== null && playback.error.length > 0 ? (
-        <Text numberOfLines={2} style={styles.error}>
-          {playback.error}
-        </Text>
-      ) : null}
     </View>
   );
 }
@@ -308,12 +303,5 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 12,
     fontWeight: "800",
-  },
-  error: {
-    color: "#b3261e",
-    fontSize: 11,
-    fontWeight: "700",
-    marginTop: 8,
-    textAlign: "center",
   },
 });

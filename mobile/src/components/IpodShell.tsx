@@ -10,11 +10,13 @@ import {
 } from "lucide-react-native";
 
 import { ClickWheel } from "@/components/ClickWheel";
+import { ErrorToast } from "@/components/ErrorToast";
 import { Header } from "@/components/Header";
 import { colors } from "@/components/theme";
 import { useInputBus } from "@/context/InputContext";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
 import { usePlayback, useStereodrome } from "@/core/selectors";
+import { coreActions } from "@/core/store";
 import { useSongActions } from "@/context/SongActionContext";
 import {
   connectView,
@@ -175,6 +177,10 @@ export function IpodShell() {
             <Animated.View style={[styles.animatedViewport, screenStyle]}>
               {renderView(current)}
             </Animated.View>
+            <ErrorToast
+              message={playback.error}
+              onDismiss={coreActions.dismissError}
+            />
           </View>
         </View>
         <View style={styles.wheelSlot}>

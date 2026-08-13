@@ -36,6 +36,12 @@ function setError(error: unknown): void {
   }
 }
 
+function clearStoredError(): void {
+  if (state.error !== null) {
+    publish({ ...state, error: null });
+  }
+}
+
 let comparedSnapshotJson: { revision: number; json: string } | null = null;
 
 function applySnapshot(snapshot: CoreSnapshot): void {
@@ -153,6 +159,7 @@ async function run(
 }
 
 export const coreActions = {
+  dismissError: clearStoredError,
   async connect(params: { url: string; username: string; password: string }) {
     await run({ type: "connect", params });
   },
