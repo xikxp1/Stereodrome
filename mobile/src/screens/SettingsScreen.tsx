@@ -22,6 +22,8 @@ import { useViewStack } from "@/context/ViewContext";
 import { configureLibrarySyncBackgroundTask } from "@/services/librarySyncScheduler";
 import { settingsScreenStyles as styles } from "@/screens/SettingsScreen.styles";
 import { backupSettingsOptions } from "@/screens/backupSettingsOptions";
+import { diagnosticsSettingsOptions } from "@/screens/diagnosticsSettingsOptions";
+import { getResourceDiagnosticsStatus } from "@/services/resourceDiagnostics";
 import type {
   AudioProcessingSettings,
   LastfmQueueItem,
@@ -39,6 +41,17 @@ const syncSettingsQueryKey = ["sync-settings"] as const;
 const scanStatusQueryKey = ["scan-status"] as const;
 const lastfmStatusQueryKey = ["lastfm-status"] as const;
 const lastfmQueueQueryKey = ["lastfm-queue"] as const;
+const resourceDiagnosticsQueryKey = ["resource-diagnostics-status"] as const;
+
+function useResourceDiagnosticsQuery(enabled: boolean) {
+  return useQuery({
+    queryKey: resourceDiagnosticsQueryKey,
+    queryFn: getResourceDiagnosticsStatus,
+    enabled,
+    refetchInterval: (query) =>
+      query.state.data?.active === true ? 10_000 : false,
+  });
+}
 const eqLabels = [
   "32",
   "64",
@@ -76,6 +89,7 @@ type SettingsCategory =
   | "playback"
   | "normalization"
   | "backup"
+  | "diagnostics"
   | "cache";
 
 const settingsCategories: {
@@ -97,6 +111,11 @@ const settingsCategories: {
     id: "backup",
     label: "Backup & Transfer",
     sublabel: "Move library data between devices",
+  },
+  {
+    id: "diagnostics",
+    label: "Diagnostics",
+    sublabel: "Record and share resource usage",
   },
   { id: "cache", label: "Audio Cache", sublabel: "Downloaded audio storage" },
 ];
@@ -210,6 +229,9 @@ export function SettingsScreen({ category }: { category?: string }) {
     enabled:
       selectedCategory === "playback" || selectedCategory === "normalization",
   });
+  const resourceDiagnostics = useResourceDiagnosticsQuery(
+    selectedCategory === "diagnostics"
+  );
   const { protectedActionRows } = useProtectedSelectableAction(
     [
       selectedCategory ?? "root",
@@ -220,8 +242,15 @@ export function SettingsScreen({ category }: { category?: string }) {
       syncStatus.data?.active_job ?? "idle",
       cacheStats.data?.file_count ?? 0,
       cacheStats.data?.total_size ?? 0,
+      resourceDiagnostics.data?.active ?? false,
+      resourceDiagnostics.data?.sample_count ?? 0,
     ].join(":")
   );
+  const invalidateResourceDiagnostics = () => {
+    void queryClient.invalidateQueries({
+      queryKey: resourceDiagnosticsQueryKey,
+    });
+  };
 
   function openTextEdit(config: TextEditConfig) {
     setTextEdit(config);
@@ -289,6 +318,23 @@ export function SettingsScreen({ category }: { category?: string }) {
             await configureLibrarySyncBackgroundTask(importedSyncSettings);
             setMessage(`Imported ${summary.songs.toLocaleString()} songs`);
           },
+        });
+      case "diagnostics":
+        return diagnosticsSettingsOptions({
+          status: resourceDiagnostics.data,
+          loadingError:
+            resourceDiagnostics.error instanceof Error
+              ? resourceDiagnostics.error.message
+              : null,
+          busyAction,
+          protectedActionRows,
+          runBusy,
+          setMessage,
+          onRefresh: invalidateResourceDiagnostics,
+          onStatusChange: (status) => {
+            queryClient.setQueryData(resourceDiagnosticsQueryKey, status);
+          },
+          onCleared: invalidateResourceDiagnostics,
         });
       case "cache":
         return cacheOptions();

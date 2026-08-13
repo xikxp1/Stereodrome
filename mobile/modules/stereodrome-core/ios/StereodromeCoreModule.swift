@@ -331,8 +331,16 @@ public class StereodromeCoreModule: Module {
   private var audioSessionGeneration: UInt64 = 0
   private var eventCallbackContext: UnsafeMutableRawPointer?
   private var nextNativeCommandId = Int64.max
+  private lazy var resourceDiagnostics = ResourceDiagnosticsCollector { [weak self] in
+    self?.resourceDiagnosticsPlaybackSnapshot() ?? [
+      "state": "stopped",
+      "output_state": "closed",
+      "audio_session_active": false,
+    ]
+  }
 
   deinit {
+    resourceDiagnostics.close()
     clearAudioSessionObservers()
     if clearActiveStereodromeCoreModule(self) {
       performOnMainSync {
@@ -363,6 +371,7 @@ public class StereodromeCoreModule: Module {
     AsyncFunction("initialize") { (_ dataDir: String) -> Bool in
       setActiveStereodromeCoreModule(self)
       stereodromeRuntimeSetLogCallback(stereodromeRustLogCallback)
+      _ = self.resourceDiagnostics
       self.configureAudioSession()
       if self.core == nil {
         self.core = self.coreQueue.sync {
@@ -400,11 +409,47 @@ public class StereodromeCoreModule: Module {
       }
     }
 
+    AsyncFunction("startResourceDiagnostics") { () -> String in
+      try self.resourceDiagnostics.start()
+    }
+
+    AsyncFunction("stopResourceDiagnostics") { () -> String in
+      try self.resourceDiagnostics.stop()
+    }
+
+    AsyncFunction("getResourceDiagnosticsStatus") { () -> String in
+      try self.resourceDiagnostics.status()
+    }
+
+    AsyncFunction("exportResourceDiagnostics") { (_ destinationPath: String) -> Bool in
+      try self.resourceDiagnostics.export(to: destinationPath)
+    }
+
+    AsyncFunction("clearResourceDiagnostics") { () -> Bool in
+      self.resourceDiagnostics.clear()
+    }
+
     Events("core-event")
   }
 
   fileprivate func emitRustLog(_ message: String) {
     appContext?.jsLogger.info(message)
+  }
+
+  private func resourceDiagnosticsPlaybackSnapshot() -> [String: Any] {
+    playbackProjectionLock.lock()
+    let projection = playbackProjection
+    playbackProjectionLock.unlock()
+    audioSessionStateLock.lock()
+    let audioSessionActive = ownsAudioSession
+    audioSessionStateLock.unlock()
+    return [
+      "state": projection?.isStopped != false
+        ? "stopped"
+        : projection?.isPlaying == true ? "playing" : "paused",
+      "output_state": projection?.outputState ?? "closed",
+      "audio_session_active": audioSessionActive,
+    ]
   }
 
   fileprivate func reservePlaybackProjection(_ projection: PlaybackProjection) -> Bool {
