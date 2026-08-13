@@ -2,9 +2,15 @@ import { useEffect, useState } from "react";
 import { Image, StyleSheet, View } from "react-native";
 
 import { SyncedMarqueeText } from "@/components/SyncedMarqueeText";
+import { SongFileStateIcon } from "@/components/SongFileStateIcon";
 import { colors } from "@/components/theme";
 import { coreClient } from "@/core/client";
-import { usePlayback, usePlaybackPosition } from "@/core/selectors";
+import {
+  useFileState,
+  usePlayback,
+  usePlaybackPosition,
+} from "@/core/selectors";
+import { songFileState } from "@/services/offlineLibrary";
 
 type CoverArtState = {
   songId: string;
@@ -53,6 +59,7 @@ function useCoverArtUri(songId: string | null, size: number) {
 export function NowPlayingScreen() {
   const playback = usePlayback();
   const position = usePlaybackPosition();
+  const fileState = useFileState();
   const [currentRegionSize, setCurrentRegionSize] = useState({
     height: 0,
     width: 0,
@@ -61,6 +68,14 @@ export function NowPlayingScreen() {
   const nextSong = playback.upcomingSong;
   const songId = song?.id ?? null;
   const nextSongId = nextSong?.id ?? null;
+  const nextSongFileState =
+    nextSong === null
+      ? null
+      : songFileState(
+          nextSong.id,
+          fileState.offlineSongIds,
+          fileState.downloadingSongIds
+        );
   const coverUri = useCoverArtUri(songId, 512);
   const nextCoverUri = useCoverArtUri(nextSongId, 128);
   const duration =
@@ -170,13 +185,18 @@ export function NowPlayingScreen() {
               <View style={styles.nextCoverPlaceholder} />
             )}
             <View style={styles.nextText}>
-              <SyncedMarqueeText
-                align="left"
-                containerStyle={styles.nextMarquee}
-                group="mobile-next-song"
-                text={nextSong.title}
-                style={styles.nextTitle}
-              />
+              <View style={styles.nextTitleRow}>
+                {nextSongFileState === null ? null : (
+                  <SongFileStateIcon state={nextSongFileState} />
+                )}
+                <SyncedMarqueeText
+                  align="left"
+                  containerStyle={styles.nextTitleMarquee}
+                  group="mobile-next-song"
+                  text={nextSong.title}
+                  style={styles.nextTitle}
+                />
+              </View>
               <SyncedMarqueeText
                 align="left"
                 containerStyle={styles.nextMarquee}
@@ -303,5 +323,15 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 12,
     fontWeight: "800",
+  },
+  nextTitleMarquee: {
+    flex: 1,
+    height: 18,
+    minWidth: 0,
+  },
+  nextTitleRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 5,
   },
 });

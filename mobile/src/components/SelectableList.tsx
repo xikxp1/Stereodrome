@@ -9,17 +9,11 @@ import {
   View,
   type ListRenderItemInfo,
 } from "react-native";
-import {
-  ChevronRight,
-  CircleCheck,
-  Download,
-  Info,
-  LoaderCircle,
-  Pencil,
-} from "lucide-react-native";
+import { ChevronRight, Info, Pencil } from "lucide-react-native";
 
 import type { SongFileState } from "@/types/music";
 
+import { SongFileStateIcon } from "@/components/SongFileStateIcon";
 import { useInputBus } from "@/context/InputContext";
 import { colors } from "@/components/theme";
 
@@ -71,7 +65,11 @@ const SelectableRow = memo(
       ]}
     >
       {item.fileState !== undefined ? (
-        <FileStateIcon state={item.fileState} selected={selected} />
+        <SongFileStateIcon
+          selected={selected}
+          state={item.fileState}
+          style={styles.fileStateIcon}
+        />
       ) : null}
       <View style={styles.labelGroup}>
         <Text
@@ -111,31 +109,6 @@ const SelectableRow = memo(
     previous.item.wheelOnly === next.item.wheelOnly &&
     previous.selected === next.selected
 );
-
-function FileStateIcon({
-  state,
-  selected,
-}: {
-  state: SongFileState;
-  selected: boolean;
-}) {
-  const color = selected
-    ? colors.selectedText
-    : state === "downloaded"
-      ? "#16803a"
-      : state === "downloading"
-        ? "#2563eb"
-        : colors.muted;
-  const style = styles.fileStateIcon;
-
-  if (state === "downloaded") {
-    return <CircleCheck color={color} size={13} style={style} />;
-  }
-  if (state === "downloading") {
-    return <LoaderCircle color={color} size={13} style={style} />;
-  }
-  return <Download color={color} size={13} style={style} />;
-}
 
 function RowAccessory({
   kind,
