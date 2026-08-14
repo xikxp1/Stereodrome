@@ -29,7 +29,8 @@ export function ClickWheel() {
         lastAngle.current = nextAngle;
         return;
       }
-      const delta = nextAngle - previous;
+      const rawDelta = nextAngle - previous;
+      const delta = Math.atan2(Math.sin(rawDelta), Math.cos(rawDelta));
       if (Math.abs(delta) > 0.22) {
         haptics.tick();
         emit(delta > 0 ? "scroll_forward" : "scroll_backward");
