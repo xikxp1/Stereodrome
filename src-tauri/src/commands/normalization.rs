@@ -91,7 +91,7 @@ fn normalization_album_if_missing(
 ) -> AppResult<Option<String>> {
     use rusqlite::OptionalExtension;
 
-    let conn = rusqlite::Connection::open(db_path)?;
+    let conn = stereodrome_core::open_connection(db_path)?;
     conn.query_row(
         "SELECT s.album_id FROM songs s
          WHERE s.id = ?1
@@ -112,7 +112,7 @@ pub fn get_analysis_progress(state: State<'_, AppState>) -> Option<AnalysisProgr
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_normalization_stats(state: State<'_, AppState>) -> AppResult<NormalizationStats> {
-    let conn = rusqlite::Connection::open(&state.db_path)?;
+    let conn = stereodrome_core::open_connection(&state.db_path)?;
 
     let analyzed_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM normalization_data", [], |row| {
@@ -143,7 +143,7 @@ pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>
 
     // Get all songs that haven't been analyzed yet, plus total counts
     let (songs, total_count, already_analyzed) = {
-        let conn = rusqlite::Connection::open(&state.db_path)?;
+        let conn = stereodrome_core::open_connection(&state.db_path)?;
 
         let total_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM songs", [], |row| row.get(0))
@@ -282,7 +282,7 @@ pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn clear_normalization_data(state: State<'_, AppState>) -> AppResult<()> {
-    let conn = rusqlite::Connection::open(&state.db_path)?;
+    let conn = stereodrome_core::open_connection(&state.db_path)?;
     conn.execute("DELETE FROM normalization_data", [])
         .map_err(AppError::Database)?;
     Ok(())

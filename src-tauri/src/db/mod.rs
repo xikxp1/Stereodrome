@@ -25,7 +25,7 @@ pub fn save_normalization_result(
     integrated_lufs: f64,
     true_peak: f64,
 ) -> Result<(), rusqlite::Error> {
-    let conn = rusqlite::Connection::open(db_path)?;
+    let conn = stereodrome_core::open_connection(db_path)?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT OR REPLACE INTO normalization_data

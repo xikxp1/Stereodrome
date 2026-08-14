@@ -37,6 +37,7 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tokio::task::JoinSet;
 pub use tokio_util::sync::CancellationToken as PrefetchCancellationToken;
 
+pub use db::open_connection;
 pub use error::{CoreError, CoreResult};
 pub use lastfm::{LastfmAuthStart, LastfmQueueItem, LastfmStatus};
 pub use models::*;

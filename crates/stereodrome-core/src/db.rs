@@ -11,7 +11,12 @@ const SCHEMA: &str = include_str!("../../../src-tauri/src/db/schema.sql");
 /// Opens a connection with the pragmas every core connection relies on:
 /// `synchronous=NORMAL` so WAL commits skip the per-transaction fsync, and a
 /// busy timeout so concurrent writers back off instead of failing.
-pub fn open_connection(path: &Path) -> CoreResult<Connection> {
+///
+/// # Errors
+///
+/// Returns an error if `SQLite` cannot open the database or apply the connection
+/// configuration.
+pub fn open_connection(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
