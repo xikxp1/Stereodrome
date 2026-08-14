@@ -1738,6 +1738,13 @@ fn should_poll_audio_thread(
     current_sink_active || crossfade_active || lifecycle_state == PlaybackLifecycleState::Playing
 }
 
+fn should_schedule_paused_output_release(
+    output_open: bool,
+    lifecycle_state: PlaybackLifecycleState,
+) -> bool {
+    output_open && lifecycle_state == PlaybackLifecycleState::Paused
+}
+
 /// How long a paused output device stays open before it is released so the
 /// platform can stop its render callback and suspend the process. Resume
 /// transparently rebuilds the output from the persisted position.
@@ -1866,12 +1873,9 @@ impl<'a> AudioThread<'a> {
     }
 
     /// Returns the remaining time before a paused output should be released,
-    /// or `None` when there is nothing to release or a crossfade is parked.
+    /// or `None` when there is no open output or playback is not paused.
     fn paused_release_wait(&self) -> Option<Duration> {
-        if self.stream.is_none()
-            || self.crossfade_sink.is_some()
-            || self.crossfade_state.is_some()
-            || self.shared_state.state() != PlaybackLifecycleState::Paused
+        if !should_schedule_paused_output_release(self.stream.is_some(), self.shared_state.state())
         {
             return None;
         }
@@ -3213,7 +3217,7 @@ mod tests {
     }
 
     #[test]
-    fn paused_crossfade_does_not_require_audio_polling() {
+    fn paused_crossfade_parks_polling_but_keeps_output_release_scheduled() {
         let mut crossfade = CrossfadeState::new(5_000);
         crossfade.pause();
 
@@ -3221,6 +3225,10 @@ mod tests {
         assert!(!should_poll_audio_thread(
             false,
             crossfade.requires_poll(),
+            PlaybackLifecycleState::Paused
+        ));
+        assert!(should_schedule_paused_output_release(
+            true,
             PlaybackLifecycleState::Paused
         ));
     }
