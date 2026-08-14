@@ -3550,7 +3550,7 @@ impl StereodromeCore {
         for entry in std::fs::read_dir(self.audio_cache_dir()?)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_file() {
+            if path.is_file() && is_mobile_playback_cache_path(&path) {
                 entries.push((path, entry.metadata()?.len()));
             }
         }
@@ -4761,10 +4761,10 @@ mod tests {
         DownloadInProgressGuard, DownloadRecord, DownloadRecordFinalizer, DueSyncJob,
         DynamicsPreset, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate,
         NewestAlbumPageEntry, NewestPageScanResult, NormalizationMode, PendingAtomicFile,
-        PlaybackProgress, ServerConfig, Song, StereodromeCore, SyncSettings, build_client,
-        compute_next_run_at, cover_art_filename_matches, cover_cache_filename,
-        distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete, is_job_due,
-        path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
+        PlaybackProgress, ServerConfig, Song, StereodromeCore, SyncSettings,
+        atomic_write_temporary_path, build_client, compute_next_run_at, cover_art_filename_matches,
+        cover_cache_filename, distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete,
+        is_job_due, path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
         scan_newest_album_page, should_prefetch_large_cover_art, write_sync_value,
     };
     use crate::queue::{PlayQueue, QueueItem, RepeatMode};
@@ -5889,6 +5889,36 @@ mod tests {
 
         assert!(saved_path.exists());
         assert!(!cache_path.exists());
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn partial_downloads_are_excluded_from_cache_maintenance() {
+        let data_dir = unique_temp_dir("cache-maintenance-ignores-partials");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let committed_path = core
+            .audio_cache_path("committed", MOBILE_PLAYBACK_FORMAT)
+            .expect("committed cache path");
+        let partial_path = atomic_write_temporary_path(&committed_path);
+        std::fs::write(&committed_path, b"committed audio").expect("write committed cache file");
+        std::fs::write(&partial_path, b"active partial download")
+            .expect("write partial cache file");
+
+        let stats = core.get_audio_cache_stats().expect("cache stats");
+        assert_eq!(stats.file_count, 1);
+        assert_eq!(stats.total_size, 15);
+
+        core.enforce_audio_cache_limit_to(0)
+            .expect("enforce cache limit");
+        assert!(!committed_path.exists(), "committed entry is evicted");
+        assert!(partial_path.exists(), "partial download survives eviction");
+
+        core.clear_audio_cache().expect("clear cache");
+        assert!(
+            partial_path.exists(),
+            "partial download survives cache clear"
+        );
 
         std::fs::remove_dir_all(data_dir).ok();
     }
