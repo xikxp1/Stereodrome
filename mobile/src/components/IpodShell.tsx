@@ -62,7 +62,7 @@ export function IpodShell() {
   const insets = useSafeAreaInsets();
   const navigationOffset = transitionDirection === "back" ? -24 : 24;
   const leftHandedButtons = buttonHandedness === "left";
-  const downloadQueueSize = fileState.downloadingSongIds.size;
+  const downloadQueueSize = fileState.downloadQueueLength;
   const downloadsActive = downloadQueueSize > 0;
   const RepeatIcon = playback.repeatMode === "One" ? Repeat1 : Repeat;
   const headerTitle =

@@ -21,7 +21,7 @@ pub mod test_support;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, LazyLock, Mutex, Once, Weak};
 use std::time::{Duration, Instant};
 
@@ -130,11 +130,11 @@ struct PrefetchFailureState {
 
 struct DownloadInProgressGuard {
     song_id: String,
-    cache_event_sender: Option<Sender<CacheStateEvent>>,
+    cache_event_senders: Vec<Sender<CacheStateEvent>>,
 }
 
 impl DownloadInProgressGuard {
-    fn new(song_id: &str, cache_event_sender: Option<Sender<CacheStateEvent>>) -> Self {
+    fn new(song_id: &str, cache_event_senders: Vec<Sender<CacheStateEvent>>) -> Self {
         let started = if let Ok(mut downloads) = DOWNLOADS_IN_PROGRESS.lock() {
             downloads
                 .entry(song_id.to_string())
@@ -144,15 +144,18 @@ impl DownloadInProgressGuard {
         } else {
             false
         };
-        if started && let Some(sender) = &cache_event_sender {
-            let _ = sender.send(CacheStateEvent::DownloadingChanged {
+        if started {
+            let event = CacheStateEvent::DownloadingChanged {
                 song_id: song_id.to_string(),
                 downloading: true,
-            });
+            };
+            for sender in &cache_event_senders {
+                let _ = sender.send(event.clone());
+            }
         }
         Self {
             song_id: song_id.to_string(),
-            cache_event_sender,
+            cache_event_senders,
         }
     }
 }
@@ -169,11 +172,14 @@ impl Drop for DownloadInProgressGuard {
                 finished = true;
             }
         }
-        if finished && let Some(sender) = &self.cache_event_sender {
-            let _ = sender.send(CacheStateEvent::DownloadingChanged {
+        if finished {
+            let event = CacheStateEvent::DownloadingChanged {
                 song_id: self.song_id.clone(),
                 downloading: false,
-            });
+            };
+            for sender in &self.cache_event_senders {
+                let _ = sender.send(event.clone());
+            }
         }
     }
 }
@@ -359,6 +365,7 @@ pub struct StereodromeCore {
     prefetch_failures: Mutex<HashMap<String, PrefetchFailureState>>,
     lastfm_retry_lock: AsyncMutex<()>,
     cache_event_sender: Option<Sender<CacheStateEvent>>,
+    runtime_cache_event_sender: Mutex<Option<Sender<CacheStateEvent>>>,
     offline_song_ids_cache: Mutex<Option<Vec<String>>>,
     audio_processing_settings_cache: Mutex<Option<AudioProcessingSettings>>,
     gapless_eligibility_cache: Mutex<Option<((String, String), bool)>>,
@@ -431,6 +438,7 @@ impl StereodromeCore {
             prefetch_failures: Mutex::new(HashMap::new()),
             lastfm_retry_lock: AsyncMutex::new(()),
             cache_event_sender,
+            runtime_cache_event_sender: Mutex::new(None),
             offline_song_ids_cache: Mutex::new(None),
             audio_processing_settings_cache: Mutex::new(None),
             gapless_eligibility_cache: Mutex::new(None),
@@ -450,8 +458,31 @@ impl StereodromeCore {
         // single invalidation point for the memoized offline song set.
         self.invalidate_offline_song_ids_cache();
         if let Some(sender) = &self.cache_event_sender {
+            let _ = sender.send(event.clone());
+        }
+        if let Ok(sender) = self.runtime_cache_event_sender.lock()
+            && let Some(sender) = sender.as_ref()
+        {
             let _ = sender.send(event);
         }
+    }
+
+    pub(crate) fn subscribe_cache_state_events(&self) -> Receiver<CacheStateEvent> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        if let Ok(mut runtime_sender) = self.runtime_cache_event_sender.lock() {
+            *runtime_sender = Some(sender);
+        }
+        receiver
+    }
+
+    fn cache_event_senders(&self) -> Vec<Sender<CacheStateEvent>> {
+        let mut senders = self.cache_event_sender.iter().cloned().collect::<Vec<_>>();
+        if let Ok(runtime_sender) = self.runtime_cache_event_sender.lock()
+            && let Some(sender) = runtime_sender.as_ref()
+        {
+            senders.push(sender.clone());
+        }
+        senders
     }
 
     /// # Errors
@@ -1608,8 +1639,7 @@ impl StereodromeCore {
         }
         .map_err(|_| CoreError::InvalidInput("song download limiter is closed".to_string()))?;
 
-        let download_guard =
-            DownloadInProgressGuard::new(&song_id, self.cache_event_sender.clone());
+        let download_guard = DownloadInProgressGuard::new(&song_id, self.cache_event_senders());
         let client = self.connected_client().await?;
         let path = self.audio_cache_path(&song_id, MOBILE_PLAYBACK_FORMAT)?;
         if let Some(parent) = path.parent() {
@@ -2948,6 +2978,19 @@ impl StereodromeCore {
         let conn = db::open_connection(&self.db_path)?;
         let mut stmt = conn.prepare("SELECT song_id FROM playlist_songs WHERE playlist_id = ?1")?;
         stmt.query_map([playlist_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<HashSet<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn saved_playlist_song_ids(&self) -> CoreResult<HashSet<String>> {
+        let conn = db::open_connection(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT ps.song_id
+             FROM playlist_songs ps
+             JOIN playlists p ON p.id = ps.playlist_id
+             WHERE p.offline_saved_at IS NOT NULL",
+        )?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<HashSet<_>, _>>()
             .map_err(Into::into)
     }
@@ -5611,7 +5654,7 @@ mod tests {
         let song_id = format!("event-song-{}", std::process::id());
 
         {
-            let _guard = DownloadInProgressGuard::new(&song_id, Some(sender));
+            let _guard = DownloadInProgressGuard::new(&song_id, vec![sender]);
             assert_eq!(
                 receiver
                     .recv_timeout(Duration::from_secs(1))

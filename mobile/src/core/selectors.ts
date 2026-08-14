@@ -280,6 +280,7 @@ export function useFileState() {
     () => ({
       offlineSongIds: new Set(downloads?.offline_song_ids ?? []),
       downloadingSongIds: new Set(downloads?.downloading_song_ids ?? []),
+      downloadQueueLength: downloads?.queue_length ?? 0,
     }),
     [downloads]
   );

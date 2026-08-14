@@ -564,6 +564,7 @@ pub enum ConnectivityState {
 pub struct DownloadSnapshot {
     pub downloading_song_ids: Vec<String>,
     pub offline_song_ids: Vec<String>,
+    pub queue_length: usize,
 }
 
 /// Song metadata projected to UI and native media sessions.

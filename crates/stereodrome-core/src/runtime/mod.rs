@@ -54,6 +54,7 @@ enum MailboxMessage {
         result: CoreResult<playback::PreparedPlayback>,
     },
     PlaybackNotification(AudioNotification),
+    CacheStateChanged,
     PlaybackTick,
     Stop,
 }
@@ -246,6 +247,7 @@ impl StereodromeRuntimeHandle {
             Arc::clone(&monitor_running),
             Arc::clone(&tick_gate),
         );
+        start_cache_inputs(&core, mailbox.clone(), Arc::clone(&monitor_running));
         let actor_tick_gate = Arc::clone(&tick_gate);
         let actor_thread = thread::Builder::new()
             .name("stereodrome-runtime".to_string())
@@ -492,6 +494,26 @@ fn start_playback_inputs(
     });
 }
 
+fn start_cache_inputs(
+    core: &StereodromeCore,
+    mailbox: SyncSender<MailboxMessage>,
+    running: Arc<AtomicBool>,
+) {
+    let cache_events = core.subscribe_cache_state_events();
+    thread::spawn(move || {
+        while running.load(Ordering::SeqCst) {
+            match cache_events.recv_timeout(Duration::from_millis(250)) {
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            if mailbox.send(MailboxMessage::CacheStateChanged).is_err() {
+                break;
+            }
+        }
+    });
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     clippy::too_many_arguments,
@@ -580,6 +602,21 @@ fn run_actor(
                     &mut last_progress_at,
                     &mut last_segment_index,
                 ),
+                MailboxMessage::CacheStateChanged => {
+                    state.revision = state.revision.wrapping_add(1);
+                    let command_id = CommandId(next_internal_command_id);
+                    next_internal_command_id = next_internal_command_id.wrapping_add(1);
+                    emit_snapshot_event(
+                        &core,
+                        audio.as_ref(),
+                        &events,
+                        stream_id,
+                        &mut next_event_id,
+                        &state,
+                        command_id,
+                        None,
+                    );
+                }
                 MailboxMessage::PlaybackTick => handle_playback_input(
                     None,
                     &core,
@@ -2845,6 +2882,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
+    use crate::CacheStateEvent;
     use crate::protocol::{CommandStatus, CoreCommand, CoreCommandRequest};
     use crate::queue::{QueueItem, QueueState, RepeatMode};
     use crate::test_support::{AudioCall, FakeAudio, ManualPlaybackClock};
@@ -2881,6 +2919,26 @@ mod tests {
                 Err(error) => panic!("runtime event unavailable: {error}"),
             }
         }
+    }
+
+    #[test]
+    fn cache_changes_emit_authoritative_runtime_snapshots() {
+        let data_dir = test_dir("cache-events");
+        let core = Arc::new(StereodromeCore::new(&data_dir).expect("core initializes"));
+        let handle = StereodromeRuntimeHandle::start_with_core(&data_dir, Arc::clone(&core))
+            .expect("runtime starts");
+        let mut events = handle.subscribe();
+
+        core.emit_cache_state_event(CacheStateEvent::Reconcile);
+
+        let event = next_event(&mut events, Duration::from_secs(1));
+        let CoreEventKind::SnapshotChanged { snapshot } = event.kind else {
+            panic!("cache change emits a snapshot");
+        };
+        assert_eq!(snapshot.revision, 1);
+
+        handle.shutdown();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     fn seed_song(core: &StereodromeCore, song_id: &str) {

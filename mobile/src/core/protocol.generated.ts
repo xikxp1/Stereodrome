@@ -340,6 +340,7 @@ export type ConnectivityState =
 export type DownloadSnapshot = {
   downloading_song_ids: Array<string>;
   offline_song_ids: Array<string>;
+  queue_length: number;
 };
 
 export type PlaybackProjectionSong = {
