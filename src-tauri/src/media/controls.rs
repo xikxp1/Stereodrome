@@ -112,7 +112,7 @@ fn media_controls_hwnd(app_handle: &AppHandle) -> Option<usize> {
     };
 
     match window.hwnd() {
-        Ok(hwnd) => usize::try_from(hwnd.0).ok(),
+        Ok(hwnd) => Some(hwnd.0.addr()),
         Err(e) => {
             error!("Failed to initialize media controls: could not get main window HWND: {e}");
             None
