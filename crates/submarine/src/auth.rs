@@ -27,6 +27,7 @@ impl AuthBuilder {
     }
 
     /// give the client a name; defaults to "submarine-lib"
+    #[must_use]
     pub fn client_name(mut self, name: &str) -> Self {
         self.client_name = Some(String::from(name));
         self
@@ -34,13 +35,15 @@ impl AuthBuilder {
 
     /// specifiy salt instead of generated
     /// mostly useful for tests so that the outcome is determinante
-    pub(crate) fn _salt(mut self, salt: impl Into<String>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn salt_for_test(mut self, salt: impl Into<String>) -> Self {
         self.salt = Some(salt.into());
         self
     }
 
     /// hash plain password for storing and subsequently uses
     /// ; consumes self
+    #[must_use]
     pub fn hashed(self, password: &str) -> Auth {
         let (hash, salt) = if let Some(salt) = self.salt {
             (Auth::hash_with_salt(password, &salt), salt)
@@ -71,16 +74,16 @@ impl Auth {
     fn hash(password: &str) -> (String, String) {
         let salt = Self::create_salt(24);
         let hash = md5::compute(password.to_owned() + &salt);
-        (format!("{:x}", hash), salt)
+        (format!("{hash:x}"), salt)
     }
 
     fn hash_with_salt(password: impl Into<String>, salt: &str) -> String {
         let hash = md5::compute(password.into() + salt);
-        format!("{:x}", hash)
+        format!("{hash:x}")
     }
 
     fn create_salt(size: usize) -> String {
-        use rand::{distributions::Alphanumeric, thread_rng, Rng};
+        use rand::{Rng, distributions::Alphanumeric, thread_rng};
         use std::iter;
 
         let mut rng = thread_rng();

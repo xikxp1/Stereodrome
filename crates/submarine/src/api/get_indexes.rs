@@ -1,10 +1,13 @@
 use crate::{
-    data::{Indexes, ResponseType},
     Client, Parameter, SubsonicError,
+    data::{Indexes, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getIndexes
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getIndexes>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_indexes(
         &self,
         music_folder_id: Option<impl Into<String>>,
@@ -39,7 +42,7 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_indexes() {
+    fn conversion_get_indexes() -> anyhow::Result<()> {
         let response_body = r##"
             {
                 "subsonic-response": {
@@ -65,13 +68,19 @@ mod tests {
                 }
             }"##;
 
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::Indexes { indexes } = response.data {
-            assert_eq!(&indexes.index.first().unwrap().name, "#");
+            check_eq!(
+                &indexes
+                    .index
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .name,
+                "#"
+            );
         } else {
-            panic!("wrong type");
+            anyhow::bail!("wrong type");
         }
+        Ok(())
     }
 }

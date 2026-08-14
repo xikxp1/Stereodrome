@@ -2,7 +2,10 @@ use crate::data::{Info, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#createBookmark
+    /// reference: <http://www.subsonic.org/pages/api.jsp#createBookmark>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn create_bookmark(
         &self,
         id: impl Into<String>,

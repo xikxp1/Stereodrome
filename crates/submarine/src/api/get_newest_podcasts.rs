@@ -1,10 +1,13 @@
 use crate::{
-    data::{PodcastEpisode, ResponseType},
     Client, Parameter, SubsonicError,
+    data::{PodcastEpisode, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getNewestPodcasts
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getNewestPodcasts>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_newest_podcasts(
         &self,
         count: Option<i32>, //defaults to 20

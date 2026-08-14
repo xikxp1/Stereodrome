@@ -1,11 +1,14 @@
 use crate::api::get_album_list::Order;
 use crate::{
-    data::{Child, ResponseType},
     Client, SubsonicError,
+    data::{Child, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getAlbumList2
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getAlbumList2>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_album_list2(
         &self,
         order: Order,
@@ -27,7 +30,10 @@ impl Client {
         }
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#getAlbumList2
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getAlbumList2>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_album_list2_by_year(
         &self,
         from_year: Option<usize>,
@@ -55,7 +61,10 @@ impl Client {
         }
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#getAlbumList2
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getAlbumList2>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_album_list2_by_genre(
         &self,
         genre: impl Into<String>,
@@ -83,8 +92,8 @@ mod tests {
     use crate::data::{Child, OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_album_list2_navidrome_v0_49_3() {
-        let response_body = r##"
+    fn conversion_get_album_list2_navidrome_v0_49_3() -> anyhow::Result<()> {
+        let response_body = r#"
             {
               "subsonic-response": {
                 "status": "ok",
@@ -135,22 +144,25 @@ mod tests {
                   ]
                 }
               }
-            }"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+            }"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::AlbumList2 { album_list2 } = response.data {
-            assert_eq!(album_list2.album.len(), 2);
-            assert_eq!(album_list2.album[0].year, Some(2014));
-            assert!(album_list2.album[0].starred.is_some());
+            check_eq!(album_list2.album.len(), 2);
+            let first_album = album_list2
+                .album
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("album list is empty"))?;
+            check_eq!(first_album.year, Some(2014));
+            check!(first_album.starred.is_some());
         } else {
-            panic!("wrong type: {response:?}");
+            anyhow::bail!("wrong type: {response:?}");
         }
+        Ok(())
     }
 
     #[test]
-    fn conversion_album_navidrome_v0_49_3() {
-        let json = r##"
+    fn conversion_album_navidrome_v0_49_3() -> anyhow::Result<()> {
+        let json = r#"
           {
             "id": "c686e803911d72cf98bd077c72326759",
             "parent": "f97bc375b1576bdfd1116641304c4cf0",
@@ -170,15 +182,16 @@ mod tests {
             "songCount": 9,
             "isVideo": false
           }
-        "##;
-        let album = serde_json::from_str::<Child>(json).unwrap();
-        assert_eq!(album.id, "c686e803911d72cf98bd077c72326759");
-        assert_eq!(album.title, "Voodooism the Sequel");
+        "#;
+        let album = serde_json::from_str::<Child>(json)?;
+        check_eq!(album.id, "c686e803911d72cf98bd077c72326759");
+        check_eq!(album.title, "Voodooism the Sequel");
+        Ok(())
     }
 
     #[test]
-    fn conversion_album_navidrome_v0_55_2() {
-        let json = r##"
+    fn conversion_album_navidrome_v0_55_2() -> anyhow::Result<()> {
+        let json = r#"
             {
                 "id": "3CHbxxPvEVgBdQ4ZDbNtHa",
                 "name": "Digital Nightmare",
@@ -232,15 +245,14 @@ mod tests {
                 "explicitStatus": "",
                 "version": ""
               }
-        "##;
-        let album = serde_json::from_str::<Child>(json).unwrap();
-        assert_eq!(album.id, "3CHbxxPvEVgBdQ4ZDbNtHa");
-        assert_eq!(album.name, "Digital Nightmare");
+        "#;
+        let album = serde_json::from_str::<Child>(json)?;
+        check_eq!(album.id, "3CHbxxPvEVgBdQ4ZDbNtHa");
+        check_eq!(album.name, "Digital Nightmare");
+        Ok(())
     }
 
-    #[test]
-    fn conversion_get_album_list2_navidrome_v0_55_2() {
-        let response_body = r##"
+    const NAVIDROME_ALBUM_LIST_RESPONSE: &str = r#"
         {
           "subsonic-response": {
           "status": "ok",
@@ -360,16 +372,23 @@ mod tests {
           }
         }
       }
-            "##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+            "#;
+
+    #[test]
+    fn conversion_get_album_list2_navidrome_v0_55_2() -> anyhow::Result<()> {
+        let response_body = NAVIDROME_ALBUM_LIST_RESPONSE;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::AlbumList2 { album_list2 } = response.data {
-            assert_eq!(album_list2.album.len(), 2);
-            assert_eq!(album_list2.album[0].year, Some(2024));
-            assert!(album_list2.album[0].starred.is_some());
+            check_eq!(album_list2.album.len(), 2);
+            let first_album = album_list2
+                .album
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("album list is empty"))?;
+            check_eq!(first_album.year, Some(2024));
+            check!(first_album.starred.is_some());
         } else {
-            panic!("wrong type: {response:?}");
+            anyhow::bail!("wrong type: {response:?}");
         }
+        Ok(())
     }
 }

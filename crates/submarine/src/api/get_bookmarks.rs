@@ -1,10 +1,13 @@
 use crate::{
-    data::{Bookmark, ResponseType},
     Client, SubsonicError,
+    data::{Bookmark, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getBookmarks
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getBookmarks>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_bookmarks(&self) -> Result<Vec<Bookmark>, SubsonicError> {
         let body = self.request("getBookmarks", None, None).await?;
         if let ResponseType::Bookmarks { bookmarks } = body.data {
@@ -22,8 +25,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_empty_get_bookmarks() {
-        let response_body = r##"
+    fn conversion_empty_get_bookmarks() -> anyhow::Result<()> {
+        let response_body = r#"
 {
     "subsonic-response": {
         "status": "ok",
@@ -32,20 +35,19 @@ mod tests {
         "serverVersion": "0.49.3 (8b93962f)",
         "bookmarks": {}
     }
-}"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::Bookmarks { bookmarks } = response.data {
-            assert_eq!(bookmarks.bookmark.len(), 0);
+            check_eq!(bookmarks.bookmark.len(), 0);
         } else {
-            panic!("wrong type");
+            anyhow::bail!("wrong type");
         }
+        Ok(())
     }
 
     #[test]
-    fn conversion_get_bookmarks() {
-        let response_body = r##"
+    fn conversion_get_bookmarks() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -89,15 +91,29 @@ mod tests {
       ]
     }
   }
-}"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::Bookmarks { bookmarks } = response.data {
-            assert_eq!(bookmarks.bookmark.first().unwrap().entry.track, Some(13));
-            assert_eq!(bookmarks.bookmark.first().unwrap().position, 5000);
+            check_eq!(
+                bookmarks
+                    .bookmark
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .entry
+                    .track,
+                Some(13)
+            );
+            check_eq!(
+                bookmarks
+                    .bookmark
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .position,
+                5000
+            );
         } else {
-            panic!("wrong type");
+            anyhow::bail!("wrong type");
         }
+        Ok(())
     }
 }

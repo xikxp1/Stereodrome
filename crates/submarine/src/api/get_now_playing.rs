@@ -2,7 +2,10 @@ use crate::data::{NowPlaying, ResponseType};
 use crate::{Client, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getNowPlaying
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getNowPlaying>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_now_playing(&self) -> Result<NowPlaying, SubsonicError> {
         let body = self.request("getNowPlaying", None, None).await?;
         if let ResponseType::NowPlaying { now_playing } = body.data {
@@ -17,8 +20,8 @@ impl Client {
 
 mod tests {
     #[test]
-    fn conversion_now_playing() {
-        let response_body = r##"
+    fn conversion_now_playing() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -58,18 +61,30 @@ mod tests {
       ]
     }
   }
-}"##;
-        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)?.inner;
         if let crate::data::ResponseType::NowPlaying { now_playing } = response.data {
-            assert_eq!(
-                now_playing.entry.first().unwrap().child.album.as_deref(),
+            check_eq!(
+                now_playing
+                    .entry
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .child
+                    .album
+                    .as_deref(),
                 Some("Showdown")
             );
-            assert_eq!(now_playing.entry.first().unwrap().username, "eppixx");
+            check_eq!(
+                now_playing
+                    .entry
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .username,
+                "eppixx"
+            );
         } else {
-            panic!("wrong type {:?}", response.data);
+            anyhow::bail!("wrong type {:?}", response.data);
         }
+        Ok(())
     }
 }

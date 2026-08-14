@@ -2,7 +2,10 @@ use crate::data::{Child, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getTopSongs
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getTopSongs>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_top_songs(
         &self,
         artist: impl Into<String>,
@@ -28,8 +31,8 @@ impl Client {
 mod tests {
     //TODO better test
     #[test]
-    fn conversion_empty_get_top_songs() {
-        let response_body = r##"
+    fn conversion_empty_get_top_songs() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -38,20 +41,19 @@ mod tests {
     "serverVersion": "0.49.3 (8b93962f)",
     "topSongs": {}
   }
-}"##;
-        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)?.inner;
         if let crate::data::ResponseType::TopSongs { top_songs } = response.data {
-            assert!(top_songs.song.is_empty());
+            check!(top_songs.song.is_empty());
         } else {
-            panic!("wrong type {:?}", response.data);
+            anyhow::bail!("wrong type {:?}", response.data);
         }
+        Ok(())
     }
 
     #[test]
-    fn conversion_get_top_songs() {
-        let response_body = r##"
+    fn conversion_get_top_songs() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -109,15 +111,21 @@ mod tests {
       ]
     }
   }
-}"##;
-        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)?.inner;
         if let crate::data::ResponseType::TopSongs { top_songs } = response.data {
-            assert_eq!(top_songs.song.len(), 2);
-            assert_eq!(top_songs.song.first().unwrap().duration, Some(223));
+            check_eq!(top_songs.song.len(), 2);
+            check_eq!(
+                top_songs
+                    .song
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .duration,
+                Some(223)
+            );
         } else {
-            panic!("wrong type {:?}", response.data);
+            anyhow::bail!("wrong type {:?}", response.data);
         }
+        Ok(())
     }
 }

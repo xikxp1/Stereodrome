@@ -2,7 +2,10 @@ use crate::data::{Child, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getSimilarSongs
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getSimilarSongs>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_similar_songs(
         &self,
         id: impl Into<String>,
@@ -27,8 +30,8 @@ impl Client {
 
 mod tests {
     #[test]
-    fn conversion_get_similar_songs() {
-        let response_body = r##"
+    fn conversion_get_similar_songs() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -63,14 +66,20 @@ mod tests {
       ]
     }
   }
-}"##;
-        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)?.inner;
         if let crate::data::ResponseType::SimilarSongs { similar_songs } = response.data {
-            assert_eq!(&similar_songs.song.first().unwrap().title, "The Springs");
+            check_eq!(
+                &similar_songs
+                    .song
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .title,
+                "The Springs"
+            );
         } else {
-            panic!("wrong type {:?}", response.data);
+            anyhow::bail!("wrong type {:?}", response.data);
         }
+        Ok(())
     }
 }

@@ -1,10 +1,13 @@
 use crate::{
-    data::{ResponseType, Share},
     Client, Parameter, SubsonicError,
+    data::{ResponseType, Share},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#createShare
+    /// reference: <http://www.subsonic.org/pages/api.jsp#createShare>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn create_share(
         &self,
         id: impl Into<String>,

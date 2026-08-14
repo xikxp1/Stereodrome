@@ -2,7 +2,10 @@ use crate::data::{PlaylistWithSongs, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getPlaylist
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getPlaylist>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_playlist(
         &self,
         id: impl Into<String>,
@@ -27,8 +30,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_playlist() {
-        let response_body = r##"
+    fn conversion_get_playlist() -> anyhow::Result<()> {
+        let response_body = r#"
             {
               "subsonic-response": {
                 "status": "ok",
@@ -98,18 +101,24 @@ mod tests {
                   ]
                 }
               }
-            }"##;
+            }"#;
 
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         println!("{response:?}");
         if let ResponseType::PlaylistWithSongs { playlist } = response.data {
-            assert_eq!(playlist.entry.len(), 2);
-            assert_eq!(playlist.entry[0].track, Some(17));
-            assert_eq!(playlist.base.song_count, 2);
+            check_eq!(playlist.entry.len(), 2);
+            check_eq!(
+                playlist
+                    .entry
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("playlist is empty"))?
+                    .track,
+                Some(17)
+            );
+            check_eq!(playlist.base.song_count, 2);
         } else {
-            panic!("wrong type");
+            anyhow::bail!("wrong type");
         }
+        Ok(())
     }
 }

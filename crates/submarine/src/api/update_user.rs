@@ -1,12 +1,15 @@
 use crate::{
-    data::{Info, ResponseType},
     Client, Parameter, SubsonicError,
+    data::{Info, ResponseType},
 };
 
 use super::create_user::Roles;
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#updateUser
+    /// reference: <http://www.subsonic.org/pages/api.jsp#updateUser>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn update_user(
         &self,
         username: impl Into<String>,

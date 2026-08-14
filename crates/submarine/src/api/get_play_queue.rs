@@ -2,7 +2,10 @@ use crate::data::{Info, PlayQueue, ResponseType};
 use crate::{Client, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getPlayQueue
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getPlayQueue>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_play_queue(&self) -> Result<Result<PlayQueue, Info>, SubsonicError> {
         let body = self.request("getPlayQueue", None, None).await?;
         match body.data {
@@ -20,8 +23,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_play_queue() {
-        let response_body = r##"
+    fn conversion_get_play_queue() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -53,16 +56,15 @@ mod tests {
       "changedBy": "Sublime Music"
     }
   }
-}"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::PlayQueue { play_queue } = response.data {
-            assert_eq!(play_queue.entry.len(), 2);
-            assert_eq!(&play_queue.username, "eppixx");
+            check_eq!(play_queue.entry.len(), 2);
+            check_eq!(&play_queue.username, "eppixx");
         } else {
-            panic!("wrong type");
+            anyhow::bail!("wrong type");
         }
+        Ok(())
     }
 }
 

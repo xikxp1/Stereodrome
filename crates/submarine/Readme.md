@@ -14,7 +14,7 @@ As implementations differ from the subsonic interface, others can specifically a
 # Cargo.toml
 ...
 [dependencies]
-submarine = { version = "0.1.0", features = ["navidrome"] }
+submarine = { version = "0.1.2", features = ["navidrome"] }
 ...
 ```
 

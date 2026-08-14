@@ -2,7 +2,10 @@ use crate::data::{Child, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getSong
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getSong>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_song(&self, id: impl Into<String>) -> Result<Child, SubsonicError> {
         let mut paras = Parameter::new();
         paras.push("id", id);
@@ -23,8 +26,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_song() {
-        let response_body = r##"
+    fn conversion_get_song() -> anyhow::Result<()> {
+        let response_body = r#"
             {
               "subsonic-response": {
                 "status": "ok",
@@ -56,14 +59,13 @@ mod tests {
                   "isVideo": false
                 }
               }
-            }"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+            }"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::Song { song } = response.data {
-            assert_eq!(song.track, Some(13));
+            check_eq!(song.track, Some(13));
         } else {
-            panic!("wrong type");
+            anyhow::bail!("wrong type");
         }
+        Ok(())
     }
 }

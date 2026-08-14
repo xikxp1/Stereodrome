@@ -2,7 +2,10 @@ use crate::data::{ResponseType, Starred};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getStarred2
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getStarred2>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_starred2(
         &self,
         music_folder_id: Option<impl Into<String>>,
@@ -23,10 +26,9 @@ impl Client {
     }
 }
 
+#[cfg(test)]
 mod tests {
-    #[test]
-    fn conversion_starred() {
-        let response_body = r##"
+    const STARRED2_RESPONSE: &str = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -95,19 +97,41 @@ mod tests {
       ]
     }
   }
-}"##;
-        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+
+    #[test]
+    fn conversion_starred() -> anyhow::Result<()> {
+        let response_body = STARRED2_RESPONSE;
+        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)?.inner;
         if let crate::data::ResponseType::Starred { starred } = response.data {
-            assert_eq!(starred.artist.first().unwrap().name, "Fox Stevenson");
-            assert_eq!(
-                starred.album.first().unwrap().artist.as_deref(),
+            check_eq!(
+                starred
+                    .artist
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .name,
+                "Fox Stevenson"
+            );
+            check_eq!(
+                starred
+                    .album
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .artist
+                    .as_deref(),
                 Some("cYsmix")
             );
-            assert_eq!(starred.song.first().unwrap().title, "Inner");
+            check_eq!(
+                starred
+                    .song
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .title,
+                "Inner"
+            );
         } else {
-            panic!("wrong type {:?}", response.data);
+            anyhow::bail!("wrong type {:?}", response.data);
         }
+        Ok(())
     }
 }

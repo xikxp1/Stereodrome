@@ -1,10 +1,13 @@
 use crate::{
-    data::{License, ResponseType},
     Client, SubsonicError,
+    data::{License, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getLicense
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getLicense>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_license(&self) -> Result<License, SubsonicError> {
         let body = self.request("getLicense", None, None).await?;
         if let ResponseType::License { license } = body.data {
@@ -22,8 +25,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_license() {
-        let response_body = r##"
+    fn conversion_get_license() -> anyhow::Result<()> {
+        let response_body = r#"
             {
               "subsonic-response": {
                 "status": "ok",
@@ -34,14 +37,13 @@ mod tests {
                   "valid": true
                 }
               }
-            }"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+            }"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::License { license } = response.data {
-            assert!(license.valid);
+            check!(license.valid);
         } else {
-            panic!("wrong type");
+            anyhow::bail!("wrong type");
         }
+        Ok(())
     }
 }

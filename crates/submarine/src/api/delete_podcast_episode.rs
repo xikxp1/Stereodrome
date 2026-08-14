@@ -1,10 +1,13 @@
 use crate::{
-    data::{Info, ResponseType},
     Client, Parameter, SubsonicError,
+    data::{Info, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#deletePodcastEpisode
+    /// reference: <http://www.subsonic.org/pages/api.jsp#deletePodcastEpisode>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn delete_podcast_episode(
         &self,
         id: impl Into<String>,

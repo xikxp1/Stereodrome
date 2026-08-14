@@ -2,7 +2,10 @@ use crate::data::{AlbumInfo, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getAlbumInfo
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getAlbumInfo>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_album_info(&self, id: impl Into<String>) -> Result<AlbumInfo, SubsonicError> {
         let mut paras = Parameter::new();
         paras.push("id", id);
@@ -28,8 +31,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_album_info() {
-        let response_body = r##"
+    fn conversion_get_album_info() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -42,17 +45,16 @@ mod tests {
       "lastFmUrl": "https://www.last.fm/music/A/Hi-Fi+Serious"
     }
   }
-}"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::AlbumInfo { album_info } = response.data {
-            assert_eq!(
+            check_eq!(
                 album_info.music_brainz_id.as_deref(),
                 Some("7c5cc754-8ce4-4959-a164-541098b4a476")
             );
         } else {
-            panic!("wrong type {:?}", response.data);
+            anyhow::bail!("wrong type {:?}", response.data);
         }
+        Ok(())
     }
 }

@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// returned by the server
 #[derive(Debug, Deserialize)]
@@ -27,7 +27,7 @@ pub enum Status {
     Error,
 }
 
-/// This is send by every request from server. If a request is 'Status::Ok' the returned
+/// This is send by every request from server. If a request is '`Status::Ok`' the returned
 /// Info will be omitted. Requests that doesn't send something
 /// back this will be returned instead.
 #[derive(Debug, Deserialize)]
@@ -248,13 +248,48 @@ pub struct ArtistWithAlbumsId3 {
     pub album: Vec<AlbumId3>,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum UserRating {
+    #[default]
+    Unrated,
     One,
     Two,
     Three,
     Four,
     Five,
+}
+
+impl<'de> Deserialize<'de> for UserRating {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match Option::<i32>::deserialize(deserializer)? {
+            Some(1) => Self::One,
+            Some(2) => Self::Two,
+            Some(3) => Self::Three,
+            Some(4) => Self::Four,
+            Some(5) => Self::Five,
+            _ => Self::Unrated,
+        })
+    }
+}
+
+impl Serialize for UserRating {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value = match self {
+            Self::Unrated => return serializer.serialize_none(),
+            Self::One => 1,
+            Self::Two => 2,
+            Self::Three => 3,
+            Self::Four => 4,
+            Self::Five => 5,
+        };
+        serializer.serialize_i32(value)
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -588,8 +623,8 @@ pub struct Artist {
     pub name: String,
     pub artist_image_url: Option<String>,
     pub starred: Option<chrono::DateTime<chrono::offset::FixedOffset>>,
-    #[serde(default, with = "option_user_rating")]
-    pub user_rating: Option<UserRating>,
+    #[serde(default)]
+    pub user_rating: UserRating,
     pub average_rating: Option<f64>,
 }
 
@@ -909,18 +944,52 @@ pub struct User {
     pub email: Option<String>,
     pub scrobbling_enabled: bool,
     pub max_bit_rate: Option<i32>,
+    #[serde(flatten)]
+    pub roles: UserRoles,
+    pub avatar_last_changed: Option<chrono::DateTime<chrono::offset::FixedOffset>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct UserRoles {
+    #[serde(flatten)]
+    pub administration: AdministrationRoles,
+    #[serde(flatten)]
+    pub library: LibraryRoles,
+    #[serde(flatten)]
+    pub interaction: InteractionRoles,
+    #[serde(flatten)]
+    pub playback: PlaybackRoles,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdministrationRoles {
     pub admin_role: bool,
     pub settings_role: bool,
+    pub video_conversion_role: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryRoles {
     pub download_role: bool,
     pub upload_role: bool,
     pub playlist_role: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionRoles {
     pub cover_art_role: bool,
     pub comment_role: bool,
     pub podcast_role: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackRoles {
     pub stream_role: bool,
     pub jukebox_role: bool,
-    pub video_conversion_role: bool,
-    pub avatar_last_changed: Option<chrono::DateTime<chrono::offset::FixedOffset>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -962,45 +1031,10 @@ mod status {
         D: Deserializer<'de>,
     {
         let s: Option<&str> = Option::deserialize(deserializer)?;
-        match s {
-            Some("ok") => Ok(Status::Ok),
-            Some("failed") => Ok(Status::Error),
-            _ => Ok(Status::Error),
-        }
-    }
-}
-
-mod option_user_rating {
-    use crate::data::UserRating;
-    use serde::{self, Deserialize, Deserializer, Serializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<UserRating>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: Option<i32> = Option::deserialize(deserializer)?;
-        match s {
-            Some(1) => Ok(Some(UserRating::One)),
-            Some(2) => Ok(Some(UserRating::Two)),
-            Some(3) => Ok(Some(UserRating::Three)),
-            Some(4) => Ok(Some(UserRating::Four)),
-            Some(5) => Ok(Some(UserRating::Five)),
-            _ => Ok(None),
-        }
-    }
-
-    pub fn serialize<S>(value: &Option<UserRating>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let number = match value {
-            None => return serializer.serialize_none(),
-            Some(UserRating::One) => 1,
-            Some(UserRating::Two) => 2,
-            Some(UserRating::Three) => 3,
-            Some(UserRating::Four) => 4,
-            Some(UserRating::Five) => 5,
-        };
-        serializer.serialize_i32(number)
+        Ok(if s == Some("ok") {
+            Status::Ok
+        } else {
+            Status::Error
+        })
     }
 }

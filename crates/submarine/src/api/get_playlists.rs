@@ -2,7 +2,10 @@ use crate::data::{Playlist, ResponseType};
 use crate::{Client, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getPlaylists
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getPlaylists>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_playlists(
         &self,
         user_name: Option<impl Into<String>>,
@@ -28,8 +31,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_playlists() {
-        let response_body = r##"
+    fn conversion_get_playlists() -> anyhow::Result<()> {
+        let response_body = r#"
         {
           "subsonic-response": {
             "status": "ok",
@@ -63,15 +66,14 @@ mod tests {
               ]
             }
           }
-        }"##;
+        }"#;
 
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::Playlists { playlists } = response.data {
-            assert_eq!(playlists.playlist.len(), 2);
+            check_eq!(playlists.playlist.len(), 2);
         } else {
-            panic!("wrong type: {response:?}");
+            anyhow::bail!("wrong type: {response:?}");
         }
+        Ok(())
     }
 }

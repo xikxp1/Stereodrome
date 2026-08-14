@@ -1,10 +1,13 @@
 use crate::{
-    data::{ResponseType, User},
     Client, SubsonicError,
+    data::{ResponseType, User},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getUsers
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getUsers>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_users(&self) -> Result<Vec<User>, SubsonicError> {
         let body = self.request("getUsers", None, None).await?;
         if let ResponseType::Users { users } = body.data {
@@ -22,8 +25,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_users() {
-        let response_body = r##"
+    fn conversion_get_users() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -51,15 +54,21 @@ mod tests {
       ]
     }
   }
-}"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         println!("{response:?}");
         if let ResponseType::Users { users } = response.data {
-            assert_eq!(&users.user.first().unwrap().username, "eppi");
+            check_eq!(
+                &users
+                    .user
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .username,
+                "eppi"
+            );
         } else {
-            panic!("wrong type: {response:?}");
+            anyhow::bail!("wrong type: {response:?}");
         }
+        Ok(())
     }
 }

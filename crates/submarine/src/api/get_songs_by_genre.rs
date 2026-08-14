@@ -2,7 +2,10 @@ use crate::data::{Child, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getSongsByGenre
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getSongsByGenre>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_songs_by_genre(
         &self,
         genre: impl Into<String>,
@@ -35,8 +38,8 @@ impl Client {
 
 mod tests {
     #[test]
-    fn conversion_get_songs_by_genre() {
-        let response_body = r##"
+    fn conversion_get_songs_by_genre() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -72,14 +75,20 @@ mod tests {
       ]
     }
   }
-}"##;
-        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)?.inner;
         if let crate::data::ResponseType::SongsByGenre { songs_by_genre } = response.data {
-            assert_eq!(songs_by_genre.song.first().unwrap().year, Some(2009));
+            check_eq!(
+                songs_by_genre
+                    .song
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .year,
+                Some(2009)
+            );
         } else {
-            panic!("wrong type {:?}", response.data);
+            anyhow::bail!("wrong type {:?}", response.data);
         }
+        Ok(())
     }
 }

@@ -1,10 +1,13 @@
 use crate::{
-    data::{PodcastChannel, ResponseType},
     Client, Parameter, SubsonicError,
+    data::{PodcastChannel, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getPodcasts
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getPodcasts>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_podcasts(
         &self,
         include_episodes: Option<bool>,

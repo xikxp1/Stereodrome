@@ -1,7 +1,10 @@
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#stream
+    /// reference: <http://www.subsonic.org/pages/api.jsp#stream>
+    ///
+    /// # Errors
+    /// Returns an error when the generated URL is invalid.
     pub fn hls_url(
         &self,
         id: impl Into<String>,
@@ -24,6 +27,9 @@ impl Client {
         )
     }
 
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn hls(
         &self,
         id: impl Into<String>,
@@ -31,7 +37,7 @@ impl Client {
         audio_rate: Option<impl Into<String>>,
     ) -> Result<Vec<u8>, SubsonicError> {
         let result = match self
-            .client
+            .transport
             .get(self.hls_url(id, bit_rate, audio_rate)?)
             .send()
             .await
@@ -49,18 +55,20 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use crate::{auth::AuthBuilder, Client};
+    use crate::{Client, auth::AuthBuilder};
 
     #[tokio::test]
-    async fn create_hls_url() {
+    async fn create_hls_url() -> anyhow::Result<()> {
         let auth = AuthBuilder::new("peter", "v0.16.1")
-            ._salt("")
+            .salt_for_test("")
             .hashed("change_me_password");
         let client = Client::new("https://target.com", auth);
-        let url = client
-            .hls_url(String::from("testId"), vec![128, 196], None::<&str>)
-            .unwrap();
+        let url = client.hls_url(String::from("testId"), vec![128, 196], None::<&str>)?;
 
-        assert_eq!("https://target.com/rest/hls.m3u8?u=peter&v=v0.16.1&c=submarine-lib&t=d4a5b2db9781fba37ec95f0312ade67a&s=&f=json&id=testId&bitRate=128&bitRate=196", &url.to_string());
+        check_eq!(
+            "https://target.com/rest/hls.m3u8?u=peter&v=v0.16.1&c=submarine-lib&t=d4a5b2db9781fba37ec95f0312ade67a&s=&f=json&id=testId&bitRate=128&bitRate=196",
+            &url.to_string()
+        );
+        Ok(())
     }
 }

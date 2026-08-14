@@ -2,7 +2,10 @@ use crate::data::{PlaylistWithSongs, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#createPlaylist
+    /// reference: <http://www.subsonic.org/pages/api.jsp#createPlaylist>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn create_playlist(
         &self,
         name: impl Into<String>,
@@ -24,6 +27,9 @@ impl Client {
         }
     }
 
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn overwrite_playlist(
         &self,
         playlist_id: impl Into<String>,
@@ -51,8 +57,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_create_playlist() {
-        let response_body = r##"
+    fn conversion_create_playlist() -> anyhow::Result<()> {
+        let response_body = r#"
             {
               "subsonic-response": {
                 "status": "ok",
@@ -71,21 +77,20 @@ mod tests {
                   "coverArt": "pl-7d6f3c43-cb3a-4195-b437-a9e1429a8a22_64ee1a41"
                 }
               }
-            }"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+            }"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::PlaylistWithSongs { playlist } = response.data {
-            assert_eq!(playlist.entry.len(), 0);
-            assert_eq!(playlist.base.duration, 0);
+            check_eq!(playlist.entry.len(), 0);
+            check_eq!(playlist.base.duration, 0);
         } else {
-            panic!("wrong type: {response:?}");
+            anyhow::bail!("wrong type: {response:?}");
         }
+        Ok(())
     }
 
     #[test]
-    fn conversion_overwrite_playlist() {
-        let response_body = r##"
+    fn conversion_overwrite_playlist() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -130,15 +135,21 @@ mod tests {
       ]
     }
   }
-}"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::PlaylistWithSongs { playlist } = response.data {
-            assert_eq!(playlist.entry.len(), 1);
-            assert_eq!(playlist.entry.first().unwrap().bit_rate, Some(200));
+            check_eq!(playlist.entry.len(), 1);
+            check_eq!(
+                playlist
+                    .entry
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .bit_rate,
+                Some(200)
+            );
         } else {
-            panic!("wrong type: {response:?}");
+            anyhow::bail!("wrong type: {response:?}");
         }
+        Ok(())
     }
 }

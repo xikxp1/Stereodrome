@@ -2,7 +2,10 @@ use crate::data::{IndexId3, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getArtists
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getArtists>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_artists(
         &self,
         music_folder_id: Option<String>,
@@ -28,7 +31,7 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_artists() {
+    fn conversion_get_artists() -> anyhow::Result<()> {
         let response_body = r##"
             {
               "subsonic-response": {
@@ -64,14 +67,13 @@ mod tests {
                 }
               }
             }"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         println!("{response:?}");
         if let ResponseType::Artists { artists } = response.data {
-            assert_eq!(artists.index.len(), 2);
+            check_eq!(artists.index.len(), 2);
         } else {
-            panic!("wrong type: {response:?}");
+            anyhow::bail!("wrong type: {response:?}");
         }
+        Ok(())
     }
 }

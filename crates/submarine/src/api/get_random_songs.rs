@@ -2,7 +2,10 @@ use crate::data::{Child, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getRandomSongs
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getRandomSongs>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_random_songs(
         &self,
         size: Option<i32>, //defaults to 10
@@ -41,8 +44,8 @@ impl Client {
 
 mod tests {
     #[test]
-    fn conversion_get_random_songs() {
-        let response_body = r##"
+    fn conversion_get_random_songs() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -78,17 +81,21 @@ mod tests {
       ]
     }
   }
-}"##;
-        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)?.inner;
         if let crate::data::ResponseType::RandomSongs { random_songs } = response.data {
-            assert_eq!(
-                random_songs.song.first().unwrap().album.as_deref(),
+            check_eq!(
+                random_songs
+                    .song
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .album
+                    .as_deref(),
                 Some("Showdown")
             );
         } else {
-            panic!("wrong type {:?}", response.data);
+            anyhow::bail!("wrong type {:?}", response.data);
         }
+        Ok(())
     }
 }

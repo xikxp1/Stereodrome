@@ -1,7 +1,10 @@
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getCatptions
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getCatptions>
+    ///
+    /// # Errors
+    /// Returns an error when the generated URL is invalid.
     pub fn get_captions_url(
         &self,
         id: impl Into<String>,
@@ -17,14 +20,17 @@ impl Client {
         url::Url::parse_with_params(&format!("{}/rest/getCaptions", self.server_url), paras.0)
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#getCatptions
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getCatptions>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_captions(
         &self,
         id: impl Into<String>,
         format: Option<impl Into<String>>,
     ) -> Result<Vec<u8>, SubsonicError> {
         let result = match self
-            .client
+            .transport
             .get(self.get_captions_url(id, format)?)
             .send()
             .await
@@ -40,16 +46,20 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use crate::{auth::AuthBuilder, Client};
+    use crate::{Client, auth::AuthBuilder};
 
     #[tokio::test]
-    async fn create_get_captions_url() {
+    async fn create_get_captions_url() -> anyhow::Result<()> {
         let auth = AuthBuilder::new("peter", "v0.16.1")
-            ._salt("")
+            .salt_for_test("")
             .hashed("change_me_password");
         let client = Client::new("https://target.com", auth);
-        let url = client.get_captions_url("testId", None::<&str>).unwrap();
+        let url = client.get_captions_url("testId", None::<&str>)?;
 
-        assert_eq!("https://target.com/rest/getCaptions?u=peter&v=v0.16.1&c=submarine-lib&t=d4a5b2db9781fba37ec95f0312ade67a&s=&f=json&id=testId", &url.to_string());
+        check_eq!(
+            "https://target.com/rest/getCaptions?u=peter&v=v0.16.1&c=submarine-lib&t=d4a5b2db9781fba37ec95f0312ade67a&s=&f=json&id=testId",
+            &url.to_string()
+        );
+        Ok(())
     }
 }

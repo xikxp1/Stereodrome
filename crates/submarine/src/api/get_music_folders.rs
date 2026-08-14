@@ -1,10 +1,13 @@
 use crate::{
-    data::{MusicFolders, ResponseType},
     Client, SubsonicError,
+    data::{MusicFolders, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getMusicFolders
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getMusicFolders>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_music_folders(&self) -> Result<MusicFolders, SubsonicError> {
         let body = self.request("getMusicFolders", None, None).await?;
         if let ResponseType::MusicFolders { music_folders } = body.data {
@@ -22,8 +25,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_music_folders() {
-        let response_body = r##"
+    fn conversion_get_music_folders() -> anyhow::Result<()> {
+        let response_body = r#"
             {
                 "subsonic-response": {
                     "status": "ok",
@@ -39,14 +42,20 @@ mod tests {
                         ]
                     }
                 }
-            }"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+            }"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::MusicFolders { music_folders } = response.data {
-            assert_eq!(music_folders.music_folder.first().unwrap().id, 0);
+            check_eq!(
+                music_folders
+                    .music_folder
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .id,
+                0
+            );
         } else {
-            panic!("wrong type");
+            anyhow::bail!("wrong type");
         }
+        Ok(())
     }
 }

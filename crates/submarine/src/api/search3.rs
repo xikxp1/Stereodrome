@@ -1,10 +1,13 @@
 use crate::{
-    data::{ResponseType, SearchResult3},
     Client, Parameter, SubsonicError,
+    data::{ResponseType, SearchResult3},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#search3
+    /// reference: <http://www.subsonic.org/pages/api.jsp#search3>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn search3(
         &self,
         query: impl Into<String>,
@@ -56,8 +59,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_album() {
-        let response_body = r##"
+    fn conversion_get_album() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -110,17 +113,21 @@ mod tests {
       ]
     }
   }
-}"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::SearchResult3 { search_result3 } = response.data {
-            assert_eq!(
-                search_result3.song.first().unwrap().artist.as_deref(),
+            check_eq!(
+                search_result3
+                    .song
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .artist
+                    .as_deref(),
                 Some("A")
             );
         } else {
-            panic!("wrong type: {response:?}");
+            anyhow::bail!("wrong type: {response:?}");
         }
+        Ok(())
     }
 }

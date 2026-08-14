@@ -1,10 +1,13 @@
 use crate::{
-    data::{Info, ResponseType},
     Client, Parameter, SubsonicError,
+    data::{Info, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#deleteShare
+    /// reference: <http://www.subsonic.org/pages/api.jsp#deleteShare>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn delete_share(&self, id: impl Into<String>) -> Result<Info, SubsonicError> {
         let mut paras = Parameter::new();
         paras.push("id", id);

@@ -1,10 +1,13 @@
 use crate::{
-    data::{Info, ResponseType},
     Client, Parameter, SubsonicError,
+    data::{Info, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#scrobble
+    /// reference: <http://www.subsonic.org/pages/api.jsp#scrobble>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn scrobble(
         &self,
         id_at_time: Vec<(impl Into<String>, Option<usize>)>,

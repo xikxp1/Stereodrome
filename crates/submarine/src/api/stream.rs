@@ -5,7 +5,10 @@ use tokio::io::AsyncWriteExt;
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#stream
+    /// reference: <http://www.subsonic.org/pages/api.jsp#stream>
+    ///
+    /// # Errors
+    /// Returns an error when the generated URL is invalid.
     pub fn stream_url(
         &self,
         id: impl Into<String>,
@@ -41,7 +44,10 @@ impl Client {
         url::Url::parse_with_params(&format!("{}/rest/stream", self.server_url), paras.0)
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#stream
+    /// reference: <http://www.subsonic.org/pages/api.jsp#stream>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn stream(
         &self,
         id: impl Into<String>,
@@ -53,7 +59,7 @@ impl Client {
         converted: Option<bool>,               // video only
     ) -> Result<Vec<u8>, SubsonicError> {
         let result = match self
-            .client
+            .transport
             .get(self.stream_url(
                 id,
                 max_bit_rate,
@@ -80,6 +86,9 @@ impl Client {
     /// Unlike [`Self::stream`], this keeps memory bounded by the HTTP client's
     /// current body chunk. The caller owns atomic replacement and cleanup so it
     /// can coordinate cancellation with its cache metadata transaction.
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn stream_to_file(
         &self,
         id: impl Into<String>,
@@ -92,7 +101,7 @@ impl Client {
         destination: impl AsRef<Path>,
     ) -> Result<u64, SubsonicError> {
         let mut response = self
-            .client
+            .transport
             .get(self.stream_url(
                 id,
                 max_bit_rate,
@@ -129,46 +138,45 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    use crate::{auth::AuthBuilder, Client};
+    use crate::{Client, auth::AuthBuilder};
 
     #[tokio::test]
-    async fn create_stream_url() {
+    async fn create_stream_url() -> anyhow::Result<()> {
         let auth = AuthBuilder::new("peter", "v0.16.1")
-            ._salt("")
+            .salt_for_test("")
             .hashed("change_me_password");
         let client = Client::new("https://target.com", auth);
-        let url = client
-            .stream_url("testId", None, None::<&str>, None, None::<&str>, None, None)
-            .unwrap();
+        let url =
+            client.stream_url("testId", None, None::<&str>, None, None::<&str>, None, None)?;
 
-        assert_eq!("https://target.com/rest/stream?u=peter&v=v0.16.1&c=submarine-lib&t=d4a5b2db9781fba37ec95f0312ade67a&s=&f=json&id=testId", &url.to_string());
+        check_eq!(
+            "https://target.com/rest/stream?u=peter&v=v0.16.1&c=submarine-lib&t=d4a5b2db9781fba37ec95f0312ade67a&s=&f=json&id=testId",
+            &url.to_string()
+        );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn streams_chunked_response_directly_to_file() {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("test listener binds");
-        let address = listener.local_addr().expect("listener has address");
+    async fn streams_chunked_response_directly_to_file() -> anyhow::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.expect("request connects");
+            let (mut socket, _) = listener.accept().await?;
             let mut request = vec![0_u8; 4096];
-            let _ = socket.read(&mut request).await.expect("request reads");
+            let _ = socket.read(&mut request).await?;
             socket
                 .write_all(
                     b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
                 )
                 .await
-                .expect("response writes");
+                ?;
+            Ok::<(), anyhow::Error>(())
         });
         let auth = AuthBuilder::new("peter", "v0.16.1")
-            ._salt("")
+            .salt_for_test("")
             .hashed("change_me_password");
         let client = Client::new(&format!("http://{address}"), auth);
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock follows epoch")
-            .as_nanos();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let destination = std::env::temp_dir().join(format!(
             "submarine-stream-{}-{nonce}.bin",
             std::process::id()
@@ -185,15 +193,12 @@ mod tests {
                 None,
                 &destination,
             )
-            .await
-            .expect("response streams");
+            .await?;
 
-        server.await.expect("server completes");
-        assert_eq!(byte_count, 11);
-        assert_eq!(
-            tokio::fs::read(&destination).await.expect("file reads"),
-            b"hello world"
-        );
+        server.await??;
+        check_eq!(byte_count, 11);
+        check_eq!(tokio::fs::read(&destination).await?, b"hello world");
         let _ = tokio::fs::remove_file(destination).await;
+        Ok(())
     }
 }

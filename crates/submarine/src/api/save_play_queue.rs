@@ -2,7 +2,10 @@ use crate::data::{Info, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#savePlayQueue
+    /// reference: <http://www.subsonic.org/pages/api.jsp#savePlayQueue>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn save_play_queue(
         &self,
         id: Vec<impl Into<String>>,

@@ -68,7 +68,10 @@ impl Client {
         paras
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#getAlbumList
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getAlbumList>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_album_list(
         &self,
         order: Order,
@@ -89,7 +92,10 @@ impl Client {
         }
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#getAlbumList
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getAlbumList>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_album_list_by_year(
         &self,
         from_year: Option<usize>,
@@ -117,7 +123,10 @@ impl Client {
         }
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#getAlbumList
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getAlbumList>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_album_list_by_genre(
         &self,
         genre: impl Into<String>,
@@ -149,7 +158,7 @@ mod tests {
     use super::Order;
 
     #[test]
-    fn conversion_order() {
+    fn conversion_order() -> anyhow::Result<()> {
         let oracle = vec![
             Order::Random,
             Order::Newest,
@@ -162,19 +171,21 @@ mod tests {
         ];
         for test in oracle {
             println!("testing: {test:?}");
-            println!("  to_string: {}", test);
+            println!("  to_string: {test}");
             println!("  to_order: {:?}", Order::from_str(&test.to_string()));
-            assert_eq!(
+            check_eq!(
                 test,
-                Order::from_str(&test.to_string()).unwrap(),
+                Order::from_str(&test.to_string())
+                    .map_err(|()| anyhow::anyhow!("invalid order value"))?,
                 "{test:?}"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn conversion_get_album_list() {
-        let response_body = r##"
+    fn conversion_get_album_list() -> anyhow::Result<()> {
+        let response_body = r#"
             {
               "subsonic-response": {
                 "status": "ok",
@@ -225,15 +236,21 @@ mod tests {
                   ]
                 }
               }
-            }"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+            }"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::AlbumList { album_list } = response.data {
-            assert_eq!(album_list.album.len(), 2);
-            assert_eq!(album_list.album.first().unwrap().year, Some(2014));
+            check_eq!(album_list.album.len(), 2);
+            check_eq!(
+                album_list
+                    .album
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .year,
+                Some(2014)
+            );
         } else {
-            panic!("wrong type: {response:?}");
+            anyhow::bail!("wrong type: {response:?}");
         }
+        Ok(())
     }
 }

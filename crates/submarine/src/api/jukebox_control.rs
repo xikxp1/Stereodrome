@@ -1,8 +1,8 @@
 use std::fmt::Display;
 
 use crate::{
-    data::{JukeboxPlaylist, JukeboxStatus, ResponseType},
     Client, Parameter, SubsonicError,
+    data::{JukeboxPlaylist, JukeboxStatus, ResponseType},
 };
 
 pub enum Action {
@@ -26,7 +26,10 @@ impl Display for Action {
 }
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#jukeboxControl
+    /// reference: <http://www.subsonic.org/pages/api.jsp#jukeboxControl>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn jukebox_control(&self, action: Action) -> Result<JukeboxStatus, SubsonicError> {
         let mut paras = Parameter::new();
         paras.push("action", action.to_string());
@@ -41,7 +44,10 @@ impl Client {
         }
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#jukeboxControl
+    /// reference: <http://www.subsonic.org/pages/api.jsp#jukeboxControl>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn jukebox_control_get(&self) -> Result<JukeboxPlaylist, SubsonicError> {
         let mut paras = Parameter::new();
         paras.push("action", "get");
@@ -56,7 +62,10 @@ impl Client {
         }
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#jukeboxControl
+    /// reference: <http://www.subsonic.org/pages/api.jsp#jukeboxControl>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn jukebox_control_set(
         &self,
         id: Vec<impl Into<String>>,
@@ -77,7 +86,10 @@ impl Client {
         }
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#jukeboxControl
+    /// reference: <http://www.subsonic.org/pages/api.jsp#jukeboxControl>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn jukebox_control_skip(
         &self,
         index: i32,
@@ -100,7 +112,10 @@ impl Client {
         }
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#jukeboxControl
+    /// reference: <http://www.subsonic.org/pages/api.jsp#jukeboxControl>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn jukebox_control_add(
         &self,
         id: Vec<impl Into<String>>,
@@ -121,7 +136,10 @@ impl Client {
         }
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#jukeboxControl
+    /// reference: <http://www.subsonic.org/pages/api.jsp#jukeboxControl>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn jukebox_control_remove(&self, index: i32) -> Result<JukeboxStatus, SubsonicError> {
         let mut paras = Parameter::new();
         paras.push("action", "remove");
@@ -137,7 +155,10 @@ impl Client {
         }
     }
 
-    /// reference: http://www.subsonic.org/pages/api.jsp#jukeboxControl
+    /// reference: <http://www.subsonic.org/pages/api.jsp#jukeboxControl>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn jukebox_control_set_gain(
         &self,
         gain: f32,

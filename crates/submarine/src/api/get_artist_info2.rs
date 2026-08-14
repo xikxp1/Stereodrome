@@ -2,7 +2,10 @@ use crate::data::{ArtistInfo, ResponseType};
 use crate::{Client, Parameter, SubsonicError};
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getArtistInfo2
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getArtistInfo2>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_artist_info2(
         &self,
         id: impl Into<String>,
@@ -39,8 +42,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_artist_info2() {
-        let response_body = r##"
+    fn conversion_get_artist_info2() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -67,18 +70,21 @@ mod tests {
       ]
     }
   }
-}"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::ArtistInfo2 { artist_info2 } = response.data {
-            assert_eq!(artist_info2.similar_artist.len(), 2);
-            assert_eq!(
-                &artist_info2.similar_artist.first().unwrap().name,
+            check_eq!(artist_info2.similar_artist.len(), 2);
+            check_eq!(
+                &artist_info2
+                    .similar_artist
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .name,
                 "Box Car Racer"
             );
         } else {
-            panic!("wrong type {:?}", response.data);
+            anyhow::bail!("wrong type {:?}", response.data);
         }
+        Ok(())
     }
 }

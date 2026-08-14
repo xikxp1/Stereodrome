@@ -1,10 +1,13 @@
 use crate::{
-    data::{Info, ResponseType},
     Client, Parameter, SubsonicError,
+    data::{Info, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#star
+    /// reference: <http://www.subsonic.org/pages/api.jsp#star>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn star(
         &self,
         id: Vec<impl Into<String>>,

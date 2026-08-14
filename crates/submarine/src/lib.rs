@@ -7,6 +7,31 @@
 // Vendored crate: the upstream API surface predates the workspace lint bar.
 #![allow(clippy::too_many_arguments)]
 
+#[cfg(test)]
+macro_rules! check {
+    ($condition:expr $(, $message:expr)?) => {
+        if !$condition {
+            return Err(anyhow::anyhow!(
+                "condition failed: {}",
+                stringify!($condition)
+            ));
+        }
+    };
+}
+
+#[cfg(test)]
+macro_rules! check_eq {
+    ($left:expr, $right:expr $(, $message:expr)?) => {{
+        let left = &$left;
+        let right = &$right;
+        if left != right {
+            return Err(anyhow::anyhow!(
+                "values differ: left={left:?}, right={right:?}"
+            ));
+        }
+    }};
+}
+
 pub mod api;
 pub mod auth;
 pub mod data;
@@ -36,7 +61,7 @@ use crate::data::ResponseType;
 pub struct Client {
     server_url: String,
     auth: auth::Auth,
-    client: reqwest::Client,
+    transport: reqwest::Client,
 }
 
 #[derive(Error, Debug)]
@@ -75,6 +100,7 @@ impl Parameter {
 }
 
 impl Client {
+    #[must_use]
     pub fn new(server_url: &str, auth: auth::Auth) -> Self {
         // reqwest is built with `rustls-no-provider`, which panics on client
         // construction unless a process-wide crypto provider is installed.
@@ -86,9 +112,9 @@ impl Client {
         let client = Self {
             server_url: String::from(server_url),
             auth,
-            client: reqwest::Client::new(),
+            transport: reqwest::Client::new(),
         };
-        info!("created client {:?}", client);
+        info!("created client {client:?}");
         client
     }
 
@@ -102,14 +128,9 @@ impl Client {
         self.auth.add_parameter(&mut paras);
         let headers = headers.unwrap_or_default();
 
-        trace!(
-            "request from server: {}, para: {:?}, header: {:?}",
-            path,
-            paras,
-            headers
-        );
+        trace!("request from server: {path}, para: {paras:?}, header: {headers:?}");
         let request = self
-            .client
+            .transport
             .post(self.server_url.clone() + "/rest/" + path)
             .headers(headers)
             .query(&paras);
@@ -122,10 +143,10 @@ impl Client {
                 {
                     return Err(SubsonicError::ServerRouteNotImplemented(String::from(
                         "navidrome",
-                    )))
+                    )));
                 }
                 _ => {
-                    warn!("Could not fetch previous request to {}", path);
+                    warn!("Could not fetch previous request to {path}");
                     return Err(SubsonicError::NoServerFound);
                 }
             },
@@ -145,8 +166,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType, Status};
 
     #[test]
-    fn basic_conversion() {
-        let response = r##"
+    fn basic_conversion() -> anyhow::Result<()> {
+        let response = r#"
             {
               "subsonic-response": {
                  "status":"ok",
@@ -154,16 +175,15 @@ mod tests {
                  "type":"navidrome",
                  "serverVersion":"0.49.3 (8b93962f)"
               }
-            }"##;
-        let response = serde_json::from_str::<OuterResponse>(response)
-            .unwrap()
-            .inner;
-        assert_eq!(response.info.status, Status::Ok);
+            }"#;
+        let response = serde_json::from_str::<OuterResponse>(response)?.inner;
+        check_eq!(response.info.status, Status::Ok);
+        Ok(())
     }
 
     #[test]
-    fn convert_error() {
-        let response = r##"
+    fn convert_error() -> anyhow::Result<()> {
+        let response = r#"
             {
               "subsonic-response": {
                 "status":"failed",
@@ -175,14 +195,13 @@ mod tests {
                   "message":"Wrong username or password"
                 }
               }
-            }"##;
-        let response = serde_json::from_str::<OuterResponse>(response)
-            .unwrap()
-            .inner;
-        assert_eq!(response.info.status, Status::Error);
+            }"#;
+        let response = serde_json::from_str::<OuterResponse>(response)?.inner;
+        check_eq!(response.info.status, Status::Error);
         if let ResponseType::Error { error } = response.data {
-            assert_eq!(error.code, 40);
-            assert_eq!(&error.message, "Wrong username or password");
+            check_eq!(error.code, 40);
+            check_eq!(&error.message, "Wrong username or password");
         }
+        Ok(())
     }
 }

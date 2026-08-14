@@ -1,10 +1,13 @@
 use crate::{
-    data::{ChatMessage, ResponseType},
     Client, Parameter, SubsonicError,
+    data::{ChatMessage, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getChatMessages
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getChatMessages>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_chat_messages(
         &self,
         since: Option<i64>,

@@ -1,10 +1,13 @@
 use crate::{
-    data::{Directory, ResponseType},
     Client, Parameter, SubsonicError,
+    data::{Directory, ResponseType},
 };
 
 impl Client {
-    /// reference: http://www.subsonic.org/pages/api.jsp#getMusicDirectory
+    /// reference: <http://www.subsonic.org/pages/api.jsp#getMusicDirectory>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_music_directory(
         &self,
         music_directory_id: impl Into<String>,
@@ -28,8 +31,8 @@ mod tests {
     use crate::data::{OuterResponse, ResponseType};
 
     #[test]
-    fn conversion_get_music_directory() {
-        let response_body = r##"
+    fn conversion_get_music_directory() -> anyhow::Result<()> {
+        let response_body = r#"
 {
   "subsonic-response": {
     "status": "ok",
@@ -65,14 +68,13 @@ mod tests {
       "albumCount": 1
     }
   }
-}"##;
-        let response = serde_json::from_str::<OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+}"#;
+        let response = serde_json::from_str::<OuterResponse>(response_body)?.inner;
         if let ResponseType::MusicDirectory { directory } = response.data {
-            assert_eq!(&directory.name, "+44");
+            check_eq!(&directory.name, "+44");
         } else {
-            panic!("wrong type");
+            anyhow::bail!("wrong type");
         }
+        Ok(())
     }
 }

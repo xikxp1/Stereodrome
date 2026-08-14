@@ -1,10 +1,13 @@
 use crate::{
-    data::{Genre, ResponseType},
     Client, SubsonicError,
+    data::{Genre, ResponseType},
 };
 
 impl Client {
-    /// http://www.subsonic.org/pages/api.jsp#getGenres
+    /// <http://www.subsonic.org/pages/api.jsp#getGenres>
+    ///
+    /// # Errors
+    /// Returns an error when arguments are invalid, the request fails, or the response cannot be decoded.
     pub async fn get_genres(&self) -> Result<Vec<Genre>, SubsonicError> {
         let body = self.request("getGenres", None, None).await?;
         if let ResponseType::Genres { genres } = body.data {
@@ -19,8 +22,8 @@ impl Client {
 
 mod tests {
     #[test]
-    fn conversion_get_genres() {
-        let response_body = r##"
+    fn conversion_get_genres() -> anyhow::Result<()> {
+        let response_body = r#"
             {
                 "subsonic-response": {
                     "status": "ok",
@@ -42,16 +45,29 @@ mod tests {
                         ]
                     }
                 }
-            }"##;
+            }"#;
 
-        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)
-            .unwrap()
-            .inner;
+        let response = serde_json::from_str::<crate::data::OuterResponse>(response_body)?.inner;
         if let crate::data::ResponseType::Genres { genres } = response.data {
-            assert_eq!(genres.genre.first().unwrap().value, "Rock");
-            assert_eq!(genres.genre.first().unwrap().song_count, Some(2860));
+            check_eq!(
+                genres
+                    .genre
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .value,
+                "Rock"
+            );
+            check_eq!(
+                genres
+                    .genre
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("fixture item missing"))?
+                    .song_count,
+                Some(2860)
+            );
         } else {
-            panic!("wrong type");
+            anyhow::bail!("wrong type");
         }
+        Ok(())
     }
 }
