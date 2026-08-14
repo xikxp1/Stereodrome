@@ -6,7 +6,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Condvar, Mutex, Once};
 use std::thread;
 
 use log::{Level, LevelFilter, Metadata, Record};
@@ -102,18 +102,29 @@ struct InstanceEventCallback {
     context: usize,
 }
 
+#[derive(Default)]
+struct EventEmitterState {
+    callback: Option<InstanceEventCallback>,
+    applied_revision: Option<u64>,
+}
+
 #[derive(Clone, Default)]
 struct MobileEventEmitter {
-    callback: Arc<Mutex<Option<InstanceEventCallback>>>,
+    state: Arc<(Mutex<EventEmitterState>, Condvar)>,
 }
 
 impl MobileEventEmitter {
     fn set_callback(&self, callback: Option<MobileEventCallback>, context: *mut c_void) {
-        if let Ok(mut current) = self.callback.lock() {
-            *current = callback.map(|callback| InstanceEventCallback {
+        let (state, applied) = self.state.as_ref();
+        if let Ok(mut current) = state.lock() {
+            current.callback = callback.map(|callback| InstanceEventCallback {
                 callback,
                 context: context.addr(),
             });
+            if current.callback.is_some() {
+                current.applied_revision = None;
+            }
+            applied.notify_all();
         }
     }
 
@@ -128,15 +139,38 @@ impl MobileEventEmitter {
                 return;
             }
         };
+        let (state, applied) = self.state.as_ref();
         // Holding the guard through invocation makes clearing the callback a
         // synchronous lifetime barrier for the opaque context pointer.
-        if let Ok(current) = self.callback.lock()
-            && let Some(callback) = *current
+        if let Ok(mut current) = state.lock()
+            && let Some(callback) = current.callback
         {
             (callback.callback)(
                 message.as_ptr(),
                 ptr::with_exposed_provenance_mut(callback.context),
             );
+            current.applied_revision = Some(event.revision);
+            applied.notify_all();
+        }
+    }
+
+    /// Waits until the native callback has synchronously applied an event at
+    /// least as new as `revision`. Clearing the callback releases waiters
+    /// during teardown.
+    fn wait_until_applied(&self, revision: u64) {
+        let (state, applied) = self.state.as_ref();
+        let Ok(mut current) = state.lock() else {
+            return;
+        };
+        while current.callback.is_some()
+            && current
+                .applied_revision
+                .is_none_or(|applied_revision| applied_revision < revision)
+        {
+            current = match applied.wait(current) {
+                Ok(current) => current,
+                Err(_) => return,
+            };
         }
     }
 }
@@ -244,7 +278,14 @@ pub extern "C" fn stereodrome_runtime_dispatch(
             Ok(request) => request,
             Err(error) => return protocol_input_error(&format!("invalid command JSON: {error}")),
         };
-        runtime.runtime.dispatch(request)
+        let waits_for_event = request.command.emits_event_before_completion();
+        let result = runtime.runtime.dispatch(request);
+        if waits_for_event && result.status == stereodrome_core::CommandStatus::Succeeded {
+            runtime
+                .event_emitter
+                .wait_until_applied(result.accepted_revision);
+        }
+        result
     })
 }
 
@@ -382,6 +423,8 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    use std::sync::mpsc;
+    use std::time::Duration;
     use stereodrome_core::{CommandStatus, CoreCommand, CoreEventKind};
 
     static CALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -397,6 +440,24 @@ mod tests {
         .expect("callback event matches the runtime protocol");
         assert!(matches!(event.kind, CoreEventKind::RuntimeShuttingDown));
         CALLBACK_COUNT.fetch_add(1, AtomicOrdering::SeqCst);
+    }
+
+    struct BlockingCallback {
+        entered: mpsc::SyncSender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    extern "C" fn blocking_event_callback(message: *const c_char, context: *mut c_void) {
+        assert!(!message.is_null());
+        assert!(!context.is_null());
+        let callback = unsafe { &*context.cast::<BlockingCallback>() };
+        callback.entered.send(()).expect("test observes callback");
+        callback
+            .release
+            .lock()
+            .expect("release receiver locks")
+            .recv()
+            .expect("test releases callback");
     }
 
     struct TestRuntime {
@@ -482,5 +543,70 @@ mod tests {
         });
         assert_eq!(CALLBACK_COUNT.load(AtomicOrdering::SeqCst), 1);
         emitter.set_callback(None, ptr::null_mut());
+    }
+
+    #[test]
+    fn state_changing_dispatch_waits_for_native_projection_application() {
+        let runtime = TestRuntime::new("native-projection-ack");
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let mut callback = Box::new(BlockingCallback {
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+        });
+        unsafe {
+            (*runtime.pointer).event_emitter.set_callback(
+                Some(blocking_event_callback),
+                ptr::from_mut(callback.as_mut()).cast(),
+            );
+        }
+
+        let pointer_address = runtime.pointer.addr();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let dispatch_thread = thread::spawn(move || {
+            let request = CoreCommandRequest {
+                protocol_version: CORE_PROTOCOL_VERSION,
+                command_id: CommandId(1),
+                command: CoreCommand::Initialize,
+            };
+            let request =
+                CString::new(serde_json::to_string(&request).expect("request serializes"))
+                    .expect("request has no null bytes");
+            let pointer = ptr::with_exposed_provenance_mut::<MobileRuntime>(pointer_address);
+            let response = stereodrome_runtime_dispatch(pointer, request.as_ptr());
+            assert!(!response.is_null(), "runtime FFI returns a response");
+            let response_json = unsafe { CStr::from_ptr(response) }
+                .to_str()
+                .expect("runtime response is UTF-8")
+                .to_string();
+            unsafe { stereodrome_string_free(response) };
+            result_tx
+                .send(
+                    serde_json::from_str::<CoreCommandResult>(&response_json)
+                        .expect("runtime response is JSON"),
+                )
+                .expect("test receives dispatch result");
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("native callback starts");
+        let early_result = result_rx.recv_timeout(Duration::from_millis(100)).ok();
+        let returned_early = early_result.is_some();
+        release_tx.send(()).expect("callback is released");
+        let result = early_result.unwrap_or_else(|| {
+            result_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("dispatch completes after callback")
+        });
+        dispatch_thread.join().expect("dispatch thread exits");
+
+        assert!(!returned_early, "dispatch must wait for native state");
+        assert_eq!(result.status, CommandStatus::Succeeded);
+        unsafe {
+            (*runtime.pointer)
+                .event_emitter
+                .set_callback(None, ptr::null_mut());
+        }
     }
 }

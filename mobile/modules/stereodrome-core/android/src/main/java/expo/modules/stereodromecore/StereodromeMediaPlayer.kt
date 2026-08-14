@@ -58,21 +58,19 @@ class StereodromeMediaPlayer(
   override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<Any> {
     if (playWhenReady) {
       if (info?.canPlay != true) {
-        invalidateOnPlayerLooper()
-        return Futures.immediateFuture(Any())
+        return rejectedCommand("Rust core cannot start the current item")
       }
-      StereodromeCoreCommandQueue.enqueue("resume-playback") {
+      return StereodromeCoreCommandQueue.enqueueCommand("resume-playback") {
         StereodromeCoreBridge.dispatchWithAudioFocus(
           appContext,
           JSONObject().put("type", "resume-playback"),
         )
       }
     } else {
-      StereodromeCoreCommandQueue.enqueue("pause-playback") {
+      return StereodromeCoreCommandQueue.enqueueCommand("pause-playback") {
         StereodromeCoreBridge.dispatchCommand(JSONObject().put("type", "pause-playback"))
       }
     }
-    return Futures.immediateFuture(Any())
   }
 
   override fun handleSeek(
@@ -82,10 +80,10 @@ class StereodromeMediaPlayer(
   ): ListenableFuture<Any> {
     when (seekCommand) {
       Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> {
-        if (info?.canPlay != true) {
-          return Futures.immediateFuture(Any())
+        if (info?.canPlay != true || info?.canNext != true) {
+          return rejectedCommand("Rust core has no next item")
         }
-        StereodromeCoreCommandQueue.enqueue("navigate-next") {
+        return StereodromeCoreCommandQueue.enqueueCommand("navigate-next") {
           StereodromeCoreBridge.dispatchWithAudioFocus(
             appContext,
             JSONObject()
@@ -95,10 +93,10 @@ class StereodromeMediaPlayer(
         }
       }
       Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> {
-        if (info?.canPlay != true) {
-          return Futures.immediateFuture(Any())
+        if (info?.canPlay != true || info?.canPrevious != true) {
+          return rejectedCommand("Rust core has no previous item")
         }
-        StereodromeCoreCommandQueue.enqueue("navigate-previous") {
+        return StereodromeCoreCommandQueue.enqueueCommand("navigate-previous") {
           StereodromeCoreBridge.dispatchWithAudioFocus(
             appContext,
             JSONObject()
@@ -108,8 +106,11 @@ class StereodromeMediaPlayer(
         }
       }
       Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM -> {
+        if (info?.canSeek != true) {
+          return rejectedCommand("Rust core cannot seek the current item")
+        }
         val nextPositionSeconds = max(0.0, positionMs / 1000.0)
-        StereodromeCoreCommandQueue.enqueue("seek-to") {
+        return StereodromeCoreCommandQueue.enqueueCommand("seek-to") {
           StereodromeCoreBridge.dispatchCommand(
             JSONObject().put("type", "seek-to").put("seconds", nextPositionSeconds),
           )
@@ -120,10 +121,9 @@ class StereodromeMediaPlayer(
   }
 
   override fun handleStop(): ListenableFuture<Any> {
-    StereodromeCoreCommandQueue.enqueue("stop-playback") {
+    return StereodromeCoreCommandQueue.enqueueCommand("stop-playback") {
       StereodromeCoreBridge.dispatchCommand(JSONObject().put("type", "stop-playback"))
     }
-    return Futures.immediateFuture(Any())
   }
 
   private fun availableCommands(currentInfo: NowPlayingInfo?): Player.Commands {
@@ -194,5 +194,10 @@ class StereodromeMediaPlayer(
     } else {
       handler.post { invalidateState() }
     }
+  }
+
+  private fun rejectedCommand(message: String): ListenableFuture<Any> {
+    invalidateOnPlayerLooper()
+    return Futures.immediateFailedFuture(IllegalStateException(message))
   }
 }
