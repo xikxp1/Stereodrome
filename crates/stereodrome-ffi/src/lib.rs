@@ -112,7 +112,7 @@ impl MobileEventEmitter {
         if let Ok(mut current) = self.callback.lock() {
             *current = callback.map(|callback| InstanceEventCallback {
                 callback,
-                context: context as usize,
+                context: context.addr(),
             });
         }
     }
@@ -133,7 +133,10 @@ impl MobileEventEmitter {
         if let Ok(current) = self.callback.lock()
             && let Some(callback) = *current
         {
-            (callback.callback)(message.as_ptr(), callback.context as *mut c_void);
+            (callback.callback)(
+                message.as_ptr(),
+                ptr::with_exposed_provenance_mut(callback.context),
+            );
         }
     }
 }
@@ -368,6 +371,14 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "FFI tests intentionally use fail-fast setup and assertions"
+)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -377,7 +388,7 @@ mod tests {
 
     extern "C" fn event_callback(message: *const c_char, context: *mut c_void) {
         assert!(!message.is_null());
-        assert_eq!(context as usize, 41);
+        assert_eq!(context.addr(), 41);
         let event: CoreEvent = serde_json::from_str(
             unsafe { CStr::from_ptr(message) }
                 .to_str()
@@ -456,7 +467,10 @@ mod tests {
     fn event_callback_receives_the_unwrapped_runtime_event() {
         CALLBACK_COUNT.store(0, AtomicOrdering::SeqCst);
         let emitter = MobileEventEmitter::default();
-        emitter.set_callback(Some(event_callback), 41_usize as *mut c_void);
+        emitter.set_callback(
+            Some(event_callback),
+            ptr::with_exposed_provenance_mut(41_usize),
+        );
         emitter.emit(&CoreEvent {
             protocol_version: CORE_PROTOCOL_VERSION,
             stream_id: 3,

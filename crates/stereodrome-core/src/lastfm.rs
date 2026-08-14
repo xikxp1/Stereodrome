@@ -457,7 +457,9 @@ fn summarize_response_body(body: &str) -> String {
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.len() > MAX_LEN {
         // Response bodies are arbitrary remote bytes, so MAX_LEN can land mid-character.
-        format!("{}...", &compact[..compact.floor_char_boundary(MAX_LEN)])
+        compact
+            .get(..compact.floor_char_boundary(MAX_LEN))
+            .map_or_else(|| compact.clone(), |prefix| format!("{prefix}..."))
     } else if compact.is_empty() {
         "<empty>".to_string()
     } else {
@@ -467,9 +469,11 @@ fn summarize_response_body(body: &str) -> String {
 
 fn extract_lastfm_xml_error(body: &str) -> Option<String> {
     let start_tag = body.find("<error")?;
-    let after_start = body[start_tag..].find('>')? + start_tag + 1;
-    let end = body[after_start..].find("</error>")? + after_start;
-    let message = body[after_start..end].trim();
+    let start = body.get(start_tag..)?;
+    let after_start = start_tag.checked_add(start.find('>')?)?.checked_add(1)?;
+    let error_body = body.get(after_start..)?;
+    let end = after_start.checked_add(error_body.find("</error>")?)?;
+    let message = body.get(after_start..end)?.trim();
     (!message.is_empty()).then(|| message.to_string())
 }
 
@@ -602,13 +606,14 @@ fn mark_batch_failure(db_path: &Path, items: &[LastfmQueueItem], error: &str) ->
     let now_ts = Utc::now().timestamp();
     let now = Utc::now().to_rfc3339();
     for item in items {
-        let attempts = item.attempts + 1;
+        let attempts = item.attempts.saturating_add(1);
         let delay = retry_delay_secs(attempts);
+        let next_retry_at = now_ts.saturating_add(delay);
         conn.execute(
             "UPDATE lastfm_scrobble_queue
              SET attempts = ?1, next_retry_at = ?2, last_error = ?3, updated_at = ?4
              WHERE id = ?5",
-            params![attempts, now_ts + delay, error, now, item.id],
+            params![attempts, next_retry_at, error, now, item.id],
         )?;
     }
     Ok(())
@@ -616,7 +621,9 @@ fn mark_batch_failure(db_path: &Path, items: &[LastfmQueueItem], error: &str) ->
 
 fn retry_delay_secs(attempts: i64) -> i64 {
     let exponent = u32::try_from(attempts.clamp(0, 6)).unwrap_or_default();
-    (60_i64 * 2_i64.pow(exponent)).min(3600)
+    60_i64
+        .saturating_mul(2_i64.saturating_pow(exponent))
+        .min(3600)
 }
 
 fn queue_count(db_path: &Path) -> CoreResult<i64> {
@@ -643,6 +650,14 @@ fn latest_queue_error(db_path: &Path) -> CoreResult<Option<String>> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast"
+)]
 mod tests {
     use super::*;
 

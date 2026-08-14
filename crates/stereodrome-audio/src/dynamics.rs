@@ -64,23 +64,20 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         // Return buffered output if available
         if self.output_pos < usize::from(self.channels.get()) {
-            let sample = self.output_buffer[self.output_pos];
-            self.output_pos += 1;
+            let sample = self.output_buffer.get(self.output_pos).copied()?;
+            self.output_pos = self.output_pos.checked_add(1)?;
             return Some(sample);
         }
 
         // Collect a full frame from inner source into pre-allocated buffer
         let ch = usize::from(self.channels.get());
-        for i in 0..ch {
-            self.input_buffer[i] = self.inner.next()?;
+        for input in self.input_buffer.iter_mut().take(ch) {
+            *input = self.inner.next()?;
         }
 
         // Compress (always stereo-style: mono duplicates the channel)
-        let (left, right) = if ch >= 2 {
-            (self.input_buffer[0], self.input_buffer[1])
-        } else {
-            (self.input_buffer[0], self.input_buffer[0])
-        };
+        let left = self.input_buffer.first().copied()?;
+        let right = self.input_buffer.get(1).copied().unwrap_or(left);
         let (comp_l, comp_r) = self.compressor.process_frame(left, right);
 
         // Limit via fundsp
@@ -93,7 +90,7 @@ where
         }
 
         self.output_pos = 1;
-        Some(self.output_buffer[0])
+        self.output_buffer.first().copied()
     }
 }
 

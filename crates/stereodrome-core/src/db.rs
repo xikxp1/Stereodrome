@@ -232,6 +232,14 @@ fn load_queue_state(conn: &Connection) -> CoreResult<(Option<usize>, bool, Repea
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast"
+)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};

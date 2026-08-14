@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use log::warn;
+use num_traits::ToPrimitive;
 use stereodrome_core::backup::{BackupSummary, PortablePreferences, read_from_file};
 use stereodrome_core::{
     BinauralPreset as CoreBinauralPreset, CoreCommand, DynamicsPreset as CoreDynamicsPreset,
@@ -129,9 +130,8 @@ fn parse_binaural(value: CoreBinauralPreset) -> BinauralPreset {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn f64_to_f32(value: f64) -> f32 {
-    value as f32
+    value.to_f32().unwrap_or_default()
 }
 
 fn backup_error(error: &stereodrome_core::CoreError) -> AppError {

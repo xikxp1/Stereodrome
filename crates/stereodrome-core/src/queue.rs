@@ -209,7 +209,7 @@ impl PlayQueue {
 
     pub fn insert_next(&mut self, item: QueueItem) {
         self.invalidate_prepared_shuffle_cycle();
-        let insert_idx = self.current_index.map_or(0, |i| i + 1);
+        let insert_idx = self.current_index.map_or(0, |i| i.saturating_add(1));
         self.original_order
             .insert(insert_idx.min(self.original_order.len()), item.clone());
         self.items.insert(insert_idx.min(self.items.len()), item);
@@ -217,9 +217,9 @@ impl PlayQueue {
 
     pub fn insert_many_next(&mut self, items: Vec<QueueItem>) {
         self.invalidate_prepared_shuffle_cycle();
-        let base_idx = self.current_index.map_or(0, |i| i + 1);
+        let base_idx = self.current_index.map_or(0, |i| i.saturating_add(1));
         for (offset, item) in items.into_iter().enumerate() {
-            let idx = base_idx + offset;
+            let idx = base_idx.saturating_add(offset);
             self.original_order
                 .insert(idx.min(self.original_order.len()), item.clone());
             self.items.insert(idx.min(self.items.len()), item);
@@ -250,7 +250,7 @@ impl PlayQueue {
 
         if let Some(current) = self.current_index {
             if index < current {
-                self.current_index = Some(current - 1);
+                self.current_index = Some(current.saturating_sub(1));
             } else if index == current {
                 // The playing item is gone; resume at whatever took its slot.
                 self.current_index = None;
@@ -288,9 +288,9 @@ impl PlayQueue {
             if from == current {
                 self.current_index = Some(to);
             } else if from < current && to >= current {
-                self.current_index = Some(current - 1);
+                self.current_index = Some(current.saturating_sub(1));
             } else if from > current && to <= current {
-                self.current_index = Some(current + 1);
+                self.current_index = Some(current.saturating_add(1));
             }
         }
     }
@@ -346,7 +346,10 @@ impl PlayQueue {
             RepeatMode::One => {
                 self.invalidate_prepared_shuffle_cycle();
                 let next_idx = match effective_index {
-                    Some(i) if self.current_index.is_some() => (i + 1) % self.items.len(),
+                    Some(i) if self.current_index.is_some() => i
+                        .saturating_add(1)
+                        .checked_rem(self.items.len())
+                        .unwrap_or_default(),
                     Some(i) => i,
                     None => 0,
                 };
@@ -367,7 +370,10 @@ impl PlayQueue {
                 }
 
                 let next_idx = match effective_index {
-                    Some(i) if self.current_index.is_some() => (i + 1) % self.items.len(),
+                    Some(i) if self.current_index.is_some() => i
+                        .saturating_add(1)
+                        .checked_rem(self.items.len())
+                        .unwrap_or_default(),
                     Some(i) => i,
                     None => 0,
                 };
@@ -378,8 +384,9 @@ impl PlayQueue {
             RepeatMode::Off => {
                 let next_idx = match effective_index {
                     Some(i) if self.current_index.is_some() => {
-                        if i + 1 < self.items.len() {
-                            Some(i + 1)
+                        let candidate = i.saturating_add(1);
+                        if candidate < self.items.len() {
+                            Some(candidate)
                         } else {
                             None
                         }
@@ -417,8 +424,16 @@ impl PlayQueue {
         };
 
         match self.repeat_mode {
-            RepeatMode::One | RepeatMode::All => Some((current + 1) % self.items.len()),
-            RepeatMode::Off => (current + 1 < self.items.len()).then_some(current + 1),
+            RepeatMode::One | RepeatMode::All => Some(
+                current
+                    .saturating_add(1)
+                    .checked_rem(self.items.len())
+                    .unwrap_or_default(),
+            ),
+            RepeatMode::Off => {
+                let candidate = current.saturating_add(1);
+                (candidate < self.items.len()).then_some(candidate)
+            }
         }
     }
 
@@ -434,7 +449,11 @@ impl PlayQueue {
             };
 
             let candidates: Vec<usize> = (1..next_cycle.len())
-                .filter(|idx| next_cycle[*idx].song_id != current_song_id)
+                .filter(|idx| {
+                    next_cycle
+                        .get(*idx)
+                        .is_some_and(|item| item.song_id != current_song_id)
+                })
                 .collect();
 
             let mut rng = rand::rng();
@@ -488,7 +507,9 @@ impl PlayQueue {
                     && let Some(pending) = pending_index
                 {
                     self.pending_navigation = None;
-                    let idx = pending.saturating_sub(1).min(self.items.len() - 1);
+                    let idx = pending
+                        .saturating_sub(1)
+                        .min(self.items.len().saturating_sub(1));
                     self.current_index = Some(idx);
                     return self.items.get(idx);
                 }
@@ -497,14 +518,16 @@ impl PlayQueue {
             RepeatMode::All => {
                 let prev_idx = if let (None, Some(pending)) = (self.current_index, pending_index) {
                     if pending == 0 {
-                        self.items.len() - 1
+                        self.items.len().saturating_sub(1)
                     } else {
-                        (pending - 1).min(self.items.len() - 1)
+                        pending
+                            .saturating_sub(1)
+                            .min(self.items.len().saturating_sub(1))
                     }
                 } else {
                     match effective_index {
-                        Some(0) | None => self.items.len() - 1,
-                        Some(i) => i - 1,
+                        Some(0) | None => self.items.len().saturating_sub(1),
+                        Some(i) => i.saturating_sub(1),
                     }
                 };
                 self.current_index = Some(prev_idx);
@@ -513,10 +536,14 @@ impl PlayQueue {
             }
             RepeatMode::Off => {
                 let prev_idx = if let (None, Some(pending)) = (self.current_index, pending_index) {
-                    Some(pending.saturating_sub(1).min(self.items.len() - 1))
+                    Some(
+                        pending
+                            .saturating_sub(1)
+                            .min(self.items.len().saturating_sub(1)),
+                    )
                 } else {
                     match effective_index {
-                        Some(i) if i > 0 => Some(i - 1),
+                        Some(i) if i > 0 => Some(i.saturating_sub(1)),
                         Some(_) | None => Some(0),
                     }
                 };
@@ -598,7 +625,10 @@ impl PlayQueue {
                 }
 
                 let next_idx = match effective_index {
-                    Some(i) if self.current_index.is_some() => (i + 1) % self.items.len(),
+                    Some(i) if self.current_index.is_some() => i
+                        .saturating_add(1)
+                        .checked_rem(self.items.len())
+                        .unwrap_or_default(),
                     Some(i) => i,
                     None => 0,
                 };
@@ -606,8 +636,9 @@ impl PlayQueue {
             }
             RepeatMode::Off => match effective_index {
                 Some(i) if self.current_index.is_some() => {
-                    if i + 1 < self.items.len() {
-                        self.items.get(i + 1)
+                    let candidate = i.saturating_add(1);
+                    if candidate < self.items.len() {
+                        self.items.get(candidate)
                     } else {
                         None
                     }
@@ -644,7 +675,7 @@ impl PlayQueue {
         // `items.len()` for a past-end cursor leaves nothing before the wrap, which the
         // repeat-off and repeat-all arms below both handle.
         let start_index = match (self.current_index, self.pending_navigation_index()) {
-            (Some(index), _) => index + 1,
+            (Some(index), _) => index.saturating_add(1),
             (None, Some(index)) => index,
             (None, None) => 0,
         };
@@ -657,7 +688,9 @@ impl PlayQueue {
                 .take(max_items)
                 .cloned()
                 .collect(),
-            RepeatMode::All if self.shuffle && start_index + max_items > self.items.len() => {
+            RepeatMode::All
+                if self.shuffle && start_index.saturating_add(max_items) > self.items.len() =>
+            {
                 let before_wrap = self.items.len().saturating_sub(start_index);
                 self.prepare_shuffle_cycle_after_wrap();
                 let mut upcoming = self
@@ -668,14 +701,25 @@ impl PlayQueue {
                     .cloned()
                     .collect::<Vec<_>>();
                 if let Some(next_cycle) = &self.prepared_shuffle_cycle {
-                    upcoming.extend(next_cycle.iter().take(max_items - before_wrap).cloned());
+                    upcoming.extend(
+                        next_cycle
+                            .iter()
+                            .take(max_items.saturating_sub(before_wrap))
+                            .cloned(),
+                    );
                 }
                 upcoming
             }
             RepeatMode::All => (0..max_items)
-                .map(|offset| self.items[(start_index + offset) % self.items.len()].clone())
+                .filter_map(|offset| {
+                    let index = start_index
+                        .saturating_add(offset)
+                        .checked_rem(self.items.len())
+                        .unwrap_or_default();
+                    self.items.get(index).cloned()
+                })
                 .collect(),
-            RepeatMode::One => unreachable!("repeat-one handled above"),
+            RepeatMode::One => Vec::new(),
         }
     }
 
@@ -726,11 +770,19 @@ impl PlayQueue {
             && self.repeat_mode == RepeatMode::All
             && self.items.len() > 1
             && self.pending_navigation.is_none()
-            && self.current_index == Some(self.items.len() - 1)
+            && self.current_index == Some(self.items.len().saturating_sub(1))
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast"
+)]
 mod tests {
     use super::{PlayQueue, QueueItem, RepeatMode};
 

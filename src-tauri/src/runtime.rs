@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::thread;
 
+use log::error;
 use serde::de::DeserializeOwned;
 use stereodrome_core::{
     CommandStatus, CoreCommand, CoreCommandResult, CoreEventKind, CoreSnapshot, PlaybackProjection,
@@ -175,8 +176,11 @@ pub fn start_event_bridge(app_handle: AppHandle, runtime: StereodromeRuntimeHand
         }
         let event_runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
-            .expect("failed to create desktop runtime event bridge");
+            .build();
+        let Ok(event_runtime) = event_runtime else {
+            error!("Failed to create desktop runtime event bridge");
+            return;
+        };
 
         event_runtime.block_on(async move {
             loop {

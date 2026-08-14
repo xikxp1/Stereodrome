@@ -5,6 +5,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use num_traits::ToPrimitive;
 use serde_json::Value;
 use stereodrome_audio::{
     AudioError, AudioNotification, AudioOutputState, AudioPlayer, AudioStateHandle, BinauralPreset,
@@ -619,7 +620,7 @@ fn next_queue_item_exists(queue: &QueueState) -> bool {
     }
     match queue.current_index {
         None => true,
-        Some(index) if index + 1 < queue.items.len() => true,
+        Some(index) if index.saturating_add(1) < queue.items.len() => true,
         Some(_) => queue.repeat_mode == RepeatMode::All,
     }
 }
@@ -685,13 +686,14 @@ fn narrow_f64_to_f32(value: f64, name: &str) -> CoreResult<f32> {
             "{name} is outside the supported f32 range"
         )));
     }
-    #[allow(clippy::cast_possible_truncation)]
-    Ok(value as f32)
+    value.to_f32().ok_or_else(|| {
+        CoreError::InvalidInput(format!("{name} cannot be represented as an f32 value"))
+    })
 }
 
 fn duration_seconds(duration: i64) -> f64 {
     let duration = duration.clamp(0, i64::from(u32::MAX));
-    f64::from(u32::try_from(duration).expect("clamped duration fits in u32"))
+    duration.to_f64().unwrap_or_default()
 }
 
 fn file_uri_to_path(value: &str) -> CoreResult<PathBuf> {

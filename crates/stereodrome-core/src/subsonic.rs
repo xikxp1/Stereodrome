@@ -30,6 +30,14 @@ pub fn signed_url(config: &ServerConfig, endpoint: &str, params: &[(&str, &str)]
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast"
+)]
 mod tests {
     use super::{CLIENT_NAME, signed_url};
     use crate::ServerConfig;

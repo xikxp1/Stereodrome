@@ -13,6 +13,7 @@ use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use num_traits::ToPrimitive;
 use serde_json::Value;
 use stereodrome_audio::AudioNotification;
 use tokio::sync::broadcast;
@@ -598,7 +599,7 @@ fn run_actor(
                     &mut last_segment_index,
                 ),
                 MailboxMessage::Stop => break,
-                MailboxMessage::Dispatch { .. } => unreachable!(),
+                MailboxMessage::Dispatch { .. } => continue,
             }
             continue;
         };
@@ -934,7 +935,9 @@ fn process_playback_request(
         CoreCommand::ReportPlatformPlayback { event } => {
             handle_platform_playback(*event, audio, state)
         }
-        _ => unreachable!("checked by is_playback_command"),
+        _ => Err(CoreError::InvalidInput(
+            "command is not a playback command".to_string(),
+        )),
     };
 
     if result.is_ok()
@@ -2140,7 +2143,10 @@ async fn run_effect(
         }
         CoreCommand::StartQueuePrefetch { .. } => {
             let settings = core.get_audio_processing_settings()?;
-            let plan = core.queue_prefetch_plan(settings.prefetch_count as usize)?;
+            let prefetch_count = settings.prefetch_count.to_usize().ok_or_else(|| {
+                CoreError::InvalidInput("prefetch_count does not fit usize".to_string())
+            })?;
+            let plan = core.queue_prefetch_plan(prefetch_count)?;
             let outcome = core.run_queue_prefetch_plan(&plan, cancellation).await?;
             serde_json::to_value(outcome.statuses).map_err(CoreError::from)
         }
@@ -2605,7 +2611,9 @@ fn process_request(
                         serde_json::to_value(snapshot.saved_playlist_offline)
                             .map_err(CoreError::from)
                     }
-                    _ => unreachable!(),
+                    _ => Err(CoreError::InvalidInput(
+                        "command is not a snapshot-backed status command".to_string(),
+                    )),
                 };
                 match value {
                     Ok(value) => CoreCommandResult::succeeded(
@@ -2653,9 +2661,8 @@ fn process_request(
                 update_connectivity(state, core, &command_for_state, &value);
                 if matches!(command_for_state, CoreCommand::ImportPortableBackup { .. })
                     && let Ok(playback) = core.get_playback_state()
+                    && let Some(volume) = playback.app_volume.to_f32()
                 {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let volume = playback.app_volume as f32;
                     let _ = audio.set_volume(volume);
                 }
 
@@ -2825,6 +2832,14 @@ fn unavailable_result(command_id: CommandId) -> CoreCommandResult {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast"
+)]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};

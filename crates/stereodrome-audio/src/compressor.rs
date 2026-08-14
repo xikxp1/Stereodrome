@@ -2,6 +2,8 @@
 //! Reduces dynamic range by attenuating signals above a threshold,
 //! making perceived loudness more consistent across tracks.
 
+use num_traits::ToPrimitive;
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DynamicsPreset {
@@ -99,11 +101,6 @@ impl Compressor {
     }
 }
 
-/// Audio sample rates are far below the integer precision limit of `f32`.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "DSP coefficients are f32 and supported audio sample rates are exactly representable"
-)]
 fn sample_rate_as_f32(sample_rate: u32) -> f32 {
-    sample_rate as f32
+    sample_rate.to_f32().unwrap_or(48_000.0)
 }

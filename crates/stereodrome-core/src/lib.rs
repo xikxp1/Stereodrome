@@ -8,6 +8,14 @@ pub mod queue;
 pub mod runtime;
 mod subsonic;
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test helpers intentionally use fail-fast setup and direct fixture indexing"
+)]
 pub mod test_support;
 
 use std::collections::{HashMap, HashSet};
@@ -20,6 +28,7 @@ use std::time::{Duration, Instant};
 use backup::{BackupSummary, PortablePreferences};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use log::{debug, info, warn};
+use num_traits::ToPrimitive;
 use queue::{PlayQueue, QueueItem, QueueState, RepeatMode};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use submarine::{Client, api::get_album_list::Order, auth::AuthBuilder};
@@ -127,7 +136,10 @@ struct DownloadInProgressGuard {
 impl DownloadInProgressGuard {
     fn new(song_id: &str, cache_event_sender: Option<Sender<CacheStateEvent>>) -> Self {
         let started = if let Ok(mut downloads) = DOWNLOADS_IN_PROGRESS.lock() {
-            *downloads.entry(song_id.to_string()).or_default() += 1;
+            downloads
+                .entry(song_id.to_string())
+                .and_modify(|count| *count = count.saturating_add(1))
+                .or_insert(1);
             true
         } else {
             false
@@ -151,7 +163,7 @@ impl Drop for DownloadInProgressGuard {
         if let Ok(mut downloads) = DOWNLOADS_IN_PROGRESS.lock()
             && let Some(count) = downloads.get_mut(&self.song_id)
         {
-            *count -= 1;
+            *count = count.saturating_sub(1);
             if *count == 0 {
                 downloads.remove(&self.song_id);
                 finished = true;
@@ -1366,7 +1378,9 @@ impl StereodromeCore {
         let entries = self.audio_cache_entries()?;
         Ok(CacheStats {
             total_size: entries.iter().map(|(_, size)| *size).sum(),
-            file_count: entries.len() as u64,
+            file_count: u64::try_from(entries.len()).map_err(|_| {
+                CoreError::InvalidInput("audio cache entry count does not fit u64".to_string())
+            })?,
             max_size,
         })
     }
@@ -1944,7 +1958,13 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if queue, processing settings, or prefetched downloads cannot be accessed.
     pub async fn prefetch_next(&self) -> CoreResult<Vec<DownloadStatus>> {
-        let prefetch_count = self.get_audio_processing_settings()?.prefetch_count as usize;
+        let prefetch_count = self
+            .get_audio_processing_settings()?
+            .prefetch_count
+            .to_usize()
+            .ok_or_else(|| {
+                CoreError::InvalidInput("prefetch_count does not fit usize".to_string())
+            })?;
         self.prefetch_upcoming(prefetch_count).await
     }
 
@@ -2075,12 +2095,12 @@ impl StereodromeCore {
                         outcome.completed = false;
                         return Ok(outcome);
                     }
-                    Err(error) if attempt + 1 < PREFETCH_MAX_ATTEMPTS => {
+                    Err(error) if attempt.saturating_add(1) < PREFETCH_MAX_ATTEMPTS => {
                         let shift = u32::try_from(attempt).unwrap_or(u32::MAX).min(8);
                         let delay = PREFETCH_RETRY_BASE_DELAY.saturating_mul(1_u32 << shift);
                         warn!(
                             "Prefetch attempt {} failed for {song_id}: {error}; retrying in {} ms",
-                            attempt + 1,
+                            attempt.saturating_add(1),
                             delay.as_millis()
                         );
                         tokio::select! {
@@ -2146,7 +2166,9 @@ impl StereodromeCore {
             song_id.to_string(),
             PrefetchFailureState {
                 consecutive_failures,
-                retry_after: Instant::now() + cooldown,
+                retry_after: Instant::now().checked_add(cooldown).ok_or_else(|| {
+                    CoreError::InvalidInput("prefetch cooldown exceeds Instant range".to_string())
+                })?,
             },
         );
         Ok(())
@@ -2212,9 +2234,10 @@ impl StereodromeCore {
         ) {
             (Some(current), Some(next)) if current.album_id == next.album_id => {
                 let same_disc_consecutive = current.disc_number == next.disc_number
-                    && next.track_number == current.track_number + 1;
-                let next_disc_first_track =
-                    next.disc_number == current.disc_number + 1 && next.track_number == 1;
+                    && next.track_number == current.track_number.saturating_add(1);
+                let next_disc_first_track = next.disc_number
+                    == current.disc_number.saturating_add(1)
+                    && next.track_number == 1;
                 same_disc_consecutive || next_disc_first_track
             }
             _ => false,
@@ -3058,18 +3081,18 @@ impl StereodromeCore {
 
     fn remove_unprotected_cached_songs(&self, song_ids: HashSet<String>) -> CoreResult<(i32, i32)> {
         let _cache_guard = cache_mutation_guard()?;
-        let mut removed_count = 0;
-        let mut skipped_protected_count = 0;
+        let mut removed_count = 0_i32;
+        let mut skipped_protected_count = 0_i32;
 
         for song_id in song_ids {
             if self.song_protected_by_saved_playlist(&song_id)? {
-                skipped_protected_count += 1;
+                skipped_protected_count = skipped_protected_count.saturating_add(1);
                 continue;
             }
             if let Some(path) = self.cached_song_path(&song_id)? {
                 match std::fs::remove_file(&path) {
                     Ok(()) => {
-                        removed_count += 1;
+                        removed_count = removed_count.saturating_add(1);
                         self.emit_cache_state_event(CacheStateEvent::CachedChanged {
                             song_id: song_id.clone(),
                             cached: false,
@@ -4082,7 +4105,7 @@ async fn fetch_newest_album_candidates(
         }
 
         if head_album_id.is_none() {
-            head_album_id = Some(page[0].id.clone());
+            head_album_id = page.first().map(|album| album.id.clone());
         }
 
         let page_len = page.len();
@@ -4098,7 +4121,7 @@ async fn fetch_newest_album_candidates(
             break;
         }
 
-        offset += page_len;
+        offset = offset.saturating_add(page_len);
     }
 
     Ok(NewestScanResult {
@@ -4480,11 +4503,9 @@ fn compute_next_run_at(
         return Some(now.to_rfc3339());
     };
 
-    Some(
-        (last_attempt + ChronoDuration::minutes(i64::from(interval_minutes)))
-            .with_timezone(&Utc)
-            .to_rfc3339(),
-    )
+    last_attempt
+        .checked_add_signed(ChronoDuration::minutes(i64::from(interval_minutes)))
+        .map(|next_run| next_run.with_timezone(&Utc).to_rfc3339())
 }
 
 fn prune_stale_library_rows(conn: &Connection, synced_at: &str) -> CoreResult<()> {
@@ -4683,6 +4704,14 @@ pub(crate) fn clamp_audio_processing_settings(settings: &mut AudioProcessingSett
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast"
+)]
 mod tests {
     use super::{
         AudioProcessingSettings, BinauralPreset, CacheStateEvent, ConnectivitySettings, CoreError,

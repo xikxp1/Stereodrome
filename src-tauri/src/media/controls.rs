@@ -112,7 +112,7 @@ fn media_controls_hwnd(app_handle: &AppHandle) -> Option<usize> {
     };
 
     match window.hwnd() {
-        Ok(hwnd) => Some(hwnd.0 as usize),
+        Ok(hwnd) => usize::try_from(hwnd.0).ok(),
         Err(e) => {
             error!("Failed to initialize media controls: could not get main window HWND: {e}");
             None
@@ -130,7 +130,7 @@ fn run_media_controls_thread(
     let config = PlatformConfig {
         dbus_name: "stereodrome",
         display_name: "Stereodrome",
-        hwnd: hwnd.map(|value| value as *mut std::ffi::c_void),
+        hwnd: hwnd.map(std::ptr::with_exposed_provenance_mut::<std::ffi::c_void>),
     };
 
     let mut controls = match MediaControls::new(config) {

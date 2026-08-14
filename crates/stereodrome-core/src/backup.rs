@@ -584,7 +584,10 @@ fn validate_queue(queue: &BackupQueue, song_ids: &HashSet<&str>) -> CoreResult<(
     let counts = |items: &[QueueItem]| {
         let mut counts = HashMap::<String, usize>::new();
         for item in items {
-            *counts.entry(item.song_id.clone()).or_default() += 1;
+            counts
+                .entry(item.song_id.clone())
+                .and_modify(|count| *count = count.saturating_add(1))
+                .or_insert(1);
         }
         counts
     };
@@ -837,6 +840,14 @@ fn repeat_mode_name(mode: RepeatMode) -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast"
+)]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 

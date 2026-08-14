@@ -1,4 +1,5 @@
 use log::{debug, error, info, warn};
+use num_traits::ToPrimitive;
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::any::Any;
@@ -669,18 +670,22 @@ impl SharedState {
         let mut cumulative_position = source_position.max(0.0);
         if inner.gapless_segments.len() > 1 {
             let mut segment_idx = Self::segment_index_for_current_position(&inner);
-            let current_segment = &inner.gapless_segments[segment_idx];
+            let Some(current_segment) = inner.gapless_segments.get(segment_idx) else {
+                return false;
+            };
             let candidate = current_segment.cumulative_start + source_position;
             let near_segment_end =
                 previous >= current_segment.cumulative_start + current_segment.duration - 0.5;
-            if segment_idx + 1 < inner.gapless_segments.len()
+            let next_segment_idx = segment_idx.saturating_add(1);
+            if next_segment_idx < inner.gapless_segments.len()
                 && near_segment_end
                 && candidate + 0.25 < previous
             {
-                segment_idx += 1;
+                segment_idx = next_segment_idx;
             }
-            cumulative_position =
-                inner.gapless_segments[segment_idx].cumulative_start + source_position.max(0.0);
+            if let Some(segment) = inner.gapless_segments.get(segment_idx) {
+                cumulative_position = segment.cumulative_start + source_position.max(0.0);
+            }
         }
 
         inner.consumed_position = cumulative_position.clamp(0.0, inner.duration);
@@ -704,7 +709,7 @@ impl SharedState {
         }
 
         let segment_idx = Self::segment_index_for_current_position(&inner);
-        let segment = &inner.gapless_segments[segment_idx];
+        let segment = inner.gapless_segments.get(segment_idx)?;
         let position = (inner.consumed_position - segment.cumulative_start)
             .max(0.0)
             .min(segment.duration);
@@ -762,37 +767,38 @@ impl SharedState {
         if inner.gapless_segments.len() > 1 {
             // Find which segment we're in
             let seg_idx = Self::segment_index_for_current_position(&inner);
-            let seg = &inner.gapless_segments[seg_idx];
-            let song_pos = (cumulative_pos - seg.cumulative_start)
-                .max(0.0)
-                .min(seg.duration);
+            if let Some(seg) = inner.gapless_segments.get(seg_idx) {
+                let song_pos = (cumulative_pos - seg.cumulative_start)
+                    .max(0.0)
+                    .min(seg.duration);
 
-            (
-                PlaybackState {
-                    state: lifecycle_state,
-                    is_playing,
-                    position: song_pos,
-                    duration: seg.duration,
-                    volume: inner.volume,
-                    song: Some(seg.metadata.clone()),
-                    output_state: self.output_state(),
-                },
-                seg_idx,
-            )
-        } else {
-            (
-                PlaybackState {
-                    state: lifecycle_state,
-                    is_playing,
-                    position: cumulative_pos,
-                    duration: inner.duration,
-                    volume: inner.volume,
-                    song: inner.current_song.clone(),
-                    output_state: self.output_state(),
-                },
-                0,
-            )
+                return (
+                    PlaybackState {
+                        state: lifecycle_state,
+                        is_playing,
+                        position: song_pos,
+                        duration: seg.duration,
+                        volume: inner.volume,
+                        song: Some(seg.metadata.clone()),
+                        output_state: self.output_state(),
+                    },
+                    seg_idx,
+                );
+            }
         }
+
+        (
+            PlaybackState {
+                state: lifecycle_state,
+                is_playing,
+                position: cumulative_pos,
+                duration: inner.duration,
+                volume: inner.volume,
+                song: inner.current_song.clone(),
+                output_state: self.output_state(),
+            },
+            0,
+        )
     }
 
     fn get_status(&self) -> PlaybackStatus {
@@ -814,7 +820,10 @@ impl SharedState {
             inner.current_song.as_ref().map(|song| song.id.clone())
         } else {
             let segment_idx = Self::segment_index_for_current_position(&inner);
-            Some(inner.gapless_segments[segment_idx].metadata.id.clone())
+            inner
+                .gapless_segments
+                .get(segment_idx)
+                .map(|segment| segment.metadata.id.clone())
         }?;
 
         Some(PlaybackIdentity {
@@ -857,7 +866,8 @@ impl AudioStateHandle {
     #[must_use]
     pub fn is_last_gapless_segment(&self, segment_idx: usize) -> bool {
         let inner = self.shared_state.read_inner();
-        inner.gapless_segments.len() <= 1 || segment_idx == inner.gapless_segments.len() - 1
+        inner.gapless_segments.len() <= 1
+            || segment_idx.saturating_add(1) == inner.gapless_segments.len()
     }
 
     #[must_use]
@@ -1358,54 +1368,50 @@ fn append_processed_source<S>(
     S: Source<Item = f32> + Send + 'static,
 {
     let gain = normalization_gain.unwrap_or(1.0);
-    let use_eq = equalizer_settings.is_some_and(|eq| !eq.is_flat());
+    let equalizer_settings = equalizer_settings.filter(|eq| !eq.is_flat());
 
-    match (dynamics_preset, binaural_preset, use_eq) {
-        (Some(dynamics), Some(binaural), true) => {
+    match (dynamics_preset, binaural_preset, equalizer_settings) {
+        (Some(dynamics), Some(binaural), Some(equalizer)) => {
             let normalizing_source = NormalizingSource::with_clamp(source, gain, false);
             let dynamics_source = DynamicsSource::new(normalizing_source, dynamics);
-            let equalizer_source =
-                EqualizerSource::new(dynamics_source, equalizer_settings.expect("eq checked"));
+            let equalizer_source = EqualizerSource::new(dynamics_source, equalizer);
             let binaural_source = BinauralSource::new(equalizer_source, binaural);
             sink.append(binaural_source);
         }
-        (Some(dynamics), Some(binaural), false) => {
+        (Some(dynamics), Some(binaural), None) => {
             let normalizing_source = NormalizingSource::with_clamp(source, gain, false);
             let dynamics_source = DynamicsSource::new(normalizing_source, dynamics);
             let binaural_source = BinauralSource::new(dynamics_source, binaural);
             sink.append(binaural_source);
         }
-        (Some(dynamics), None, true) => {
+        (Some(dynamics), None, Some(equalizer)) => {
             let normalizing_source = NormalizingSource::with_clamp(source, gain, false);
             let dynamics_source = DynamicsSource::new(normalizing_source, dynamics);
-            let equalizer_source =
-                EqualizerSource::new(dynamics_source, equalizer_settings.expect("eq checked"));
+            let equalizer_source = EqualizerSource::new(dynamics_source, equalizer);
             sink.append(equalizer_source);
         }
-        (Some(dynamics), None, false) => {
+        (Some(dynamics), None, None) => {
             let normalizing_source = NormalizingSource::with_clamp(source, gain, false);
             let dynamics_source = DynamicsSource::new(normalizing_source, dynamics);
             sink.append(dynamics_source);
         }
-        (None, Some(binaural), true) => {
+        (None, Some(binaural), Some(equalizer)) => {
             let normalizing_source = NormalizingSource::new(source, gain);
-            let equalizer_source =
-                EqualizerSource::new(normalizing_source, equalizer_settings.expect("eq checked"));
+            let equalizer_source = EqualizerSource::new(normalizing_source, equalizer);
             let binaural_source = BinauralSource::new(equalizer_source, binaural);
             sink.append(binaural_source);
         }
-        (None, Some(binaural), false) => {
+        (None, Some(binaural), None) => {
             let normalizing_source = NormalizingSource::new(source, gain);
             let binaural_source = BinauralSource::new(normalizing_source, binaural);
             sink.append(binaural_source);
         }
-        (None, None, true) => {
+        (None, None, Some(equalizer)) => {
             let normalizing_source = NormalizingSource::new(source, gain);
-            let equalizer_source =
-                EqualizerSource::new(normalizing_source, equalizer_settings.expect("eq checked"));
+            let equalizer_source = EqualizerSource::new(normalizing_source, equalizer);
             sink.append(equalizer_source);
         }
-        (None, None, false) => {
+        (None, None, None) => {
             // No processing requested: skip the normalizer wrapper entirely
             // rather than multiplying every sample by 1.0 on the render thread.
             if let Some(gain) = normalization_gain {
@@ -1474,7 +1480,7 @@ impl PlaybackWatchdog {
         let now = Instant::now();
         Self {
             last_progress_at: now,
-            grace_until: now + STALL_GRACE_DURATION,
+            grace_until: now.checked_add(STALL_GRACE_DURATION).unwrap_or(now),
             last_position: 0.0,
         }
     }
@@ -1482,7 +1488,7 @@ impl PlaybackWatchdog {
     fn reset(&mut self, position: f64) {
         let now = Instant::now();
         self.last_progress_at = now;
-        self.grace_until = now + STALL_GRACE_DURATION;
+        self.grace_until = now.checked_add(STALL_GRACE_DURATION).unwrap_or(now);
         self.last_position = position;
     }
 
@@ -1870,10 +1876,9 @@ impl<'a> AudioThread<'a> {
             return None;
         }
         let paused_since = self.paused_since?;
-        Some(
-            (paused_since + PAUSED_OUTPUT_RELEASE_TIMEOUT)
-                .saturating_duration_since(Instant::now()),
-        )
+        paused_since
+            .checked_add(PAUSED_OUTPUT_RELEASE_TIMEOUT)
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
 
     /// Drops the sinks and the output device of a long-paused player. The
@@ -2121,11 +2126,9 @@ impl<'a> AudioThread<'a> {
                 .as_ref()
                 .is_some_and(rodio::Player::is_paused);
             if was_paused {
-                let sink = self
-                    .current_sink
-                    .as_ref()
-                    .expect("resumable sink checked above");
-                sink.play();
+                if let Some(sink) = self.current_sink.as_ref() {
+                    sink.play();
+                }
                 if let Some(ref crossfade_sink) = self.crossfade_sink {
                     crossfade_sink.play();
                 }
@@ -2305,9 +2308,13 @@ impl<'a> AudioThread<'a> {
                     break;
                 }
             }
-            let segment = &inner.gapless_segments[segment_index];
-            let clamped = position_secs.clamp(0.0, segment.duration);
-            (clamped, segment.cumulative_start + clamped)
+            if let Some(segment) = inner.gapless_segments.get(segment_index) {
+                let clamped = position_secs.clamp(0.0, segment.duration);
+                (clamped, segment.cumulative_start + clamped)
+            } else {
+                let clamped = position_secs.clamp(0.0, inner.duration);
+                (clamped, clamped)
+            }
         } else {
             let clamped = position_secs.clamp(0.0, inner.duration);
             (clamped, clamped)
@@ -2607,12 +2614,8 @@ impl<'a> AudioThread<'a> {
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "crossfade timing uses f64 but rodio volume controls require f32"
-)]
 fn crossfade_factor(factor: f64) -> f32 {
-    factor as f32
+    factor.to_f32().unwrap_or_default()
 }
 
 fn panic_payload_message(payload: &(dyn Any + Send)) -> &str {
@@ -2679,7 +2682,7 @@ fn wait_for_audio_recovery(
     delay: Option<Duration>,
     allow_explicit_retry: bool,
 ) -> SupervisorWait {
-    let deadline = delay.map(|delay| Instant::now() + delay);
+    let deadline = delay.and_then(|delay| Instant::now().checked_add(delay));
     loop {
         let command = match deadline {
             Some(deadline) => {
@@ -2836,6 +2839,11 @@ fn run_audio_thread(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast with contextual messages"
+)]
 mod tests {
     use super::*;
 
@@ -2848,12 +2856,21 @@ mod tests {
             std::process::id()
         ));
         let samples = [0_i16, 1_000, -1_000, 0];
-        let data_len =
-            u32::try_from(samples.len() * std::mem::size_of::<i16>()).expect("test WAV fits u32");
+        let sample_bytes = samples
+            .len()
+            .checked_mul(std::mem::size_of::<i16>())
+            .expect("test WAV byte length fits usize");
+        let data_len = u32::try_from(sample_bytes).expect("test WAV fits u32");
         let data_capacity = usize::try_from(data_len).expect("test WAV length fits usize");
-        let mut wav = Vec::with_capacity(44 + data_capacity);
+        let wav_capacity = 44_usize
+            .checked_add(data_capacity)
+            .expect("test WAV capacity fits usize");
+        let mut wav = Vec::with_capacity(wav_capacity);
         wav.extend_from_slice(b"RIFF");
-        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        let riff_len = 36_u32
+            .checked_add(data_len)
+            .expect("test WAV RIFF length fits u32");
+        wav.extend_from_slice(&riff_len.to_le_bytes());
         wav.extend_from_slice(b"WAVEfmt ");
         wav.extend_from_slice(&16_u32.to_le_bytes());
         wav.extend_from_slice(&1_u16.to_le_bytes());

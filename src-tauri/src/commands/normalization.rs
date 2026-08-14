@@ -245,7 +245,7 @@ pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>
             .await;
 
             match result {
-                Ok(true) => successful_writes += 1,
+                Ok(true) => successful_writes = successful_writes.saturating_add(1),
                 Ok(false) => {}
                 Err(_) => warn!("Analysis task panicked for {song_id}"),
             }
@@ -255,7 +255,7 @@ pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>
                 analyzed: i64::try_from(i.saturating_add(1)).unwrap_or(i64::MAX),
                 total,
                 current_song: song_id,
-                analyzed_count: already_analyzed + successful_writes,
+                analyzed_count: already_analyzed.saturating_add(successful_writes),
                 total_count,
             };
             *progress_state.lock_recover() = Some(progress.clone());
@@ -267,7 +267,7 @@ pub async fn analyze_all_songs(app_handle: AppHandle, state: State<'_, AppState>
             analyzed: total,
             total,
             current_song: String::new(),
-            analyzed_count: already_analyzed + successful_writes,
+            analyzed_count: already_analyzed.saturating_add(successful_writes),
             total_count,
         };
         let _ = app_handle.emit("normalization-progress", completion);

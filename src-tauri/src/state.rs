@@ -53,12 +53,11 @@ impl AppState {
             StereodromeAudioPort::new_with_spectrum(true)
                 .map_err(|error| AppError::Runtime(error.to_string()))?,
         );
-        let runtime = StereodromeRuntimeHandle::start_with_core_and_audio(
-            data_dir,
-            core,
-            Arc::clone(&runtime_audio) as Arc<dyn stereodrome_core::runtime::AudioPort>,
-        )
-        .map_err(|error| AppError::Runtime(error.to_string()))?;
+        let runtime_audio_port: Arc<dyn stereodrome_core::runtime::AudioPort> =
+            runtime_audio.clone();
+        let runtime =
+            StereodromeRuntimeHandle::start_with_core_and_audio(data_dir, core, runtime_audio_port)
+                .map_err(|error| AppError::Runtime(error.to_string()))?;
 
         Ok(Self {
             runtime,
