@@ -347,6 +347,34 @@ struct NewestPageScanResult {
     reached_previous_head: bool,
 }
 
+#[derive(Debug)]
+struct InvalidatableCache<T> {
+    generation: u64,
+    value: Option<T>,
+}
+
+impl<T> Default for InvalidatableCache<T> {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            value: None,
+        }
+    }
+}
+
+impl<T> InvalidatableCache<T> {
+    fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.value = None;
+    }
+
+    fn store_if_current(&mut self, generation: u64, value: T) {
+        if self.generation == generation {
+            self.value = Some(value);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DueSyncJob {
     Incremental,
@@ -366,9 +394,9 @@ pub struct StereodromeCore {
     lastfm_retry_lock: AsyncMutex<()>,
     cache_event_sender: Option<Sender<CacheStateEvent>>,
     runtime_cache_event_sender: Mutex<Option<Sender<CacheStateEvent>>>,
-    offline_song_ids_cache: Mutex<Option<Vec<String>>>,
+    offline_song_ids_cache: Mutex<InvalidatableCache<Vec<String>>>,
     audio_processing_settings_cache: Mutex<Option<AudioProcessingSettings>>,
-    gapless_eligibility_cache: Mutex<Option<((String, String), bool)>>,
+    gapless_eligibility_cache: Mutex<InvalidatableCache<((String, String), bool)>>,
 }
 
 fn ensure_queue_navigation_matches(
@@ -439,9 +467,9 @@ impl StereodromeCore {
             lastfm_retry_lock: AsyncMutex::new(()),
             cache_event_sender,
             runtime_cache_event_sender: Mutex::new(None),
-            offline_song_ids_cache: Mutex::new(None),
+            offline_song_ids_cache: Mutex::new(InvalidatableCache::default()),
             audio_processing_settings_cache: Mutex::new(None),
-            gapless_eligibility_cache: Mutex::new(None),
+            gapless_eligibility_cache: Mutex::new(InvalidatableCache::default()),
         })
     }
 
@@ -449,7 +477,7 @@ impl StereodromeCore {
     /// the download records, or the cached audio files themselves.
     fn invalidate_offline_song_ids_cache(&self) {
         if let Ok(mut cache) = self.offline_song_ids_cache.lock() {
-            *cache = None;
+            cache.invalidate();
         }
     }
 
@@ -1430,14 +1458,19 @@ impl StereodromeCore {
     /// # Errors
     /// Returns an error if offline song state cannot be read from the database.
     pub fn get_offline_song_ids(&self) -> CoreResult<Vec<String>> {
-        if let Ok(cache) = self.offline_song_ids_cache.lock()
-            && let Some(song_ids) = cache.as_ref()
-        {
-            return Ok(song_ids.clone());
-        }
+        let generation = if let Ok(cache) = self.offline_song_ids_cache.lock() {
+            if let Some(song_ids) = cache.value.as_ref() {
+                return Ok(song_ids.clone());
+            }
+            Some(cache.generation)
+        } else {
+            None
+        };
         let song_ids = self.compute_offline_song_ids()?;
-        if let Ok(mut cache) = self.offline_song_ids_cache.lock() {
-            *cache = Some(song_ids.clone());
+        if let Some(generation) = generation
+            && let Ok(mut cache) = self.offline_song_ids_cache.lock()
+        {
+            cache.store_if_current(generation, song_ids.clone());
         }
         Ok(song_ids)
     }
@@ -2249,13 +2282,17 @@ impl StereodromeCore {
         // The playback tick re-evaluates the same transition several times a
         // second; track metadata only changes on library sync or backup
         // import, which invalidate this cache.
-        if let Ok(cache) = self.gapless_eligibility_cache.lock()
-            && let Some(((cached_current, cached_next), eligible)) = cache.as_ref()
-            && cached_current == current_song_id
-            && cached_next == next_song_id
-        {
-            return Ok(*eligible);
-        }
+        let generation = if let Ok(cache) = self.gapless_eligibility_cache.lock() {
+            if let Some(((cached_current, cached_next), eligible)) = cache.value.as_ref()
+                && cached_current == current_song_id
+                && cached_next == next_song_id
+            {
+                return Ok(*eligible);
+            }
+            Some(cache.generation)
+        } else {
+            None
+        };
 
         let conn = db::open_connection(&self.db_path)?;
         let eligible = match (
@@ -2273,18 +2310,23 @@ impl StereodromeCore {
             _ => false,
         };
 
-        if let Ok(mut cache) = self.gapless_eligibility_cache.lock() {
-            *cache = Some((
-                (current_song_id.to_string(), next_song_id.to_string()),
-                eligible,
-            ));
+        if let Some(generation) = generation
+            && let Ok(mut cache) = self.gapless_eligibility_cache.lock()
+        {
+            cache.store_if_current(
+                generation,
+                (
+                    (current_song_id.to_string(), next_song_id.to_string()),
+                    eligible,
+                ),
+            );
         }
         Ok(eligible)
     }
 
     fn invalidate_gapless_eligibility_cache(&self) {
         if let Ok(mut cache) = self.gapless_eligibility_cache.lock() {
-            *cache = None;
+            cache.invalidate();
         }
     }
 
@@ -4759,9 +4801,9 @@ mod tests {
     use super::{
         AudioProcessingSettings, BinauralPreset, CacheStateEvent, ConnectivitySettings, CoreError,
         DownloadInProgressGuard, DownloadRecord, DownloadRecordFinalizer, DueSyncJob,
-        DynamicsPreset, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate,
-        NewestAlbumPageEntry, NewestPageScanResult, NormalizationMode, PendingAtomicFile,
-        PlaybackProgress, ServerConfig, Song, StereodromeCore, SyncSettings,
+        DynamicsPreset, InvalidatableCache, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT,
+        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, NormalizationMode,
+        PendingAtomicFile, PlaybackProgress, ServerConfig, Song, StereodromeCore, SyncSettings,
         atomic_write_temporary_path, build_client, compute_next_run_at, cover_art_filename_matches,
         cover_cache_filename, distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete,
         is_job_due, path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
@@ -4773,6 +4815,22 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::mpsc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn invalidatable_cache_rejects_values_from_an_old_generation() {
+        let mut cache = InvalidatableCache::default();
+        let old_generation = cache.generation;
+
+        cache.invalidate();
+        cache.store_if_current(old_generation, "stale");
+
+        assert_eq!(cache.value, None);
+
+        let current_generation = cache.generation;
+        cache.store_if_current(current_generation, "fresh");
+
+        assert_eq!(cache.value, Some("fresh"));
+    }
 
     #[test]
     fn prefetches_large_cover_art_for_small_requests() {
