@@ -5687,6 +5687,7 @@ name = "stereodrome-core"
 version = "0.3.1"
 dependencies = [
  "chrono",
+ "crossbeam-channel",
  "log",
  "md5 0.8.1",
  "num-traits",

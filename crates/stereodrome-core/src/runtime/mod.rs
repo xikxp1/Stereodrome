@@ -90,7 +90,9 @@ struct RuntimeInner {
     next_command_id: AtomicU64,
     stopped: AtomicBool,
     monitor_running: Arc<AtomicBool>,
+    cache_input_shutdown: crossbeam_channel::Sender<()>,
     tick_gate: Arc<PlaybackTickGate>,
+    cache_input_thread: Mutex<Option<thread::JoinHandle<()>>>,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
@@ -100,8 +102,14 @@ impl Drop for RuntimeInner {
             let _ = self.mailbox.send(MailboxMessage::Stop);
         }
         self.monitor_running.store(false, Ordering::SeqCst);
+        let _ = self.cache_input_shutdown.try_send(());
         self.tick_gate.stop();
         if let Ok(thread) = self.thread.get_mut()
+            && let Some(thread) = thread.take()
+        {
+            let _ = thread.join();
+        }
+        if let Ok(thread) = self.cache_input_thread.get_mut()
             && let Some(thread) = thread.take()
         {
             let _ = thread.join();
@@ -247,7 +255,7 @@ impl StereodromeRuntimeHandle {
             Arc::clone(&monitor_running),
             Arc::clone(&tick_gate),
         );
-        start_cache_inputs(&core, mailbox.clone(), Arc::clone(&monitor_running));
+        let (cache_input_shutdown, cache_input_thread) = start_cache_inputs(&core, mailbox.clone());
         let actor_tick_gate = Arc::clone(&tick_gate);
         let actor_thread = thread::Builder::new()
             .name("stereodrome-runtime".to_string())
@@ -273,7 +281,9 @@ impl StereodromeRuntimeHandle {
                 next_command_id: AtomicU64::new(GENERATED_COMMAND_ID_START),
                 stopped: AtomicBool::new(false),
                 monitor_running,
+                cache_input_shutdown,
                 tick_gate,
+                cache_input_thread: Mutex::new(Some(cache_input_thread)),
                 thread: Mutex::new(Some(actor_thread)),
             }),
         })
@@ -349,6 +359,7 @@ impl StereodromeRuntimeHandle {
             return;
         }
         self.inner.monitor_running.store(false, Ordering::SeqCst);
+        let _ = self.inner.cache_input_shutdown.try_send(());
         self.inner.tick_gate.stop();
         let command_id = CommandId(self.inner.next_command_id.fetch_add(1, Ordering::Relaxed));
         let (response_sender, response_receiver) = mpsc::channel();
@@ -362,6 +373,11 @@ impl StereodromeRuntimeHandle {
         });
         let _ = response_receiver.recv();
         if let Ok(mut thread) = self.inner.thread.lock()
+            && let Some(thread) = thread.take()
+        {
+            let _ = thread.join();
+        }
+        if let Ok(mut thread) = self.inner.cache_input_thread.lock()
             && let Some(thread) = thread.take()
         {
             let _ = thread.join();
@@ -497,21 +513,25 @@ fn start_playback_inputs(
 fn start_cache_inputs(
     core: &StereodromeCore,
     mailbox: SyncSender<MailboxMessage>,
-    running: Arc<AtomicBool>,
-) {
+) -> (crossbeam_channel::Sender<()>, thread::JoinHandle<()>) {
     let cache_events = core.subscribe_cache_state_events();
-    thread::spawn(move || {
-        while running.load(Ordering::SeqCst) {
-            match cache_events.recv_timeout(Duration::from_millis(250)) {
-                Ok(_) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-            if mailbox.send(MailboxMessage::CacheStateChanged).is_err() {
-                break;
+    let (shutdown_sender, shutdown_receiver) = crossbeam_channel::bounded(1);
+    let thread = thread::spawn(move || {
+        loop {
+            crossbeam_channel::select! {
+                recv(shutdown_receiver) -> _ => break,
+                recv(cache_events) -> event => {
+                    if event.is_err() {
+                        break;
+                    }
+                    if mailbox.send(MailboxMessage::CacheStateChanged).is_err() {
+                        break;
+                    }
+                }
             }
         }
     });
+    (shutdown_sender, thread)
 }
 
 #[allow(

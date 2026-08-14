@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
+crossbeam-channel = "0.5.16"
 log = "0.4.33"
 md5 = "0.8.1"
 num-traits = "0.2.19"

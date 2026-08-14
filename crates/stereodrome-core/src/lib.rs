@@ -21,12 +21,13 @@ pub mod test_support;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, LazyLock, Mutex, Once, Weak};
 use std::time::{Duration, Instant};
 
 use backup::{BackupSummary, PortablePreferences};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use crossbeam_channel::{Receiver as RuntimeCacheEventReceiver, Sender as RuntimeCacheEventSender};
 use log::{debug, info, warn};
 use num_traits::ToPrimitive;
 use queue::{PlayQueue, QueueItem, QueueState, RepeatMode};
@@ -109,6 +110,25 @@ pub enum CacheStateEvent {
     Reconcile,
 }
 
+#[derive(Clone)]
+enum CacheStateEventSender {
+    External(Sender<CacheStateEvent>),
+    Runtime(RuntimeCacheEventSender<CacheStateEvent>),
+}
+
+impl CacheStateEventSender {
+    fn send(&self, event: CacheStateEvent) {
+        match self {
+            Self::External(sender) => {
+                let _ = sender.send(event);
+            }
+            Self::Runtime(sender) => {
+                let _ = sender.send(event);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuePrefetchPlan {
     pub queue_revision: u64,
@@ -130,11 +150,11 @@ struct PrefetchFailureState {
 
 struct DownloadInProgressGuard {
     song_id: String,
-    cache_event_senders: Vec<Sender<CacheStateEvent>>,
+    cache_event_senders: Vec<CacheStateEventSender>,
 }
 
 impl DownloadInProgressGuard {
-    fn new(song_id: &str, cache_event_senders: Vec<Sender<CacheStateEvent>>) -> Self {
+    fn new(song_id: &str, cache_event_senders: Vec<CacheStateEventSender>) -> Self {
         let started = if let Ok(mut downloads) = DOWNLOADS_IN_PROGRESS.lock() {
             downloads
                 .entry(song_id.to_string())
@@ -150,7 +170,7 @@ impl DownloadInProgressGuard {
                 downloading: true,
             };
             for sender in &cache_event_senders {
-                let _ = sender.send(event.clone());
+                sender.send(event.clone());
             }
         }
         Self {
@@ -178,7 +198,7 @@ impl Drop for DownloadInProgressGuard {
                 downloading: false,
             };
             for sender in &self.cache_event_senders {
-                let _ = sender.send(event.clone());
+                sender.send(event.clone());
             }
         }
     }
@@ -393,7 +413,7 @@ pub struct StereodromeCore {
     prefetch_failures: Mutex<HashMap<String, PrefetchFailureState>>,
     lastfm_retry_lock: AsyncMutex<()>,
     cache_event_sender: Option<Sender<CacheStateEvent>>,
-    runtime_cache_event_sender: Mutex<Option<Sender<CacheStateEvent>>>,
+    runtime_cache_event_sender: Mutex<Option<RuntimeCacheEventSender<CacheStateEvent>>>,
     offline_song_ids_cache: Mutex<InvalidatableCache<Vec<String>>>,
     audio_processing_settings_cache: Mutex<Option<AudioProcessingSettings>>,
     gapless_eligibility_cache: Mutex<InvalidatableCache<((String, String), bool)>>,
@@ -495,20 +515,27 @@ impl StereodromeCore {
         }
     }
 
-    pub(crate) fn subscribe_cache_state_events(&self) -> Receiver<CacheStateEvent> {
-        let (sender, receiver) = std::sync::mpsc::channel();
+    pub(crate) fn subscribe_cache_state_events(
+        &self,
+    ) -> RuntimeCacheEventReceiver<CacheStateEvent> {
+        let (sender, receiver) = crossbeam_channel::unbounded();
         if let Ok(mut runtime_sender) = self.runtime_cache_event_sender.lock() {
             *runtime_sender = Some(sender);
         }
         receiver
     }
 
-    fn cache_event_senders(&self) -> Vec<Sender<CacheStateEvent>> {
-        let mut senders = self.cache_event_sender.iter().cloned().collect::<Vec<_>>();
+    fn cache_event_senders(&self) -> Vec<CacheStateEventSender> {
+        let mut senders = self
+            .cache_event_sender
+            .iter()
+            .cloned()
+            .map(CacheStateEventSender::External)
+            .collect::<Vec<_>>();
         if let Ok(runtime_sender) = self.runtime_cache_event_sender.lock()
             && let Some(sender) = runtime_sender.as_ref()
         {
-            senders.push(sender.clone());
+            senders.push(CacheStateEventSender::Runtime(sender.clone()));
         }
         senders
     }
@@ -4799,14 +4826,15 @@ pub(crate) fn clamp_audio_processing_settings(settings: &mut AudioProcessingSett
 )]
 mod tests {
     use super::{
-        AudioProcessingSettings, BinauralPreset, CacheStateEvent, ConnectivitySettings, CoreError,
-        DownloadInProgressGuard, DownloadRecord, DownloadRecordFinalizer, DueSyncJob,
-        DynamicsPreset, InvalidatableCache, LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT,
-        NewestAlbumCandidate, NewestAlbumPageEntry, NewestPageScanResult, NormalizationMode,
-        PendingAtomicFile, PlaybackProgress, ServerConfig, Song, StereodromeCore, SyncSettings,
-        atomic_write_temporary_path, build_client, compute_next_run_at, cover_art_filename_matches,
-        cover_cache_filename, distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete,
-        is_job_due, path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
+        AudioProcessingSettings, BinauralPreset, CacheStateEvent, CacheStateEventSender,
+        ConnectivitySettings, CoreError, DownloadInProgressGuard, DownloadRecord,
+        DownloadRecordFinalizer, DueSyncJob, DynamicsPreset, InvalidatableCache,
+        LARGE_COVER_ART_SIZE, MOBILE_PLAYBACK_FORMAT, NewestAlbumCandidate, NewestAlbumPageEntry,
+        NewestPageScanResult, NormalizationMode, PendingAtomicFile, PlaybackProgress, ServerConfig,
+        Song, StereodromeCore, SyncSettings, atomic_write_temporary_path, build_client,
+        compute_next_run_at, cover_art_filename_matches, cover_cache_filename,
+        distinct_nonempty_cover_art_ids, ensure_incremental_albums_complete, is_job_due,
+        path_to_file_uri, playlist_song_ids_to_add, prune_stale_library_rows,
         scan_newest_album_page, should_prefetch_large_cover_art, write_sync_value,
     };
     use crate::queue::{PlayQueue, QueueItem, RepeatMode};
@@ -5712,7 +5740,10 @@ mod tests {
         let song_id = format!("event-song-{}", std::process::id());
 
         {
-            let _guard = DownloadInProgressGuard::new(&song_id, vec![sender]);
+            let _guard = DownloadInProgressGuard::new(
+                &song_id,
+                vec![CacheStateEventSender::External(sender)],
+            );
             assert_eq!(
                 receiver
                     .recv_timeout(Duration::from_secs(1))
