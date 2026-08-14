@@ -338,6 +338,7 @@ public class StereodromeCoreModule: Module {
   private var remoteCommandTargets: [Any] = []
   private var audioSessionObservers: [NSObjectProtocol] = []
   private var canPlayRemoteCommandsValue = false
+  private var isPlayingRemoteCommandsValue = false
   private let audioSessionStateLock = NSLock()
   private var ownsAudioSession = false
   private var audioSessionGeneration: UInt64 = 0
@@ -776,6 +777,7 @@ public class StereodromeCoreModule: Module {
       MPMediaItemPropertyPlaybackDuration: projection.durationSeconds,
       MPNowPlayingInfoPropertyElapsedPlaybackTime: projection.positionSeconds,
       MPNowPlayingInfoPropertyPlaybackRate: projection.isPlaying ? 1.0 : 0.0,
+      MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
       MPNowPlayingInfoPropertyPlaybackQueueCount: projection.queueCount,
     ]
 
@@ -802,7 +804,7 @@ public class StereodromeCoreModule: Module {
 
   private func clearNowPlayingInfo() {
     currentArtworkUri = nil
-    setCanPlayRemoteCommands(false)
+    setRemotePlaybackState(canPlay: false, isPlaying: false)
     let hasPublishedSession =
       MPNowPlayingInfoCenter.default().nowPlayingInfo != nil || !remoteCommandTargets.isEmpty
     guard hasPublishedSession else {
@@ -981,9 +983,16 @@ public class StereodromeCoreModule: Module {
     return canPlayRemoteCommandsValue
   }
 
-  private func setCanPlayRemoteCommands(_ canPlay: Bool) {
+  private func remotePlaybackState() -> (canPlay: Bool, isPlaying: Bool) {
+    remoteCommandStateLock.lock()
+    defer { remoteCommandStateLock.unlock() }
+    return (canPlayRemoteCommandsValue, isPlayingRemoteCommandsValue)
+  }
+
+  private func setRemotePlaybackState(canPlay: Bool, isPlaying: Bool) {
     remoteCommandStateLock.lock()
     canPlayRemoteCommandsValue = canPlay
+    isPlayingRemoteCommandsValue = isPlaying
     remoteCommandStateLock.unlock()
   }
 
@@ -997,11 +1006,43 @@ public class StereodromeCoreModule: Module {
   }
 
   /// Remote command handlers run on the main thread, but the underlying core
-  /// calls can block while Rust prepares media. Acknowledge
-  /// the command immediately and run it on a serial background queue.
+  /// calls can block while Rust prepares media. Publish the transport intent
+  /// before acknowledging it so iOS and external accessories route the next
+  /// play/pause event from the intended state. Rust's ordered snapshot then
+  /// reconciles the projection before dispatch returns on the background queue.
   private func enqueueRemoteCommand(_ action: RemoteCommandAction) -> MPRemoteCommandHandlerStatus {
+    let playbackState = remotePlaybackState()
+    let resolvedAction: RemoteCommandAction
+    switch action {
+    case .play:
+      guard playbackState.canPlay else {
+        return .noActionableNowPlayingItem
+      }
+      resolvedAction = .play
+    case .pause:
+      guard playbackState.canPlay || playbackState.isPlaying else {
+        return .noActionableNowPlayingItem
+      }
+      resolvedAction = .pause
+    case .toggle:
+      guard playbackState.canPlay || playbackState.isPlaying else {
+        return .noActionableNowPlayingItem
+      }
+      resolvedAction = playbackState.isPlaying ? .pause : .play
+    case .next, .previous, .stop:
+      resolvedAction = action
+    }
+
+    switch resolvedAction {
+    case .play:
+      publishRemoteTransportIntent(isPlaying: true, canPlay: playbackState.canPlay)
+    case .pause:
+      publishRemoteTransportIntent(isPlaying: false, canPlay: playbackState.canPlay)
+    case .toggle, .next, .previous, .stop:
+      break
+    }
     remoteCommandQueue.async {
-      self.performRemoteCommand(action)
+      self.performRemoteCommand(resolvedAction)
     }
     return .success
   }
@@ -1023,14 +1064,17 @@ public class StereodromeCoreModule: Module {
       guard canPlayRemoteCommands() else {
         return
       }
-      _ = dispatchCommand(["type": "resume-playback"], activateAudioSession: true)
-    case .pause:
-      _ = dispatchCommand(["type": "pause-playback"])
-    case .toggle:
-      if !canPlayRemoteCommands() {
-        return
+      let result = dispatchCommand(["type": "resume-playback"], activateAudioSession: true)
+      if !isSuccessfulRuntimeResult(result) {
+        restoreAuthoritativePlaybackProjection()
       }
-      _ = dispatchCommand(["type": "toggle-playback"], activateAudioSession: true)
+    case .pause:
+      let result = dispatchCommand(["type": "pause-playback"])
+      if !isSuccessfulRuntimeResult(result) {
+        restoreAuthoritativePlaybackProjection()
+      }
+    case .toggle:
+      return
     case .next:
       guard canPlayRemoteCommands() else {
         return
@@ -1061,18 +1105,51 @@ public class StereodromeCoreModule: Module {
     }
   }
 
+  private func restoreAuthoritativePlaybackProjection() {
+    playbackProjectionLock.lock()
+    let projection = playbackProjection
+    playbackProjectionLock.unlock()
+    performOnMainSync {
+      guard getActiveStereodromeCoreModule() === self else {
+        return
+      }
+      if let projection {
+        _ = applyPlaybackProjection(projection)
+      } else {
+        clearNowPlayingInfo()
+      }
+    }
+  }
+
   private func configureCommandAvailability(_ projection: PlaybackProjection) {
     let commandCenter = MPRemoteCommandCenter.shared()
     let canPlay = projection.canPlay
     let isPlaying = projection.isPlaying
-    setCanPlayRemoteCommands(canPlay)
+    setRemotePlaybackState(canPlay: canPlay, isPlaying: isPlaying)
     commandCenter.nextTrackCommand.isEnabled = canPlay && projection.canNext
     commandCenter.previousTrackCommand.isEnabled = canPlay && projection.canPrevious
     commandCenter.changePlaybackPositionCommand.isEnabled = projection.canSeek
-    commandCenter.playCommand.isEnabled = canPlay
-    commandCenter.pauseCommand.isEnabled = canPlay || isPlaying
-    commandCenter.togglePlayPauseCommand.isEnabled = canPlay || isPlaying
+    configureTransportCommandAvailability(canPlay: canPlay, isPlaying: isPlaying)
     commandCenter.stopCommand.isEnabled = true
+  }
+
+  private func publishRemoteTransportIntent(isPlaying: Bool, canPlay: Bool) {
+    let center = MPNowPlayingInfoCenter.default()
+    if var info = center.nowPlayingInfo {
+      info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+      info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+      center.nowPlayingInfo = info
+    }
+    updateNowPlayingPlaybackState(isPlaying: isPlaying)
+    setRemotePlaybackState(canPlay: canPlay, isPlaying: isPlaying)
+    configureTransportCommandAvailability(canPlay: canPlay, isPlaying: isPlaying)
+  }
+
+  private func configureTransportCommandAvailability(canPlay: Bool, isPlaying: Bool) {
+    let commandCenter = MPRemoteCommandCenter.shared()
+    commandCenter.playCommand.isEnabled = canPlay && !isPlaying
+    commandCenter.pauseCommand.isEnabled = isPlaying
+    commandCenter.togglePlayPauseCommand.isEnabled = canPlay || isPlaying
   }
 
   private func artworkValue(_ uri: String) -> MPMediaItemArtwork? {
