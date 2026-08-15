@@ -575,6 +575,14 @@ public class StereodromeCoreModule: Module {
       )
       ownsAudioSession = false
       audioSessionGeneration &+= 1
+    } catch let error as NSError where error.code == AVAudioSession.ErrorCode.isBusy.rawValue {
+      // Apple documents that deactivation still succeeds when running audio
+      // objects cause isBusy. Keep our ownership model aligned with the real
+      // session so the next Play reactivates it instead of treating it as live.
+      ownsAudioSession = false
+      audioSessionGeneration &+= 1
+      appContext?.jsLogger.warn(
+        "Audio session deactivated while output was still stopping: \(error.localizedDescription)")
     } catch {
       appContext?.jsLogger.warn("Failed to deactivate audio session: \(error.localizedDescription)")
     }
@@ -762,10 +770,10 @@ public class StereodromeCoreModule: Module {
     if projection.outputState == "unavailable" {
       releaseAudioSession()
     }
-    // The Rust engine closes its output device after a pause idle timeout.
-    // Nothing renders once the device is closed, so hand the session back and
-    // let iOS suspend the app until the user resumes; Now Playing info stays
-    // so lock screen controls keep working.
+    // The iOS Rust build closes its output device immediately on pause. iOS
+    // ignores MPNowPlayingInfoCenter.playbackState, so deactivating the audio
+    // session here is what makes the system transport widget show Play. Now
+    // Playing metadata remains published so lock-screen controls keep working.
     if !projection.isPlaying, projection.outputState == "closed" {
       releaseAudioSession()
     }

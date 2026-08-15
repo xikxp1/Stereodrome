@@ -1745,10 +1745,23 @@ fn should_schedule_paused_output_release(
     output_open && lifecycle_state == PlaybackLifecycleState::Paused
 }
 
+const fn paused_output_release_timeout(is_ios: bool) -> Duration {
+    if is_ios {
+        // iOS derives its Now Playing transport state from the audio session,
+        // not MPNowPlayingInfoCenter.playbackState (which is macOS-only). Close
+        // the render object immediately so the native adapter can deactivate
+        // AVAudioSession and make Control Center show the paused state.
+        Duration::ZERO
+    } else {
+        Duration::from_secs(30)
+    }
+}
+
 /// How long a paused output device stays open before it is released so the
 /// platform can stop its render callback and suspend the process. Resume
 /// transparently rebuilds the output from the persisted position.
-const PAUSED_OUTPUT_RELEASE_TIMEOUT: Duration = Duration::from_secs(30);
+const PAUSED_OUTPUT_RELEASE_TIMEOUT: Duration =
+    paused_output_release_timeout(cfg!(target_os = "ios"));
 
 /// Supervisor wake interval near timing-sensitive moments (crossfades, track
 /// and segment boundaries) and right after commands.
@@ -3231,6 +3244,15 @@ mod tests {
             true,
             PlaybackLifecycleState::Paused
         ));
+    }
+
+    #[test]
+    fn ios_releases_paused_output_immediately_for_now_playing_state() {
+        assert_eq!(paused_output_release_timeout(true), Duration::ZERO);
+        assert_eq!(
+            paused_output_release_timeout(false),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]
