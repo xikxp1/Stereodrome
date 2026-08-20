@@ -303,6 +303,13 @@ private func stereodromeEventCallback(
 }
 
 public class StereodromeCoreModule: Module {
+  // Library audio is served at 44.1 kHz; asking the hardware for the same rate
+  // avoids a permanent 44.1->48 kHz software resample on the render thread.
+  private static let preferredHardwareSampleRate: Double = 44_100
+  private static let preferredIOBufferDuration: TimeInterval = 0.1
+  private static let artworkCacheCountLimit = 24
+  private static let artworkCacheTotalCostLimit = 32 * 1024 * 1024
+
   private struct AudioSessionLease {
     let acquiredNow: Bool
   }
@@ -316,7 +323,12 @@ public class StereodromeCoreModule: Module {
   private let coreQueue = DispatchQueue(label: "dev.xikxp1.stereodrome.mobile.core")
   private let remoteCommandQueue = DispatchQueue(
     label: "dev.xikxp1.stereodrome.mobile.remote-commands")
-  private let artworkCache = NSCache<NSString, MPMediaItemArtwork>()
+  private let artworkCache: NSCache<NSString, MPMediaItemArtwork> = {
+    let cache = NSCache<NSString, MPMediaItemArtwork>()
+    cache.countLimit = StereodromeCoreModule.artworkCacheCountLimit
+    cache.totalCostLimit = StereodromeCoreModule.artworkCacheTotalCostLimit
+    return cache
+  }()
   private let artworkQueue = DispatchQueue(
     label: "dev.xikxp1.stereodrome.mobile.artwork", qos: .utility)
   private let playbackProjectionLock = NSLock()
@@ -326,13 +338,22 @@ public class StereodromeCoreModule: Module {
   private var remoteCommandTargets: [Any] = []
   private var audioSessionObservers: [NSObjectProtocol] = []
   private var canPlayRemoteCommandsValue = false
+  private var isPlayingRemoteCommandsValue = false
   private let audioSessionStateLock = NSLock()
   private var ownsAudioSession = false
   private var audioSessionGeneration: UInt64 = 0
   private var eventCallbackContext: UnsafeMutableRawPointer?
   private var nextNativeCommandId = Int64.max
+  private lazy var resourceDiagnostics = ResourceDiagnosticsCollector { [weak self] in
+    self?.resourceDiagnosticsPlaybackSnapshot() ?? [
+      "state": "stopped",
+      "output_state": "closed",
+      "audio_session_active": false,
+    ]
+  }
 
   deinit {
+    resourceDiagnostics.close()
     clearAudioSessionObservers()
     if clearActiveStereodromeCoreModule(self) {
       performOnMainSync {
@@ -363,6 +384,7 @@ public class StereodromeCoreModule: Module {
     AsyncFunction("initialize") { (_ dataDir: String) -> Bool in
       setActiveStereodromeCoreModule(self)
       stereodromeRuntimeSetLogCallback(stereodromeRustLogCallback)
+      _ = self.resourceDiagnostics
       self.configureAudioSession()
       if self.core == nil {
         self.core = self.coreQueue.sync {
@@ -400,11 +422,47 @@ public class StereodromeCoreModule: Module {
       }
     }
 
+    AsyncFunction("startResourceDiagnostics") { () -> String in
+      try self.resourceDiagnostics.start()
+    }
+
+    AsyncFunction("stopResourceDiagnostics") { () -> String in
+      try self.resourceDiagnostics.stop()
+    }
+
+    AsyncFunction("getResourceDiagnosticsStatus") { () -> String in
+      try self.resourceDiagnostics.status()
+    }
+
+    AsyncFunction("exportResourceDiagnostics") { (_ destinationPath: String) -> Bool in
+      try self.resourceDiagnostics.export(to: destinationPath)
+    }
+
+    AsyncFunction("clearResourceDiagnostics") { () -> Bool in
+      self.resourceDiagnostics.clear()
+    }
+
     Events("core-event")
   }
 
   fileprivate func emitRustLog(_ message: String) {
     appContext?.jsLogger.info(message)
+  }
+
+  private func resourceDiagnosticsPlaybackSnapshot() -> [String: Any] {
+    playbackProjectionLock.lock()
+    let projection = playbackProjection
+    playbackProjectionLock.unlock()
+    audioSessionStateLock.lock()
+    let audioSessionActive = ownsAudioSession
+    audioSessionStateLock.unlock()
+    return [
+      "state": projection?.isStopped != false
+        ? "stopped"
+        : projection?.isPlaying == true ? "playing" : "paused",
+      "output_state": projection?.outputState ?? "closed",
+      "audio_session_active": audioSessionActive,
+    ]
   }
 
   fileprivate func reservePlaybackProjection(_ projection: PlaybackProjection) -> Bool {
@@ -465,9 +523,22 @@ public class StereodromeCoreModule: Module {
     let session = AVAudioSession.sharedInstance()
     do {
       try session.setCategory(.playback, mode: .default)
+      applyPreferredAudioSessionParameters(session)
     } catch {
       // Rust returns playback errors through the FFI call path; session setup
       // failure should not prevent core initialization in development builds.
+    }
+  }
+
+  private func applyPreferredAudioSessionParameters(_ session: AVAudioSession) {
+    // Matching the library's native rate lets the Rust resampler take its
+    // pass-through path, and a longer IO buffer cuts render-thread wakeups.
+    do {
+      try session.setPreferredSampleRate(Self.preferredHardwareSampleRate)
+      try session.setPreferredIOBufferDuration(Self.preferredIOBufferDuration)
+    } catch {
+      appContext?.jsLogger.warn(
+        "Failed to apply preferred audio session parameters: \(error.localizedDescription)")
     }
   }
 
@@ -481,6 +552,7 @@ public class StereodromeCoreModule: Module {
     let session = AVAudioSession.sharedInstance()
     do {
       try session.setCategory(.playback, mode: .default)
+      applyPreferredAudioSessionParameters(session)
       try session.setActive(true)
       ownsAudioSession = true
       audioSessionGeneration &+= 1
@@ -503,6 +575,14 @@ public class StereodromeCoreModule: Module {
       )
       ownsAudioSession = false
       audioSessionGeneration &+= 1
+    } catch let error as NSError where error.code == AVAudioSession.ErrorCode.isBusy.rawValue {
+      // Apple documents that deactivation still succeeds when running audio
+      // objects cause isBusy. Keep our ownership model aligned with the real
+      // session so the next Play reactivates it instead of treating it as live.
+      ownsAudioSession = false
+      audioSessionGeneration &+= 1
+      appContext?.jsLogger.warn(
+        "Audio session deactivated while output was still stopping: \(error.localizedDescription)")
     } catch {
       appContext?.jsLogger.warn("Failed to deactivate audio session: \(error.localizedDescription)")
     }
@@ -690,6 +770,13 @@ public class StereodromeCoreModule: Module {
     if projection.outputState == "unavailable" {
       releaseAudioSession()
     }
+    // The iOS Rust build closes its output device immediately on pause. iOS
+    // ignores MPNowPlayingInfoCenter.playbackState, so deactivating the audio
+    // session here is what makes the system transport widget show Play. Now
+    // Playing metadata remains published so lock-screen controls keep working.
+    if !projection.isPlaying, projection.outputState == "closed" {
+      releaseAudioSession()
+    }
 
     var info: [String: Any] = [
       MPMediaItemPropertyTitle: projection.title,
@@ -698,6 +785,7 @@ public class StereodromeCoreModule: Module {
       MPMediaItemPropertyPlaybackDuration: projection.durationSeconds,
       MPNowPlayingInfoPropertyElapsedPlaybackTime: projection.positionSeconds,
       MPNowPlayingInfoPropertyPlaybackRate: projection.isPlaying ? 1.0 : 0.0,
+      MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
       MPNowPlayingInfoPropertyPlaybackQueueCount: projection.queueCount,
     ]
 
@@ -724,7 +812,7 @@ public class StereodromeCoreModule: Module {
 
   private func clearNowPlayingInfo() {
     currentArtworkUri = nil
-    setCanPlayRemoteCommands(false)
+    setRemotePlaybackState(canPlay: false, isPlaying: false)
     let hasPublishedSession =
       MPNowPlayingInfoCenter.default().nowPlayingInfo != nil || !remoteCommandTargets.isEmpty
     guard hasPublishedSession else {
@@ -903,9 +991,16 @@ public class StereodromeCoreModule: Module {
     return canPlayRemoteCommandsValue
   }
 
-  private func setCanPlayRemoteCommands(_ canPlay: Bool) {
+  private func remotePlaybackState() -> (canPlay: Bool, isPlaying: Bool) {
+    remoteCommandStateLock.lock()
+    defer { remoteCommandStateLock.unlock() }
+    return (canPlayRemoteCommandsValue, isPlayingRemoteCommandsValue)
+  }
+
+  private func setRemotePlaybackState(canPlay: Bool, isPlaying: Bool) {
     remoteCommandStateLock.lock()
     canPlayRemoteCommandsValue = canPlay
+    isPlayingRemoteCommandsValue = isPlaying
     remoteCommandStateLock.unlock()
   }
 
@@ -919,11 +1014,43 @@ public class StereodromeCoreModule: Module {
   }
 
   /// Remote command handlers run on the main thread, but the underlying core
-  /// calls can block while Rust prepares media. Acknowledge
-  /// the command immediately and run it on a serial background queue.
+  /// calls can block while Rust prepares media. Publish the transport intent
+  /// before acknowledging it so iOS and external accessories route the next
+  /// play/pause event from the intended state. Rust's ordered snapshot then
+  /// reconciles the projection before dispatch returns on the background queue.
   private func enqueueRemoteCommand(_ action: RemoteCommandAction) -> MPRemoteCommandHandlerStatus {
+    let playbackState = remotePlaybackState()
+    let resolvedAction: RemoteCommandAction
+    switch action {
+    case .play:
+      guard playbackState.canPlay else {
+        return .noActionableNowPlayingItem
+      }
+      resolvedAction = .play
+    case .pause:
+      guard playbackState.canPlay || playbackState.isPlaying else {
+        return .noActionableNowPlayingItem
+      }
+      resolvedAction = .pause
+    case .toggle:
+      guard playbackState.canPlay || playbackState.isPlaying else {
+        return .noActionableNowPlayingItem
+      }
+      resolvedAction = playbackState.isPlaying ? .pause : .play
+    case .next, .previous, .stop:
+      resolvedAction = action
+    }
+
+    switch resolvedAction {
+    case .play:
+      publishRemoteTransportIntent(isPlaying: true, canPlay: playbackState.canPlay)
+    case .pause:
+      publishRemoteTransportIntent(isPlaying: false, canPlay: playbackState.canPlay)
+    case .toggle, .next, .previous, .stop:
+      break
+    }
     remoteCommandQueue.async {
-      self.performRemoteCommand(action)
+      self.performRemoteCommand(resolvedAction)
     }
     return .success
   }
@@ -945,14 +1072,17 @@ public class StereodromeCoreModule: Module {
       guard canPlayRemoteCommands() else {
         return
       }
-      _ = dispatchCommand(["type": "resume-playback"], activateAudioSession: true)
-    case .pause:
-      _ = dispatchCommand(["type": "pause-playback"])
-    case .toggle:
-      if !canPlayRemoteCommands() {
-        return
+      let result = dispatchCommand(["type": "resume-playback"], activateAudioSession: true)
+      if !isSuccessfulRuntimeResult(result) {
+        restoreAuthoritativePlaybackProjection()
       }
-      _ = dispatchCommand(["type": "toggle-playback"], activateAudioSession: true)
+    case .pause:
+      let result = dispatchCommand(["type": "pause-playback"])
+      if !isSuccessfulRuntimeResult(result) {
+        restoreAuthoritativePlaybackProjection()
+      }
+    case .toggle:
+      return
     case .next:
       guard canPlayRemoteCommands() else {
         return
@@ -983,18 +1113,51 @@ public class StereodromeCoreModule: Module {
     }
   }
 
+  private func restoreAuthoritativePlaybackProjection() {
+    playbackProjectionLock.lock()
+    let projection = playbackProjection
+    playbackProjectionLock.unlock()
+    performOnMainSync {
+      guard getActiveStereodromeCoreModule() === self else {
+        return
+      }
+      if let projection {
+        _ = applyPlaybackProjection(projection)
+      } else {
+        clearNowPlayingInfo()
+      }
+    }
+  }
+
   private func configureCommandAvailability(_ projection: PlaybackProjection) {
     let commandCenter = MPRemoteCommandCenter.shared()
     let canPlay = projection.canPlay
     let isPlaying = projection.isPlaying
-    setCanPlayRemoteCommands(canPlay)
+    setRemotePlaybackState(canPlay: canPlay, isPlaying: isPlaying)
     commandCenter.nextTrackCommand.isEnabled = canPlay && projection.canNext
     commandCenter.previousTrackCommand.isEnabled = canPlay && projection.canPrevious
     commandCenter.changePlaybackPositionCommand.isEnabled = projection.canSeek
-    commandCenter.playCommand.isEnabled = canPlay
-    commandCenter.pauseCommand.isEnabled = canPlay || isPlaying
-    commandCenter.togglePlayPauseCommand.isEnabled = canPlay || isPlaying
+    configureTransportCommandAvailability(canPlay: canPlay, isPlaying: isPlaying)
     commandCenter.stopCommand.isEnabled = true
+  }
+
+  private func publishRemoteTransportIntent(isPlaying: Bool, canPlay: Bool) {
+    let center = MPNowPlayingInfoCenter.default()
+    if var info = center.nowPlayingInfo {
+      info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+      info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+      center.nowPlayingInfo = info
+    }
+    updateNowPlayingPlaybackState(isPlaying: isPlaying)
+    setRemotePlaybackState(canPlay: canPlay, isPlaying: isPlaying)
+    configureTransportCommandAvailability(canPlay: canPlay, isPlaying: isPlaying)
+  }
+
+  private func configureTransportCommandAvailability(canPlay: Bool, isPlaying: Bool) {
+    let commandCenter = MPRemoteCommandCenter.shared()
+    commandCenter.playCommand.isEnabled = canPlay && !isPlaying
+    commandCenter.pauseCommand.isEnabled = isPlaying
+    commandCenter.togglePlayPauseCommand.isEnabled = canPlay || isPlaying
   }
 
   private func artworkValue(_ uri: String) -> MPMediaItemArtwork? {
@@ -1016,7 +1179,10 @@ public class StereodromeCoreModule: Module {
 
     let preparedImage = image.preparingForDisplay() ?? image
     let artwork = MPMediaItemArtwork(boundsSize: preparedImage.size) { _ in preparedImage }
-    artworkCache.setObject(artwork, forKey: cacheKey)
+    // Decoded RGBA bitmap cost; without it NSCache never evicts under the limit.
+    let bitmapCost = Int(preparedImage.size.width * preparedImage.size.height
+      * preparedImage.scale * preparedImage.scale * 4)
+    artworkCache.setObject(artwork, forKey: cacheKey, cost: bitmapCost)
     return artwork
   }
 

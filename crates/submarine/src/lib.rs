@@ -1,0 +1,207 @@
+//! This is a pure rust implementation for the subsonic API
+//!
+//! API description of subsonic: <http://www.subsonic.org/pages/api.jsp><br>
+//! xsd schema: <http://www.subsonic.org/pages/inc/api/schema/subsonic-rest-api-1.16.1.xsd><br>
+//! This implements everything up to version v1.16.1.
+
+// Vendored crate: the upstream API surface predates the workspace lint bar.
+#![allow(clippy::too_many_arguments)]
+
+#[cfg(test)]
+macro_rules! check {
+    ($condition:expr $(, $message:expr)?) => {
+        if !$condition {
+            return Err(anyhow::anyhow!(
+                "condition failed: {}",
+                stringify!($condition)
+            ));
+        }
+    };
+}
+
+#[cfg(test)]
+macro_rules! check_eq {
+    ($left:expr, $right:expr $(, $message:expr)?) => {{
+        let left = &$left;
+        let right = &$right;
+        if left != right {
+            return Err(anyhow::anyhow!(
+                "values differ: left={left:?}, right={right:?}"
+            ));
+        }
+    }};
+}
+
+pub mod api;
+pub mod auth;
+pub mod data;
+
+use log::{info, trace, warn};
+use reqwest::StatusCode;
+use serde::Serialize;
+use thiserror::Error;
+
+use crate::data::ResponseType;
+
+/// A client which all requests are send through.<br>
+/// Example
+/// ```no_run
+/// #[tokio::main]
+/// async fn main() {
+///     use submarine::{auth::AuthBuilder, Client};
+///
+///     let auth = AuthBuilder::new("peter", "v0.16.1")
+///         .client_name("my_music_app")
+///         .hashed("change_me_password");
+///     let client = Client::new("https://target.com", auth);
+///     client.ping().await.unwrap();
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct Client {
+    server_url: String,
+    auth: auth::Auth,
+    transport: reqwest::Client,
+}
+
+#[derive(Error, Debug)]
+pub enum SubsonicError {
+    #[error("Connection error")]
+    Connection(#[from] reqwest::Error),
+    #[error("File I/O error")]
+    Io(#[from] std::io::Error),
+    #[error("Conversion error")]
+    Conversion(#[from] serde_json::Error),
+    #[error("No server found")]
+    NoServerFound,
+    #[error("Server sends error: {0}")]
+    Server(String),
+    #[error("Submarine error: {0}")]
+    Submarine(String),
+    #[error("Submarine invalid arguments: {0}")]
+    InvalidArgs(String),
+    #[error("Route not implemented on server: {0}")]
+    ServerRouteNotImplemented(String),
+    #[error("Url parsing error: {0}")]
+    UrlParsing(#[from] url::ParseError),
+}
+
+#[derive(Debug, Serialize, Default, Clone, PartialEq, Eq)]
+pub struct Parameter(Vec<(String, String)>);
+
+impl Parameter {
+    fn new() -> Self {
+        Self(vec![])
+    }
+
+    fn push(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.0.push((key.into(), value.into()));
+    }
+}
+
+impl Client {
+    #[must_use]
+    pub fn new(server_url: &str, auth: auth::Auth) -> Self {
+        // reqwest is built with `rustls-no-provider`, which panics on client
+        // construction unless a process-wide crypto provider is installed.
+        // Install Ring (the provider the host app uses) if none is set so the
+        // library and its tests are self-contained.
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+        let client = Self {
+            server_url: String::from(server_url),
+            auth,
+            transport: reqwest::Client::new(),
+        };
+        info!("created client {client:?}");
+        client
+    }
+
+    pub(crate) async fn request(
+        &self,
+        path: &str,
+        parameter: Option<Parameter>,
+        headers: Option<reqwest::header::HeaderMap>,
+    ) -> Result<data::Response, SubsonicError> {
+        let mut paras = parameter.unwrap_or_default();
+        self.auth.add_parameter(&mut paras);
+        let headers = headers.unwrap_or_default();
+
+        trace!("request from server: {path}, para: {paras:?}, header: {headers:?}");
+        let request = self
+            .transport
+            .post(self.server_url.clone() + "/rest/" + path)
+            .headers(headers)
+            .query(&paras);
+
+        let body: String = match request.send().await {
+            Ok(body) => match body.status() {
+                StatusCode::OK => body.text().await?,
+                StatusCode::GONE
+                    if body.text().await? == "This endpoint will not be implemented" =>
+                {
+                    return Err(SubsonicError::ServerRouteNotImplemented(String::from(
+                        "navidrome",
+                    )));
+                }
+                _ => {
+                    warn!("Could not fetch previous request to {path}");
+                    return Err(SubsonicError::NoServerFound);
+                }
+            },
+            Err(e) => return Err(SubsonicError::Connection(e)),
+        };
+
+        let response: data::OuterResponse = serde_json::from_str(&body)?;
+        match response.inner.data {
+            ResponseType::Error { error } => Err(SubsonicError::Server(error.to_string())),
+            _ => Ok(response.inner),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::data::{OuterResponse, ResponseType, Status};
+
+    #[test]
+    fn basic_conversion() -> anyhow::Result<()> {
+        let response = r#"
+            {
+              "subsonic-response": {
+                 "status":"ok",
+                 "version":"1.16.1",
+                 "type":"navidrome",
+                 "serverVersion":"0.49.3 (8b93962f)"
+              }
+            }"#;
+        let response = serde_json::from_str::<OuterResponse>(response)?.inner;
+        check_eq!(response.info.status, Status::Ok);
+        Ok(())
+    }
+
+    #[test]
+    fn convert_error() -> anyhow::Result<()> {
+        let response = r#"
+            {
+              "subsonic-response": {
+                "status":"failed",
+                "version":"1.16.1",
+                "type":"navidrome",
+                "serverVersion":"0.49.3 (8b93962f)",
+                "error": {
+                  "code":40,
+                  "message":"Wrong username or password"
+                }
+              }
+            }"#;
+        let response = serde_json::from_str::<OuterResponse>(response)?.inner;
+        check_eq!(response.info.status, Status::Error);
+        if let ResponseType::Error { error } = response.data {
+            check_eq!(error.code, 40);
+            check_eq!(&error.message, "Wrong username or password");
+        }
+        Ok(())
+    }
+}

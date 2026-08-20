@@ -83,28 +83,28 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         // Return buffered output if available
         if self.output_pos < usize::from(self.channels.get()) {
-            let sample = self.output_buffer[self.output_pos];
-            self.output_pos += 1;
+            let sample = self.output_buffer.get(self.output_pos).copied()?;
+            self.output_pos = self.output_pos.checked_add(1)?;
             return Some(sample);
         }
 
         // Collect a full frame from inner source into pre-allocated buffer
         let ch = usize::from(self.channels.get());
-        for i in 0..ch {
-            self.input_buffer[i] = self.inner.next()?;
+        for input in self.input_buffer.iter_mut().take(ch) {
+            *input = self.inner.next()?;
         }
 
         if ch >= 2 {
-            self.output_buffer[..ch].copy_from_slice(&self.input_buffer[..ch]);
+            self.output_buffer.copy_from_slice(&self.input_buffer);
             if let Some(adapter) = self.adapter.as_mut() {
-                let _ = adapter.process(&mut self.output_buffer[..ch]);
+                let _ = adapter.process(&mut self.output_buffer);
             }
         } else if ch == 1 {
-            self.output_buffer[0] = self.input_buffer[0];
+            *self.output_buffer.first_mut()? = self.input_buffer.first().copied()?;
         }
 
         self.output_pos = 1;
-        Some(self.output_buffer[0])
+        self.output_buffer.first().copied()
     }
 }
 

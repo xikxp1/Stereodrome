@@ -11,7 +11,7 @@ mod tray;
 
 use std::sync::Arc;
 
-use log::{LevelFilter, info, warn};
+use log::{LevelFilter, error, info, warn};
 use media::MediaControlsManager;
 use state::AppState;
 use tauri::{AppHandle, Manager};
@@ -69,7 +69,7 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
 
-    builder
+    let application = builder
         .setup(move |app| {
             let db_path = db::get_db_path(app.handle())?;
             let data_dir = std::path::Path::new(&db_path)
@@ -185,30 +185,33 @@ pub fn run() {
             commands::close_mini_player,
             commands::restore_main_window,
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|app_handle, event| match event {
-            tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::CloseRequested { api, .. },
-                ..
-            } if label == "main" => {
-                // Hide window instead of closing (minimize to tray)
-                api.prevent_close();
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.hide();
-                    info!("Window hidden to tray");
-                }
+        .build(tauri::generate_context!());
+    let Ok(application) = application else {
+        error!("Failed to build Tauri application");
+        return;
+    };
+    application.run(|app_handle, event| match event {
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == "main" => {
+            // Hide window instead of closing (minimize to tray)
+            api.prevent_close();
+            if let Some(window) = app_handle.get_webview_window("main") {
+                let _ = window.hide();
+                info!("Window hidden to tray");
             }
-            tauri::RunEvent::Exit => {
-                if let Some(state) = app_handle.try_state::<AppState>() {
-                    state
-                        .emitter_running
-                        .store(false, std::sync::atomic::Ordering::SeqCst);
-                    info!("Shutting down desktop runtime");
-                    state.runtime.shutdown();
-                }
+        }
+        tauri::RunEvent::Exit => {
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                state
+                    .emitter_running
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                info!("Shutting down desktop runtime");
+                state.runtime.shutdown();
             }
-            _ => {}
-        });
+        }
+        _ => {}
+    });
 }

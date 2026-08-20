@@ -17,6 +17,19 @@ object StereodromeMediaSessionState {
   private var nowPlayingInfo: NowPlayingInfo? = null
   private var serviceStartPending = false
 
+  fun diagnosticsSnapshot(): Map<String, Any> = synchronized(lock) {
+    val info = nowPlayingInfo
+    mapOf(
+      "state" to when {
+        info == null -> "stopped"
+        info.isPlaying -> "playing"
+        else -> "paused"
+      },
+      "output_state" to (info?.outputState ?: "closed"),
+      "media_session_service_active" to (service?.get() != null),
+    )
+  }
+
   private data class ProjectionUpdate(
     val player: StereodromeMediaPlayer?,
     val shouldStartService: Boolean,

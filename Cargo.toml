@@ -3,6 +3,7 @@ members = [
   "crates/stereodrome-audio",
   "crates/stereodrome-core",
   "crates/stereodrome-ffi",
+  "crates/submarine",
   "src-tauri",
 ]
 resolver = "3"
@@ -15,6 +16,19 @@ unsafe_op_in_unsafe_fn = "deny"
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+unchecked_time_subtraction = "deny"
+todo = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+as_conversions = "deny"
 # Multiple versions are dictated by Tauri and compatibility dependencies.
 multiple_crate_versions = "allow"
 

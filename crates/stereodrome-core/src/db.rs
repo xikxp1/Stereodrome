@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use rusqlite::Connection;
 
@@ -6,6 +7,21 @@ use crate::CoreResult;
 use crate::queue::{PlayQueue, QueueItem, QueueState, RepeatMode};
 
 const SCHEMA: &str = include_str!("../../../src-tauri/src/db/schema.sql");
+
+/// Opens a connection with the pragmas every core connection relies on:
+/// `synchronous=NORMAL` so WAL commits skip the per-transaction fsync, and a
+/// busy timeout so concurrent writers back off instead of failing.
+///
+/// # Errors
+///
+/// Returns an error if `SQLite` cannot open the database or apply the connection
+/// configuration.
+pub fn open_connection(path: &Path) -> rusqlite::Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    Ok(conn)
+}
 
 pub const SONG_SELECT_WITH_JOINS: &str = "
     SELECT s.id, s.album_id, s.artist_id, s.title, s.track_number, s.disc_number,
@@ -37,7 +53,10 @@ pub const SONG_SELECT_ALL: &str = "
     ORDER BY s.title COLLATE NOCASE";
 
 pub fn init(path: &Path) -> CoreResult<()> {
-    let conn = Connection::open(path)?;
+    let conn = open_connection(path)?;
+    // WAL is a persistent database property; setting it once here covers
+    // every later connection, including the desktop shell's direct opens.
+    conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.execute_batch(SCHEMA)?;
     run_migrations(&conn)?;
     Ok(())
@@ -69,7 +88,7 @@ fn run_migrations(conn: &Connection) -> CoreResult<()> {
 }
 
 pub fn load_queue(path: &Path) -> CoreResult<PlayQueue> {
-    let conn = Connection::open(path)?;
+    let conn = open_connection(path)?;
     let items = load_queue_items(&conn)?;
     let original_order = load_queue_original_items(&conn)?;
     let (current_index, shuffle, repeat_mode) = load_queue_state(&conn)?;
@@ -83,7 +102,7 @@ pub fn load_queue(path: &Path) -> CoreResult<PlayQueue> {
 }
 
 pub fn save_queue(path: &Path, state: &QueueState, original_order: &[QueueItem]) -> CoreResult<()> {
-    let mut conn = Connection::open(path)?;
+    let mut conn = open_connection(path)?;
     let tx = conn.transaction()?;
 
     tx.execute("DELETE FROM queue_items", [])?;
@@ -218,6 +237,14 @@ fn load_queue_state(conn: &Connection) -> CoreResult<(Option<usize>, bool, Repea
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast"
+)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};

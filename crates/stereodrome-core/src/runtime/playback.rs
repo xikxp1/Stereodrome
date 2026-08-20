@@ -5,6 +5,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use num_traits::ToPrimitive;
 use serde_json::Value;
 use stereodrome_audio::{
     AudioError, AudioNotification, AudioOutputState, AudioPlayer, AudioStateHandle, BinauralPreset,
@@ -39,7 +40,7 @@ impl PlaybackClock for SystemPlaybackClock {
 /// Fully prepared audio passed to an [`AudioPort`].
 #[derive(Debug)]
 pub struct PreparedAudio {
-    pub audio_data: Arc<[u8]>,
+    pub audio_path: PathBuf,
     pub metadata: SongMetadata,
     pub duration_seconds: f64,
     pub normalization_gain: Option<f32>,
@@ -151,7 +152,7 @@ impl AudioPort for StereodromeAudioPort {
         self.player
             .play_with_expected(
                 expected,
-                prepared.audio_data,
+                prepared.audio_path,
                 prepared.metadata,
                 prepared.duration_seconds,
                 prepared.normalization_gain,
@@ -170,7 +171,7 @@ impl AudioPort for StereodromeAudioPort {
         self.player
             .append_gapless(
                 expected,
-                prepared.audio_data,
+                prepared.audio_path,
                 prepared.metadata,
                 prepared.duration_seconds,
                 prepared.normalization_gain,
@@ -190,7 +191,7 @@ impl AudioPort for StereodromeAudioPort {
         self.player
             .crossfade_play(CrossfadePlayRequest {
                 expected_playback: expected,
-                audio_data: prepared.audio_data,
+                audio_path: prepared.audio_path,
                 metadata: prepared.metadata,
                 duration_secs: prepared.duration_seconds,
                 normalization_gain: prepared.normalization_gain,
@@ -289,7 +290,6 @@ pub(crate) async fn prepare(
         ))
     })?;
     let audio_path = file_uri_to_path(path)?;
-    let audio_data = std::fs::read(audio_path)?;
     let settings = core.get_audio_processing_settings()?;
     let processing = audio_processing(&settings)?;
     let cover_art_id = core.song_cover_art_id(&target_song_id)?;
@@ -297,7 +297,7 @@ pub(crate) async fn prepare(
     Ok(PreparedPlayback {
         target_song_id,
         prepared: PreparedAudio {
-            audio_data: Arc::from(audio_data),
+            audio_path,
             metadata: SongMetadata {
                 id: item.song_id,
                 title: item.title,
@@ -534,12 +534,26 @@ pub(crate) fn gapless_target(
     core: &StereodromeCore,
     audio: &dyn AudioPort,
 ) -> CoreResult<Option<(QueueItem, PlaybackIdentity)>> {
+    // Runs on every playback tick, so the cheap checks (memoized settings,
+    // audio status, single-item peek, memoized eligibility) come first; the
+    // full queue clone happens only for transitions that can actually happen.
     let settings = core.get_audio_processing_settings()?;
-    if !settings.gapless_enabled || audio.status().current_song_id.is_none() {
+    if !settings.gapless_enabled {
         return Ok(None);
     }
+    let Some(current_song_id) = audio.status().current_song_id else {
+        return Ok(None);
+    };
     let (_, segment_index) = audio.gapless_state();
     if !audio.is_last_gapless_segment(segment_index) {
+        return Ok(None);
+    }
+    let Some(next) = core.peek_next_queue_item()? else {
+        return Ok(None);
+    };
+    if current_song_id == next.song_id
+        || !core.songs_are_gapless_eligible(&current_song_id, &next.song_id)?
+    {
         return Ok(None);
     }
     let queue = core.get_queue()?;
@@ -549,12 +563,7 @@ pub(crate) fn gapless_target(
     let Some(current) = queue.current_index.and_then(|index| queue.items.get(index)) else {
         return Ok(None);
     };
-    let Some(next) = core.peek_next_queue_item()? else {
-        return Ok(None);
-    };
-    if current.song_id == next.song_id
-        || !core.songs_are_gapless_eligible(&current.song_id, &next.song_id)?
-    {
+    if current.song_id != current_song_id {
         return Ok(None);
     }
     let Some(identity) = audio.current_identity() else {
@@ -611,7 +620,7 @@ fn next_queue_item_exists(queue: &QueueState) -> bool {
     }
     match queue.current_index {
         None => true,
-        Some(index) if index + 1 < queue.items.len() => true,
+        Some(index) if index.saturating_add(1) < queue.items.len() => true,
         Some(_) => queue.repeat_mode == RepeatMode::All,
     }
 }
@@ -677,13 +686,14 @@ fn narrow_f64_to_f32(value: f64, name: &str) -> CoreResult<f32> {
             "{name} is outside the supported f32 range"
         )));
     }
-    #[allow(clippy::cast_possible_truncation)]
-    Ok(value as f32)
+    value.to_f32().ok_or_else(|| {
+        CoreError::InvalidInput(format!("{name} cannot be represented as an f32 value"))
+    })
 }
 
 fn duration_seconds(duration: i64) -> f64 {
     let duration = duration.clamp(0, i64::from(u32::MAX));
-    f64::from(u32::try_from(duration).expect("clamped duration fits in u32"))
+    duration.to_f64().unwrap_or_default()
 }
 
 fn file_uri_to_path(value: &str) -> CoreResult<PathBuf> {

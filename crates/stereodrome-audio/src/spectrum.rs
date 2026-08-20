@@ -1,6 +1,7 @@
 //! Spectrum analyzer using FFT to compute frequency band magnitudes.
 //! Processes audio samples from a ring buffer into normalized frequency bands.
 
+use num_traits::ToPrimitive;
 use ringbuf::HeapCons;
 use ringbuf::traits::Consumer;
 use rustfft::{FftPlanner, num_complex::Complex};
@@ -118,12 +119,16 @@ impl SpectrumAnalyzer {
         }
 
         // Take the most recent FFT_SIZE samples
-        let start_idx = self.sample_buffer.len() - FFT_SIZE;
-        let samples = &self.sample_buffer[start_idx..];
+        let start_idx = self.sample_buffer.len().checked_sub(FFT_SIZE)?;
+        let samples = self.sample_buffer.get(start_idx..)?;
 
         // Apply Hann window and convert to complex
-        for (i, (&sample, &window)) in samples.iter().zip(self.window.iter()).enumerate() {
-            self.fft_input[i] = Complex::new(sample * window, 0.0);
+        for (fft_input, (&sample, &window)) in self
+            .fft_input
+            .iter_mut()
+            .zip(samples.iter().zip(self.window.iter()))
+        {
+            *fft_input = Complex::new(sample * window, 0.0);
         }
 
         // Perform FFT
@@ -146,19 +151,23 @@ impl SpectrumAnalyzer {
             peak = peak.max(magnitude);
 
             // Find which band this frequency belongs to
-            for (band_idx, &(low, high)) in BAND_FREQUENCIES.iter().enumerate() {
+            for ((band, count), &(low, high)) in bands
+                .iter_mut()
+                .zip(band_counts.iter_mut())
+                .zip(BAND_FREQUENCIES.iter())
+            {
                 if freq >= low && freq < high {
-                    bands[band_idx] += magnitude;
-                    band_counts[band_idx] += 1;
+                    *band += magnitude;
+                    *count = count.saturating_add(1);
                     break;
                 }
             }
         }
 
         // Average each band
-        for i in 0..NUM_BANDS {
-            if band_counts[i] > 0 {
-                bands[i] /= f32::from(band_counts[i]);
+        for (band, count) in bands.iter_mut().zip(band_counts) {
+            if count > 0 {
+                *band /= f32::from(count);
             }
         }
 
@@ -178,16 +187,16 @@ impl SpectrumAnalyzer {
 
         // Apply per-band gain compensation AFTER normalization
         // This ensures higher frequencies get boosted relative to lower ones
-        for i in 0..NUM_BANDS {
-            bands[i] = (bands[i] * BAND_GAINS[i]).min(1.0);
+        for (band, gain) in bands.iter_mut().zip(BAND_GAINS) {
+            *band = (*band * gain).min(1.0);
         }
 
         // Apply smoothing (quick attack, slower decay) for visual appeal.
-        for (i, band) in bands.iter().enumerate() {
-            if *band > self.smoothed_bands[i] {
-                self.smoothed_bands[i] = self.smoothed_bands[i] * (1.0 - ATTACK) + band * ATTACK;
+        for (smoothed, band) in self.smoothed_bands.iter_mut().zip(bands) {
+            if band > *smoothed {
+                *smoothed = *smoothed * (1.0 - ATTACK) + band * ATTACK;
             } else {
-                self.smoothed_bands[i] = self.smoothed_bands[i] * (1.0 - DECAY) + band * DECAY;
+                *smoothed = *smoothed * (1.0 - DECAY) + band * DECAY;
             }
         }
 
@@ -207,11 +216,6 @@ impl SpectrumAnalyzer {
     }
 }
 
-/// Audio sample rates are far below the integer precision limit of `f32`.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "FFT processing uses f32 and supported audio sample rates are exactly representable"
-)]
 fn sample_rate_as_f32(sample_rate: u32) -> f32 {
-    sample_rate as f32
+    sample_rate.to_f32().unwrap_or(48_000.0)
 }

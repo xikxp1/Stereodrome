@@ -17,6 +17,7 @@ import {
   visibleSearchResults,
   visibleSongs,
 } from "@/services/offlineLibrary";
+import { haptics } from "@/services/haptics";
 
 export function SearchScreen() {
   const inputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
@@ -177,12 +178,14 @@ export function SearchScreen() {
           autoCapitalize="none"
           autoFocus
           onChangeText={setQuery}
+          onFocus={haptics.selection}
           placeholder="Search"
           style={styles.input}
           value={query}
         />
         <Pressable
           onPress={() => {
+            haptics.selection();
             setQuery("");
           }}
           style={styles.clear}

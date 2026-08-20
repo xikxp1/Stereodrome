@@ -6,7 +6,12 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 
 const androidMinSdkVersion = "26";
-const gradleVersion = "9.4.1";
+// Must stay on a Gradle release whose bundled Kotlin metadata is readable by
+// the Kotlin compiler of @react-native/gradle-plugin (2.1.x for RN 0.86, which
+// reads metadata <= 2.2.0). Gradle 9.4+ bundles Kotlin 2.3, which breaks the
+// settings-plugin compile during prebuild builds; 9.3.1 is the version React
+// Native 0.86 ships in its own wrapper.
+const gradleVersion = "9.3.1";
 
 module.exports = function withStereodromeCore(config) {
   const configWithGradleProperties = withGradleProperties(

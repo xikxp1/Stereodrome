@@ -407,6 +407,15 @@ impl CoreCommand {
         )
     }
 
+    /// Whether a successful dispatch emits a runtime event before returning.
+    ///
+    /// Native adapters use this boundary to wait until the corresponding
+    /// authoritative projection has reached platform media controls.
+    #[must_use]
+    pub fn emits_event_before_completion(&self) -> bool {
+        matches!(self, Self::Initialize) || self.is_mutation()
+    }
+
     #[must_use]
     pub(crate) fn changes_library(&self) -> bool {
         matches!(
@@ -555,6 +564,7 @@ pub enum ConnectivityState {
 pub struct DownloadSnapshot {
     pub downloading_song_ids: Vec<String>,
     pub offline_song_ids: Vec<String>,
+    pub queue_length: usize,
 }
 
 /// Song metadata projected to UI and native media sessions.

@@ -1,10 +1,16 @@
 import { useEffect, useState } from "react";
-import { Image, StyleSheet, Text, View } from "react-native";
+import { Image, StyleSheet, View } from "react-native";
 
 import { SyncedMarqueeText } from "@/components/SyncedMarqueeText";
+import { SongFileStateIcon } from "@/components/SongFileStateIcon";
 import { colors } from "@/components/theme";
 import { coreClient } from "@/core/client";
-import { usePlayback } from "@/core/selectors";
+import {
+  useFileState,
+  usePlayback,
+  usePlaybackPosition,
+} from "@/core/selectors";
+import { songFileState } from "@/services/offlineLibrary";
 
 type CoverArtState = {
   songId: string;
@@ -52,6 +58,8 @@ function useCoverArtUri(songId: string | null, size: number) {
 
 export function NowPlayingScreen() {
   const playback = usePlayback();
+  const position = usePlaybackPosition();
+  const fileState = useFileState();
   const [currentRegionSize, setCurrentRegionSize] = useState({
     height: 0,
     width: 0,
@@ -60,14 +68,20 @@ export function NowPlayingScreen() {
   const nextSong = playback.upcomingSong;
   const songId = song?.id ?? null;
   const nextSongId = nextSong?.id ?? null;
+  const nextSongFileState =
+    nextSong === null
+      ? null
+      : songFileState(
+          nextSong.id,
+          fileState.offlineSongIds,
+          fileState.downloadingSongIds
+        );
   const coverUri = useCoverArtUri(songId, 512);
   const nextCoverUri = useCoverArtUri(nextSongId, 128);
   const duration =
     playback.duration > 0 ? playback.duration : (song?.duration ?? 0);
   const progressRatio =
-    song !== null && duration > 0
-      ? Math.min(1, playback.position / duration)
-      : 0;
+    song !== null && duration > 0 ? Math.min(1, position / duration) : 0;
   const usesWideLayout =
     currentRegionSize.width > 0 &&
     currentRegionSize.width >= currentRegionSize.height * wideLayoutAspectRatio;
@@ -145,7 +159,7 @@ export function NowPlayingScreen() {
             accessibilityValue={{
               min: 0,
               max: Math.max(0, duration),
-              now: Math.max(0, Math.min(playback.position, duration)),
+              now: Math.max(0, Math.min(position, duration)),
             }}
             pointerEvents="none"
             style={[
@@ -171,13 +185,18 @@ export function NowPlayingScreen() {
               <View style={styles.nextCoverPlaceholder} />
             )}
             <View style={styles.nextText}>
-              <SyncedMarqueeText
-                align="left"
-                containerStyle={styles.nextMarquee}
-                group="mobile-next-song"
-                text={nextSong.title}
-                style={styles.nextTitle}
-              />
+              <View style={styles.nextTitleRow}>
+                {nextSongFileState === null ? null : (
+                  <SongFileStateIcon state={nextSongFileState} />
+                )}
+                <SyncedMarqueeText
+                  align="left"
+                  containerStyle={styles.nextTitleMarquee}
+                  group="mobile-next-song"
+                  text={nextSong.title}
+                  style={styles.nextTitle}
+                />
+              </View>
               <SyncedMarqueeText
                 align="left"
                 containerStyle={styles.nextMarquee}
@@ -191,11 +210,6 @@ export function NowPlayingScreen() {
           </View>
         ) : null}
       </View>
-      {playback.error !== null && playback.error.length > 0 ? (
-        <Text numberOfLines={2} style={styles.error}>
-          {playback.error}
-        </Text>
-      ) : null}
     </View>
   );
 }
@@ -310,11 +324,14 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
   },
-  error: {
-    color: "#b3261e",
-    fontSize: 11,
-    fontWeight: "700",
-    marginTop: 8,
-    textAlign: "center",
+  nextTitleMarquee: {
+    flex: 1,
+    height: 18,
+    minWidth: 0,
+  },
+  nextTitleRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 5,
   },
 });

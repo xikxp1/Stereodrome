@@ -27,7 +27,11 @@ pub fn start_position_emitter(
             let state = audio.playback_state_snapshot();
             let _ = app_handle.emit("playback-state", &state);
 
-            position_update_counter = (position_update_counter + 1) % 10;
+            position_update_counter = if position_update_counter == 9 {
+                0
+            } else {
+                position_update_counter.saturating_add(1)
+            };
             if position_update_counter == 0
                 && let Some(media_controls) = app_handle.try_state::<MediaControlsManager>()
             {

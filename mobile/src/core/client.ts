@@ -21,6 +21,22 @@ let nativeSubscription: { remove(): void } | null = null;
 const eventListeners = new Set<(event: CoreEvent) => void>();
 const errorListeners = new Set<(error: unknown) => void>();
 
+export class CoreCommandError extends Error {
+  readonly code: ProtocolError["code"];
+  readonly retryable: boolean;
+
+  constructor(error: ProtocolError) {
+    super(error.message);
+    this.name = "CoreCommandError";
+    this.code = error.code;
+    this.retryable = error.retryable;
+  }
+}
+
+export function isCancelledCoreCommand(error: unknown): boolean {
+  return error instanceof CoreCommandError && error.code === "cancelled";
+}
+
 function fileUriToPath(uri: string): string {
   return uri.startsWith("file://")
     ? decodeURIComponent(uri.replace(/^file:\/\//, ""))
@@ -196,9 +212,10 @@ async function dispatch(command: CoreCommand): Promise<unknown> {
 
   if (parsed["status"] === "failed") {
     const error = parsed["error"];
-    throw new Error(
-      isProtocolError(error) ? error.message : "Runtime command failed"
-    );
+    if (isProtocolError(error)) {
+      throw new CoreCommandError(error);
+    }
+    throw new Error("Runtime command failed");
   }
   return parsed["value"];
 }

@@ -2,6 +2,7 @@
 //! Decodes audio data and measures integrated loudness (LUFS) and true peak.
 
 use ebur128::{EbuR128, Mode};
+use num_traits::ToPrimitive;
 use rodio::Decoder;
 use rodio::Source;
 use std::io::Cursor;
@@ -23,7 +24,8 @@ pub struct LoudnessResult {
 /// Returns an error if decoding fails or the EBU R128 analyzer cannot process
 /// the decoded samples.
 pub fn analyze_loudness(audio_data: Vec<u8>) -> AudioResult<LoudnessResult> {
-    let byte_len = audio_data.len() as u64;
+    let byte_len = u64::try_from(audio_data.len())
+        .map_err(|_| AudioError::Playback("Audio data length does not fit u64".to_string()))?;
     let cursor = Cursor::new(audio_data);
     let source = Decoder::builder()
         .with_data(cursor)
@@ -113,10 +115,6 @@ pub fn calculate_gain(
     gain_as_f32(gain)
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "the final normalization multiplier must match the f32 audio sample format"
-)]
 fn gain_as_f32(gain: f64) -> f32 {
-    gain as f32
+    gain.to_f32().unwrap_or(1.0)
 }

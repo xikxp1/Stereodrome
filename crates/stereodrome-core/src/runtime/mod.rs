@@ -9,10 +9,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use num_traits::ToPrimitive;
 use serde_json::Value;
 use stereodrome_audio::AudioNotification;
 use tokio::sync::broadcast;
@@ -53,6 +54,7 @@ enum MailboxMessage {
         result: CoreResult<playback::PreparedPlayback>,
     },
     PlaybackNotification(AudioNotification),
+    CacheStateChanged,
     PlaybackTick,
     Stop,
 }
@@ -74,12 +76,23 @@ struct PendingPlayback {
     success_value: Option<Value>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CancellationReporting {
+    /// The runtime superseded obsolete work as part of another command.
+    Silent,
+    /// A caller explicitly cancelled an operation and should observe its terminal state.
+    Failure,
+}
+
 struct RuntimeInner {
     mailbox: SyncSender<MailboxMessage>,
     events: broadcast::Sender<CoreEvent>,
     next_command_id: AtomicU64,
     stopped: AtomicBool,
     monitor_running: Arc<AtomicBool>,
+    cache_input_shutdown: crossbeam_channel::Sender<()>,
+    tick_gate: Arc<PlaybackTickGate>,
+    cache_input_thread: Mutex<Option<thread::JoinHandle<()>>>,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
@@ -89,11 +102,76 @@ impl Drop for RuntimeInner {
             let _ = self.mailbox.send(MailboxMessage::Stop);
         }
         self.monitor_running.store(false, Ordering::SeqCst);
+        let _ = self.cache_input_shutdown.try_send(());
+        self.tick_gate.stop();
         if let Ok(thread) = self.thread.get_mut()
             && let Some(thread) = thread.take()
         {
             let _ = thread.join();
         }
+        if let Ok(thread) = self.cache_input_thread.get_mut()
+            && let Some(thread) = thread.take()
+        {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Blocks the playback tick thread while nothing is playing so a paused or
+/// idle runtime schedules zero periodic wakeups.
+struct PlaybackTickGate {
+    state: Mutex<TickGateState>,
+    condvar: Condvar,
+}
+
+struct TickGateState {
+    playing: bool,
+    running: bool,
+}
+
+impl PlaybackTickGate {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(TickGateState {
+                playing: false,
+                running: true,
+            }),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn set_playing(&self, playing: bool) {
+        if let Ok(mut state) = self.state.lock()
+            && state.playing != playing
+        {
+            state.playing = playing;
+            self.condvar.notify_all();
+        }
+    }
+
+    fn stop(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.running = false;
+            self.condvar.notify_all();
+        }
+    }
+
+    /// Blocks until playback is active; returns false once the runtime stops.
+    fn wait_until_playing(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        while state.running && !state.playing {
+            state = match self.condvar.wait(state) {
+                Ok(state) => state,
+                Err(_) => return false,
+            };
+        }
+        state.running
+    }
+
+    fn is_running(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.running)
     }
 }
 
@@ -170,7 +248,15 @@ impl StereodromeRuntimeHandle {
         let actor_events = events.clone();
         let stream_id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
         let monitor_running = Arc::new(AtomicBool::new(true));
-        start_playback_inputs(&audio, mailbox.clone(), Arc::clone(&monitor_running));
+        let tick_gate = Arc::new(PlaybackTickGate::new());
+        start_playback_inputs(
+            &audio,
+            mailbox.clone(),
+            Arc::clone(&monitor_running),
+            Arc::clone(&tick_gate),
+        );
+        let (cache_input_shutdown, cache_input_thread) = start_cache_inputs(&core, mailbox.clone());
+        let actor_tick_gate = Arc::clone(&tick_gate);
         let actor_thread = thread::Builder::new()
             .name("stereodrome-runtime".to_string())
             .spawn(move || {
@@ -184,6 +270,7 @@ impl StereodromeRuntimeHandle {
                     clock,
                     connectivity,
                     tokio_runtime,
+                    actor_tick_gate,
                     lease,
                 );
             })?;
@@ -194,6 +281,9 @@ impl StereodromeRuntimeHandle {
                 next_command_id: AtomicU64::new(GENERATED_COMMAND_ID_START),
                 stopped: AtomicBool::new(false),
                 monitor_running,
+                cache_input_shutdown,
+                tick_gate,
+                cache_input_thread: Mutex::new(Some(cache_input_thread)),
                 thread: Mutex::new(Some(actor_thread)),
             }),
         })
@@ -269,6 +359,8 @@ impl StereodromeRuntimeHandle {
             return;
         }
         self.inner.monitor_running.store(false, Ordering::SeqCst);
+        let _ = self.inner.cache_input_shutdown.try_send(());
+        self.inner.tick_gate.stop();
         let command_id = CommandId(self.inner.next_command_id.fetch_add(1, Ordering::Relaxed));
         let (response_sender, response_receiver) = mpsc::channel();
         let _ = self.inner.mailbox.send(MailboxMessage::Dispatch {
@@ -281,6 +373,11 @@ impl StereodromeRuntimeHandle {
         });
         let _ = response_receiver.recv();
         if let Ok(mut thread) = self.inner.thread.lock()
+            && let Some(thread) = thread.take()
+        {
+            let _ = thread.join();
+        }
+        if let Ok(mut thread) = self.inner.cache_input_thread.lock()
             && let Some(thread) = thread.take()
         {
             let _ = thread.join();
@@ -381,16 +478,18 @@ fn start_playback_inputs(
     audio: &Arc<dyn AudioPort>,
     mailbox: SyncSender<MailboxMessage>,
     running: Arc<AtomicBool>,
+    tick_gate: Arc<PlaybackTickGate>,
 ) {
     if let Some(notifications) = audio.take_notifications() {
         let notification_mailbox = mailbox.clone();
-        let notification_running = Arc::clone(&running);
+        let notification_running = running;
+        // Blocks until the audio engine sends a notification; the channel
+        // disconnects when the audio port is dropped at shutdown, so no
+        // periodic wakeup is needed to observe the running flag.
         thread::spawn(move || {
             while notification_running.load(Ordering::SeqCst) {
-                let notification = match notifications.recv_timeout(Duration::from_millis(250)) {
-                    Ok(notification) => notification,
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                let Ok(notification) = notifications.recv() else {
+                    break;
                 };
                 if notification_mailbox
                     .send(MailboxMessage::PlaybackNotification(notification))
@@ -402,15 +501,37 @@ fn start_playback_inputs(
         });
     }
     thread::spawn(move || {
-        while running.load(Ordering::SeqCst) {
+        while tick_gate.wait_until_playing() {
             thread::sleep(Duration::from_millis(250));
-            if !running.load(Ordering::SeqCst)
-                || mailbox.send(MailboxMessage::PlaybackTick).is_err()
-            {
+            if !tick_gate.is_running() || mailbox.send(MailboxMessage::PlaybackTick).is_err() {
                 break;
             }
         }
     });
+}
+
+fn start_cache_inputs(
+    core: &StereodromeCore,
+    mailbox: SyncSender<MailboxMessage>,
+) -> (crossbeam_channel::Sender<()>, thread::JoinHandle<()>) {
+    let cache_events = core.subscribe_cache_state_events();
+    let (shutdown_sender, shutdown_receiver) = crossbeam_channel::bounded(1);
+    let thread = thread::spawn(move || {
+        loop {
+            crossbeam_channel::select! {
+                recv(shutdown_receiver) -> _ => break,
+                recv(cache_events) -> event => {
+                    if event.is_err() {
+                        break;
+                    }
+                    if mailbox.send(MailboxMessage::CacheStateChanged).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    (shutdown_sender, thread)
 }
 
 #[allow(
@@ -428,6 +549,7 @@ fn run_actor(
     clock: Arc<dyn PlaybackClock>,
     connectivity: ConnectivityState,
     tokio_runtime: tokio::runtime::Runtime,
+    tick_gate: Arc<PlaybackTickGate>,
     _lease: RuntimeLease,
 ) {
     let mut state = CoreState::new(connectivity);
@@ -439,10 +561,15 @@ fn run_actor(
     let mut pending_effects = HashMap::<OperationId, PendingEffect>::new();
     let mut pending_playback = HashMap::<OperationId, PendingPlayback>::new();
     let mut last_playback_projection = playback::projection(&core, audio.as_ref(), None).ok();
+    let mut last_tick_fingerprint: Option<PlaybackTickFingerprint> = None;
     let mut last_progress_at = clock.now();
     let mut last_segment_index = 0_usize;
 
     while let Ok(message) = receiver.recv() {
+        // Every playback transition produces at least one mailbox message
+        // (commands directly, engine transitions via PlaybackChanged), so
+        // sampling here keeps the gate current without its own timer.
+        tick_gate.set_playing(audio.status().is_playing);
         let MailboxMessage::Dispatch { request, response } = message else {
             match message {
                 MailboxMessage::EffectCompleted {
@@ -490,10 +617,26 @@ fn run_actor(
                     &mut next_event_id,
                     &mut pending_playback,
                     &mut last_playback_projection,
+                    &mut last_tick_fingerprint,
                     clock.as_ref(),
                     &mut last_progress_at,
                     &mut last_segment_index,
                 ),
+                MailboxMessage::CacheStateChanged => {
+                    state.revision = state.revision.wrapping_add(1);
+                    let command_id = CommandId(next_internal_command_id);
+                    next_internal_command_id = next_internal_command_id.wrapping_add(1);
+                    emit_snapshot_event(
+                        &core,
+                        audio.as_ref(),
+                        &events,
+                        stream_id,
+                        &mut next_event_id,
+                        &state,
+                        command_id,
+                        None,
+                    );
+                }
                 MailboxMessage::PlaybackTick => handle_playback_input(
                     None,
                     &core,
@@ -507,12 +650,13 @@ fn run_actor(
                     &mut next_event_id,
                     &mut pending_playback,
                     &mut last_playback_projection,
+                    &mut last_tick_fingerprint,
                     clock.as_ref(),
                     &mut last_progress_at,
                     &mut last_segment_index,
                 ),
                 MailboxMessage::Stop => break,
-                MailboxMessage::Dispatch { .. } => unreachable!(),
+                MailboxMessage::Dispatch { .. } => continue,
             }
             continue;
         };
@@ -574,6 +718,7 @@ fn run_actor(
                 &mut next_event_id,
                 &mut pending_effects,
                 &mut result_cache,
+                CancellationReporting::Silent,
             );
         }
         if let CoreCommand::CancelOperation { operation_id } = &request.command {
@@ -587,6 +732,7 @@ fn run_actor(
                 &mut next_event_id,
                 &mut pending_playback,
                 &mut result_cache,
+                CancellationReporting::Failure,
             ) {
                 let result = CoreCommandResult::succeeded(
                     request.command_id,
@@ -846,7 +992,9 @@ fn process_playback_request(
         CoreCommand::ReportPlatformPlayback { event } => {
             handle_platform_playback(*event, audio, state)
         }
-        _ => unreachable!("checked by is_playback_command"),
+        _ => Err(CoreError::InvalidInput(
+            "command is not a playback command".to_string(),
+        )),
     };
 
     if result.is_ok()
@@ -1354,6 +1502,7 @@ fn cancel_pending_playback(
     next_event_id: &mut u64,
     pending_playback: &mut HashMap<OperationId, PendingPlayback>,
     result_cache: &mut ResultCache,
+    reporting: CancellationReporting,
 ) -> bool {
     let Some(pending) = pending_playback.remove(&operation_id) else {
         return false;
@@ -1367,21 +1516,23 @@ fn cancel_pending_playback(
     }
     state.revision = state.revision.wrapping_add(1);
     let error = ProtocolError::new(ProtocolErrorCode::Cancelled, "operation cancelled", false);
-    let failure = OperationFailure {
-        command_id: pending.command_id,
-        operation_id: Some(operation_id),
-        error: error.clone(),
-    };
-    state.last_failure = Some(failure.clone());
-    emit_event(
-        events,
-        stream_id,
-        next_event_id,
-        state.revision,
-        pending.command_id,
-        Some(operation_id),
-        CoreEventKind::OperationFailed { failure },
-    );
+    if reporting == CancellationReporting::Failure {
+        let failure = OperationFailure {
+            command_id: pending.command_id,
+            operation_id: Some(operation_id),
+            error: error.clone(),
+        };
+        state.last_failure = Some(failure.clone());
+        emit_event(
+            events,
+            stream_id,
+            next_event_id,
+            state.revision,
+            pending.command_id,
+            Some(operation_id),
+            CoreEventKind::OperationFailed { failure },
+        );
+    }
     emit_snapshot_event(
         core,
         audio,
@@ -1428,6 +1579,7 @@ fn cancel_current_playback(
             next_event_id,
             pending_playback,
             result_cache,
+            CancellationReporting::Silent,
         );
     }
 }
@@ -1454,6 +1606,38 @@ fn cancel_all_playback(
     }
 }
 
+/// Cheap summary of every input that can change the playback projection short
+/// of a queue mutation (covered by `queue_revision`). While it is unchanged on
+/// a quiet tick, rebuilding the projection is guaranteed to be discarded by
+/// `playback_projection_changed`, so the tick skips the rebuild entirely.
+#[derive(Clone, PartialEq)]
+struct PlaybackTickFingerprint {
+    state: stereodrome_audio::PlaybackLifecycleState,
+    is_playing: bool,
+    song_id: Option<String>,
+    output_state: stereodrome_audio::AudioOutputState,
+    queue_revision: u64,
+    preparing_operation_id: Option<OperationId>,
+}
+
+impl PlaybackTickFingerprint {
+    fn capture(
+        core: &StereodromeCore,
+        audio: &dyn AudioPort,
+        preparing_operation_id: Option<OperationId>,
+    ) -> Self {
+        let status = audio.status();
+        Self {
+            state: status.state,
+            is_playing: status.is_playing,
+            song_id: status.current_song_id,
+            output_state: status.output_state,
+            queue_revision: core.queue_revision(),
+            preparing_operation_id,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn handle_playback_input(
     notification: Option<AudioNotification>,
@@ -1468,10 +1652,12 @@ fn handle_playback_input(
     next_event_id: &mut u64,
     pending_playback: &mut HashMap<OperationId, PendingPlayback>,
     last_projection: &mut Option<crate::PlaybackProjection>,
+    last_tick_fingerprint: &mut Option<PlaybackTickFingerprint>,
     clock: &dyn PlaybackClock,
     last_progress_at: &mut std::time::Instant,
     last_segment_index: &mut usize,
 ) {
+    let is_quiet_tick = notification.is_none();
     if notification
         .as_ref()
         .is_some_and(|notification| !audio_notification_is_current(audio, notification))
@@ -1595,6 +1781,15 @@ fn handle_playback_input(
             );
         }
     }
+
+    // Building the projection clones the queue and hits the database, so quiet
+    // ticks skip it while the cheap fingerprint is unchanged; notifications and
+    // any tick that mutated state above always rebuild.
+    let fingerprint = PlaybackTickFingerprint::capture(core, audio, state.playback_operation_id);
+    if is_quiet_tick && last_tick_fingerprint.as_ref() == Some(&fingerprint) {
+        return;
+    }
+    *last_tick_fingerprint = Some(fingerprint);
 
     if let Ok(projection) = playback::projection(core, audio, state.playback_operation_id)
         && playback_projection_changed(last_projection.as_ref(), &projection)
@@ -2005,7 +2200,10 @@ async fn run_effect(
         }
         CoreCommand::StartQueuePrefetch { .. } => {
             let settings = core.get_audio_processing_settings()?;
-            let plan = core.queue_prefetch_plan(settings.prefetch_count as usize)?;
+            let prefetch_count = settings.prefetch_count.to_usize().ok_or_else(|| {
+                CoreError::InvalidInput("prefetch_count does not fit usize".to_string())
+            })?;
+            let plan = core.queue_prefetch_plan(prefetch_count)?;
             let outcome = core.run_queue_prefetch_plan(&plan, cancellation).await?;
             serde_json::to_value(outcome.statuses).map_err(CoreError::from)
         }
@@ -2139,6 +2337,7 @@ fn cancel_operation(
         next_event_id,
         pending_effects,
         result_cache,
+        CancellationReporting::Failure,
     );
     if cancelled {
         CoreCommandResult::succeeded(cancel_command_id, state.revision, None, Value::Null)
@@ -2167,6 +2366,7 @@ fn cancel_pending_effect(
     next_event_id: &mut u64,
     pending_effects: &mut HashMap<OperationId, PendingEffect>,
     result_cache: &mut ResultCache,
+    reporting: CancellationReporting,
 ) -> bool {
     let Some(pending) = pending_effects.remove(&operation_id) else {
         return false;
@@ -2175,27 +2375,31 @@ fn cancel_pending_effect(
     pending.abort_handle.abort();
     state.operations.remove(&operation_id);
     state.revision = state.revision.wrapping_add(1);
-    if state.saved_playlist_offline.operation_id == Some(operation_id) {
+    if reporting == CancellationReporting::Failure
+        && state.saved_playlist_offline.operation_id == Some(operation_id)
+    {
         state.saved_playlist_offline.running = false;
         state.saved_playlist_offline.operation_id = None;
         state.saved_playlist_offline.last_error = Some("operation cancelled".to_string());
     }
     let error = ProtocolError::new(ProtocolErrorCode::Cancelled, "operation cancelled", false);
-    let failure = OperationFailure {
-        command_id: pending.command_id,
-        operation_id: Some(operation_id),
-        error: error.clone(),
-    };
-    state.last_failure = Some(failure.clone());
-    emit_event(
-        events,
-        stream_id,
-        next_event_id,
-        state.revision,
-        pending.command_id,
-        Some(operation_id),
-        CoreEventKind::OperationFailed { failure },
-    );
+    if reporting == CancellationReporting::Failure {
+        let failure = OperationFailure {
+            command_id: pending.command_id,
+            operation_id: Some(operation_id),
+            error: error.clone(),
+        };
+        state.last_failure = Some(failure.clone());
+        emit_event(
+            events,
+            stream_id,
+            next_event_id,
+            state.revision,
+            pending.command_id,
+            Some(operation_id),
+            CoreEventKind::OperationFailed { failure },
+        );
+    }
     emit_snapshot_event(
         core,
         audio,
@@ -2464,7 +2668,9 @@ fn process_request(
                         serde_json::to_value(snapshot.saved_playlist_offline)
                             .map_err(CoreError::from)
                     }
-                    _ => unreachable!(),
+                    _ => Err(CoreError::InvalidInput(
+                        "command is not a snapshot-backed status command".to_string(),
+                    )),
                 };
                 match value {
                     Ok(value) => CoreCommandResult::succeeded(
@@ -2512,9 +2718,8 @@ fn process_request(
                 update_connectivity(state, core, &command_for_state, &value);
                 if matches!(command_for_state, CoreCommand::ImportPortableBackup { .. })
                     && let Ok(playback) = core.get_playback_state()
+                    && let Some(volume) = playback.app_volume.to_f32()
                 {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let volume = playback.app_volume as f32;
                     let _ = audio.set_volume(volume);
                 }
 
@@ -2684,11 +2889,20 @@ fn unavailable_result(command_id: CommandId) -> CoreCommandResult {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast"
+)]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
+    use crate::CacheStateEvent;
     use crate::protocol::{CommandStatus, CoreCommand, CoreCommandRequest};
     use crate::queue::{QueueItem, QueueState, RepeatMode};
     use crate::test_support::{AudioCall, FakeAudio, ManualPlaybackClock};
@@ -2725,6 +2939,26 @@ mod tests {
                 Err(error) => panic!("runtime event unavailable: {error}"),
             }
         }
+    }
+
+    #[test]
+    fn cache_changes_emit_authoritative_runtime_snapshots() {
+        let data_dir = test_dir("cache-events");
+        let core = Arc::new(StereodromeCore::new(&data_dir).expect("core initializes"));
+        let handle = StereodromeRuntimeHandle::start_with_core(&data_dir, Arc::clone(&core))
+            .expect("runtime starts");
+        let mut events = handle.subscribe();
+
+        core.emit_cache_state_event(CacheStateEvent::Reconcile);
+
+        let event = next_event(&mut events, Duration::from_secs(1));
+        let CoreEventKind::SnapshotChanged { snapshot } = event.kind else {
+            panic!("cache change emits a snapshot");
+        };
+        assert_eq!(snapshot.revision, 1);
+
+        handle.shutdown();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     fn seed_song(core: &StereodromeCore, song_id: &str) {
@@ -3168,7 +3402,7 @@ mod tests {
         let prepared = playback::PreparedPlayback {
             target_song_id: "stale-song".to_string(),
             prepared: PreparedAudio {
-                audio_data: Arc::from(&b"fake"[..]),
+                audio_path: PathBuf::from("stale-song.mp3"),
                 metadata: stereodrome_audio::SongMetadata {
                     id: "stale-song".to_string(),
                     title: "Stale".to_string(),
@@ -3209,6 +3443,160 @@ mod tests {
 
         assert!(fake.calls().is_empty());
         assert_eq!(state.playback_operation_id, Some(OperationId(2)));
+        runtime.shutdown_timeout(Duration::from_millis(50));
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn superseded_playback_cancellation_is_not_reported_as_a_failure() {
+        let data_dir = test_dir("silent-playback-cancellation");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let fake = FakeAudio::default();
+        let connectivity = initial_connectivity(&core).expect("connectivity initializes");
+        let mut state = CoreState::new(connectivity);
+        let operation_id = OperationId(1);
+        state.playback_operation_id = Some(operation_id);
+        state.operations.insert(
+            operation_id,
+            OperationSnapshot {
+                operation_id,
+                cause_command_id: CommandId(8),
+                kind: JobKind::PlaybackPrepare {
+                    song_id: "song-1".to_string(),
+                },
+                phase: OperationPhase::Running,
+            },
+        );
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let task = runtime.spawn(std::future::pending::<()>());
+        let cancellation = CancellationToken::new();
+        let cancellation_probe = cancellation.clone();
+        let (response, response_receiver) = mpsc::channel();
+        let mut pending = HashMap::from([(
+            operation_id,
+            PendingPlayback {
+                command_id: CommandId(8),
+                command: CoreCommand::NavigatePlayback {
+                    navigation: crate::PlaybackNavigation::Next { force: true },
+                },
+                response: Some(response),
+                cancellation,
+                abort_handle: task.abort_handle(),
+                success_value: None,
+            },
+        )]);
+        let (events, mut event_receiver) = broadcast::channel(4);
+        let mut next_event_id = 1;
+        let mut result_cache = ResultCache::new();
+
+        assert!(cancel_pending_playback(
+            operation_id,
+            &core,
+            &fake,
+            &events,
+            1,
+            &mut state,
+            &mut next_event_id,
+            &mut pending,
+            &mut result_cache,
+            CancellationReporting::Silent,
+        ));
+
+        assert!(cancellation_probe.is_cancelled());
+        assert!(state.last_failure.is_none());
+        assert!(state.operations.is_empty());
+        assert!(state.playback_operation_id.is_none());
+        let result = response_receiver
+            .recv()
+            .expect("caller receives cancellation");
+        assert!(matches!(
+            result.error,
+            Some(ProtocolError {
+                code: ProtocolErrorCode::Cancelled,
+                ..
+            })
+        ));
+        assert!(matches!(
+            event_receiver.try_recv().expect("snapshot event"),
+            CoreEvent {
+                kind: CoreEventKind::SnapshotChanged { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            event_receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        runtime.shutdown_timeout(Duration::from_millis(50));
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn invalidated_prefetch_cancellation_is_not_reported_as_a_failure() {
+        let data_dir = test_dir("silent-prefetch-cancellation");
+        let core = StereodromeCore::new(&data_dir).expect("core initializes");
+        let fake = FakeAudio::default();
+        let connectivity = initial_connectivity(&core).expect("connectivity initializes");
+        let mut state = CoreState::new(connectivity);
+        let operation_id = OperationId(1);
+        state.operations.insert(
+            operation_id,
+            OperationSnapshot {
+                operation_id,
+                cause_command_id: CommandId(9),
+                kind: JobKind::QueuePrefetch,
+                phase: OperationPhase::Running,
+            },
+        );
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let task = runtime.spawn(std::future::pending::<()>());
+        let cancellation = CancellationToken::new();
+        let cancellation_probe = cancellation.clone();
+        let mut pending = HashMap::from([(
+            operation_id,
+            PendingEffect {
+                command_id: CommandId(9),
+                command: CoreCommand::StartQueuePrefetch {
+                    reserve_first: false,
+                },
+                response: None,
+                cancellation,
+                abort_handle: task.abort_handle(),
+            },
+        )]);
+        let (events, mut event_receiver) = broadcast::channel(4);
+        let mut next_event_id = 1;
+        let mut result_cache = ResultCache::new();
+
+        assert!(cancel_pending_effect(
+            operation_id,
+            &core,
+            &fake,
+            &events,
+            1,
+            &mut state,
+            &mut next_event_id,
+            &mut pending,
+            &mut result_cache,
+            CancellationReporting::Silent,
+        ));
+
+        assert!(cancellation_probe.is_cancelled());
+        assert!(state.last_failure.is_none());
+        assert!(state.operations.is_empty());
+        assert!(matches!(
+            event_receiver.try_recv().expect("snapshot event"),
+            CoreEvent {
+                kind: CoreEventKind::SnapshotChanged { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            event_receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
         runtime.shutdown_timeout(Duration::from_millis(50));
         let _ = std::fs::remove_dir_all(data_dir);
     }

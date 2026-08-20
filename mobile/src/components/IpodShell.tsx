@@ -1,8 +1,17 @@
-import { Animated, Easing, Pressable, StyleSheet, View } from "react-native";
+import {
+  Animated,
+  Easing,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Dices,
+  Download,
+  LoaderCircle,
   MoreHorizontal,
   Repeat,
   Repeat1,
@@ -10,11 +19,13 @@ import {
 } from "lucide-react-native";
 
 import { ClickWheel } from "@/components/ClickWheel";
+import { ErrorToast } from "@/components/ErrorToast";
 import { Header } from "@/components/Header";
 import { colors } from "@/components/theme";
 import { useInputBus } from "@/context/InputContext";
 import { useMobileSettings } from "@/context/MobileSettingsContext";
-import { usePlayback, useStereodrome } from "@/core/selectors";
+import { useFileState, usePlayback, useStereodrome } from "@/core/selectors";
+import { coreActions } from "@/core/store";
 import { useSongActions } from "@/context/SongActionContext";
 import {
   connectView,
@@ -23,13 +34,7 @@ import {
   useViewStack,
 } from "@/context/ViewContext";
 import { renderView } from "@/screens/renderView";
-
-function formatPlaybackTime(seconds: number) {
-  const safeSeconds = Math.max(0, Math.floor(seconds));
-  const minutes = Math.floor(safeSeconds / 60);
-  const remainingSeconds = safeSeconds % 60;
-  return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
-}
+import { haptics } from "@/services/haptics";
 
 function ignorePlaybackFailure(promise: Promise<void>): void {
   void promise.catch(() => undefined);
@@ -46,25 +51,20 @@ export function IpodShell() {
     transitionKey,
   } = view;
   const navigationProgress = useRef(new Animated.Value(1)).current;
+  const downloadProgress = useRef(new Animated.Value(0)).current;
   const previousTransitionKey = useRef(transitionKey);
   const { subscribe } = useInputBus();
   const { buttonHandedness } = useMobileSettings();
   const playback = usePlayback();
+  const fileState = useFileState();
   const songActions = useSongActions();
   const stereodrome = useStereodrome();
   const insets = useSafeAreaInsets();
   const navigationOffset = transitionDirection === "back" ? -24 : 24;
   const leftHandedButtons = buttonHandedness === "left";
+  const downloadQueueSize = fileState.downloadQueueLength;
+  const downloadsActive = downloadQueueSize > 0;
   const RepeatIcon = playback.repeatMode === "One" ? Repeat1 : Repeat;
-  const playbackDuration =
-    playback.duration > 0
-      ? playback.duration
-      : (playback.currentSong?.duration ?? 0);
-  const playbackTime = playback.currentSong
-    ? `${formatPlaybackTime(playback.position)}/${formatPlaybackTime(
-        playbackDuration
-      )}`
-    : undefined;
   const headerTitle =
     current.name !== "nowPlaying" && playback.currentSong
       ? `${playback.currentSong.artist ?? "Unknown Artist"} - ${
@@ -107,6 +107,27 @@ export function IpodShell() {
       useNativeDriver: true,
     }).start();
   }, [navigationProgress, transitionKey]);
+
+  useEffect(() => {
+    downloadProgress.stopAnimation();
+    downloadProgress.setValue(0);
+    if (!downloadsActive) {
+      return undefined;
+    }
+
+    const animation = Animated.loop(
+      Animated.timing(downloadProgress, {
+        duration: 1100,
+        easing: Easing.linear,
+        toValue: 1,
+        useNativeDriver: true,
+      })
+    );
+    animation.start();
+    return () => {
+      animation.stop();
+    };
+  }, [downloadProgress, downloadsActive]);
 
   useEffect(() => {
     if (!stereodrome.ready) {
@@ -184,13 +205,17 @@ export function IpodShell() {
             marqueeTitle={
               current.name !== "nowPlaying" && Boolean(playback.currentSong)
             }
-            {...(playbackTime === undefined ? {} : { rightText: playbackTime })}
+            showPlaybackTime={Boolean(playback.currentSong)}
             title={headerTitle}
           />
           <View style={styles.viewport}>
             <Animated.View style={[styles.animatedViewport, screenStyle]}>
               {renderView(current)}
             </Animated.View>
+            <ErrorToast
+              message={playback.error}
+              onDismiss={coreActions.dismissError}
+            />
           </View>
         </View>
         <View style={styles.wheelSlot}>
@@ -199,6 +224,7 @@ export function IpodShell() {
             accessibilityRole="button"
             accessibilityState={{ selected: playback.repeatEnabled }}
             onPress={() => {
+              haptics.toggle(!playback.repeatEnabled);
               ignorePlaybackFailure(playback.toggleRepeat());
             }}
             style={[
@@ -221,7 +247,10 @@ export function IpodShell() {
               disabled: !songActions.canOpenSongContextMenu,
             }}
             disabled={!songActions.canOpenSongContextMenu}
-            onPress={songActions.openSongContextMenu}
+            onPress={() => {
+              haptics.selection();
+              songActions.openSongContextMenu();
+            }}
             style={[
               styles.queueButton,
               leftHandedButtons
@@ -243,6 +272,7 @@ export function IpodShell() {
               accessibilityRole="button"
               accessibilityState={{ selected: playback.shuffleEnabled }}
               onPress={() => {
+                haptics.toggle(!playback.shuffleEnabled);
                 ignorePlaybackFailure(playback.toggleShuffle());
               }}
               style={[
@@ -263,11 +293,53 @@ export function IpodShell() {
               accessibilityLabel="Reroll next track"
               accessibilityRole="button"
               onPress={() => {
+                haptics.selection();
                 ignorePlaybackFailure(playback.rerollNext());
               }}
               style={styles.queueButton}
             >
               <Dices color={colors.wheelIcon} size={20} />
+            </Pressable>
+            <Pressable
+              accessibilityLabel={`Downloads, ${downloadQueueSize} queued`}
+              accessibilityRole="button"
+              accessibilityState={{ busy: downloadsActive }}
+              onPress={() => {
+                haptics.selection();
+                if (current.name !== "downloads") {
+                  view.push({ name: "downloads", title: "Downloads" });
+                }
+              }}
+              style={styles.queueButton}
+            >
+              {downloadsActive ? (
+                <Animated.View
+                  style={{
+                    transform: [
+                      {
+                        rotate: downloadProgress.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: ["0deg", "360deg"],
+                        }),
+                      },
+                    ],
+                  }}
+                >
+                  <LoaderCircle color="#2563eb" size={20} />
+                </Animated.View>
+              ) : (
+                <Download color={colors.wheelIcon} size={20} />
+              )}
+              <View
+                style={[
+                  styles.downloadCount,
+                  downloadsActive && styles.downloadCountActive,
+                ]}
+              >
+                <Text style={styles.downloadCountText}>
+                  {downloadQueueSize.toLocaleString()}
+                </Text>
+              </View>
             </Pressable>
           </View>
           <ClickWheel />
@@ -332,6 +404,28 @@ const styles = StyleSheet.create({
   },
   queueButtonDisabled: {
     opacity: 0.42,
+  },
+  downloadCount: {
+    alignItems: "center",
+    backgroundColor: colors.muted,
+    borderColor: colors.wheel,
+    borderRadius: 8,
+    borderWidth: 1,
+    bottom: -4,
+    justifyContent: "center",
+    minWidth: 17,
+    paddingHorizontal: 3,
+    position: "absolute",
+    right: -5,
+  },
+  downloadCountActive: {
+    backgroundColor: "#2563eb",
+  },
+  downloadCountText: {
+    color: colors.selectedText,
+    fontSize: 9,
+    fontWeight: "900",
+    lineHeight: 14,
   },
   repeatLeft: {
     left: 8,

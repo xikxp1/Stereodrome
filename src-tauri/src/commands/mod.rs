@@ -1,3 +1,8 @@
+#![allow(
+    clippy::unreachable,
+    reason = "tauri::command expansion contains internal unreachable branches"
+)]
+
 pub mod auth;
 pub mod backup;
 pub mod cache;

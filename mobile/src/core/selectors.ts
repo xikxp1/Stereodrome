@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { AppState } from "react-native";
 
 import { coreActions, coreStore } from "@/core/store";
 import type {
@@ -148,19 +149,51 @@ function useInterpolatedPosition(playback: PlaybackProjection | null): number {
     if (playback?.is_playing !== true) {
       return undefined;
     }
-    const interval = setInterval(() => {
-      setPosition((current) =>
-        playback.duration_seconds > 0
-          ? Math.min(playback.duration_seconds, current + 1)
-          : current + 1
-      );
-    }, 1000);
+    // Ticks pause while the app is backgrounded; the foreground reconcile in
+    // App.tsx refreshes the authoritative position when the app returns.
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      interval ??= setInterval(() => {
+        setPosition((current) =>
+          playback.duration_seconds > 0
+            ? Math.min(playback.duration_seconds, current + 1)
+            : current + 1
+        );
+      }, 1000);
+    };
+    const stop = () => {
+      if (interval !== null) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+    if (AppState.currentState === "active") {
+      start();
+    }
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        start();
+      } else {
+        stop();
+      }
+    });
     return () => {
-      clearInterval(interval);
+      stop();
+      subscription.remove();
     };
   }, [authoritative, playback?.duration_seconds, playback?.is_playing]);
 
   return position;
+}
+
+/**
+ * The 1 Hz interpolated playback position. This is the only hook that
+ * re-renders every second, so consume it in leaf components rather than in
+ * screen- or shell-level ones.
+ */
+export function usePlaybackPosition(): number {
+  const playback = useCoreState().snapshot?.playback ?? null;
+  return useInterpolatedPosition(playback);
 }
 
 const playbackActions = {
@@ -204,15 +237,13 @@ export function usePlaybackMetadata() {
 export function usePlayback() {
   const metadata = usePlaybackMetadata();
   const playback = useCoreState().snapshot?.playback ?? null;
-  const position = useInterpolatedPosition(playback);
   return useMemo(
     () => ({
       ...metadata,
       ...playbackActions,
       duration: playback?.duration_seconds ?? 0,
-      position,
     }),
-    [metadata, playback?.duration_seconds, position]
+    [metadata, playback?.duration_seconds]
   );
 }
 
@@ -249,6 +280,7 @@ export function useFileState() {
     () => ({
       offlineSongIds: new Set(downloads?.offline_song_ids ?? []),
       downloadingSongIds: new Set(downloads?.downloading_song_ids ?? []),
+      downloadQueueLength: downloads?.queue_length ?? 0,
     }),
     [downloads]
   );

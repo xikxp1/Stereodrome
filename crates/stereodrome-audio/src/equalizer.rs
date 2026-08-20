@@ -3,6 +3,7 @@
 
 use fundsp::audionode::AudioNode;
 use fundsp::biquad::{Biquad, BiquadCoefs};
+use num_traits::ToPrimitive;
 use rodio::source::SeekError;
 use rodio::{ChannelCount, SampleRate, Source};
 use std::time::Duration;
@@ -48,8 +49,8 @@ pub fn default_bands_db() -> Vec<f32> {
 #[must_use]
 pub fn sanitize_bands_db(input: &[f32]) -> Vec<f32> {
     let mut output = vec![0.0; EQ_BAND_COUNT];
-    for (index, value) in input.iter().copied().enumerate().take(EQ_BAND_COUNT) {
-        output[index] = value.clamp(EQ_MIN_DB, EQ_MAX_DB);
+    for (slot, value) in output.iter_mut().zip(input.iter().copied()) {
+        *slot = value.clamp(EQ_MIN_DB, EQ_MAX_DB);
     }
     output
 }
@@ -85,12 +86,16 @@ where
         let mut filters = Vec::with_capacity(channel_count);
         for _ in 0..channel_count {
             let mut channel_filters = Vec::with_capacity(EQ_BAND_COUNT);
-            for (index, gain) in gains.iter().copied().enumerate() {
+            for (frequency, gain) in EQ_BAND_FREQUENCIES
+                .iter()
+                .copied()
+                .zip(gains.iter().copied())
+            {
                 let mut biquad = Biquad::<f32>::new();
                 biquad.set_sample_rate(f64::from(sample_rate));
                 biquad.set_coefs(BiquadCoefs::bell(
                     sample_rate,
-                    EQ_BAND_FREQUENCIES[index].min(max_center),
+                    frequency.min(max_center),
                     EQ_Q,
                     gain,
                 ));
@@ -120,23 +125,28 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.output_pos < usize::from(self.channels.get()) {
-            let sample = self.output_buffer[self.output_pos];
-            self.output_pos += 1;
+            let sample = self.output_buffer.get(self.output_pos).copied()?;
+            self.output_pos = self.output_pos.checked_add(1)?;
             return Some(sample);
         }
 
         let ch = usize::from(self.channels.get());
-        for channel_idx in 0..ch {
+        for (channel_filters, output) in self
+            .filters
+            .iter_mut()
+            .zip(self.output_buffer.iter_mut())
+            .take(ch)
+        {
             let mut sample = self.inner.next()?;
-            for filter in &mut self.filters[channel_idx] {
+            for filter in channel_filters {
                 let input = [sample].into();
-                sample = filter.tick(&input)[0];
+                sample = filter.tick(&input).iter().next().copied().unwrap_or(sample);
             }
-            self.output_buffer[channel_idx] = sample.clamp(-1.0, 1.0);
+            *output = sample.clamp(-1.0, 1.0);
         }
 
         self.output_pos = 1;
-        Some(self.output_buffer[0])
+        self.output_buffer.first().copied()
     }
 }
 
@@ -174,11 +184,6 @@ where
     }
 }
 
-/// Audio sample rates are far below the integer precision limit of `f32`.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "fundsp's f32 filters require f32 rates and supported audio rates are exact"
-)]
 fn sample_rate_as_f32(sample_rate: u32) -> f32 {
-    sample_rate as f32
+    sample_rate.to_f32().unwrap_or(48_000.0)
 }

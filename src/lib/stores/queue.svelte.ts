@@ -25,9 +25,6 @@ class QueueStore {
   }
 
   private async init() {
-    // Load initial state from backend
-    await this.loadFromBackend();
-
     // Listen for queue changes from backend
     this.unlistenChanged = await listen<QueueState>(
       "queue-changed",
@@ -35,6 +32,10 @@ class QueueStore {
         this.updateFromState(event.payload);
       }
     );
+
+    // Load the authoritative state after the listener is active so queue changes
+    // cannot be missed during initialization.
+    await this.loadFromBackend();
   }
 
   private updateFromState(state: QueueState) {

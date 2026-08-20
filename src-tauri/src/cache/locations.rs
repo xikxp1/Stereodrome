@@ -179,7 +179,7 @@ fn move_cache_files(source_dir: &Path, destination_dir: &Path) -> CacheMoveSumma
                 "Failed to read cache directory {}: {error}",
                 source_dir.display()
             );
-            summary.failed_files += 1;
+            summary.failed_files = summary.failed_files.saturating_add(1);
             return summary;
         }
     };
@@ -192,31 +192,31 @@ fn move_cache_files(source_dir: &Path, destination_dir: &Path) -> CacheMoveSumma
                     "Failed to read a cache directory entry in {}: {error}",
                     source_dir.display()
                 );
-                summary.failed_files += 1;
+                summary.failed_files = summary.failed_files.saturating_add(1);
                 continue;
             }
         };
         let source_path = entry.path();
         if !source_path.is_file() {
-            summary.skipped_files += 1;
+            summary.skipped_files = summary.skipped_files.saturating_add(1);
             continue;
         }
 
         let destination_path = destination_dir.join(entry.file_name());
         if destination_path.exists() {
-            summary.skipped_files += 1;
+            summary.skipped_files = summary.skipped_files.saturating_add(1);
             continue;
         }
 
         match move_file_without_overwrite(&source_path, &destination_path) {
-            Ok(()) => summary.moved_files += 1,
+            Ok(()) => summary.moved_files = summary.moved_files.saturating_add(1),
             Err(error) => {
                 warn!(
                     "Failed to move cache file {} to {}: {error}",
                     source_path.display(),
                     destination_path.display()
                 );
-                summary.failed_files += 1;
+                summary.failed_files = summary.failed_files.saturating_add(1);
             }
         }
     }
@@ -250,6 +250,14 @@ fn paths_refer_to_same_location(left: &Path, right: &Path) -> bool {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "cache tests intentionally use fail-fast fixture setup and assertions"
+)]
 mod tests {
     use super::{
         AUDIO_CACHE_DIR_NAME, COVER_CACHE_DIR_NAME, move_cache_files, normalize_requested_root,

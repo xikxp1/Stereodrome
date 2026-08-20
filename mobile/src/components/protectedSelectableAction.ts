@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 
 import type { SelectableOption } from "@/components/SelectableList";
+import { haptics } from "@/services/haptics";
 
 export type ProtectedSelectableAction = {
   id: string;
@@ -70,6 +71,7 @@ export function useProtectedSelectableAction(resetKey: string | number | null) {
             : { disabled: action.disabled }),
           wheelOnly: true,
           onSelect: async () => {
+            haptics.warning();
             clearProtectedAction();
             await action.onConfirm();
           },

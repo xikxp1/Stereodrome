@@ -1,10 +1,13 @@
 use log::{debug, error, info, warn};
+use num_traits::ToPrimitive;
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::any::Any;
 use std::collections::HashSet;
-use std::io::Cursor;
+use std::fs::File;
+use std::io::BufReader;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
@@ -259,7 +262,7 @@ impl PlaybackIdentity {
 enum AudioCommand {
     Play {
         expected_playback: Option<PlaybackIdentity>,
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -298,7 +301,7 @@ enum AudioCommand {
     /// while a new sink fades in over the specified duration.
     CrossfadePlay {
         expected_playback: Option<PlaybackIdentity>,
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -315,7 +318,7 @@ enum AudioCommand {
 #[derive(Debug)]
 pub struct CrossfadePlayRequest {
     pub expected_playback: Option<PlaybackIdentity>,
-    pub audio_data: Arc<[u8]>,
+    pub audio_path: PathBuf,
     pub metadata: SongMetadata,
     pub duration_secs: f64,
     pub normalization_gain: Option<f32>,
@@ -327,7 +330,7 @@ pub struct CrossfadePlayRequest {
 
 struct GaplessAppendRequest {
     expected_playback: PlaybackIdentity,
-    audio_data: Arc<[u8]>,
+    audio_path: PathBuf,
     metadata: SongMetadata,
     duration_secs: f64,
     normalization_gain: Option<f32>,
@@ -346,7 +349,7 @@ struct AudioProcessingRequest {
 
 #[derive(Debug, Clone)]
 struct ActiveAudioRequest {
-    audio_data: Arc<[u8]>,
+    audio_path: PathBuf,
     metadata: SongMetadata,
     duration_secs: f64,
     processing: AudioProcessingRequest,
@@ -354,7 +357,7 @@ struct ActiveAudioRequest {
 
 impl ActiveAudioRequest {
     fn new(
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -363,7 +366,7 @@ impl ActiveAudioRequest {
         equalizer_settings: Option<EqualizerSettings>,
     ) -> Self {
         Self {
-            audio_data,
+            audio_path,
             metadata,
             duration_secs,
             processing: AudioProcessingRequest {
@@ -667,18 +670,22 @@ impl SharedState {
         let mut cumulative_position = source_position.max(0.0);
         if inner.gapless_segments.len() > 1 {
             let mut segment_idx = Self::segment_index_for_current_position(&inner);
-            let current_segment = &inner.gapless_segments[segment_idx];
+            let Some(current_segment) = inner.gapless_segments.get(segment_idx) else {
+                return false;
+            };
             let candidate = current_segment.cumulative_start + source_position;
             let near_segment_end =
                 previous >= current_segment.cumulative_start + current_segment.duration - 0.5;
-            if segment_idx + 1 < inner.gapless_segments.len()
+            let next_segment_idx = segment_idx.saturating_add(1);
+            if next_segment_idx < inner.gapless_segments.len()
                 && near_segment_end
                 && candidate + 0.25 < previous
             {
-                segment_idx += 1;
+                segment_idx = next_segment_idx;
             }
-            cumulative_position =
-                inner.gapless_segments[segment_idx].cumulative_start + source_position.max(0.0);
+            if let Some(segment) = inner.gapless_segments.get(segment_idx) {
+                cumulative_position = segment.cumulative_start + source_position.max(0.0);
+            }
         }
 
         inner.consumed_position = cumulative_position.clamp(0.0, inner.duration);
@@ -702,7 +709,7 @@ impl SharedState {
         }
 
         let segment_idx = Self::segment_index_for_current_position(&inner);
-        let segment = &inner.gapless_segments[segment_idx];
+        let segment = inner.gapless_segments.get(segment_idx)?;
         let position = (inner.consumed_position - segment.cumulative_start)
             .max(0.0)
             .min(segment.duration);
@@ -760,37 +767,38 @@ impl SharedState {
         if inner.gapless_segments.len() > 1 {
             // Find which segment we're in
             let seg_idx = Self::segment_index_for_current_position(&inner);
-            let seg = &inner.gapless_segments[seg_idx];
-            let song_pos = (cumulative_pos - seg.cumulative_start)
-                .max(0.0)
-                .min(seg.duration);
+            if let Some(seg) = inner.gapless_segments.get(seg_idx) {
+                let song_pos = (cumulative_pos - seg.cumulative_start)
+                    .max(0.0)
+                    .min(seg.duration);
 
-            (
-                PlaybackState {
-                    state: lifecycle_state,
-                    is_playing,
-                    position: song_pos,
-                    duration: seg.duration,
-                    volume: inner.volume,
-                    song: Some(seg.metadata.clone()),
-                    output_state: self.output_state(),
-                },
-                seg_idx,
-            )
-        } else {
-            (
-                PlaybackState {
-                    state: lifecycle_state,
-                    is_playing,
-                    position: cumulative_pos,
-                    duration: inner.duration,
-                    volume: inner.volume,
-                    song: inner.current_song.clone(),
-                    output_state: self.output_state(),
-                },
-                0,
-            )
+                return (
+                    PlaybackState {
+                        state: lifecycle_state,
+                        is_playing,
+                        position: song_pos,
+                        duration: seg.duration,
+                        volume: inner.volume,
+                        song: Some(seg.metadata.clone()),
+                        output_state: self.output_state(),
+                    },
+                    seg_idx,
+                );
+            }
         }
+
+        (
+            PlaybackState {
+                state: lifecycle_state,
+                is_playing,
+                position: cumulative_pos,
+                duration: inner.duration,
+                volume: inner.volume,
+                song: inner.current_song.clone(),
+                output_state: self.output_state(),
+            },
+            0,
+        )
     }
 
     fn get_status(&self) -> PlaybackStatus {
@@ -812,7 +820,10 @@ impl SharedState {
             inner.current_song.as_ref().map(|song| song.id.clone())
         } else {
             let segment_idx = Self::segment_index_for_current_position(&inner);
-            Some(inner.gapless_segments[segment_idx].metadata.id.clone())
+            inner
+                .gapless_segments
+                .get(segment_idx)
+                .map(|segment| segment.metadata.id.clone())
         }?;
 
         Some(PlaybackIdentity {
@@ -855,7 +866,8 @@ impl AudioStateHandle {
     #[must_use]
     pub fn is_last_gapless_segment(&self, segment_idx: usize) -> bool {
         let inner = self.shared_state.read_inner();
-        inner.gapless_segments.len() <= 1 || segment_idx == inner.gapless_segments.len() - 1
+        inner.gapless_segments.len() <= 1
+            || segment_idx.saturating_add(1) == inner.gapless_segments.len()
     }
 
     #[must_use]
@@ -953,7 +965,7 @@ impl AudioPlayer {
     /// source cannot be decoded, or no output stream can be opened.
     pub fn play(
         &self,
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -963,7 +975,7 @@ impl AudioPlayer {
     ) -> AudioResult<()> {
         self.play_with_expected(
             None,
-            audio_data,
+            audio_path,
             metadata,
             duration_secs,
             normalization_gain,
@@ -983,7 +995,7 @@ impl AudioPlayer {
     pub fn play_with_expected(
         &self,
         expected_playback: Option<PlaybackIdentity>,
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -993,7 +1005,7 @@ impl AudioPlayer {
     ) -> AudioResult<()> {
         self.send_start_command("play", |permit, ack| AudioCommand::Play {
             expected_playback,
-            audio_data,
+            audio_path,
             metadata,
             duration_secs,
             normalization_gain,
@@ -1016,7 +1028,7 @@ impl AudioPlayer {
     pub fn append_gapless(
         &self,
         expected_playback: PlaybackIdentity,
-        audio_data: Arc<[u8]>,
+        audio_path: PathBuf,
         metadata: SongMetadata,
         duration_secs: f64,
         normalization_gain: Option<f32>,
@@ -1027,7 +1039,7 @@ impl AudioPlayer {
         self.send_result_command("append gapless", |ack| AudioCommand::AppendGapless {
             request: Box::new(GaplessAppendRequest {
                 expected_playback,
-                audio_data,
+                audio_path,
                 metadata,
                 duration_secs,
                 normalization_gain,
@@ -1048,7 +1060,7 @@ impl AudioPlayer {
     pub fn crossfade_play(&self, request: CrossfadePlayRequest) -> AudioResult<()> {
         let CrossfadePlayRequest {
             expected_playback,
-            audio_data,
+            audio_path,
             metadata,
             duration_secs,
             normalization_gain,
@@ -1063,7 +1075,7 @@ impl AudioPlayer {
         self.command_tx
             .send(AudioCommand::CrossfadePlay {
                 expected_playback,
-                audio_data,
+                audio_path,
                 metadata,
                 duration_secs,
                 normalization_gain,
@@ -1356,56 +1368,57 @@ fn append_processed_source<S>(
     S: Source<Item = f32> + Send + 'static,
 {
     let gain = normalization_gain.unwrap_or(1.0);
-    let use_eq = equalizer_settings.is_some_and(|eq| !eq.is_flat());
+    let equalizer_settings = equalizer_settings.filter(|eq| !eq.is_flat());
 
-    match (dynamics_preset, binaural_preset, use_eq) {
-        (Some(dynamics), Some(binaural), true) => {
+    match (dynamics_preset, binaural_preset, equalizer_settings) {
+        (Some(dynamics), Some(binaural), Some(equalizer)) => {
             let normalizing_source = NormalizingSource::with_clamp(source, gain, false);
             let dynamics_source = DynamicsSource::new(normalizing_source, dynamics);
-            let equalizer_source =
-                EqualizerSource::new(dynamics_source, equalizer_settings.expect("eq checked"));
+            let equalizer_source = EqualizerSource::new(dynamics_source, equalizer);
             let binaural_source = BinauralSource::new(equalizer_source, binaural);
             sink.append(binaural_source);
         }
-        (Some(dynamics), Some(binaural), false) => {
+        (Some(dynamics), Some(binaural), None) => {
             let normalizing_source = NormalizingSource::with_clamp(source, gain, false);
             let dynamics_source = DynamicsSource::new(normalizing_source, dynamics);
             let binaural_source = BinauralSource::new(dynamics_source, binaural);
             sink.append(binaural_source);
         }
-        (Some(dynamics), None, true) => {
+        (Some(dynamics), None, Some(equalizer)) => {
             let normalizing_source = NormalizingSource::with_clamp(source, gain, false);
             let dynamics_source = DynamicsSource::new(normalizing_source, dynamics);
-            let equalizer_source =
-                EqualizerSource::new(dynamics_source, equalizer_settings.expect("eq checked"));
+            let equalizer_source = EqualizerSource::new(dynamics_source, equalizer);
             sink.append(equalizer_source);
         }
-        (Some(dynamics), None, false) => {
+        (Some(dynamics), None, None) => {
             let normalizing_source = NormalizingSource::with_clamp(source, gain, false);
             let dynamics_source = DynamicsSource::new(normalizing_source, dynamics);
             sink.append(dynamics_source);
         }
-        (None, Some(binaural), true) => {
+        (None, Some(binaural), Some(equalizer)) => {
             let normalizing_source = NormalizingSource::new(source, gain);
-            let equalizer_source =
-                EqualizerSource::new(normalizing_source, equalizer_settings.expect("eq checked"));
+            let equalizer_source = EqualizerSource::new(normalizing_source, equalizer);
             let binaural_source = BinauralSource::new(equalizer_source, binaural);
             sink.append(binaural_source);
         }
-        (None, Some(binaural), false) => {
+        (None, Some(binaural), None) => {
             let normalizing_source = NormalizingSource::new(source, gain);
             let binaural_source = BinauralSource::new(normalizing_source, binaural);
             sink.append(binaural_source);
         }
-        (None, None, true) => {
+        (None, None, Some(equalizer)) => {
             let normalizing_source = NormalizingSource::new(source, gain);
-            let equalizer_source =
-                EqualizerSource::new(normalizing_source, equalizer_settings.expect("eq checked"));
+            let equalizer_source = EqualizerSource::new(normalizing_source, equalizer);
             sink.append(equalizer_source);
         }
-        (None, None, false) => {
-            let normalizing_source = NormalizingSource::new(source, gain);
-            sink.append(normalizing_source);
+        (None, None, None) => {
+            // No processing requested: skip the normalizer wrapper entirely
+            // rather than multiplying every sample by 1.0 on the render thread.
+            if let Some(gain) = normalization_gain {
+                sink.append(NormalizingSource::new(source, gain));
+            } else {
+                sink.append(source);
+            }
         }
     }
 }
@@ -1467,7 +1480,7 @@ impl PlaybackWatchdog {
         let now = Instant::now();
         Self {
             last_progress_at: now,
-            grace_until: now + STALL_GRACE_DURATION,
+            grace_until: now.checked_add(STALL_GRACE_DURATION).unwrap_or(now),
             last_position: 0.0,
         }
     }
@@ -1475,7 +1488,7 @@ impl PlaybackWatchdog {
     fn reset(&mut self, position: f64) {
         let now = Instant::now();
         self.last_progress_at = now;
-        self.grace_until = now + STALL_GRACE_DURATION;
+        self.grace_until = now.checked_add(STALL_GRACE_DURATION).unwrap_or(now);
         self.last_position = position;
     }
 
@@ -1527,17 +1540,17 @@ fn append_request_to_sink(
     spectrum_producer: &Arc<Mutex<HeapProd<f32>>>,
     spectrum_enabled: &Arc<AtomicBool>,
 ) -> AudioResult<()> {
-    let byte_len = request.audio_data.len() as u64;
-    let cursor = Cursor::new(Arc::clone(&request.audio_data));
+    let file = File::open(&request.audio_path)?;
+    let byte_len = file.metadata()?.len();
     let source = Decoder::builder()
-        .with_data(cursor)
+        .with_data(BufReader::new(file))
         .with_byte_len(byte_len)
         .with_coarse_seek(true)
         .build()
         .map_err(|e| {
             AudioError::Decode(format!(
-                "Failed to decode audio for {}: {e:?}",
-                request.metadata.id
+                "Failed to decode cached audio for {}: {e:?}",
+                request.metadata.id,
             ))
         })?;
 
@@ -1725,6 +1738,42 @@ fn should_poll_audio_thread(
     current_sink_active || crossfade_active || lifecycle_state == PlaybackLifecycleState::Playing
 }
 
+fn should_schedule_paused_output_release(
+    output_open: bool,
+    lifecycle_state: PlaybackLifecycleState,
+) -> bool {
+    output_open && lifecycle_state == PlaybackLifecycleState::Paused
+}
+
+const fn paused_output_release_timeout(is_ios: bool) -> Duration {
+    if is_ios {
+        // iOS derives its Now Playing transport state from the audio session,
+        // not MPNowPlayingInfoCenter.playbackState (which is macOS-only). Close
+        // the render object immediately so the native adapter can deactivate
+        // AVAudioSession and make Control Center show the paused state.
+        Duration::ZERO
+    } else {
+        Duration::from_secs(30)
+    }
+}
+
+/// How long a paused output device stays open before it is released so the
+/// platform can stop its render callback and suspend the process. Resume
+/// transparently rebuilds the output from the persisted position.
+const PAUSED_OUTPUT_RELEASE_TIMEOUT: Duration =
+    paused_output_release_timeout(cfg!(target_os = "ios"));
+
+/// Supervisor wake interval near timing-sensitive moments (crossfades, track
+/// and segment boundaries) and right after commands.
+const POLL_INTERVAL_FAST: Duration = Duration::from_millis(50);
+/// Supervisor wake interval mid-track; 20 wakeups/sec for the whole playback
+/// session is a measurable energy cost on mobile, and nothing mid-track needs
+/// finer position granularity than this.
+const POLL_INTERVAL_RELAXED: Duration = Duration::from_millis(250);
+/// Remaining time in the current segment below which polling tightens so
+/// boundary detection stays prompt.
+const POLL_BOUNDARY_WINDOW_SECONDS: f64 = 2.0;
+
 fn mark_missing_sink_if_playing(
     shared_state: &SharedState,
     watchdog: &mut PlaybackWatchdog,
@@ -1749,6 +1798,8 @@ struct AudioThread<'a> {
     crossfade_state: Option<CrossfadeState>,
     current_generation: u64,
     watchdog: PlaybackWatchdog,
+    paused_since: Option<Instant>,
+    poll_interval: Duration,
 }
 
 fn matches_expected_playback(
@@ -1779,10 +1830,12 @@ impl<'a> AudioThread<'a> {
             crossfade_state: None,
             current_generation: 0,
             watchdog: PlaybackWatchdog::new(),
+            paused_since: None,
+            poll_interval: POLL_INTERVAL_FAST,
         }
     }
 
-    fn next_event(&self, command_rx: &Receiver<AudioCommand>) -> AudioThreadEvent {
+    fn next_event(&mut self, command_rx: &Receiver<AudioCommand>) -> AudioThreadEvent {
         let output_ready = self.shared_state.output_state() == AudioOutputState::Ready;
         let current_sink_active = output_ready
             && self
@@ -1798,17 +1851,33 @@ impl<'a> AudioThread<'a> {
                     .crossfade_sink
                     .as_ref()
                     .is_some_and(|sink| !sink.is_paused() && !sink.empty()));
-        if should_poll_audio_thread(
-            current_sink_active,
-            crossfade_active,
-            self.shared_state.state(),
-        ) {
-            match command_rx.recv_timeout(Duration::from_millis(50)) {
+        let lifecycle_state = self.shared_state.state();
+        if lifecycle_state == PlaybackLifecycleState::Paused {
+            if self.paused_since.is_none() {
+                self.paused_since = Some(Instant::now());
+            }
+        } else {
+            self.paused_since = None;
+        }
+        if should_poll_audio_thread(current_sink_active, crossfade_active, lifecycle_state) {
+            match command_rx.recv_timeout(self.poll_interval) {
                 Ok(command) => AudioThreadEvent::Command(Box::new(command)),
                 Err(mpsc::RecvTimeoutError::Timeout) => AudioThreadEvent::Timeout,
                 Err(mpsc::RecvTimeoutError::Disconnected) => AudioThreadEvent::Disconnected,
             }
         } else {
+            // While paused with the output device still open, wait only until
+            // the release deadline; afterwards the thread blocks with no
+            // periodic wakeups until the next command arrives.
+            if let Some(wait) = self.paused_release_wait() {
+                match command_rx.recv_timeout(wait) {
+                    Ok(command) => return AudioThreadEvent::Command(Box::new(command)),
+                    Err(mpsc::RecvTimeoutError::Timeout) => self.release_paused_output(),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return AudioThreadEvent::Disconnected;
+                    }
+                }
+            }
             match command_rx.recv() {
                 Ok(command) => AudioThreadEvent::Command(Box::new(command)),
                 Err(_) => AudioThreadEvent::Disconnected,
@@ -1816,11 +1885,44 @@ impl<'a> AudioThread<'a> {
         }
     }
 
+    /// Returns the remaining time before a paused output should be released,
+    /// or `None` when there is no open output or playback is not paused.
+    fn paused_release_wait(&self) -> Option<Duration> {
+        if !should_schedule_paused_output_release(self.stream.is_some(), self.shared_state.state())
+        {
+            return None;
+        }
+        let paused_since = self.paused_since?;
+        paused_since
+            .checked_add(PAUSED_OUTPUT_RELEASE_TIMEOUT)
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
+    /// Drops the sinks and the output device of a long-paused player. The
+    /// consumed position was persisted when the sink paused, so a later
+    /// resume rebuilds the output exactly like recovery from a lost device.
+    fn release_paused_output(&mut self) {
+        info!("Releasing audio output after pause idle timeout");
+        if let Some(sink) = self.current_sink.take() {
+            sink.stop();
+        }
+        if let Some(crossfade_sink) = self.crossfade_sink.take() {
+            crossfade_sink.stop();
+        }
+        self.crossfade_state = None;
+        self.stream.take();
+        self.shared_state.mark_output_closed();
+        self.shared_state.notify_playback_changed();
+    }
+
     fn handle_command(&mut self, command: AudioCommand) -> bool {
+        // Commands can start transitions that need prompt follow-up; poll fast
+        // until the next timeout pass relaxes the interval again.
+        self.poll_interval = POLL_INTERVAL_FAST;
         match command {
             AudioCommand::Play {
                 expected_playback,
-                audio_data,
+                audio_path,
                 metadata,
                 duration_secs,
                 normalization_gain,
@@ -1832,7 +1934,7 @@ impl<'a> AudioThread<'a> {
             } => self.play(
                 expected_playback.as_ref(),
                 ActiveAudioRequest::new(
-                    audio_data,
+                    audio_path,
                     metadata,
                     duration_secs,
                     normalization_gain,
@@ -1852,7 +1954,7 @@ impl<'a> AudioThread<'a> {
             AudioCommand::AppendGapless { request, ack } => {
                 let GaplessAppendRequest {
                     expected_playback,
-                    audio_data,
+                    audio_path,
                     metadata,
                     duration_secs,
                     normalization_gain,
@@ -1863,7 +1965,7 @@ impl<'a> AudioThread<'a> {
                 self.append_gapless(
                     &expected_playback,
                     ActiveAudioRequest::new(
-                        audio_data,
+                        audio_path,
                         metadata,
                         duration_secs,
                         normalization_gain,
@@ -1876,7 +1978,7 @@ impl<'a> AudioThread<'a> {
             }
             AudioCommand::CrossfadePlay {
                 expected_playback,
-                audio_data,
+                audio_path,
                 metadata,
                 duration_secs,
                 normalization_gain,
@@ -1889,7 +1991,7 @@ impl<'a> AudioThread<'a> {
             } => self.crossfade_play(
                 expected_playback.as_ref(),
                 ActiveAudioRequest::new(
-                    audio_data,
+                    audio_path,
                     metadata,
                     duration_secs,
                     normalization_gain,
@@ -1917,11 +2019,8 @@ impl<'a> AudioThread<'a> {
         ack: &Sender<AudioResult<()>>,
     ) {
         info!(
-            "Playback thread play: song_id={}, title={:?}, bytes={}, duration={:.3}s",
-            request.metadata.id,
-            request.metadata.title,
-            request.audio_data.len(),
-            request.duration_secs
+            "Playback thread play: song_id={}, title={:?}, duration={:.3}s",
+            request.metadata.id, request.metadata.title, request.duration_secs
         );
         let volume = self.shared_state.read_inner().volume;
         let had_output = self.stream.is_some();
@@ -2044,11 +2143,9 @@ impl<'a> AudioThread<'a> {
                 .as_ref()
                 .is_some_and(rodio::Player::is_paused);
             if was_paused {
-                let sink = self
-                    .current_sink
-                    .as_ref()
-                    .expect("resumable sink checked above");
-                sink.play();
+                if let Some(sink) = self.current_sink.as_ref() {
+                    sink.play();
+                }
                 if let Some(ref crossfade_sink) = self.crossfade_sink {
                     crossfade_sink.play();
                 }
@@ -2194,6 +2291,21 @@ impl<'a> AudioThread<'a> {
                 );
                 Ok(())
             }
+        } else if self.shared_state.state() == PlaybackLifecycleState::Paused
+            && self.shared_state.read_inner().active_request.is_some()
+        {
+            // The paused output was released; adjust the persisted position so
+            // the rebuild on resume starts from the requested spot.
+            let (_, cumulative_position) = self.seek_positions(position_secs);
+            self.shared_state
+                .set_consumed_position(self.current_generation, cumulative_position);
+            self.watchdog.reset(cumulative_position);
+            if let Some(identity) = self.shared_state.playback_identity() {
+                self.shared_state
+                    .notify(AudioNotification::PositionChanged { identity });
+            }
+            debug!("Playback thread seek stored for released output: {cumulative_position:.3}s");
+            Ok(())
         } else {
             Err(AudioError::Playback(
                 "Cannot seek because there is no active sink".to_string(),
@@ -2213,9 +2325,13 @@ impl<'a> AudioThread<'a> {
                     break;
                 }
             }
-            let segment = &inner.gapless_segments[segment_index];
-            let clamped = position_secs.clamp(0.0, segment.duration);
-            (clamped, segment.cumulative_start + clamped)
+            if let Some(segment) = inner.gapless_segments.get(segment_index) {
+                let clamped = position_secs.clamp(0.0, segment.duration);
+                (clamped, segment.cumulative_start + clamped)
+            } else {
+                let clamped = position_secs.clamp(0.0, inner.duration);
+                (clamped, clamped)
+            }
         } else {
             let clamped = position_secs.clamp(0.0, inner.duration);
             (clamped, clamped)
@@ -2229,11 +2345,8 @@ impl<'a> AudioThread<'a> {
         ack: &Sender<AudioResult<()>>,
     ) {
         info!(
-            "Playback thread append gapless: song_id={}, title={:?}, bytes={}, duration={:.3}s",
-            request.metadata.id,
-            request.metadata.title,
-            request.audio_data.len(),
-            request.duration_secs
+            "Playback thread append gapless: song_id={}, title={:?}, duration={:.3}s",
+            request.metadata.id, request.metadata.title, request.duration_secs
         );
         if !matches_expected_playback(
             self.shared_state,
@@ -2300,10 +2413,9 @@ impl<'a> AudioThread<'a> {
         ack: &Sender<AudioResult<()>>,
     ) {
         info!(
-            "Playback thread crossfade: song_id={}, title={:?}, bytes={}, duration={:.3}s, fade={}ms",
+            "Playback thread crossfade: song_id={}, title={:?}, duration={:.3}s, fade={}ms",
             request.metadata.id,
             request.metadata.title,
-            request.audio_data.len(),
             request.duration_secs,
             crossfade_duration_ms
         );
@@ -2431,6 +2543,21 @@ impl<'a> AudioThread<'a> {
         }
         self.update_crossfade();
         self.mark_finished_playback();
+        self.refresh_poll_interval();
+    }
+
+    /// Relax the supervisor wake interval mid-track and tighten it whenever a
+    /// crossfade is running or the current segment is about to end.
+    fn refresh_poll_interval(&mut self) {
+        let timing_sensitive = self.crossfade_state.is_some() || self.crossfade_sink.is_some() || {
+            let (state, _) = self.shared_state.get_gapless_state();
+            state.duration <= 0.0 || state.duration - state.position < POLL_BOUNDARY_WINDOW_SECONDS
+        };
+        self.poll_interval = if timing_sensitive {
+            POLL_INTERVAL_FAST
+        } else {
+            POLL_INTERVAL_RELAXED
+        };
     }
 
     fn update_crossfade(&mut self) {
@@ -2504,12 +2631,8 @@ impl<'a> AudioThread<'a> {
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "crossfade timing uses f64 but rodio volume controls require f32"
-)]
 fn crossfade_factor(factor: f64) -> f32 {
-    factor as f32
+    factor.to_f32().unwrap_or_default()
 }
 
 fn panic_payload_message(payload: &(dyn Any + Send)) -> &str {
@@ -2576,7 +2699,7 @@ fn wait_for_audio_recovery(
     delay: Option<Duration>,
     allow_explicit_retry: bool,
 ) -> SupervisorWait {
-    let deadline = delay.map(|delay| Instant::now() + delay);
+    let deadline = delay.and_then(|delay| Instant::now().checked_add(delay));
     loop {
         let command = match deadline {
             Some(deadline) => {
@@ -2733,8 +2856,54 @@ fn run_audio_thread(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast with contextual messages"
+)]
 mod tests {
     use super::*;
+
+    static NEXT_TEST_FILE_ID: AtomicU64 = AtomicU64::new(1);
+
+    fn test_wav_path(name: &str) -> PathBuf {
+        let id = NEXT_TEST_FILE_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "stereodrome-audio-{name}-{}-{id}.wav",
+            std::process::id()
+        ));
+        let samples = [0_i16, 1_000, -1_000, 0];
+        let sample_bytes = samples
+            .len()
+            .checked_mul(std::mem::size_of::<i16>())
+            .expect("test WAV byte length fits usize");
+        let data_len = u32::try_from(sample_bytes).expect("test WAV fits u32");
+        let data_capacity = usize::try_from(data_len).expect("test WAV length fits usize");
+        let wav_capacity = 44_usize
+            .checked_add(data_capacity)
+            .expect("test WAV capacity fits usize");
+        let mut wav = Vec::with_capacity(wav_capacity);
+        wav.extend_from_slice(b"RIFF");
+        let riff_len = 36_u32
+            .checked_add(data_len)
+            .expect("test WAV RIFF length fits u32");
+        wav.extend_from_slice(&riff_len.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&16_000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(&path, wav).expect("test WAV writes");
+        path
+    }
 
     fn test_shared_state() -> SharedState {
         let (notifications, _receiver) = mpsc::channel();
@@ -2743,7 +2912,7 @@ mod tests {
 
     fn test_request(song_id: &str, duration_secs: f64) -> ActiveAudioRequest {
         ActiveAudioRequest::new(
-            Arc::<[u8]>::from(vec![0_u8; 4]),
+            PathBuf::from(format!("{song_id}.mp3")),
             SongMetadata {
                 id: song_id.to_string(),
                 title: song_id.to_string(),
@@ -2771,6 +2940,59 @@ mod tests {
             spectrum_enabled: Arc::new(AtomicBool::new(false)),
             audio_thread: Some(thread::spawn(|| {})),
         }
+    }
+
+    #[test]
+    fn appends_decoder_backed_by_cached_file() {
+        let path = test_wav_path("file-backed");
+        let request = ActiveAudioRequest::new(
+            path.clone(),
+            SongMetadata {
+                id: "file-backed".to_string(),
+                title: "file-backed".to_string(),
+                artist: "artist".to_string(),
+                album: "album".to_string(),
+                cover_art_id: None,
+            },
+            1.0,
+            None,
+            None,
+            None,
+            None,
+        );
+        let (sink, mut source) = Player::new();
+        let ring_buffer = HeapRb::<f32>::new(SPECTRUM_BUFFER_SIZE);
+        let (producer, _consumer) = ring_buffer.split();
+        let producer = Arc::new(Mutex::new(producer));
+        let spectrum_enabled = Arc::new(AtomicBool::new(false));
+
+        append_request_to_sink(&sink, &request, &producer, &spectrum_enabled)
+            .expect("cached file decodes");
+        assert!(source.next().is_some());
+
+        drop(source);
+        drop(sink);
+        std::fs::remove_file(path).expect("test WAV removes");
+    }
+
+    #[test]
+    fn audio_thread_relaxes_polling_only_away_from_boundaries() {
+        let shared = Arc::new(test_shared_state());
+        let generation = shared.next_generation();
+        shared.set_active_request(generation, test_request("polling", 30.0));
+        shared.mark_playing();
+        let ring_buffer = HeapRb::<f32>::new(SPECTRUM_BUFFER_SIZE);
+        let (producer, _consumer) = ring_buffer.split();
+        let producer = Arc::new(Mutex::new(producer));
+        let spectrum_enabled = Arc::new(AtomicBool::new(false));
+        let mut audio_thread = AudioThread::new(&shared, &producer, &spectrum_enabled);
+
+        audio_thread.refresh_poll_interval();
+        assert_eq!(audio_thread.poll_interval, POLL_INTERVAL_RELAXED);
+
+        shared.set_consumed_position(generation, 29.0);
+        audio_thread.refresh_poll_interval();
+        assert_eq!(audio_thread.poll_interval, POLL_INTERVAL_FAST);
     }
 
     #[test]
@@ -2819,7 +3041,7 @@ mod tests {
     fn play_returns_error_when_audio_thread_is_disconnected() {
         let player = disconnected_audio_player();
         let result = player.play(
-            Arc::<[u8]>::from(vec![0_u8; 4]),
+            PathBuf::from("a.mp3"),
             SongMetadata {
                 id: "a".to_string(),
                 title: "a".to_string(),
@@ -2846,7 +3068,7 @@ mod tests {
                 generation: 1,
                 song_id: "a".to_string(),
             },
-            Arc::<[u8]>::from(vec![0_u8; 4]),
+            PathBuf::from("b.mp3"),
             SongMetadata {
                 id: "b".to_string(),
                 title: "b".to_string(),
@@ -3008,7 +3230,7 @@ mod tests {
     }
 
     #[test]
-    fn paused_crossfade_does_not_require_audio_polling() {
+    fn paused_crossfade_parks_polling_but_keeps_output_release_scheduled() {
         let mut crossfade = CrossfadeState::new(5_000);
         crossfade.pause();
 
@@ -3018,6 +3240,19 @@ mod tests {
             crossfade.requires_poll(),
             PlaybackLifecycleState::Paused
         ));
+        assert!(should_schedule_paused_output_release(
+            true,
+            PlaybackLifecycleState::Paused
+        ));
+    }
+
+    #[test]
+    fn ios_releases_paused_output_immediately_for_now_playing_state() {
+        assert_eq!(paused_output_release_timeout(true), Duration::ZERO);
+        assert_eq!(
+            paused_output_release_timeout(false),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]

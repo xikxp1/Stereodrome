@@ -1,4 +1,4 @@
-import { coreClient } from "@/core/client";
+import { coreClient, isCancelledCoreCommand } from "@/core/client";
 import type { CoreEvent, CoreSnapshot } from "@/core/protocol.generated";
 import type { PlayableSong } from "@/types/music";
 
@@ -36,16 +36,36 @@ function setError(error: unknown): void {
   }
 }
 
+function clearStoredError(): void {
+  if (state.error !== null) {
+    publish({ ...state, error: null });
+  }
+}
+
+let comparedSnapshotJson: { revision: number; json: string } | null = null;
+
 function applySnapshot(snapshot: CoreSnapshot): void {
   if (state.snapshot !== null && snapshot.revision < state.snapshot.revision) {
     return;
   }
+  // Same-revision snapshots only arrive from explicit refetches (foreground
+  // reconciles), so the serialization for deep equality is confined to that
+  // rare path and cached instead of stringifying twice on every event.
   if (
     state.snapshot !== null &&
-    snapshot.revision === state.snapshot.revision &&
-    JSON.stringify(snapshot) === JSON.stringify(state.snapshot)
+    snapshot.revision === state.snapshot.revision
   ) {
-    return;
+    if (comparedSnapshotJson?.revision !== state.snapshot.revision) {
+      comparedSnapshotJson = {
+        revision: state.snapshot.revision,
+        json: JSON.stringify(state.snapshot),
+      };
+    }
+    const incomingJson = JSON.stringify(snapshot);
+    if (incomingJson === comparedSnapshotJson.json) {
+      return;
+    }
+    comparedSnapshotJson = { revision: snapshot.revision, json: incomingJson };
   }
   publish({ ...state, snapshot });
 }
@@ -65,7 +85,9 @@ function applyEvent(event: CoreEvent): void {
       applySnapshot(event.kind.snapshot);
       break;
     case "operation-failed":
-      publish({ ...state, error: event.kind.failure.error.message });
+      if (event.kind.failure.error.code !== "cancelled") {
+        publish({ ...state, error: event.kind.failure.error.message });
+      }
       break;
     case "runtime-shutting-down":
       publish({ ...state, ready: false });
@@ -129,12 +151,15 @@ async function run(
   try {
     return await coreClient.dispatch(command);
   } catch (error) {
-    setError(error);
+    if (!isCancelledCoreCommand(error)) {
+      setError(error);
+    }
     throw error;
   }
 }
 
 export const coreActions = {
+  dismissError: clearStoredError,
   async connect(params: { url: string; username: string; password: string }) {
     await run({ type: "connect", params });
   },

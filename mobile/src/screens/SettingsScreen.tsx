@@ -1,15 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import {
-  type KeyboardTypeOptions,
-  Linking,
-  Modal,
-  Pressable,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { type KeyboardTypeOptions, Linking, View } from "react-native";
 
+import { SettingsTextEditModal } from "@/components/SettingsTextEditModal";
 import {
   SelectableList,
   type SelectableOption,
@@ -22,6 +15,8 @@ import { useViewStack } from "@/context/ViewContext";
 import { configureLibrarySyncBackgroundTask } from "@/services/librarySyncScheduler";
 import { settingsScreenStyles as styles } from "@/screens/SettingsScreen.styles";
 import { backupSettingsOptions } from "@/screens/backupSettingsOptions";
+import { diagnosticsSettingsOptions } from "@/screens/diagnosticsSettingsOptions";
+import { getResourceDiagnosticsStatus } from "@/services/resourceDiagnostics";
 import type {
   AudioProcessingSettings,
   LastfmQueueItem,
@@ -39,6 +34,17 @@ const syncSettingsQueryKey = ["sync-settings"] as const;
 const scanStatusQueryKey = ["scan-status"] as const;
 const lastfmStatusQueryKey = ["lastfm-status"] as const;
 const lastfmQueueQueryKey = ["lastfm-queue"] as const;
+const resourceDiagnosticsQueryKey = ["resource-diagnostics-status"] as const;
+
+function useResourceDiagnosticsQuery(enabled: boolean) {
+  return useQuery({
+    queryKey: resourceDiagnosticsQueryKey,
+    queryFn: getResourceDiagnosticsStatus,
+    enabled,
+    refetchInterval: (query) =>
+      query.state.data?.active === true ? 10_000 : false,
+  });
+}
 const eqLabels = [
   "32",
   "64",
@@ -76,6 +82,7 @@ type SettingsCategory =
   | "playback"
   | "normalization"
   | "backup"
+  | "diagnostics"
   | "cache";
 
 const settingsCategories: {
@@ -97,6 +104,11 @@ const settingsCategories: {
     id: "backup",
     label: "Backup & Transfer",
     sublabel: "Move library data between devices",
+  },
+  {
+    id: "diagnostics",
+    label: "Diagnostics",
+    sublabel: "Record and share resource usage",
   },
   { id: "cache", label: "Audio Cache", sublabel: "Downloaded audio storage" },
 ];
@@ -210,6 +222,9 @@ export function SettingsScreen({ category }: { category?: string }) {
     enabled:
       selectedCategory === "playback" || selectedCategory === "normalization",
   });
+  const resourceDiagnostics = useResourceDiagnosticsQuery(
+    selectedCategory === "diagnostics"
+  );
   const { protectedActionRows } = useProtectedSelectableAction(
     [
       selectedCategory ?? "root",
@@ -220,8 +235,15 @@ export function SettingsScreen({ category }: { category?: string }) {
       syncStatus.data?.active_job ?? "idle",
       cacheStats.data?.file_count ?? 0,
       cacheStats.data?.total_size ?? 0,
+      resourceDiagnostics.data?.active ?? false,
+      resourceDiagnostics.data?.sample_count ?? 0,
     ].join(":")
   );
+  const invalidateResourceDiagnostics = () => {
+    void queryClient.invalidateQueries({
+      queryKey: resourceDiagnosticsQueryKey,
+    });
+  };
 
   function openTextEdit(config: TextEditConfig) {
     setTextEdit(config);
@@ -289,6 +311,23 @@ export function SettingsScreen({ category }: { category?: string }) {
             await configureLibrarySyncBackgroundTask(importedSyncSettings);
             setMessage(`Imported ${summary.songs.toLocaleString()} songs`);
           },
+        });
+      case "diagnostics":
+        return diagnosticsSettingsOptions({
+          status: resourceDiagnostics.data,
+          loadingError:
+            resourceDiagnostics.error instanceof Error
+              ? resourceDiagnostics.error.message
+              : null,
+          busyAction,
+          protectedActionRows,
+          runBusy,
+          setMessage,
+          onRefresh: invalidateResourceDiagnostics,
+          onStatusChange: (status) => {
+            queryClient.setQueryData(resourceDiagnosticsQueryKey, status);
+          },
+          onCleared: invalidateResourceDiagnostics,
         });
       case "cache":
         return cacheOptions();
@@ -859,58 +898,19 @@ export function SettingsScreen({ category }: { category?: string }) {
         preserveSelectionOnChange
         resetSelectionKey={selectedCategory ?? "root"}
       />
-      <Modal
-        animationType="fade"
-        onRequestClose={() => {
+      <SettingsTextEditModal
+        config={textEdit}
+        error={textEditError}
+        onCancel={() => {
           setTextEdit(null);
         }}
-        transparent
-        visible={textEdit !== null}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{textEdit?.title}</Text>
-            <TextInput
-              autoFocus
-              keyboardType={textEdit?.keyboardType ?? "default"}
-              onChangeText={setTextEditValue}
-              onSubmitEditing={() => {
-                void submitTextEdit();
-              }}
-              selectTextOnFocus
-              style={styles.modalInput}
-              value={textEditValue}
-            />
-            {hasText(textEditError) ? (
-              <Text numberOfLines={2} style={styles.modalError}>
-                {textEditError}
-              </Text>
-            ) : null}
-            <View style={styles.modalActions}>
-              <Pressable
-                disabled={textEditSaving}
-                onPress={() => {
-                  setTextEdit(null);
-                }}
-                style={styles.modalButton}
-              >
-                <Text style={styles.modalButtonText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                disabled={textEditSaving}
-                onPress={() => {
-                  void submitTextEdit();
-                }}
-                style={[styles.modalButton, styles.modalPrimaryButton]}
-              >
-                <Text style={styles.modalPrimaryButtonText}>
-                  {textEditSaving ? "Saving..." : "Save"}
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        onChangeValue={setTextEditValue}
+        onSubmit={() => {
+          void submitTextEdit();
+        }}
+        saving={textEditSaving}
+        value={textEditValue}
+      />
     </View>
   );
 }

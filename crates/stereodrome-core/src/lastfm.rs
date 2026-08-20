@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::{CoreError, CoreResult};
@@ -109,7 +109,7 @@ pub fn should_scrobble(position: f64, duration: f64) -> bool {
 }
 
 pub fn track_for_song(db_path: &Path, song_id: &str) -> CoreResult<Option<LastfmTrack>> {
-    let conn = Connection::open(db_path)?;
+    let conn = crate::db::open_connection(db_path)?;
     let track = conn
         .query_row(
             "SELECT s.title, ar.name, al.name, s.duration
@@ -139,7 +139,7 @@ pub fn enqueue_scrobble(db_path: &Path, scrobble: &LastfmQueuedScrobble) -> Core
         return Ok(false);
     }
 
-    let conn = Connection::open(db_path)?;
+    let conn = crate::db::open_connection(db_path)?;
     let now = Utc::now().to_rfc3339();
     let changed = conn.execute(
         "INSERT OR IGNORE INTO lastfm_scrobble_queue
@@ -311,7 +311,7 @@ pub fn disconnect(db_path: &Path) -> CoreResult<LastfmStatus> {
 }
 
 pub fn list_queue(db_path: &Path) -> CoreResult<Vec<LastfmQueueItem>> {
-    let conn = Connection::open(db_path)?;
+    let conn = crate::db::open_connection(db_path)?;
     let mut stmt = conn.prepare(
         "SELECT id, song_id, title, artist, album, duration, played_at, attempts,
                 next_retry_at, last_error, created_at, updated_at
@@ -364,7 +364,7 @@ pub(crate) fn import_session_if_missing(
 }
 
 fn sync_value(db_path: &Path, key: &str) -> CoreResult<Option<String>> {
-    let conn = Connection::open(db_path)?;
+    let conn = crate::db::open_connection(db_path)?;
     let value = conn
         .query_row(
             "SELECT value FROM sync_state WHERE key = ?1",
@@ -376,7 +376,7 @@ fn sync_value(db_path: &Path, key: &str) -> CoreResult<Option<String>> {
 }
 
 fn write_sync_value(db_path: &Path, key: &str, value: &str) -> CoreResult<()> {
-    let conn = Connection::open(db_path)?;
+    let conn = crate::db::open_connection(db_path)?;
     conn.execute(
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES (?1, ?2, ?3)",
         params![key, value, Utc::now().to_rfc3339()],
@@ -457,7 +457,9 @@ fn summarize_response_body(body: &str) -> String {
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.len() > MAX_LEN {
         // Response bodies are arbitrary remote bytes, so MAX_LEN can land mid-character.
-        format!("{}...", &compact[..compact.floor_char_boundary(MAX_LEN)])
+        compact
+            .get(..compact.floor_char_boundary(MAX_LEN))
+            .map_or_else(|| compact.clone(), |prefix| format!("{prefix}..."))
     } else if compact.is_empty() {
         "<empty>".to_string()
     } else {
@@ -467,9 +469,11 @@ fn summarize_response_body(body: &str) -> String {
 
 fn extract_lastfm_xml_error(body: &str) -> Option<String> {
     let start_tag = body.find("<error")?;
-    let after_start = body[start_tag..].find('>')? + start_tag + 1;
-    let end = body[after_start..].find("</error>")? + after_start;
-    let message = body[after_start..end].trim();
+    let start = body.get(start_tag..)?;
+    let after_start = start_tag.checked_add(start.find('>')?)?.checked_add(1)?;
+    let error_body = body.get(after_start..)?;
+    let end = after_start.checked_add(error_body.find("</error>")?)?;
+    let message = body.get(after_start..end)?.trim();
     (!message.is_empty()).then(|| message.to_string())
 }
 
@@ -506,7 +510,7 @@ async fn get_session(api_key: &str, secret: &str, token: &str) -> CoreResult<Las
 }
 
 fn due_queue(db_path: &Path, include_not_due: bool) -> CoreResult<Vec<LastfmQueueItem>> {
-    let conn = Connection::open(db_path)?;
+    let conn = crate::db::open_connection(db_path)?;
     let now = Utc::now().timestamp();
     let sql = if include_not_due {
         "SELECT id, song_id, title, artist, album, duration, played_at, attempts,
@@ -590,7 +594,7 @@ async fn submit_scrobble_batch(
 }
 
 fn mark_batch_success(db_path: &Path, items: &[LastfmQueueItem]) -> CoreResult<()> {
-    let conn = Connection::open(db_path)?;
+    let conn = crate::db::open_connection(db_path)?;
     for item in items {
         conn.execute("DELETE FROM lastfm_scrobble_queue WHERE id = ?1", [item.id])?;
     }
@@ -598,17 +602,18 @@ fn mark_batch_success(db_path: &Path, items: &[LastfmQueueItem]) -> CoreResult<(
 }
 
 fn mark_batch_failure(db_path: &Path, items: &[LastfmQueueItem], error: &str) -> CoreResult<()> {
-    let conn = Connection::open(db_path)?;
+    let conn = crate::db::open_connection(db_path)?;
     let now_ts = Utc::now().timestamp();
     let now = Utc::now().to_rfc3339();
     for item in items {
-        let attempts = item.attempts + 1;
+        let attempts = item.attempts.saturating_add(1);
         let delay = retry_delay_secs(attempts);
+        let next_retry_at = now_ts.saturating_add(delay);
         conn.execute(
             "UPDATE lastfm_scrobble_queue
              SET attempts = ?1, next_retry_at = ?2, last_error = ?3, updated_at = ?4
              WHERE id = ?5",
-            params![attempts, now_ts + delay, error, now, item.id],
+            params![attempts, next_retry_at, error, now, item.id],
         )?;
     }
     Ok(())
@@ -616,11 +621,13 @@ fn mark_batch_failure(db_path: &Path, items: &[LastfmQueueItem], error: &str) ->
 
 fn retry_delay_secs(attempts: i64) -> i64 {
     let exponent = u32::try_from(attempts.clamp(0, 6)).unwrap_or_default();
-    (60_i64 * 2_i64.pow(exponent)).min(3600)
+    60_i64
+        .saturating_mul(2_i64.saturating_pow(exponent))
+        .min(3600)
 }
 
 fn queue_count(db_path: &Path) -> CoreResult<i64> {
-    let conn = Connection::open(db_path)?;
+    let conn = crate::db::open_connection(db_path)?;
     Ok(
         conn.query_row("SELECT COUNT(*) FROM lastfm_scrobble_queue", [], |row| {
             row.get(0)
@@ -629,7 +636,7 @@ fn queue_count(db_path: &Path) -> CoreResult<i64> {
 }
 
 fn latest_queue_error(db_path: &Path) -> CoreResult<Option<String>> {
-    let conn = Connection::open(db_path)?;
+    let conn = crate::db::open_connection(db_path)?;
     Ok(conn
         .query_row(
             "SELECT last_error FROM lastfm_scrobble_queue
@@ -643,6 +650,14 @@ fn latest_queue_error(db_path: &Path) -> CoreResult<Option<String>> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test setup and assertions intentionally fail fast"
+)]
 mod tests {
     use super::*;
 

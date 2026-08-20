@@ -123,6 +123,20 @@ object StereodromeCoreBridge {
     false
   }
 
+  fun runtimeResponseError(raw: String): String? = try {
+    val response = JSONObject(raw)
+    if (response.optString("status") == "succeeded") {
+      null
+    } else {
+      response.optJSONObject("error")
+        ?.optString("message")
+        ?.takeIf { it.isNotEmpty() }
+        ?: "Rust core rejected the command"
+    }
+  } catch (error: Throwable) {
+    "Rust core returned an invalid response"
+  }
+
   private fun dispatchCommandLocked(command: JSONObject): String =
     jni.dispatch(
       handle,
